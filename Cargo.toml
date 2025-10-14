@@ -1,0 +1,39 @@
+[workspace]
+members = ["crates/foo"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0" # CHANGEME
+edition = "2024" # CHANGEME
+authors = [
+  "John Doe <noreply@alpenlabs.io>",  # CHANGEME
+  "Janet Doe <noreply@alpenlabs.io>", # CHANGEME
+]
+description = "Alpen Rust Workspace Template" # CHANGEME
+license = "MIT OR Apache-2.0" # CHANGEME
+readme = "README.md"
+repository = "https://github.com/alpenlabs/rust-template-workspace" # CHANGEME
+categories = ["cryptography::cryptocurrencies"] # CHANGEME
+keywords = ["crypto", "bitcoin"] # CHANGEME
+
+[workspace.lints]
+rust.missing_debug_implementations = "warn"
+rust.rust_2018_idioms = { level = "deny", priority = -1 }
+rust.unreachable_pub = "warn"
+rust.unused_crate_dependencies = "deny"
+rust.unused_must_use = "deny"
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(coverage, coverage_nightly)',
+] }
+rust.missing_docs = "warn"
+rustdoc.all = "warn"
+clippy.too_long_first_doc_paragraph = "warn"
+
+[workspace.dependencies]
+
+[profile.release]
+opt-level = "z"   # Optimized for size, use 3 for speed
+lto = true        # Enable Link Time Optimization
+codegen-units = 1 # Reduced to increase optimizations
+panic = "abort"   # Abort on panic
+strip = "symbols" # Strip symbols from binary

@@ -1,0 +1,43 @@
+name: Security
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  supply-chain:
+    name: Run `cargo-audit`
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@22a6a5b0f9f487c5f5587025ae9d4a1caf2a8a78 # clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+        with:
+          cache-on-failure: true
+
+      - name: Install latest cargo-audit from source
+        run: cargo install cargo-audit --force --locked
+
+      - name: Check for audit warnings
+        run: cargo audit -D warnings
+        continue-on-error: true
+
+      - name: Check for vulnerabilities
+        run: cargo audit

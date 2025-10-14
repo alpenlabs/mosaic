@@ -1,0 +1,18 @@
+[package]
+name = "alpen-rust-template" # CHANGEME
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "CHANGE ME"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
