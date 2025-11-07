@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/foo"]
+members = [
+        "crates/adaptor-sigs",
+        "crates/cac/crypto",
+        "crates/cac/types",
+        "crates/vs3"
+]
 resolver = "2"
 
 [workspace.package]
@@ -30,6 +35,10 @@ rustdoc.all = "warn"
 clippy.too_long_first_doc_paragraph = "warn"
 
 [workspace.dependencies]
+mosaic-adaptor-sigs = { path = "crates/adaptor-sigs" }
+mosaic-cac-crypto = { path = "crates/cac/crypto" }
+mosaic-cac-types = { path = "crates/cac/types" }
+mosaic-vs3 = { path = "crates/vs3" }
 
 [profile.release]
 opt-level = "z"   # Optimized for size, use 3 for speed
