@@ -14,6 +14,7 @@ use tracing::*;
 
 use crate::config::ExecutorConfig;
 
+#[derive(Debug)]
 struct SharedState {
     // TODO
 }
@@ -25,6 +26,7 @@ impl SharedState {
 }
 
 /// Builder for an executor.
+#[derive(Debug)]
 pub struct ExecutorBuilder<C: Computation> {
     config: ExecutorConfig,
     comp_state: Option<C>,
@@ -85,11 +87,11 @@ impl<C: Computation> ExecutorBuilder<C> {
         // TODO convert to use the task manager system
         let handle = thread::spawn(move || {
             let comp_name = exec_state.computation_name();
-            info!(%comp_name, "starting computation executor");
+            info!(%comp_name, "starting computation executor task");
 
             if let Err(err) = executor_task(&mut exec_state, &prov) {
                 let comp_name = exec_state.computation_name();
-                error!(%comp_name, ?err, "executor thread panicked");
+                error!(%comp_name, ?err, "executor task failed");
             }
         });
 
@@ -101,12 +103,16 @@ impl<C: Computation> ExecutorBuilder<C> {
 }
 
 /// Handle for an executor thread.
+#[derive(Debug)]
 pub struct ExecutorHandle {
     handle: Mutex<Option<JoinHandle<()>>>,
+
+    #[allow(unused, reason = "future use")]
     shared: Arc<SharedState>,
 }
 
 impl ExecutorHandle {
+    /// Waits for the computation to exit.
     pub fn wait(&self) -> anyhow::Result<()> {
         let mut handle = self
             .handle
@@ -134,33 +140,12 @@ struct ExecutorState<C: Computation> {
     step_idx: u64,
     config: ExecutorConfig,
     last_snapshot: time::Instant,
+
+    #[allow(unused, reason = "future use")]
     shared: Arc<SharedState>,
 }
 
 impl<C: Computation> ExecutorState<C> {
-    /// Executes a single step and returns the step result.
-    #[tracing::instrument(skip_all, fields(step_idx = %self.step_idx))]
-    fn execute_step(&mut self) -> anyhow::Result<StepResult> {
-        if self.computation_done {
-            let res = self.comp_state.execute_step()?;
-
-            // Update flags.
-            if res.did_change_state() {
-                self.step_idx += 1;
-            }
-
-            if !res.should_execute_next() {
-                self.computation_done = true;
-            }
-
-            Ok(res)
-        } else {
-            Err(anyhow::anyhow!(
-                "tried to execute computation that was done"
-            ))
-        }
-    }
-
     fn computation_name(&self) -> &str {
         self.comp_state.name()
     }
@@ -182,6 +167,33 @@ impl<C: Computation> ExecutorState<C> {
     fn update_snapshot_ts(&mut self) {
         self.last_snapshot = time::Instant::now();
     }
+
+    /// Executes a single step and returns the step result.
+    #[tracing::instrument(skip_all)]
+    fn execute_step(&mut self) -> anyhow::Result<StepResult> {
+        if self.computation_done {
+            let computation_name = self.computation_name();
+            let step_idx = self.step_idx + 1;
+            debug!(%computation_name, %step_idx, "executing step");
+
+            let res = self.comp_state.execute_step()?;
+
+            // Update flags.
+            if res.did_change_state() {
+                self.step_idx += 1;
+            }
+
+            if !res.should_execute_next() {
+                self.computation_done = true;
+            }
+
+            Ok(res)
+        } else {
+            Err(anyhow::anyhow!(
+                "tried to execute computation that was done"
+            ))
+        }
+    }
 }
 
 fn executor_task<'r, C: Computation>(
@@ -189,7 +201,7 @@ fn executor_task<'r, C: Computation>(
     prov: &impl ComputeSnapshotProvider,
 ) -> anyhow::Result<()> {
     loop {
-        let res = execute_single_step(exec_state, prov);
+        let res = handle_exec_single_step(exec_state, prov);
 
         // Handle error/weird cases.
         match res {
@@ -226,12 +238,13 @@ fn executor_task<'r, C: Computation>(
     Ok(())
 }
 
+/// Executes a single step and possibly exports the snapshot state.
 #[tracing::instrument(skip_all)]
-fn execute_single_step<'r, C: Computation>(
+fn handle_exec_single_step<'r, C: Computation>(
     state: &mut ExecutorState<C>,
     prov: &impl ComputeSnapshotProvider,
 ) -> anyhow::Result<StepResult> {
-    let res = state.comp_state.execute_step()?;
+    let res = state.execute_step()?;
 
     if state.should_snapshot() {
         debug!("generating snapshot");
