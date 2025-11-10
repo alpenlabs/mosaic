@@ -7,7 +7,7 @@ use std::{
     time,
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use mosaic_compute_fw::{Computation, ComputeSnapshotProvider, Snapshot, StepResult};
 use strata_codec::Codec;
 use tracing::*;
@@ -19,7 +19,7 @@ struct SharedState {
 }
 
 impl SharedState {
-    pub fn new() -> Arc<Self> {
+    fn new() -> Arc<Self> {
         Arc::new(Self {})
     }
 }
@@ -189,7 +189,7 @@ fn executor_task<'r, C: Computation>(
     prov: &impl ComputeSnapshotProvider,
 ) -> anyhow::Result<()> {
     loop {
-        let res = execute_single_step(&mut exec_state, prov);
+        let res = execute_single_step(exec_state, prov);
 
         // Handle error/weird cases.
         match res {
