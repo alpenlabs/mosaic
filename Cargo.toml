@@ -48,6 +48,7 @@ anyhow = "1.0"
 bytes = "1.10"
 strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 strata-service = { git = "https://github.com/alpenlabs/strata-common.git" }
+tracing = "0.1"
 
 [profile.release]
 opt-level = "z"    # Optimized for size, use 3 for speed

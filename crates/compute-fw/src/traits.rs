@@ -1,27 +1,23 @@
-use strata_codec::Codec;
+use std::any::Any;
 
 use bytes::Bytes;
+use strata_codec::Codec;
 
-use crate::types::StepResult;
+use crate::types::{Snapshot, StepResult};
 
 /// Describes a resumable computation.
-pub trait Computation<'r>: Sized {
-    /// Some generic resources that we require from the executor thread.
-    ///
-    /// This might be something like a threadpool handle.
-    type Resources;
-
+pub trait Computation: Codec + Sync + Send + Sized + 'static {
     /// Input to the computation.
-    type Input: Clone + Codec;
+    type Input: Clone + Any + Codec;
 
     /// Serializable representation of the intermediate state.
     type SnapshotState: Clone + Codec;
 
     /// Starts the service using input and shared resources.
-    fn start(inp: Self::Input, res: &'r Self::Resources) -> anyhow::Result<Self>;
+    fn start(inp: Self::Input) -> anyhow::Result<Self>;
 
     /// Resumes from a snapshot.
-    fn resume(step: Self::SnapshotState, res: &'r Self::Resources) -> anyhow::Result<Self>;
+    fn resume(step: Self::SnapshotState) -> anyhow::Result<Self>;
 
     /// Exports the current state
     fn export(&self) -> Self::SnapshotState;
@@ -31,12 +27,18 @@ pub trait Computation<'r>: Sized {
     /// This returning an `Err` indicates the step execution failed, but might
     /// be able to be retried.
     fn execute_step(&mut self) -> anyhow::Result<StepResult>;
+
+    /// Gets a loggable name for the computation.
+    fn name(&self) -> &str;
 }
 
-pub trait ComputeSnapshotProvider {
+pub trait ComputeSnapshotProvider: Sync + Send + 'static {
     /// Loads a saved snapshot, if present.
-    fn load_snapshot(&self) -> anyhow::Result<Bytes>;
+    fn load_snapshot(&self) -> anyhow::Result<Option<Snapshot>>;
 
     /// Saves the snapshot state.
-    fn save_snapshot(&self, ss: Bytes) -> anyhow::Result<()>;
+    fn save_snapshot(&self, ss: Snapshot) -> anyhow::Result<()>;
+
+    /// Saves failure data for troubleshooting later.
+    fn save_failure_data(self, fd: Bytes) -> anyhow::Result<()>;
 }
