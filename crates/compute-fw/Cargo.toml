@@ -1,0 +1,10 @@
+[package]
+name = "mosaic-compute-fw"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+strata-codec.workspace = true
+
+anyhow.workspace = true
+bytes.workspace = true
