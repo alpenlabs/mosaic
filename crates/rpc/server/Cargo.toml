@@ -1,0 +1,21 @@
+[package]
+name = "mosaic-rpc-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-rpc-api.workspace = true
+mosaic-rpc-provider.workspace = true
+mosaic-rpc-types.workspace = true
+
+jsonrpsee = { workspace  = true, feature = ["server-core"] }
+
+[lints]
+workspace = true
