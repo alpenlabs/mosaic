@@ -220,6 +220,10 @@ name = "mosaic-cac-crypto"
 version = "0.1.0"
 
 [[package]]
+name = "mosaic-cac-proto-types"
+version = "0.1.0"
+
+[[package]]
 name = "mosaic-cac-types"
 version = "0.1.0"
 
@@ -270,9 +274,15 @@ name = "mosaic-rpc-types"
 version = "0.1.0"
 dependencies = [
  "jsonrpsee-types",
+ "mosaic-cac-proto-types",
+ "mosaic-table-types",
  "serde",
  "thiserror",
 ]
+
+[[package]]
+name = "mosaic-table-types"
+version = "0.1.0"
 
 [[package]]
 name = "mosaic-vs3"

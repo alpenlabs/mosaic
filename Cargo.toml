@@ -2,6 +2,7 @@
 members = [
         "crates/adaptor-sigs",
         "crates/cac/crypto",
+        "crates/cac/proto-types",
         "crates/cac/types",
         "crates/compute-exec",
         "crates/compute-fw",
@@ -9,6 +10,7 @@ members = [
         "crates/rpc/provider",
         "crates/rpc/server",
         "crates/rpc/types",
+        "crates/table-types",
         "crates/vs3"
 ]
 resolver = "2"
@@ -42,6 +44,7 @@ clippy.too_long_first_doc_paragraph = "warn"
 [workspace.dependencies]
 mosaic-adaptor-sigs = { path = "crates/adaptor-sigs" }
 mosaic-cac-crypto = { path = "crates/cac/crypto" }
+mosaic-cac-proto-types = { path = "crates/cac/proto-types" }
 mosaic-cac-types = { path = "crates/cac/types" }
 mosaic-compute-exec = { path = "crates/compute-exec" }
 mosaic-compute-fw = { path = "crates/compute-fw" }
@@ -49,6 +52,7 @@ mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-server = { path = "crates/rpc/server" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
+mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
 
 alpak-format = { git = "https://github.com/alpenlabs/alpak.git" }
