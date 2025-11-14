@@ -26,7 +26,7 @@ pub trait MosaicRpc {
 
     /// Gets current info about a job.
     #[method(name = "mosaic_getJobStatus")]
-    fn get_job_status(&self, jid: JobId) -> RpcResult<RpcJobState>;
+    fn get_job_status(&self, jid: JobId) -> RpcResult<RpcJobStatus>;
 
     /// Waits for a job to complete, or until a timeout.
     #[method(name = "mosaic_waitForJob")]
@@ -40,7 +40,7 @@ pub trait MosaicRpc {
 
     /// Gets current info about about a game.
     #[method(name = "mosaic_getGameInfo")]
-    fn get_game_info(&self, tsid: TablesetId) -> RpcResult<String>;
+    fn get_game_info(&self, tsid: TablesetId) -> RpcResult<GameInfo>;
 
     /// Starts generating the garbler side's commitments.
     #[method(name = "mosaic_startGenGarbCommitments")]

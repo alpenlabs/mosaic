@@ -26,7 +26,7 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         todo!()
     }
 
-    fn get_job_status(&self, jid: JobId) -> RpcResult<RpcJobState> {
+    fn get_job_status(&self, jid: JobId) -> RpcResult<RpcJobStatus> {
         todo!()
     }
 
@@ -38,7 +38,7 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         todo!()
     }
 
-    fn get_game_info(&self, tsid: TablesetId) -> RpcResult<String> {
+    fn get_game_info(&self, tsid: TablesetId) -> RpcResult<GameInfo> {
         todo!()
     }
 

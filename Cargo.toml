@@ -6,6 +6,7 @@ members = [
         "crates/cac/types",
         "crates/compute-exec",
         "crates/compute-fw",
+        "crates/job/types",
         "crates/rpc/api",
         "crates/rpc/provider",
         "crates/rpc/server",
@@ -48,6 +49,7 @@ mosaic-cac-proto-types = { path = "crates/cac/proto-types" }
 mosaic-cac-types = { path = "crates/cac/types" }
 mosaic-compute-exec = { path = "crates/compute-exec" }
 mosaic-compute-fw = { path = "crates/compute-fw" }
+mosaic-job-types = { path = "crates/job/types" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-server = { path = "crates/rpc/server" }

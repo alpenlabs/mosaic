@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-rpc-types"
+name = "mosaic-job-types"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,13 +11,7 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-mosaic-cac-proto-types.workspace = true
-mosaic-job-types.workspace = true
-mosaic-table-types.workspace = true
-
-jsonrpsee-types.workspace = true
 serde.workspace = true
-thiserror.workspace = true
 
 [lints]
 workspace = true

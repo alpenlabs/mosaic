@@ -7,8 +7,10 @@
 
 mod commit;
 mod export;
+mod game;
 mod reveal;
 
 pub use commit::*;
 pub use export::*;
+pub use game::*;
 pub use reveal::*;

@@ -1,6 +1,7 @@
 //! Mosaic RPC types
 
 pub use mosaic_cac_proto_types::*; // re-export useful types
+pub use mosaic_job_types::*;
 pub use mosaic_table_types::*;
 use serde as _; // needed because of the way the macros work
 

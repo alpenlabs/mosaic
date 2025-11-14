@@ -222,6 +222,9 @@ version = "0.1.0"
 [[package]]
 name = "mosaic-cac-proto-types"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "mosaic-cac-types"
@@ -245,6 +248,13 @@ dependencies = [
  "anyhow",
  "bytes",
  "strata-codec",
+]
+
+[[package]]
+name = "mosaic-job-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -275,6 +285,7 @@ version = "0.1.0"
 dependencies = [
  "jsonrpsee-types",
  "mosaic-cac-proto-types",
+ "mosaic-job-types",
  "mosaic-table-types",
  "serde",
  "thiserror",
