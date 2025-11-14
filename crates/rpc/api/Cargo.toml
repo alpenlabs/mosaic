@@ -1,0 +1,24 @@
+[package]
+name = "mosaic-rpc-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-rpc-types.workspace = true
+
+jsonrpsee = { workspace = true, features = ["client-core", "server-core", "macros"] }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+#gen-client = ["dep:jsonrpsee/client-core"]
+#gen-server = ["dep:jsonrpsee/server-core"]

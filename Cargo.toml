@@ -2,9 +2,16 @@
 members = [
         "crates/adaptor-sigs",
         "crates/cac/crypto",
+        "crates/cac/proto-types",
         "crates/cac/types",
         "crates/compute-exec",
         "crates/compute-fw",
+        "crates/job/types",
+        "crates/rpc/api",
+        "crates/rpc/provider",
+        "crates/rpc/server",
+        "crates/rpc/types",
+        "crates/table-types",
         "crates/vs3"
 ]
 resolver = "2"
@@ -38,16 +45,27 @@ clippy.too_long_first_doc_paragraph = "warn"
 [workspace.dependencies]
 mosaic-adaptor-sigs = { path = "crates/adaptor-sigs" }
 mosaic-cac-crypto = { path = "crates/cac/crypto" }
+mosaic-cac-proto-types = { path = "crates/cac/proto-types" }
 mosaic-cac-types = { path = "crates/cac/types" }
 mosaic-compute-exec = { path = "crates/compute-exec" }
 mosaic-compute-fw = { path = "crates/compute-fw" }
+mosaic-job-types = { path = "crates/job/types" }
+mosaic-rpc-api = { path = "crates/rpc/api" }
+mosaic-rpc-provider = { path = "crates/rpc/provider" }
+mosaic-rpc-server = { path = "crates/rpc/server" }
+mosaic-rpc-types = { path = "crates/rpc/types" }
+mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
 
 alpak-format = { git = "https://github.com/alpenlabs/alpak.git" }
 anyhow = "1.0"
 bytes = "1.10"
+jsonrpsee = { version = "0.26.0", features = ["macros"] }
+jsonrpsee-types = "*" # constrained by jsonrpsee dep
+serde = "1.0"
 strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 strata-service = { git = "https://github.com/alpenlabs/strata-common.git" }
+thiserror = "2.0"
 tracing = "0.1"
 
 [profile.release]

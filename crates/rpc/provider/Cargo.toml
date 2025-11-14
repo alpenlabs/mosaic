@@ -1,0 +1,16 @@
+[package]
+name = "mosaic-rpc-provider"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
