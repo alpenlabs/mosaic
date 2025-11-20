@@ -1,16 +1,15 @@
 //! Point scalar multiplication precomputation for secp256k1's generator G.
 
+use ark_ec::{PrimeGroup, scalar_mul::BatchMulPreprocessing};
+use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use std::sync::LazyLock;
-use ark_ec::{scalar_mul::BatchMulPreprocessing, PrimeGroup};
-use ark_secp256k1::{Projective as Point, Fr as Scalar};
 
 /// Number of scalars that will be multiplied in parallel.
 const NUM_SCALARS: usize = 174;
 
 /// Point scalar multiplication precomputation for G.
-static PRECOMP_G: LazyLock<BatchMulPreprocessing<Point>> = LazyLock::new(|| {
-    BatchMulPreprocessing::new(Point::generator(), NUM_SCALARS)
-});
+static PRECOMP_G: LazyLock<BatchMulPreprocessing<Point>> =
+    LazyLock::new(|| BatchMulPreprocessing::new(Point::generator(), NUM_SCALARS));
 
 /// Accessor for the point scalar multiplication precomputation.
 #[inline]
@@ -27,13 +26,17 @@ pub fn gen_mul(scalar: &Scalar) -> Point {
 /// Batch version.
 #[inline]
 pub fn gen_batch_mul(scalars: &[Scalar]) -> Vec<Point> {
-    precomp().batch_mul(scalars).into_iter().map(|p| p.into()).collect()
+    precomp()
+        .batch_mul(scalars)
+        .into_iter()
+        .map(|p| p.into())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_ff::{UniformRand, Zero, One};
+    use ark_ff::{One, UniformRand, Zero};
     use rand::rngs::OsRng;
 
     #[test]
@@ -105,9 +108,10 @@ mod tests {
 
         // They should match
         assert_eq!(batch_results.len(), single_results.len());
-        for (i, (batch_result, single_result)) in batch_results.iter().zip(single_results.iter()).enumerate() {
+        for (i, (batch_result, single_result)) in
+            batch_results.iter().zip(single_results.iter()).enumerate()
+        {
             assert_eq!(batch_result, single_result, "mismatch at index {}", i);
         }
     }
 }
-

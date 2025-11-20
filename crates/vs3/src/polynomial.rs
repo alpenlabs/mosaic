@@ -1,12 +1,12 @@
 //! Polynomial arithmetic over the secp256k1 curve for the VS3 protocol.
 
+use ark_ff::{UniformRand, Zero};
 use ark_secp256k1::{Fr as Scalar, Projective as Point};
-use ark_ff::{Zero, UniformRand};
 use rand_core::{CryptoRng, RngCore};
 
-use crate::constants::{N_COEFFICIENTS, N_CIRCUITS};
-use crate::psm::{gen_batch_mul, gen_mul};
+use crate::constants::{N_CIRCUITS, N_COEFFICIENTS};
 use crate::error::Error;
+use crate::psm::{gen_batch_mul, gen_mul};
 
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +19,7 @@ impl std::fmt::Display for Index {
 }
 
 impl Index {
-    /// Minimum index, we reserve index 0. 
+    /// Minimum index, we reserve index 0.
     pub const MIN: usize = 1;
     /// Maximum index.
     pub const MAX: usize = N_CIRCUITS;
@@ -113,7 +113,7 @@ impl Polynomial {
             coefficients: gen_batch_mul(&self.coefficients).try_into().unwrap(),
         }
     }
-} 
+}
 
 /// A polynomial with point coefficients, representing a commitment to the polynomial's scalar coefficients.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,9 +142,7 @@ impl PolynomialCommitment {
         if expected == share.commit() {
             Ok(())
         } else {
-            Err(Error::ShareCommitmentMismatch {
-                index: share.0,
-            })
+            Err(Error::ShareCommitmentMismatch { index: share.0 })
         }
     }
 }
@@ -212,7 +210,7 @@ mod tests {
         let share = Share::new(index, value);
 
         let commitment = share.commit();
-        
+
         // Commitment should use gen_mul on the value
         let expected_point = gen_mul(&value);
         assert_eq!(commitment, ShareCommitment(index, expected_point));
@@ -225,7 +223,7 @@ mod tests {
         coeffs[0] = Scalar::from(2u64);
         coeffs[1] = Scalar::from(3u64);
         coeffs[2] = Scalar::from(5u64);
-        
+
         let poly = Polynomial {
             coefficients: coeffs,
         };
@@ -233,12 +231,12 @@ mod tests {
         // Evaluate at x = 4
         let index = Index::new(4).unwrap();
         let share = poly.eval(index);
-        
+
         // f(4) = 2 + 3*4 + 5*16 = 2 + 12 + 80 = 94
-        let expected = Scalar::from(2u64) 
+        let expected = Scalar::from(2u64)
             + Scalar::from(3u64) * Scalar::from(4u64)
             + Scalar::from(5u64) * Scalar::from(16u64);
-        
+
         assert_eq!(share.index(), index);
         assert_eq!(share.value(), expected);
     }
@@ -319,7 +317,7 @@ mod tests {
         // Using Horner's method on points
         let x = Scalar::from(5u64);
         let point_coeffs = gen_batch_mul(&coeffs);
-        
+
         let mut expected = point_coeffs[N_COEFFICIENTS - 1];
         for i in (0..N_COEFFICIENTS - 1).rev() {
             expected = point_coeffs[i] + expected * x;
@@ -356,7 +354,10 @@ mod tests {
         // Verification should fail
         let result = commitment.verify_share(invalid_share);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::ShareCommitmentMismatch { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::ShareCommitmentMismatch { .. }
+        ));
     }
 
     #[test]
@@ -369,7 +370,7 @@ mod tests {
         // Test at multiple indices
         for i in 1..=10 {
             let index = Index::new(i).unwrap();
-            
+
             // Method 1: evaluate then commit
             let share = poly.eval(index);
             let share_commitment1 = share.commit();
@@ -378,9 +379,11 @@ mod tests {
             let share_commitment2 = poly_commitment.eval(index);
 
             // They should be equal
-            assert_eq!(share_commitment1, share_commitment2, 
-                "Homomorphism failed at index {}", i);
+            assert_eq!(
+                share_commitment1, share_commitment2,
+                "Homomorphism failed at index {}",
+                i
+            );
         }
     }
 }
-

@@ -9,15 +9,10 @@ use crate::polynomial::Index;
 pub enum Error {
     /// A share commitment verification failed.
     #[error("share commitment mismatch at index {index}")]
-    ShareCommitmentMismatch {
-        index: Index,
-    },
+    ShareCommitmentMismatch { index: Index },
     /// Invalid number of shares provided for interpolation.
     #[error("invalid share count: expected {expected}, got {actual}")]
-    InvalidShareCount {
-        expected: usize,
-        actual: usize,
-    },
+    InvalidShareCount { expected: usize, actual: usize },
     /// Missing reserved index (0) in known shares.
     #[error("missing reserved index in known shares")]
     MissingReservedIndex,
