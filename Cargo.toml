@@ -1,29 +1,27 @@
 [workspace]
 members = [
-        "crates/adaptor-sigs",
-        "crates/cac/crypto",
-        "crates/cac/proto-types",
-        "crates/cac/types",
-        "crates/compute-exec",
-        "crates/compute-fw",
-        "crates/job/types",
-        "crates/rpc/api",
-        "crates/rpc/provider",
-        "crates/rpc/server",
-        "crates/rpc/types",
-        "crates/table-types",
-        "crates/vs3"
+  "crates/adaptor-sigs",
+  "crates/cac/crypto",
+  "crates/cac/proto-types",
+  "crates/cac/types",
+  "crates/compute-exec",
+  "crates/compute-fw",
+  "crates/job/types",
+  "crates/rpc/api",
+  "crates/rpc/provider",
+  "crates/rpc/server",
+  "crates/rpc/types",
+  "crates/table-types",
+  "crates/vs3",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0" # CHANGEME
+version = "0.1.0"
 edition = "2024"
-authors = [
-  "Alpen Labs <contact@alpenlabs.io>"
-]
+authors = ["Alpen Labs <contact@alpenlabs.io>"]
 description = "Mosasic garbler infrastructure"
-license = "MIT OR Apache-2.0" # CHANGEME
+license = "MIT"
 readme = "README.md"
 repository = "https://github.com/alpenlabs/mosaic"
 categories = ["cryptography::cryptocurrencies"]
@@ -61,7 +59,7 @@ alpak-format = { git = "https://github.com/alpenlabs/alpak.git" }
 anyhow = "1.0"
 bytes = "1.10"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
-jsonrpsee-types = "*" # constrained by jsonrpsee dep
+jsonrpsee-types = "*"                                                       # constrained by jsonrpsee dep
 serde = "1.0"
 strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 strata-service = { git = "https://github.com/alpenlabs/strata-common.git" }
@@ -69,8 +67,8 @@ thiserror = "2.0"
 tracing = "0.1"
 
 [profile.release]
-opt-level = "z"    # Optimized for size, use 3 for speed
-lto = true         # Enable Link Time Optimization
-codegen-units = 1  # Reduced to increase optimizations
-panic = "unwind"   # Graceful shutdown, even on panic
-strip = "symbols"  # Strip symbols from binary
+opt-level = "z"   # Optimized for size, use 3 for speed
+lto = true        # Enable Link Time Optimization
+codegen-units = 1 # Reduced to increase optimizations
+panic = "unwind"  # Graceful shutdown, even on panic
+strip = "symbols" # Strip symbols from binary
