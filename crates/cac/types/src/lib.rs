@@ -1,14 +1,5 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+//! CaC protocol type definitions.
+//!
+//! This is for internally-focused types that we don't expect the bridge client
+//! to ever interact with directly, so this can have types that we don't want to
+//! expose in the RPC interface (or be compiled into RPC libraries).

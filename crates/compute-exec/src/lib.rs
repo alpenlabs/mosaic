@@ -1,3 +1,5 @@
+//! Resumable compute framework executor.
+
 mod config;
 mod executor;
 

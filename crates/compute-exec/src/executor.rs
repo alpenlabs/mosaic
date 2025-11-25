@@ -196,7 +196,7 @@ impl<C: Computation> ExecutorState<C> {
     }
 }
 
-fn executor_task<'r, C: Computation>(
+fn executor_task<C: Computation>(
     exec_state: &mut ExecutorState<C>,
     prov: &impl ComputeSnapshotProvider,
 ) -> anyhow::Result<()> {
@@ -240,7 +240,7 @@ fn executor_task<'r, C: Computation>(
 
 /// Executes a single step and possibly exports the snapshot state.
 #[tracing::instrument(skip_all)]
-fn handle_exec_single_step<'r, C: Computation>(
+fn handle_exec_single_step<C: Computation>(
     state: &mut ExecutorState<C>,
     prov: &impl ComputeSnapshotProvider,
 ) -> anyhow::Result<StepResult> {

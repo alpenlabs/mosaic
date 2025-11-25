@@ -15,7 +15,7 @@ mosaic-rpc-api.workspace = true
 mosaic-rpc-provider.workspace = true
 mosaic-rpc-types.workspace = true
 
-jsonrpsee = { workspace  = true, feature = ["server-core"] }
+jsonrpsee = { workspace = true, features = ["server-core"] }
 
 [lints]
 workspace = true

@@ -6,6 +6,8 @@ updates:
     schedule:
       interval: "monthly"
       time: "00:00"
+    cooldown:
+      default-days: 14
     # Group all updates into a single PR
     groups:
       all-dependencies:
@@ -27,6 +29,8 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "00:00"
+    cooldown:
+      default-days: 14
     # Group non-security updates
     groups:
       rust-dependencies:
