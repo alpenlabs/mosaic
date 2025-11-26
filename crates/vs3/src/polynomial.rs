@@ -129,9 +129,9 @@ impl PolynomialCommitment {
         }
         let x = idx.to_scalar();
         let mut it = self.coefficients.iter().rev();
-        let mut acc = it.next().unwrap().clone();
+        let mut acc = *it.next().unwrap();
         for c in it {
-            acc = c.clone() + acc * x;
+            acc = *c + acc * x;
         }
         ShareCommitment(idx, acc)
     }

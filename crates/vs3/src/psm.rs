@@ -104,7 +104,7 @@ mod tests {
         let batch_results = gen_batch_mul(&scalars);
 
         // Compute using single version
-        let single_results: Vec<Point> = scalars.iter().map(|s| gen_mul(s)).collect();
+        let single_results: Vec<Point> = scalars.iter().map(gen_mul).collect();
 
         // They should match
         assert_eq!(batch_results.len(), single_results.len());
