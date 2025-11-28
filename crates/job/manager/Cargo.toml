@@ -1,0 +1,25 @@
+[package]
+name = "mosaic-job-manager"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Job management and execution for Mosaic"
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-db-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+threadpool.workspace = true
+
+[dev-dependencies]
+mosaic-db-sqlite.workspace = true
+
+[lints]
+workspace = true
