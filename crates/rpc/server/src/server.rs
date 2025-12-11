@@ -34,7 +34,7 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         todo!()
     }
 
-    fn create_tableset_instance(&self, config: RpcTablesetConfig) -> RpcResult<TablesetId> {
+    fn create_game_instance(&self, config: RpcGameInstanceConfig) -> RpcResult<TablesetId> {
         todo!()
     }
 
@@ -42,51 +42,7 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         todo!()
     }
 
-    fn start_generate_game_tableset(&self, tsid: TablesetId) -> RpcResult<JobId> {
-        todo!()
-    }
-
-    fn get_garb_commitments(&self, tsid: TablesetId) -> RpcResult<TablesetCommitments> {
-        todo!()
-    }
-
-    fn provide_garb_commitments(
-        &self,
-        tsid: TablesetId,
-        commitments: TablesetCommitments,
-    ) -> RpcResult<CacChoices> {
-        todo!()
-    }
-
-    fn provide_eval_cac_choices(&self, tsid: TablesetId, choices: CacChoices) -> RpcResult<()> {
-        todo!()
-    }
-
-    fn get_cac_seeds(&self, tsid: TablesetId) -> RpcResult<CacSeeds> {
-        todo!()
-    }
-
-    fn start_verify_garb_cac_seeds(&self, tsid: TablesetId, seeds: CacSeeds) -> RpcResult<JobId> {
-        todo!()
-    }
-
-    fn check_verify_cac_commitments(&self, tsid: TablesetId) -> RpcResult<bool> {
-        todo!()
-    }
-
-    fn start_export_unopened_tables(&self, tsid: TablesetId) -> RpcResult<JobId> {
-        todo!()
-    }
-
     fn get_export_data(&self, tsid: TablesetId) -> RpcResult<TableExportMeta> {
-        todo!()
-    }
-
-    fn start_download_table_export(
-        &self,
-        tsid: TablesetId,
-        export_meta: TableExportMeta,
-    ) -> RpcResult<JobId> {
         todo!()
     }
 
@@ -95,6 +51,10 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
     }
 
     fn get_eval_outputs(&self, tsid: TablesetId) -> RpcResult<TableEvalOutputs> {
+        todo!()
+    }
+
+    fn cleanup_game(&self, tsid: TablesetId) -> RpcResult<()> {
         todo!()
     }
 }
