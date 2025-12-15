@@ -2,14 +2,16 @@
 
 use std::collections::VecDeque;
 
-use crate::phasm::{Action, ActionsContainer, Input, StateMachine, TrackedActionTypes};
 use tracing::{debug, info, warn};
 
-use crate::error::{Error, Result};
-use crate::executor::ActionExecutor;
-use crate::notify::{InputNotifier, ShutdownReceiver};
-use crate::provider::PhasmProvider;
-use crate::types::{PersistedInput, WorkerConfig};
+use crate::{
+    error::{Error, Result},
+    executor::ActionExecutor,
+    notify::{InputNotifier, ShutdownReceiver},
+    phasm::{Action, ActionsContainer, Input, StateMachine, TrackedActionTypes},
+    provider::PhasmProvider,
+    types::{PersistedInput, WorkerConfig},
+};
 
 /// Runs the phasm state machine worker loop.
 ///
@@ -61,11 +63,11 @@ where
     SM::RestoreError: std::error::Error + Send + Sync,
     P: PhasmProvider<State = SM::State, NormalInput = SM::Input>,
     E: ActionExecutor<
-        ActionId = <SM::TrackedAction as TrackedActionTypes>::Id,
-        TrackedAction = <SM::TrackedAction as TrackedActionTypes>::Action,
-        ActionResult = <SM::TrackedAction as TrackedActionTypes>::Result,
-        UntrackedAction = SM::UntrackedAction,
-    >,
+            ActionId = <SM::TrackedAction as TrackedActionTypes>::Id,
+            TrackedAction = <SM::TrackedAction as TrackedActionTypes>::Action,
+            ActionResult = <SM::TrackedAction as TrackedActionTypes>::Result,
+            UntrackedAction = SM::UntrackedAction,
+        >,
 {
     info!("starting phasm worker");
 
@@ -79,8 +81,14 @@ where
         .map_err(|e| Error::RestoreFailed(e.to_string()))?;
 
     // Execute restored actions and feed results back
-    process_actions::<SM, P, E>(&mut state, &mut restore_actions, &provider, &executor, &config)
-        .await?;
+    process_actions::<SM, P, E>(
+        &mut state,
+        &mut restore_actions,
+        &provider,
+        &executor,
+        &config,
+    )
+    .await?;
 
     // Save state after recovery
     provider.save_state(&state).await?;
@@ -207,11 +215,11 @@ where
     SM::TransitionError: std::error::Error + Send + Sync,
     P: PhasmProvider<State = SM::State, NormalInput = SM::Input>,
     E: ActionExecutor<
-        ActionId = <SM::TrackedAction as TrackedActionTypes>::Id,
-        TrackedAction = <SM::TrackedAction as TrackedActionTypes>::Action,
-        ActionResult = <SM::TrackedAction as TrackedActionTypes>::Result,
-        UntrackedAction = SM::UntrackedAction,
-    >,
+            ActionId = <SM::TrackedAction as TrackedActionTypes>::Id,
+            TrackedAction = <SM::TrackedAction as TrackedActionTypes>::Action,
+            ActionResult = <SM::TrackedAction as TrackedActionTypes>::Result,
+            UntrackedAction = SM::UntrackedAction,
+        >,
 {
     // Process actions - drain them from the container
     while let Some(action) = actions.pop() {

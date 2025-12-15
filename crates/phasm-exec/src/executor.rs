@@ -51,8 +51,5 @@ pub trait ActionExecutor: Send + Sync + 'static {
     /// Failures are logged but do not stop the state machine. These are
     /// suitable for notifications, logging, metrics, etc. where duplicates
     /// or missed executions are acceptable.
-    fn execute_untracked(
-        &self,
-        action: Self::UntrackedAction,
-    ) -> impl Future<Output = ()> + Send;
+    fn execute_untracked(&self, action: Self::UntrackedAction) -> impl Future<Output = ()> + Send;
 }

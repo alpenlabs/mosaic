@@ -98,4 +98,3 @@ impl WorkerConfig {
         self.action_retry_delay = delay;
     }
 }
-

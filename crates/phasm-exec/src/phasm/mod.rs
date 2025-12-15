@@ -6,9 +6,9 @@
 
 mod actions;
 
-pub use actions::{Action, ActionsContainer, TrackedAction, TrackedActionTypes};
-
 use std::future::Future;
+
+pub use actions::{Action, ActionsContainer, TrackedAction, TrackedActionTypes};
 
 /// Input to a state machine's STF.
 ///

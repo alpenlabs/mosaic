@@ -12,8 +12,8 @@ keywords.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-tracing.workspace = true
 tokio = { version = "1", features = ["sync", "time", "macros"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

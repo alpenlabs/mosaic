@@ -3,9 +3,11 @@
 use ark_ff::{Field, One, Zero};
 use ark_secp256k1::Fr as Scalar;
 
-use crate::constants::{N_CIRCUITS, N_COEFFICIENTS};
-use crate::error::Error;
-use crate::polynomial::{Index, Share};
+use crate::{
+    constants::{N_CIRCUITS, N_COEFFICIENTS},
+    error::Error,
+    polynomial::{Index, Share},
+};
 
 /// Interpolate missing shares from known shares using Lagrange interpolation.
 ///
@@ -176,10 +178,13 @@ fn lagrange_interpolate_whole_polynomial(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::constants::{N_CIRCUITS, N_COEFFICIENTS};
-    use crate::polynomial::{Index, Polynomial, Share};
     use rand::rngs::OsRng;
+
+    use super::*;
+    use crate::{
+        constants::{N_CIRCUITS, N_COEFFICIENTS},
+        polynomial::{Index, Polynomial, Share},
+    };
 
     #[test]
     fn test_interpolate_missing_shares() {

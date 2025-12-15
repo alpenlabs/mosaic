@@ -3,13 +3,13 @@
 //! This crate provides an async runtime for phasm `StateMachine` instances
 //! with:
 //!
-//! - **Durable input queue**: Inputs are persisted before processing, enabling
-//!   replay on restart for exactly-once processing semantics
-//! - **Integrated action execution**: The executor runs the STF and dispatches
-//!   actions, handling tracked action results automatically
+//! - **Durable input queue**: Inputs are persisted before processing, enabling replay on restart
+//!   for exactly-once processing semantics
+//! - **Integrated action execution**: The executor runs the STF and dispatches actions, handling
+//!   tracked action results automatically
 //! - **Watch/notify waking**: Opaque handles for signaling new input arrival
-//! - **Recovery flow**: On restart, loads state, restores pending actions, and
-//!   replays unprocessed inputs
+//! - **Recovery flow**: On restart, loads state, restores pending actions, and replays unprocessed
+//!   inputs
 //!
 //! # Architecture
 //!
@@ -62,19 +62,15 @@ mod worker;
 
 // Re-export error types
 pub use error::{Error, Result};
-
-// Re-export notification handles
-pub use notify::{
-    create_input_channel, create_shutdown_channel, InputNotifier, InputSender, ShutdownHandle,
-    ShutdownReceiver,
-};
-
 // Re-export traits
 pub use executor::ActionExecutor;
+// Re-export notification handles
+pub use notify::{
+    InputNotifier, InputSender, ShutdownHandle, ShutdownReceiver, create_input_channel,
+    create_shutdown_channel,
+};
 pub use provider::PhasmProvider;
-
 // Re-export types
 pub use types::{InputSeqNo, PersistedInput, WorkerConfig};
-
 // Re-export worker function
 pub use worker::run_worker;

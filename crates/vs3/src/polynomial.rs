@@ -4,9 +4,11 @@ use ark_ff::{UniformRand, Zero};
 use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use rand_core::{CryptoRng, RngCore};
 
-use crate::constants::{N_CIRCUITS, N_COEFFICIENTS};
-use crate::error::Error;
-use crate::psm::{gen_batch_mul, gen_mul};
+use crate::{
+    constants::{N_CIRCUITS, N_COEFFICIENTS},
+    error::Error,
+    psm::{gen_batch_mul, gen_mul},
+};
 
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +117,8 @@ impl Polynomial {
     }
 }
 
-/// A polynomial with point coefficients, representing a commitment to the polynomial's scalar coefficients.
+/// A polynomial with point coefficients, representing a commitment to the polynomial's scalar
+/// coefficients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolynomialCommitment {
     coefficients: [Point; N_COEFFICIENTS],
@@ -149,9 +152,10 @@ impl PolynomialCommitment {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ark_ff::One;
     use rand::rngs::OsRng;
+
+    use super::*;
 
     #[test]
     fn test_index_new() {

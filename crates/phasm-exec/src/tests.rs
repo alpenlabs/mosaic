@@ -1,18 +1,24 @@
 //! Tests for the phasm executor.
 
-use std::collections::HashMap;
-use std::future::{Future, Ready};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-
-use crate::error::Result;
-use crate::notify::{create_input_channel, create_shutdown_channel};
-use crate::phasm::{
-    Action, ActionsContainer, Input, StateMachine, TrackedAction, TrackedActionTypes,
+use std::{
+    collections::HashMap,
+    future::{Future, Ready},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
-use crate::provider::PhasmProvider;
-use crate::types::{InputSeqNo, PersistedInput, WorkerConfig};
-use crate::{run_worker, ActionExecutor};
+
+use crate::{
+    ActionExecutor,
+    error::Result,
+    notify::*,
+    phasm::{Action, ActionsContainer, Input, StateMachine, TrackedAction, TrackedActionTypes},
+    provider::PhasmProvider,
+    run_worker,
+    types::{InputSeqNo, PersistedInput, WorkerConfig},
+};
 
 // ============================================================================
 // Test State Machine: Counter with tracked "double" action
@@ -90,8 +96,14 @@ impl StateMachine for CounterStateMachine {
     type Input = CounterInput;
     type TransitionError = CounterError;
     type RestoreError = CounterError;
-    type StfFuture<'state, 'actions> = Ready<std::result::Result<(), Self::TransitionError>> where 'state: 'actions;
-    type RestoreFuture<'state, 'actions> = Ready<std::result::Result<(), Self::RestoreError>> where 'state: 'actions;
+    type StfFuture<'state, 'actions>
+        = Ready<std::result::Result<(), Self::TransitionError>>
+    where
+        'state: 'actions;
+    type RestoreFuture<'state, 'actions>
+        = Ready<std::result::Result<(), Self::RestoreError>>
+    where
+        'state: 'actions;
 
     fn stf<'state, 'actions>(
         state: &'state mut Self::State,
@@ -101,6 +113,7 @@ impl StateMachine for CounterStateMachine {
     where
         'state: 'actions,
     {
+        // This is some ridiculous Claude invention.
         let result = (|| {
             match input {
                 Input::Normal(CounterInput::Increment) => {
@@ -158,8 +171,9 @@ impl StateMachine for CounterStateMachine {
     where
         'state: 'actions,
     {
+        // This is some ridiculous Claude invention.
         let result = (|| {
-            let _ = actions.clear();
+            actions.clear();
 
             for (&action_id, &value) in &state.pending_doubles {
                 actions
@@ -274,10 +288,7 @@ impl PhasmProvider for MockProvider {
         }
     }
 
-    fn mark_input_processed(
-        &self,
-        seq_no: InputSeqNo,
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn mark_input_processed(&self, seq_no: InputSeqNo) -> impl Future<Output = Result<()>> + Send {
         let last = self.last_processed.clone();
         async move {
             *last.lock().unwrap() = Some(seq_no);
@@ -356,10 +367,7 @@ impl ActionExecutor for MockExecutor {
         }
     }
 
-    fn execute_untracked(
-        &self,
-        action: Self::UntrackedAction,
-    ) -> impl Future<Output = ()> + Send {
+    fn execute_untracked(&self, action: Self::UntrackedAction) -> impl Future<Output = ()> + Send {
         let executions = self.untracked_executions.clone();
         async move {
             executions.lock().unwrap().push(action);
@@ -371,177 +379,174 @@ impl ActionExecutor for MockExecutor {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    /// Helper to run worker with auto-shutdown after inputs are processed.
-    /// Uses select! to avoid tokio::spawn lifetime issues with GATs.
-    async fn run_worker_until_idle<P, E>(
-        provider: P,
-        executor: E,
-        notifier: crate::notify::InputNotifier,
-        shutdown_rx: crate::notify::ShutdownReceiver,
-        shutdown_handle: crate::notify::ShutdownHandle,
-        idle_delay: Duration,
-    ) -> Result<()>
-    where
-        P: PhasmProvider<State = CounterState, NormalInput = CounterInput>,
-        E: ActionExecutor<
+/// Helper to run worker with auto-shutdown after inputs are processed.
+/// Uses select! to avoid tokio::spawn lifetime issues with GATs.
+async fn run_worker_until_idle<P, E>(
+    provider: P,
+    executor: E,
+    notifier: InputNotifier,
+    shutdown_rx: ShutdownReceiver,
+    shutdown_handle: ShutdownHandle,
+    idle_delay: Duration,
+) -> Result<()>
+where
+    P: PhasmProvider<State = CounterState, NormalInput = CounterInput>,
+    E: ActionExecutor<
             ActionId = u64,
             TrackedAction = CounterTrackedAction,
             ActionResult = CounterActionResult,
             UntrackedAction = CounterUntrackedAction,
         >,
+{
+    // Run the worker with a timeout that triggers shutdown after idle
+    let worker_fut = run_worker::<CounterStateMachine, _, _>(
+        WorkerConfig::default(),
+        CounterState::default(),
+        provider,
+        executor,
+        notifier,
+        shutdown_rx,
+    );
+
+    tokio::select! {
+        result = worker_fut => result,
+        _ = async {
+            tokio::time::sleep(idle_delay).await;
+            shutdown_handle.shutdown();
+            // Keep this branch alive until worker finishes
+            std::future::pending::<()>().await
+        } => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn test_simple_increment() {
+    let provider = MockProvider::new();
+    let executor = MockExecutor::new();
+
+    // Add some inputs
+    provider.add_input(CounterInput::Increment);
+    provider.add_input(CounterInput::Increment);
+    provider.add_input(CounterInput::Increment);
+
+    let (notifier, _sender) = create_input_channel();
+    let (shutdown_handle, shutdown_rx) = create_shutdown_channel();
+
+    let provider_clone = provider.clone_ref();
+    let executor_clone = executor.clone_ref();
+
+    run_worker_until_idle(
+        provider_clone,
+        executor_clone,
+        notifier,
+        shutdown_rx,
+        shutdown_handle,
+        Duration::from_millis(50),
+    )
+    .await
+    .unwrap();
+
+    // Verify state
+    let state = provider.get_state().unwrap();
+    assert_eq!(state.value, 3, "counter should be 3 after 3 increments");
+
+    // Verify untracked actions (log messages)
+    assert_eq!(executor.untracked_count(), 3, "should have 3 log actions");
+}
+
+#[tokio::test]
+async fn test_tracked_action_double() {
+    let provider = MockProvider::new();
+    let executor = MockExecutor::new();
+
+    // Start with value 5, then double
+    provider.add_input(CounterInput::Increment); // 1
+    provider.add_input(CounterInput::Increment); // 2
+    provider.add_input(CounterInput::Increment); // 3
+    provider.add_input(CounterInput::Increment); // 4
+    provider.add_input(CounterInput::Increment); // 5
+    provider.add_input(CounterInput::RequestDouble); // 5 * 2 = 10
+
+    let (notifier, _sender) = create_input_channel();
+    let (shutdown_handle, shutdown_rx) = create_shutdown_channel();
+
+    let provider_clone = provider.clone_ref();
+    let executor_clone = executor.clone_ref();
+
+    run_worker_until_idle(
+        provider_clone,
+        executor_clone,
+        notifier,
+        shutdown_rx,
+        shutdown_handle,
+        Duration::from_millis(50),
+    )
+    .await
+    .unwrap();
+
+    let state = provider.get_state().unwrap();
+    assert_eq!(
+        state.value, 10,
+        "counter should be 10 after 5 increments and double"
+    );
+    assert!(
+        state.pending_doubles.is_empty(),
+        "no pending doubles after completion"
+    );
+
+    // Should have 1 tracked execution
+    assert_eq!(executor.tracked_count(), 1, "should have 1 tracked action");
+    // 5 increment logs + 1 doubled log = 6
+    assert_eq!(executor.untracked_count(), 6, "should have 6 log actions");
+}
+
+#[tokio::test]
+async fn test_recovery_with_pending_action() {
+    // Simulate a crash scenario: state has a pending tracked action
+    let provider = MockProvider::new();
+    let executor = MockExecutor::new();
+
+    // Pre-populate state with a pending double (simulating crash after emitting action)
     {
-        // Run the worker with a timeout that triggers shutdown after idle
-        let worker_fut = run_worker::<CounterStateMachine, _, _>(
-            WorkerConfig::default(),
-            CounterState::default(),
-            provider,
-            executor,
-            notifier,
-            shutdown_rx,
-        );
-
-        tokio::select! {
-            result = worker_fut => result,
-            _ = async {
-                tokio::time::sleep(idle_delay).await;
-                shutdown_handle.shutdown();
-                // Keep this branch alive until worker finishes
-                std::future::pending::<()>().await
-            } => unreachable!(),
-        }
+        let mut state = provider.state.lock().unwrap();
+        *state = Some(CounterState {
+            value: 7,
+            next_action_id: 1,
+            pending_doubles: {
+                let mut m = HashMap::new();
+                m.insert(0, 7); // action 0 was doubling value 7
+                m
+            },
+        });
     }
 
-    #[tokio::test]
-    async fn test_simple_increment() {
-        let provider = MockProvider::new();
-        let executor = MockExecutor::new();
+    let (notifier, _sender) = create_input_channel();
+    let (shutdown_handle, shutdown_rx) = create_shutdown_channel();
 
-        // Add some inputs
-        provider.add_input(CounterInput::Increment);
-        provider.add_input(CounterInput::Increment);
-        provider.add_input(CounterInput::Increment);
+    let provider_clone = provider.clone_ref();
+    let executor_clone = executor.clone_ref();
 
-        let (notifier, _sender) = create_input_channel();
-        let (shutdown_handle, shutdown_rx) = create_shutdown_channel();
+    run_worker_until_idle(
+        provider_clone,
+        executor_clone,
+        notifier,
+        shutdown_rx,
+        shutdown_handle,
+        Duration::from_millis(50),
+    )
+    .await
+    .unwrap();
 
-        let provider_clone = provider.clone_ref();
-        let executor_clone = executor.clone_ref();
-
-        run_worker_until_idle(
-            provider_clone,
-            executor_clone,
-            notifier,
-            shutdown_rx,
-            shutdown_handle,
-            Duration::from_millis(50),
-        )
-        .await
-        .unwrap();
-
-        // Verify state
-        let state = provider.get_state().unwrap();
-        assert_eq!(state.value, 3, "counter should be 3 after 3 increments");
-
-        // Verify untracked actions (log messages)
-        assert_eq!(executor.untracked_count(), 3, "should have 3 log actions");
-    }
-
-    #[tokio::test]
-    async fn test_tracked_action_double() {
-        let provider = MockProvider::new();
-        let executor = MockExecutor::new();
-
-        // Start with value 5, then double
-        provider.add_input(CounterInput::Increment); // 1
-        provider.add_input(CounterInput::Increment); // 2
-        provider.add_input(CounterInput::Increment); // 3
-        provider.add_input(CounterInput::Increment); // 4
-        provider.add_input(CounterInput::Increment); // 5
-        provider.add_input(CounterInput::RequestDouble); // 5 * 2 = 10
-
-        let (notifier, _sender) = create_input_channel();
-        let (shutdown_handle, shutdown_rx) = create_shutdown_channel();
-
-        let provider_clone = provider.clone_ref();
-        let executor_clone = executor.clone_ref();
-
-        run_worker_until_idle(
-            provider_clone,
-            executor_clone,
-            notifier,
-            shutdown_rx,
-            shutdown_handle,
-            Duration::from_millis(50),
-        )
-        .await
-        .unwrap();
-
-        let state = provider.get_state().unwrap();
-        assert_eq!(state.value, 10, "counter should be 10 after 5 increments and double");
-        assert!(
-            state.pending_doubles.is_empty(),
-            "no pending doubles after completion"
-        );
-
-        // Should have 1 tracked execution
-        assert_eq!(executor.tracked_count(), 1, "should have 1 tracked action");
-        // 5 increment logs + 1 doubled log = 6
-        assert_eq!(executor.untracked_count(), 6, "should have 6 log actions");
-    }
-
-    #[tokio::test]
-    async fn test_recovery_with_pending_action() {
-        // Simulate a crash scenario: state has a pending tracked action
-        let provider = MockProvider::new();
-        let executor = MockExecutor::new();
-
-        // Pre-populate state with a pending double (simulating crash after emitting action)
-        {
-            let mut state = provider.state.lock().unwrap();
-            *state = Some(CounterState {
-                value: 7,
-                next_action_id: 1,
-                pending_doubles: {
-                    let mut m = HashMap::new();
-                    m.insert(0, 7); // action 0 was doubling value 7
-                    m
-                },
-            });
-        }
-
-        let (notifier, _sender) = create_input_channel();
-        let (shutdown_handle, shutdown_rx) = create_shutdown_channel();
-
-        let provider_clone = provider.clone_ref();
-        let executor_clone = executor.clone_ref();
-
-        run_worker_until_idle(
-            provider_clone,
-            executor_clone,
-            notifier,
-            shutdown_rx,
-            shutdown_handle,
-            Duration::from_millis(50),
-        )
-        .await
-        .unwrap();
-
-        let state = provider.get_state().unwrap();
-        // Should have restored and completed the double: 7 * 2 = 14
-        assert_eq!(state.value, 14, "counter should be 14 after recovery");
-        assert!(
-            state.pending_doubles.is_empty(),
-            "pending action should be cleared"
-        );
-        assert_eq!(
-            executor.tracked_count(),
-            1,
-            "should have re-executed the tracked action"
-        );
-    }
+    let state = provider.get_state().unwrap();
+    // Should have restored and completed the double: 7 * 2 = 14
+    assert_eq!(state.value, 14, "counter should be 14 after recovery");
+    assert!(
+        state.pending_doubles.is_empty(),
+        "pending action should be cleared"
+    );
+    assert_eq!(
+        executor.tracked_count(),
+        1,
+        "should have re-executed the tracked action"
+    );
 }

@@ -2,8 +2,10 @@
 
 use std::future::Future;
 
-use crate::error::Result;
-use crate::types::{InputSeqNo, PersistedInput};
+use crate::{
+    error::Result,
+    types::{InputSeqNo, PersistedInput},
+};
 
 /// Provider trait for state persistence and input queue management.
 ///
