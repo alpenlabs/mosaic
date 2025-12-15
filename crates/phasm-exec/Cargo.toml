@@ -1,0 +1,22 @@
+[package]
+name = "mosaic-phasm-exec"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Async executor framework for phasm state machines"
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[lints]
+workspace = true
