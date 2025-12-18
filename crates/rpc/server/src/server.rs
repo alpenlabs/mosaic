@@ -26,35 +26,23 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         todo!()
     }
 
-    fn get_job_status(&self, jid: JobId) -> RpcResult<RpcJobStatus> {
+    fn get_peer_id(&self) -> RpcResult<PeerId> {
         todo!()
     }
 
-    fn wait_for_job(&self, jid: JobId, timeout_ms: u32) -> RpcResult<bool> {
+    fn setup_tableset(&self, config: RpcSetupConfig) -> RpcResult<TablesetId> {
         todo!()
     }
 
-    fn create_game_instance(&self, config: RpcGameInstanceConfig) -> RpcResult<TablesetId> {
+    fn get_tableset_info(&self, tsid: TablesetId) -> RpcResult<TablesetSetupInfo> {
         todo!()
     }
 
-    fn get_game_info(&self, tsid: TablesetId) -> RpcResult<GameInfo> {
+    fn get_tableset_setup_status(&self, tsid: TablesetId) -> RpcResult<RpcTablesetSetupStatus> {
         todo!()
     }
 
-    fn get_export_data(&self, tsid: TablesetId) -> RpcResult<TableExportMeta> {
-        todo!()
-    }
-
-    fn start_eval_tableset(&self, tsid: TablesetId, inputs: TableEvalInputs) -> RpcResult<JobId> {
-        todo!()
-    }
-
-    fn get_eval_outputs(&self, tsid: TablesetId) -> RpcResult<TableEvalOutputs> {
-        todo!()
-    }
-
-    fn cleanup_game(&self, tsid: TablesetId) -> RpcResult<()> {
+    fn cleanup_tableset(&self, tsid: TablesetId) -> RpcResult<()> {
         todo!()
     }
 }

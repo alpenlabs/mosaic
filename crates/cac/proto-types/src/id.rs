@@ -48,3 +48,7 @@ gen_id_inst!(
     "Tableset identifier"
     TablesetId => u64
 );
+
+/// Represents a stable identifier for a node over p2p.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PeerId(Vec<u8>);

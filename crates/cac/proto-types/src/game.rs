@@ -2,11 +2,10 @@ use serde::{Deserialize, Serialize};
 
 /// Info about a CaC game.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct GameInfo {
+pub struct TablesetSetupInfo {
     circuit_name: String,
     role: CacRole,
-    config: CacConfig,
-    state: GameState,
+    cac_params: CacParams,
 }
 
 /// The role the client should play in the garbling game.
@@ -20,32 +19,29 @@ pub enum CacRole {
     Evaluator,
 }
 
-/// Configuration for the CaC game.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CacConfig {
-    /// The number of tables we'll generate to start off.
-    tables: u32,
-
-    /// The number of tables to open as part of the setup process.
-    open: u32,
+/// Cac params that can be used to setup.
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+pub enum CacParams {
+    /// default
+    N181K174,
+    /// for testing
+    N5K3,
 }
 
-/// Describes the high-level state of a game.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum GameState {
-    /// In the setup process.
-    Setup,
+impl CacParams {
+    /// Total number of tables.
+    pub fn tables(&self) -> u64 {
+        match self {
+            CacParams::N181K174 => 181,
+            CacParams::N5K3 => 5,
+        }
+    }
 
-    /// Setup finished, ready to eval.
-    Idle,
-
-    /// Evaluating.
-    Evaling,
-
-    /// Evaluated.
-    Evaled,
-
-    /// Dishonesty detected, aborted.
-    Abort,
+    /// Number of openings during Cac.
+    pub fn selected_openings(&self) -> u64 {
+        match self {
+            CacParams::N181K174 => 174,
+            CacParams::N5K3 => 3,
+        }
+    }
 }
