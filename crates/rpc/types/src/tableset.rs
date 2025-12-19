@@ -1,4 +1,4 @@
-use mosaic_cac_proto_types::CacRole;
+use mosaic_cac_proto_types::{CacRole, PeerId};
 use serde::{Deserialize, Serialize};
 
 use crate::CacParams;
@@ -33,46 +33,18 @@ pub struct RpcSetupConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GamePeerInfo {
     // stable identifier to peer
-    peer_id: Vec<u8>, // TODO: more fields as required
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum RpcGarblerSetupStage {
-    Init,
-    GeneratedShares,
-    GeneratedCommitments,
-    WaitForChallenge,
-    ReceivedChallenge,
-    GenerateChallengeResponse,
-    WaitForTableTransfer,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum RpcEvaluatorSetupStage {
-    Init,
-    ReceivedCommitment,
-    OpeningsSampled,
-    GeneratedChallenge,
-    WaitForChallengeResponse,
-    SharesVerified,
-    VerifyingTableCommitments,
-}
-
-/// Details on which stage of the setup process we are at.
-/// For debugging and observability.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum RpcIncompleteStatus {
-    /// garbler statuses
-    Garbler(RpcGarblerSetupStage),
-    /// evaluator statuses
-    Evaluator(RpcEvaluatorSetupStage),
+    peer_id: PeerId, // TODO: more fields as required
 }
 
 /// Status of where a tableset during setup.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RpcTablesetSetupStatus {
     /// setup incomplete
-    Incomplete(RpcIncompleteStatus),
+    Incomplete {
+        /// Additional info like which step its in, or its specific status, etc
+        /// This is mainly for debugging
+        details: String,
+    },
 
     /// setup is completed
     SetupComplete,
