@@ -24,7 +24,8 @@ pub enum CacRole {
 pub enum CacParams {
     /// default
     N181K174,
-    /// for testing
+    /// for testing (only available in debug builds)
+    #[cfg(debug_assertions)]
     N5K3,
 }
 
@@ -33,6 +34,7 @@ impl CacParams {
     pub fn tables(&self) -> u64 {
         match self {
             CacParams::N181K174 => 181,
+            #[cfg(debug_assertions)]
             CacParams::N5K3 => 5,
         }
     }
@@ -41,6 +43,7 @@ impl CacParams {
     pub fn selected_openings(&self) -> u64 {
         match self {
             CacParams::N181K174 => 174,
+            #[cfg(debug_assertions)]
             CacParams::N5K3 => 3,
         }
     }
