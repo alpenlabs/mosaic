@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-job-types"
+name = "mosaic-common"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,7 +12,6 @@ keywords.workspace = true
 
 [dependencies]
 serde.workspace = true
-tokio-util.workspace = true
 
 [lints]
 workspace = true

@@ -12,14 +12,12 @@
 
 // random standin defs that we'll define more concretely later
 
-mod bytes;
 mod commit;
 mod export;
 mod game;
 mod id;
 mod reveal;
 
-pub use bytes::*;
 pub use commit::*;
 pub use export::*;
 pub use game::*;

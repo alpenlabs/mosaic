@@ -1,5 +1,6 @@
 //! Identifiers.
 
+use mosaic_common::Byte32;
 use serde::{Deserialize, Serialize};
 
 macro_rules! gen_id_inst {
@@ -46,9 +47,10 @@ gen_id_inst!(
 
 gen_id_inst!(
     "Tableset identifier"
-    TablesetId => u64
+    TablesetId => Byte32
 );
 
-/// Represents a stable identifier for a node over p2p.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PeerId(Vec<u8>);
+gen_id_inst!(
+    "Distinguishes between multiple instances of Tablesets setup between same pair of (garbler, evaluator)"
+    TablesetInstanceId => Byte32
+);

@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-job-types"
+name = "mosaic-cac-protocol"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,8 +11,8 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-serde.workspace = true
-tokio-util.workspace = true
+mosaic-cac-types.workspace = true
+mosaic-state-machine-api.workspace = true
 
 [lints]
 workspace = true

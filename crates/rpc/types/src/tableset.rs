@@ -1,4 +1,5 @@
-use mosaic_cac_proto_types::{CacRole, PeerId};
+use mosaic_cac_proto_types::{CacRole, SetupWireInputs, TablesetInstanceId};
+use mosaic_common::PeerId;
 use serde::{Deserialize, Serialize};
 
 use crate::CacParams;
@@ -18,35 +19,38 @@ pub struct RpcSetupConfig {
     cac_params: CacParams,
 
     /// Peer connection information.
-    peer_info: GamePeerInfo,
+    peer_info: RpcPeerInfo,
 
     /// corresponds to operator pubkey
-    setup_inputs: Vec<u8>,
+    setup_inputs: SetupWireInputs,
 
     /// For multiple tablesets per (garbler, evaluator) pair
     /// Both sides must use the same instance id.
-    instance_id: u64,
+    instance_id: TablesetInstanceId,
 }
 
 /// Describes information about the peer we're interacting with so we can
 /// connect to them and authenticate messages.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct GamePeerInfo {
+pub struct RpcPeerInfo {
     // stable identifier to peer
-    peer_id: PeerId, // TODO: more fields as required
+    peer_id: PeerId,
+    // TODO: more fields as required
 }
 
 /// Status of where a tableset during setup.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RpcTablesetSetupStatus {
-    /// setup incomplete
+    /// Setup is incomplete.
+    /// Wait for this to complete.
     Incomplete {
-        /// Additional info like which step its in, or its specific status, etc
+        /// Additional info like which step its in, or its specific status, etc.
         /// This is mainly for debugging
         details: String,
     },
 
-    /// setup is completed
+    /// Setup is completed successfully.
+    /// This setup can noew be used to process deposits.
     SetupComplete,
 
     /// Setup has been used for withdrawal dispute resolution.

@@ -1,4 +1,7 @@
+use mosaic_common::{PeerId, constants::N_SETUP_INPUT_WIRES};
 use serde::{Deserialize, Serialize};
+
+use crate::TablesetInstanceId;
 
 /// Info about a CaC game.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -6,6 +9,9 @@ pub struct TablesetSetupInfo {
     circuit_name: String,
     role: CacRole,
     cac_params: CacParams,
+    setup_inputs: SetupWireInputs,
+    instance: TablesetInstanceId,
+    peer: PeerId,
 }
 
 /// The role the client should play in the garbling game.
@@ -48,3 +54,8 @@ impl CacParams {
         }
     }
 }
+
+/// Input wire values provided during setup.
+/// This corresponds to operator bridge pubkey.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SetupWireInputs([u8; N_SETUP_INPUT_WIRES]);

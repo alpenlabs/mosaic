@@ -1,4 +1,5 @@
 use jsonrpsee::proc_macros::rpc;
+use mosaic_common::PeerId;
 use mosaic_rpc_types::*;
 
 // TODO figure this out
@@ -29,6 +30,9 @@ pub trait MosaicRpc {
     // ==== Protocol flow.
 
     /// Creates an instance of a tableset.
+    /// Initiates setup flow for a pair of mosaic clients, with chosen role.
+    /// Returned TablesetId uniquely identifies a combination of (garbler, evaluator, circuit,
+    /// instance).
     #[method(name = "mosaic_setupTableset")]
     fn setup_tableset(&self, config: RpcSetupConfig) -> RpcResult<TablesetId>;
 
@@ -37,8 +41,11 @@ pub trait MosaicRpc {
     fn get_tableset_info(&self, tsid: TablesetId) -> RpcResult<TablesetSetupInfo>;
 
     /// Gets current setup status of a tableset.
+    /// This should be polled to check when the setup is complete.
     #[method(name = "mosaic_getTablesetSetupStatus")]
     fn get_tableset_setup_status(&self, tsid: TablesetId) -> RpcResult<RpcTablesetSetupStatus>;
+
+    // fn
 
     /// Cleans up a tableset, regardless of its state.
     #[method(name = "mosaic_cleanupTableset")]

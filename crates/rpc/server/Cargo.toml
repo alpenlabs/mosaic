@@ -11,6 +11,7 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-common.workspace = true
 mosaic-rpc-api.workspace = true
 mosaic-rpc-provider.workspace = true
 mosaic-rpc-types.workspace = true

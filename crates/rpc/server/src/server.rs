@@ -1,5 +1,6 @@
 #![allow(unused, reason = "not yet implemented")]
 
+use mosaic_common::PeerId;
 use mosaic_rpc_api::MosaicRpcServer;
 use mosaic_rpc_provider::RpcContextProvider;
 use mosaic_rpc_types::*;

@@ -1,4 +1,4 @@
-use mosaic_cac_proto_types::Byte32;
+use mosaic_common::Byte32;
 use serde::{Deserialize, Serialize};
 
 /// Entry in the response for a configured circuit.
