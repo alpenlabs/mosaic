@@ -163,12 +163,13 @@ impl StateMachineAdaptorSpec for SetupEvalatorAdaptor {
                 ws.challenge_response_ack = Some(msg_id);
                 vec![PeerMessage(Msg::ChallengeResponseMsgAck(msg_id))]
             }
-            Action::VerifyOpenedGarbTables(seeds, commitments) => {
+            Action::VerifyOpenedGarbTableCommitments(seeds, commitments) => {
                 vec![JobExecutionRequest(JobExecution::VerifyGTCommitments(
                     seeds,
                     commitments,
                 ))]
             }
+            _ => todo!(),
         };
 
         (ws, output_msgs)
@@ -183,6 +184,7 @@ fn map_action_to_output_message(action: Action) -> ExecutorOutputMsgType {
         Action::SendChallengeResponseAck(msg_id) => {
             PeerMessage(Msg::ChallengeResponseMsgAck(msg_id))
         }
-        Action::VerifyOpenedGarbTables(_, _) => todo!(),
+        Action::VerifyOpenedGarbTableCommitments(_, _) => todo!(),
+        _ => todo!(),
     }
 }

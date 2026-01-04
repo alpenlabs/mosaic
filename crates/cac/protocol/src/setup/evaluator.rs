@@ -5,7 +5,7 @@ use mosaic_cac_types::{
     HasMsgId, MsgId, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
     PolynomialCommitments, ReservedSetupInputShares, Seed, SetupInputs,
 };
-use mosaic_state_machine_api::StateMachineSpec;
+use mosaic_state_machine_api::{StateMachinePairId, StateMachineSpec};
 
 /// State machine for Evaluator during Setup.
 #[derive(Debug)]
@@ -49,20 +49,17 @@ pub enum State {
         polynomial_commitments: PolynomialCommitments,
         garbling_table_commitments: GarblingTableCommitments,
     },
-    // received challenge response
-    ReceivedChallegeResponse {
-        challenge_response_msg_id: MsgId,
+    // got challenge ack, now waiting for challenge response
+    WaitChallengeResponse {
         polynomial_commitments: PolynomialCommitments,
         garbling_table_commitments: GarblingTableCommitments,
-        opened_input_shares: OpenedInputShares,
-        opened_output_shares: OpenedOutputShares,
-        reserved_setup_input_shares: ReservedSetupInputShares,
-        opened_garbling_seeds: OpenedGarblingSeeds,
     },
+    // received challenge response
     // verified shares are correct
     // triggered garb table verification for opened tables
     // waiting for verification to complete
-    VerifyGTCommitments {
+    ReceivedChallegeResponse {
+        challenge_response_msg_id: MsgId,
         polynomial_commitments: PolynomialCommitments,
         garbling_table_commitments: GarblingTableCommitments,
         opened_input_shares: OpenedInputShares,
@@ -73,7 +70,7 @@ pub enum State {
     // verified commitments are valid for opened tables
     // triggered receive and verify remaining tables
     // waiting for tables to be received
-    RecvGarbTables {
+    VerifiedGarblingTableCommitments {
         polynomial_commitments: PolynomialCommitments,
         garbling_table_commitments: GarblingTableCommitments,
         challenge_indices: ChallengeIndices,
@@ -93,6 +90,7 @@ pub enum State {
         opened_garbling_seeds: OpenedGarblingSeeds,
     },
     SetupConsumed {
+        by_deposit: StateMachinePairId,
         // TODO: what states need to be preserved ?
     },
     Aborted {
@@ -106,7 +104,9 @@ pub enum Input {
     RecvCommitMsg(CommitMsg),
     RecvChallengeAck,
     RecvChallengeReponseMsg(ChallengeResponseMsg),
-    // TODO: remaining
+    GarblingTableCommitmentsVerified(bool),
+    GarblingTablesReceived,
+    ConsumeSetup(StateMachinePairId),
 }
 
 #[allow(missing_docs, reason = "wip")]
@@ -115,11 +115,11 @@ pub enum Action {
     SendCommitAck(MsgId),
     SendChallengeMsg(ChallengeMsg),
     SendChallengeResponseAck(MsgId),
-    VerifyOpenedGarbTables(OpenedGarblingSeeds, GarblingTableCommitments),
-    // TODO: remaining
+    VerifyOpenedGarbTableCommitments(OpenedGarblingSeeds, GarblingTableCommitments),
+    ReceiveGarblingTables(()), // TODO: types
 }
 
-fn stf(_config: &Config, state: State, input: Input) -> State {
+fn stf(config: &Config, state: State, input: Input) -> State {
     match input {
         Input::RecvCommitMsg(commit_msg) => match state {
             State::Initialized => {
@@ -134,6 +134,17 @@ fn stf(_config: &Config, state: State, input: Input) -> State {
                     garbling_table_commitments,
                 }
             }
+            _ => state,
+        },
+        Input::RecvChallengeAck => match state {
+            State::ReceivedCommitments {
+                polynomial_commitments,
+                garbling_table_commitments,
+                ..
+            } => State::WaitChallengeResponse {
+                polynomial_commitments,
+                garbling_table_commitments,
+            },
             _ => state,
         },
         Input::RecvChallengeReponseMsg(challenge_response) => match state {
@@ -162,8 +173,53 @@ fn stf(_config: &Config, state: State, input: Input) -> State {
             }
             _ => state,
         },
-        // TODO: remaining steps
-        _ => state,
+        Input::GarblingTableCommitmentsVerified(_) => match state {
+            State::ReceivedChallegeResponse {
+                polynomial_commitments,
+                garbling_table_commitments,
+                opened_input_shares,
+                opened_output_shares,
+                reserved_setup_input_shares,
+                opened_garbling_seeds,
+                ..
+            } => {
+                let challenge_indices = generate_challenge_indices(&config.seed);
+                State::VerifiedGarblingTableCommitments {
+                    polynomial_commitments,
+                    garbling_table_commitments,
+                    challenge_indices,
+                    opened_input_shares,
+                    opened_output_shares,
+                    reserved_setup_input_shares,
+                    opened_garbling_seeds,
+                }
+            }
+            _ => state,
+        },
+        Input::GarblingTablesReceived => match state {
+            State::VerifiedGarblingTableCommitments {
+                polynomial_commitments,
+                garbling_table_commitments,
+                challenge_indices,
+                opened_input_shares,
+                opened_output_shares,
+                reserved_setup_input_shares,
+                opened_garbling_seeds,
+            } => State::SetupComplete {
+                polynomial_commitments,
+                garbling_table_commitments,
+                challenge_indices,
+                opened_input_shares,
+                opened_output_shares,
+                reserved_setup_input_shares,
+                opened_garbling_seeds,
+            },
+            _ => state,
+        },
+        Input::ConsumeSetup(by_deposit) => match state {
+            State::SetupComplete { .. } => State::SetupConsumed { by_deposit },
+            _ => state,
+        },
     }
 }
 
@@ -177,6 +233,7 @@ fn emit_actions(config: &Config, state: &State) -> Vec<Action> {
                 Action::SendChallengeMsg(ChallengeMsg { challenge_indices }),
             ]
         }
+        State::WaitChallengeResponse { .. } => vec![],
         State::ReceivedChallegeResponse {
             challenge_response_msg_id,
             garbling_table_commitments,
@@ -185,11 +242,18 @@ fn emit_actions(config: &Config, state: &State) -> Vec<Action> {
         } => {
             vec![
                 Action::SendChallengeResponseAck(*challenge_response_msg_id),
-                Action::VerifyOpenedGarbTables(*opened_garbling_seeds, *garbling_table_commitments),
+                Action::VerifyOpenedGarbTableCommitments(
+                    *opened_garbling_seeds,
+                    *garbling_table_commitments,
+                ),
             ]
         }
-        // TODO: remaining steps
-        _ => vec![],
+        State::VerifiedGarblingTableCommitments { .. } => {
+            vec![Action::ReceiveGarblingTables(())]
+        }
+        State::SetupComplete { .. } => vec![],
+        State::SetupConsumed { .. } => vec![],
+        State::Aborted { .. } => vec![],
     }
 }
 

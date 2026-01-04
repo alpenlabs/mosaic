@@ -16,6 +16,8 @@ pub type PolynomialCommitments = [[PolynomialCommitment; 256 + 1]; N_INPUT_WIRES
 pub type GarblingTableCommitments = [GarblingTableCommitment; N_CIRCUITS];
 /// N_COEFFICIENTS
 pub type ChallengeIndices = [Index; N_COEFFICIENTS];
+/// N_CIRCUITS - N_COEFFICIENTS
+pub type EvaluationIndices = [Index; N_CIRCUITS - N_COEFFICIENTS];
 /// N_COEFFICIENTS * N_INPUT_WIRES * 256
 pub type OpenedInputShares = [[[Share; 256]; N_INPUT_WIRES]; N_COEFFICIENTS];
 /// N_SETUP_INPUT_WIRES * 256
@@ -72,13 +74,18 @@ pub struct ChallengeResponseMsg {
     pub opened_garbling_seeds: OpenedGarblingSeeds,
 }
 
+/// N_DEPOSIT_INPUT_WIRES
+pub type DepositAdaptors = [Adaptor; N_DEPOSIT_INPUT_WIRES];
+/// N_WITHDRAWAL_INPUT_WIRES * 256
+pub type WithdrawalAdaptors = [[Adaptor; 256]; N_WITHDRAWAL_INPUT_WIRES];
+
 /// AdaptorMsg: Evaluator -> Garbler
 #[derive(Clone, Debug)]
 pub struct AdaptorMsg {
     /// N_DEPOSIT_INPUT_WIRES
-    pub deposit_adaptors: [Adaptor; N_DEPOSIT_INPUT_WIRES],
+    pub deposit_adaptors: DepositAdaptors,
     /// N_WITHDRAWAL_INPUT_WIRES * 256
-    pub withdrawal_adaptors: [[Adaptor; 256]; N_WITHDRAWAL_INPUT_WIRES],
+    pub withdrawal_adaptors: WithdrawalAdaptors,
 }
 
 impl HasMsgId for CommitMsg {

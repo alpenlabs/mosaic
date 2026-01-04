@@ -9,7 +9,7 @@ use crate::{
 pub trait StateMachineSpec {
     /// The mutable state that evolves with each input.
     /// State is expected to be small to be kept in-memory.
-    type State: Default + Clone + Eq;
+    type State: Clone + Eq;
     /// Configuration that remains constant throughout the state machine's lifetime.
     /// This will also contain
     type Config: Clone;

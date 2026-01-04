@@ -1,7 +1,7 @@
 use ark_secp256k1::{Fr as Scalar, Projective as Point};
 
 /// An adaptor pre-signature
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Adaptor {
     /// The tweaked scalar component.
     pub tweaked_s: Scalar,

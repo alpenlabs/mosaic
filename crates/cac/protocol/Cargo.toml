@@ -14,5 +14,7 @@ keywords.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-state-machine-api.workspace = true
 
+tracing.workspace = true
+
 [lints]
 workspace = true

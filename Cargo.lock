@@ -541,6 +541,7 @@ version = "0.1.0"
 dependencies = [
  "mosaic-cac-types",
  "mosaic-state-machine-api",
+ "tracing",
 ]
 
 [[package]]
