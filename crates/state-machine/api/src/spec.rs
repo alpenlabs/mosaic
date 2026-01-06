@@ -19,8 +19,7 @@ pub trait StateMachineSpec {
     /// Actions MUST be replay safe.
     type Action;
 
-    /// The state transition function. Takes config, mutable state, and input, updating the mutable
-    /// state. Should return true if there was a state change, false if no change
+    /// The state transition function. Takes config, state, and input, returning the next state.
     fn stf(config: &Self::Config, state: Self::State, input: Self::Input) -> Self::State;
 
     /// Emit actions based on current state.
