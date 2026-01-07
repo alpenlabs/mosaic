@@ -1,5 +1,6 @@
 //! Identifiers.
 
+use mosaic_common::Byte32;
 use serde::{Deserialize, Serialize};
 
 macro_rules! gen_id_inst {
@@ -46,5 +47,10 @@ gen_id_inst!(
 
 gen_id_inst!(
     "Tableset identifier"
-    TablesetId => u64
+    TablesetId => Byte32
+);
+
+gen_id_inst!(
+    "Distinguishes between multiple instances of Tablesets setup between same pair of (garbler, evaluator)"
+    TablesetInstanceId => Byte32
 );

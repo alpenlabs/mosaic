@@ -1,5 +1,11 @@
-//! General types for job system.
+//! Core types and traits for the job system.
 
-mod status;
+mod id;
+mod job;
+mod result;
+mod traits;
 
-pub use status::*;
+pub use id::JobId;
+pub use job::{JobExecState, JobExecStatus, JobInfo, JobRecord};
+pub use result::JobResult;
+pub use traits::ResumableJob;

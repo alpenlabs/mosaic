@@ -1,9 +1,14 @@
+use mosaic_common::Byte32;
 use serde::{Deserialize, Serialize};
 
 /// Entry in the response for a configured circuit.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RpcCircuitInfoEntry {
+    // human readable identifier
     name: String,
+    // commitment to check circuit integrity
+    commitment: Byte32,
+    // additional metadata about the circuit
     info: RpcCircuitInfo,
 }
 

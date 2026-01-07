@@ -1,0 +1,19 @@
+[package]
+name = "mosaic-state-machine-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-cac-proto-types.workspace = true
+mosaic-cac-types.workspace = true
+mosaic-common.workspace = true
+
+[lints]
+workspace = true

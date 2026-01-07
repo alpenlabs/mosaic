@@ -1,8 +1,9 @@
 //! Point scalar multiplication precomputation for secp256k1's generator G.
 
+use std::sync::LazyLock;
+
 use ark_ec::{PrimeGroup, scalar_mul::BatchMulPreprocessing};
 use ark_secp256k1::{Fr as Scalar, Projective as Point};
-use std::sync::LazyLock;
 
 /// Number of scalars that will be multiplied in parallel.
 const NUM_SCALARS: usize = 174;
@@ -35,9 +36,10 @@ pub fn gen_batch_mul(scalars: &[Scalar]) -> Vec<Point> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ark_ff::{One, UniformRand, Zero};
     use rand::rngs::OsRng;
+
+    use super::*;
 
     #[test]
     fn test_gen_mul_correctness() {

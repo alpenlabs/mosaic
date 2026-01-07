@@ -3,14 +3,20 @@ members = [
   "crates/adaptor-sigs",
   "crates/cac/crypto",
   "crates/cac/proto-types",
+  "crates/cac/protocol",
   "crates/cac/types",
+  "crates/common",
   "crates/compute-exec",
   "crates/compute-fw",
   "crates/job/types",
+  "crates/network/api",
   "crates/rpc/api",
   "crates/rpc/provider",
   "crates/rpc/server",
   "crates/rpc/types",
+  "crates/state-machine/api",
+  "crates/state-machine/executor",
+  "crates/storage/api",
   "crates/table-types",
   "crates/vs3",
 ]
@@ -42,24 +48,36 @@ clippy.too_long_first_doc_paragraph = "warn"
 
 [workspace.dependencies]
 mosaic-cac-proto-types = { path = "crates/cac/proto-types" }
+mosaic-cac-protocol = { path = "crates/cac/protocol" }
+mosaic-cac-types = { path = "crates/cac/types" }
+mosaic-common = { path = "crates/common" }
 mosaic-compute-fw = { path = "crates/compute-fw" }
 mosaic-job-types = { path = "crates/job/types" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
+mosaic-state-machine-api = { path = "crates/state-machine/api" }
+mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
+mosaic-storage-api = { path = "crates/storage/api" }
 mosaic-table-types = { path = "crates/table-types" }
+mosaic-vs3 = { path = "crates/vs3" }
+
 anyhow = "1.0"
 ark-ec = "0.5.0"
 ark-ff = "0.5.0"
 ark-secp256k1 = "0.5.0"
+async-trait = "0.1"
 bytes = "1.10"
+futures = "0.3.31"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
-jsonrpsee-types = "*" # constrained by jsonrpsee dep
+jsonrpsee-types = "*"                                                       # constrained by jsonrpsee dep
 rand = "0.8"
 rand_core = "0.6"
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 thiserror = "2.0"
+tokio = { version = "1.48.0", features = ["rt", "sync", "macros", "time"] }
+tokio-util = "0.7"
 tracing = "0.1"
 
 [profile.release]

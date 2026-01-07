@@ -1,0 +1,23 @@
+[package]
+name = "mosaic-state-machine-executor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-cac-proto-types.workspace = true
+mosaic-cac-protocol.workspace = true
+mosaic-cac-types.workspace = true
+mosaic-state-machine-api.workspace = true
+mosaic-storage-api.workspace = true
+
+tracing.workspace = true
+
+[lints]
+workspace = true

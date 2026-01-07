@@ -11,6 +11,8 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-common.workspace = true
+
 serde.workspace = true
 
 [lints]

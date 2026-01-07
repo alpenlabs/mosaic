@@ -1,0 +1,21 @@
+[package]
+name = "mosaic-network-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-common.workspace = true
+
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

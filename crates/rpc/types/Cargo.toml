@@ -12,7 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 mosaic-cac-proto-types.workspace = true
-mosaic-job-types.workspace = true
+mosaic-common.workspace = true
 mosaic-table-types.workspace = true
 
 jsonrpsee-types.workspace = true
