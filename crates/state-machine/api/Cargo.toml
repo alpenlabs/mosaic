@@ -14,7 +14,6 @@ keywords.workspace = true
 mosaic-cac-proto-types.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
-mosaic-vs3.workspace = true
 
 [lints]
 workspace = true

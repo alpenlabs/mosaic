@@ -99,7 +99,7 @@ fn stf(_config: &Config, state: State, input: Input) -> State {
                     by_deposit: prev_by_deposit,
                 }
             }
-            State::SendingAdaptorMsg | State::DepositReady { .. } => State::Consumed { by_deposit },
+            State::SendingAdaptorMsg | State::DepositReady => State::Consumed { by_deposit },
             _ => state,
         },
     }

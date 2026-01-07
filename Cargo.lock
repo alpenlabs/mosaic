@@ -641,7 +641,6 @@ dependencies = [
  "mosaic-cac-proto-types",
  "mosaic-cac-types",
  "mosaic-common",
- "mosaic-vs3",
 ]
 
 [[package]]

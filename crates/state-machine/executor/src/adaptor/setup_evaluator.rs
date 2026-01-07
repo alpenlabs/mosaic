@@ -19,6 +19,7 @@ pub struct AdaptorState {
     challenge_response_ack: Option<MsgId>,
 }
 
+#[expect(clippy::derivable_impls, reason = "keeping this explicit")]
 impl Default for AdaptorState {
     fn default() -> Self {
         Self {

@@ -44,8 +44,8 @@ pub enum State {
     WaitForAdaptors,
     DepositReady {
         adaptor_msg_id: MsgId,
-        deposit_adaptors: DepositAdaptors,
-        withdrawal_adaptors: WithdrawalAdaptors,
+        deposit_adaptors: Box<DepositAdaptors>,
+        withdrawal_adaptors: Box<WithdrawalAdaptors>,
     },
     Completed {
         counterproof_sig: (), // TODO: counterproof sig type
@@ -99,6 +99,7 @@ fn stf(_config: &Config, state: State, input: Input) -> State {
         },
         Input::GenerateCounterproofSignature(counterproof) => match state {
             State::DepositReady { .. } => {
+                #[expect(clippy::let_unit_value, reason = "TODO: correct type")]
                 let counterproof_sig = generate_counterproof_signature(counterproof);
                 State::Completed { counterproof_sig }
             }

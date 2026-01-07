@@ -48,16 +48,16 @@ pub trait HasMsgId {
 #[derive(Clone, Debug)]
 pub struct CommitMsg {
     /// N_INPUT_WIRES * 256 + 1
-    pub polynomial_commitments: PolynomialCommitments,
+    pub polynomial_commitments: Box<PolynomialCommitments>,
     /// N_CIRCUITS
-    pub garbling_table_commitments: GarblingTableCommitments,
+    pub garbling_table_commitments: Box<GarblingTableCommitments>,
 }
 
 /// ChallengeMsg: Evaluator -> Garbler
 #[derive(Clone, Debug)]
 pub struct ChallengeMsg {
     /// N_COEFFICIENTS
-    pub challenge_indices: ChallengeIndices,
+    pub challenge_indices: Box<ChallengeIndices>,
 }
 
 /// ChallengeResponseMsg: Garbler -> Evaluator
@@ -65,13 +65,13 @@ pub struct ChallengeMsg {
 #[derive(Clone, Debug)]
 pub struct ChallengeResponseMsg {
     /// N_COEFFICIENTS * N_INPUT_WIRES * 256
-    pub opened_input_shares: OpenedInputShares,
+    pub opened_input_shares: Box<OpenedInputShares>,
     /// N_SETUP_INPUT_WIRES * 256
-    pub reserved_setup_input_shares: ReservedSetupInputShares,
+    pub reserved_setup_input_shares: Box<ReservedSetupInputShares>,
     /// N_COEFFICIENTS
-    pub opened_output_shares: OpenedOutputShares,
+    pub opened_output_shares: Box<OpenedOutputShares>,
     /// N_COEFFICIENTS
-    pub opened_garbling_seeds: OpenedGarblingSeeds,
+    pub opened_garbling_seeds: Box<OpenedGarblingSeeds>,
 }
 
 /// N_DEPOSIT_INPUT_WIRES
@@ -83,9 +83,9 @@ pub type WithdrawalAdaptors = [[Adaptor; 256]; N_WITHDRAWAL_INPUT_WIRES];
 #[derive(Clone, Debug)]
 pub struct AdaptorMsg {
     /// N_DEPOSIT_INPUT_WIRES
-    pub deposit_adaptors: DepositAdaptors,
+    pub deposit_adaptors: Box<DepositAdaptors>,
     /// N_WITHDRAWAL_INPUT_WIRES * 256
-    pub withdrawal_adaptors: WithdrawalAdaptors,
+    pub withdrawal_adaptors: Box<WithdrawalAdaptors>,
 }
 
 impl HasMsgId for CommitMsg {

@@ -40,19 +40,23 @@ pub enum State {
     ///
     /// Q: should polynomial commitments be stored or re-generated when needed ?
     SendCommit {
-        garbling_table_commitments: GarblingTableCommitments,
+        garbling_table_commitments: Box<GarblingTableCommitments>,
     },
     /// Wait for challenge msg
     WaitForChallenge,
     /// Got challenge message, send ack and challenge response
     ReceivedChallege {
         challenge_msg_id: MsgId,
-        challenge_idxs: ChallengeIndices,
+        challenge_idxs: Box<ChallengeIndices>,
     },
     /// Challenge response msg ack received, send garbling tables
-    TransferGarblingTables { challenge_idxs: ChallengeIndices },
+    TransferGarblingTables {
+        challenge_idxs: Box<ChallengeIndices>,
+    },
     /// Setup is completed, ready to be used for deposits.
-    SetupComplete { challenge_idxs: ChallengeIndices },
+    SetupComplete {
+        challenge_idxs: Box<ChallengeIndices>,
+    },
     /// Setup is consumed by a withdrawal dispute. Cannot be reused.
     SetupConsumed { by_deposit: StateMachinePairId },
     /// Setup was aborted due to a protocol violation.
@@ -71,7 +75,7 @@ pub struct Config {
 #[derive(Debug)]
 #[expect(missing_docs, reason = "wip")]
 pub enum Input {
-    GTCommitmentsGenerated(GarblingTableCommitments),
+    GTCommitmentsGenerated(Box<GarblingTableCommitments>),
     RecvCommitMessageAck,
     RecvChallengeMsg(ChallengeMsg),
     RecvChallengeReponseAck,
@@ -140,7 +144,7 @@ fn emit_actions(config: &Config, state: &State) -> Vec<Action> {
         State::SendCommit {
             garbling_table_commitments,
         } => {
-            let polynomial_commitments = generate_polynomial_commmitments(config.seed);
+            let polynomial_commitments = Box::new(generate_polynomial_commmitments(config.seed));
             let commit_msg = CommitMsg {
                 polynomial_commitments,
                 garbling_table_commitments: garbling_table_commitments.clone(),
@@ -154,7 +158,7 @@ fn emit_actions(config: &Config, state: &State) -> Vec<Action> {
         } => {
             let challenge_response = prepare_challenge_response_msg(config.seed, challenge_idxs);
             vec![
-                Action::SendChallengeMsgAck(challenge_msg_id.clone()),
+                Action::SendChallengeMsgAck(*challenge_msg_id),
                 Action::SendChallengeResponseMsg(challenge_response),
             ]
         }

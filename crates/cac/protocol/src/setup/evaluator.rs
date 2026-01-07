@@ -46,13 +46,13 @@ pub enum State {
     // challenge sent, waiting for challenge response
     ReceivedCommitments {
         commit_msg_id: MsgId,
-        polynomial_commitments: PolynomialCommitments,
-        garbling_table_commitments: GarblingTableCommitments,
+        polynomial_commitments: Box<PolynomialCommitments>,
+        garbling_table_commitments: Box<GarblingTableCommitments>,
     },
     // got challenge ack, now waiting for challenge response
     WaitChallengeResponse {
-        polynomial_commitments: PolynomialCommitments,
-        garbling_table_commitments: GarblingTableCommitments,
+        polynomial_commitments: Box<PolynomialCommitments>,
+        garbling_table_commitments: Box<GarblingTableCommitments>,
     },
     // received challenge response
     // verified shares are correct
@@ -60,34 +60,34 @@ pub enum State {
     // waiting for verification to complete
     ReceivedChallegeResponse {
         challenge_response_msg_id: MsgId,
-        polynomial_commitments: PolynomialCommitments,
-        garbling_table_commitments: GarblingTableCommitments,
-        opened_input_shares: OpenedInputShares,
-        opened_output_shares: OpenedOutputShares,
-        reserved_setup_input_shares: ReservedSetupInputShares,
-        opened_garbling_seeds: OpenedGarblingSeeds,
+        polynomial_commitments: Box<PolynomialCommitments>,
+        garbling_table_commitments: Box<GarblingTableCommitments>,
+        opened_input_shares: Box<OpenedInputShares>,
+        opened_output_shares: Box<OpenedOutputShares>,
+        reserved_setup_input_shares: Box<ReservedSetupInputShares>,
+        opened_garbling_seeds: Box<OpenedGarblingSeeds>,
     },
     // verified commitments are valid for opened tables
     // triggered receive and verify remaining tables
     // waiting for tables to be received
     VerifiedGarblingTableCommitments {
-        polynomial_commitments: PolynomialCommitments,
-        garbling_table_commitments: GarblingTableCommitments,
-        challenge_indices: ChallengeIndices,
-        opened_input_shares: OpenedInputShares,
-        opened_output_shares: OpenedOutputShares,
-        reserved_setup_input_shares: ReservedSetupInputShares,
-        opened_garbling_seeds: OpenedGarblingSeeds,
+        polynomial_commitments: Box<PolynomialCommitments>,
+        garbling_table_commitments: Box<GarblingTableCommitments>,
+        challenge_indices: Box<ChallengeIndices>,
+        opened_input_shares: Box<OpenedInputShares>,
+        opened_output_shares: Box<OpenedOutputShares>,
+        reserved_setup_input_shares: Box<ReservedSetupInputShares>,
+        opened_garbling_seeds: Box<OpenedGarblingSeeds>,
     },
     SetupComplete {
         // TODO: remove states that are not needed
-        polynomial_commitments: PolynomialCommitments,
-        garbling_table_commitments: GarblingTableCommitments,
-        challenge_indices: ChallengeIndices,
-        opened_input_shares: OpenedInputShares,
-        opened_output_shares: OpenedOutputShares,
-        reserved_setup_input_shares: ReservedSetupInputShares,
-        opened_garbling_seeds: OpenedGarblingSeeds,
+        polynomial_commitments: Box<PolynomialCommitments>,
+        garbling_table_commitments: Box<GarblingTableCommitments>,
+        challenge_indices: Box<ChallengeIndices>,
+        opened_input_shares: Box<OpenedInputShares>,
+        opened_output_shares: Box<OpenedOutputShares>,
+        reserved_setup_input_shares: Box<ReservedSetupInputShares>,
+        opened_garbling_seeds: Box<OpenedGarblingSeeds>,
     },
     SetupConsumed {
         by_deposit: StateMachinePairId,
@@ -115,7 +115,7 @@ pub enum Action {
     SendCommitAck(MsgId),
     SendChallengeMsg(ChallengeMsg),
     SendChallengeResponseAck(MsgId),
-    VerifyOpenedGarbTableCommitments(OpenedGarblingSeeds, GarblingTableCommitments),
+    VerifyOpenedGarbTableCommitments(Box<OpenedGarblingSeeds>, Box<GarblingTableCommitments>),
     ReceiveGarblingTables(()), // TODO: types
 }
 
@@ -183,7 +183,7 @@ fn stf(config: &Config, state: State, input: Input) -> State {
                 opened_garbling_seeds,
                 ..
             } => {
-                let challenge_indices = generate_challenge_indices(&config.seed);
+                let challenge_indices = Box::new(generate_challenge_indices(&config.seed));
                 State::VerifiedGarblingTableCommitments {
                     polynomial_commitments,
                     garbling_table_commitments,
@@ -227,7 +227,7 @@ fn emit_actions(config: &Config, state: &State) -> Vec<Action> {
     match state {
         State::Initialized => vec![],
         State::ReceivedCommitments { commit_msg_id, .. } => {
-            let challenge_indices = generate_challenge_indices(&config.seed);
+            let challenge_indices = Box::new(generate_challenge_indices(&config.seed));
             vec![
                 Action::SendCommitAck(*commit_msg_id),
                 Action::SendChallengeMsg(ChallengeMsg { challenge_indices }),
@@ -243,8 +243,8 @@ fn emit_actions(config: &Config, state: &State) -> Vec<Action> {
             vec![
                 Action::SendChallengeResponseAck(*challenge_response_msg_id),
                 Action::VerifyOpenedGarbTableCommitments(
-                    *opened_garbling_seeds,
-                    *garbling_table_commitments,
+                    opened_garbling_seeds.clone(),
+                    garbling_table_commitments.clone(),
                 ),
             ]
         }

@@ -11,6 +11,7 @@ pub enum StateMachinePhase {
 
 /// Uniquely identifies a state machine pair run between 2 parties (type, garbler_peer,
 /// evaluator_peer, instance).
+///
 /// As a single mosaic instance only holds one side of the pair, this id also uniquely identifies a
 /// state machine inside one mosaic client.
 #[derive(Debug)]
