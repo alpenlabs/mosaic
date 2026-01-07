@@ -23,6 +23,7 @@ members = [
   "crates/table-types",
   "crates/vs3",
 ]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

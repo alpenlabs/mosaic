@@ -91,3 +91,6 @@ coverage.xml
 
 # backup files
 *.bak
+
+# fuzz target logs
+fuzz-*.log
