@@ -9,8 +9,9 @@ use ark_ec::PrimeGroup;
 use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use mosaic_adaptor_sigs::Adaptor;
 use mosaic_cac_types::{
-    Adaptor, AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, ChallengeIndices, ChallengeMsg,
+    AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, CircuitInputShares, CommitMsgChunk, WideLabelWireAdaptors,
     WideLabelWirePolynomialCommitments, WideLabelWireShares,
 };
@@ -219,7 +220,7 @@ fn bench_adaptor_msg_chunk(c: &mut Criterion) {
     let point = Point::generator() * single_scalar;
     let single_adaptor = Adaptor {
         tweaked_s: single_scalar,
-        tweaked_r: point,
+        R_dash_commit: point,
         share_commitment: point,
     };
 
@@ -338,7 +339,7 @@ fn bench_full_messages(c: &mut Criterion) {
     let point = Point::generator() * single_scalar;
     let single_adaptor = Adaptor {
         tweaked_s: single_scalar,
-        tweaked_r: point,
+        R_dash_commit: point,
         share_commitment: point,
     };
     let adaptor_chunks: Vec<AdaptorMsgChunk> = (0..N_DEPOSIT_INPUT_WIRES)

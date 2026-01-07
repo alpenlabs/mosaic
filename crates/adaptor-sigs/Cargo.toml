@@ -11,6 +11,22 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+ark-ec.workspace = true
+ark-ff.workspace = true
+ark-serialize.workspace = true
+ark-secp256k1.workspace = true
+mosaic-common.workspace = true
+once_cell.workspace = true
+rand.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rand_chacha.workspace = true
+k256.workspace = true
+bitcoin.workspace = true
+bitcoin-script.workspace = true
+bitcoin-scriptexec.workspace = true
 
 [lints]
 workspace = true

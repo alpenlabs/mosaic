@@ -17,9 +17,9 @@ mosaic-vs3.workspace = true
 
 ark-ec.workspace = true
 ark-ff.workspace = true
-ark-secp256k1.workspace = true
 ark-serialize.workspace = true
 fasm.workspace = true
+mosaic-adaptor-sigs.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]

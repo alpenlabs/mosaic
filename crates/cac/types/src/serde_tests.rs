@@ -6,6 +6,7 @@
 use ark_ec::PrimeGroup;
 use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+use mosaic_adaptor_sigs::{Adaptor, Signature};
 use mosaic_common::{
     Byte32,
     constants::{N_CIRCUITS, N_OPEN_CIRCUITS},
@@ -14,10 +15,10 @@ use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 use proptest::prelude::*;
 
 use crate::{
-    Adaptor, AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments,
+    AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments,
     ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
     CircuitInputShares, CommitMsgChunk, CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds,
-    OpenedOutputShares, PubKey, ReservedSetupInputShares, SecretKey, Sighash, Signature,
+    OpenedOutputShares, PubKey, ReservedSetupInputShares, SecretKey, Sighash,
     WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
 };
 
@@ -96,7 +97,7 @@ fn arb_adaptor() -> impl Strategy<Value = Adaptor> {
     (arb_scalar(), arb_point(), arb_point()).prop_map(|(tweaked_s, tweaked_r, share_commitment)| {
         Adaptor {
             tweaked_s,
-            tweaked_r,
+            R_dash_commit: tweaked_r,
             share_commitment,
         }
     })
@@ -118,7 +119,7 @@ fn arb_polynomial_commitment() -> impl Strategy<Value = PolynomialCommitment> {
 
 /// Generate a random Signature.
 fn arb_signature() -> impl Strategy<Value = Signature> {
-    (arb_scalar(), arb_point()).prop_map(|(s, r)| Signature { s, r })
+    (arb_scalar(), arb_point()).prop_map(|(s, r)| Signature { s, r: r.x })
 }
 
 // =============================================================================
@@ -184,7 +185,7 @@ fn arb_adaptor_msg_chunk() -> impl Strategy<Value = AdaptorMsgChunk> {
 
         let single_adaptor = Adaptor {
             tweaked_s: scalar,
-            tweaked_r: point,
+            R_dash_commit: point,
             share_commitment: point,
         };
 

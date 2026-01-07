@@ -2,14 +2,11 @@
 
 pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
-mod constants;
 mod error;
 mod interpolate;
 mod polynomial;
 mod psm;
 
-// Re-export all constants
-pub use constants::*;
 // Re-export error types
 pub use error::Error;
 // Re-export interpolation function

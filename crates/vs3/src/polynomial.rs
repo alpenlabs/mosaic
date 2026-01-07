@@ -1,12 +1,12 @@
 //! Polynomial arithmetic over the secp256k1 curve for the VS3 protocol.
 
-use ark_ff::{UniformRand, Zero};
+use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
-use rand_core::{CryptoRng, RngCore};
+use mosaic_common::constants::{N_CIRCUITS, N_OPEN_CIRCUITS as N_COEFFICIENTS};
+use rand_chacha::rand_core::{CryptoRng, RngCore};
 
 use crate::{
-    constants::{N_CIRCUITS, N_COEFFICIENTS},
     error::Error,
     psm::{gen_batch_mul, gen_mul},
 };
@@ -84,7 +84,7 @@ impl Index {
 }
 
 /// A share of a polynomial, representing an index and an evaluation value at that index.
-#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Share(Index, Scalar);
 
 impl Share {
@@ -107,11 +107,18 @@ impl Share {
     pub fn commit(&self) -> ShareCommitment {
         ShareCommitment(self.0, gen_mul(&self.1))
     }
+
+    /// truncate
+    /// TODO: @AaronFeickert, @nakkstar123: should this logic be in gobble instead ? Perhaps through a Label::from_fr() function
+    pub fn truncate(&self) -> [u8; 16] {
+        let x: [u8; 32] = self.1.into_bigint().to_bytes_le().try_into().expect("encode 32 bytes");
+        x[0..16].try_into().expect("truncate higer bits")
+    }
 }
 
 /// A commitment to a share of a polynomial.
 #[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct ShareCommitment(Index, Point);
+pub struct ShareCommitment(pub Index, pub Point);
 
 /// A polynomial with scalar coefficients.
 #[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
@@ -151,7 +158,7 @@ impl Polynomial {
 
 /// A polynomial with point coefficients, representing a commitment to the polynomial's scalar
 /// coefficients.
-#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct PolynomialCommitment {
     coefficients: [Point; N_COEFFICIENTS],
 }
@@ -179,6 +186,11 @@ impl PolynomialCommitment {
         } else {
             Err(Error::ShareCommitmentMismatch { index: share.0 })
         }
+    }
+
+    /// get zeroth coefficient
+    pub fn get_zeroth_coefficient(&self) -> Point {
+        self.coefficients[0]
     }
 }
 

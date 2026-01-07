@@ -12,12 +12,10 @@ pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 #[cfg(test)]
 use criterion as _;
 
-mod adaptor;
 mod msgs;
 mod protocol;
 pub mod state_machine;
 
-pub use adaptor::*;
 use mosaic_common::Byte32;
 pub use msgs::*;
 pub use protocol::*;

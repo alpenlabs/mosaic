@@ -8,9 +8,10 @@ use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
     Write,
 };
+use mosaic_adaptor_sigs::Adaptor;
 
 use crate::{
-    Adaptor, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments, ChallengeIndices,
+    AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments, ChallengeIndices,
     CircuitInputShares, OpenedGarblingSeeds, OpenedOutputShares, ReservedSetupInputShares,
     WideLabelWirePolynomialCommitments,
 };

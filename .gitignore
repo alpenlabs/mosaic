@@ -91,3 +91,13 @@ coverage.xml
 
 # backup files
 *.bak
+
+# fuzz target logs
+fuzz-*.log
+
+# garbling tables
+gc_*.bin*
+
+# ckt file and its runtime-input
+*.v5c
+inputs.txt

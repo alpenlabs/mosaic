@@ -11,6 +11,23 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+ark-groth16.workspace = true 
+ark-bn254.workspace = true
+ark-ff.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true 
+blake3.workspace = true 
+bitvec.workspace = true
 
-[lints]
-workspace = true
+ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt" }
+ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
+ckt-runner-exec = { git = "https://github.com/alpenlabs/ckt" }
+mosaic-common.workspace = true
+mosaic-vs3.workspace = true 
+mosaic-cac-types.workspace = true 
+mosaic-adaptor-sigs.workspace = true
+num-bigint.workspace = true
+rayon.workspace = true 
+
+[dev-dependencies]
+tokio.workspace = true

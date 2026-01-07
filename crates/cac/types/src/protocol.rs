@@ -1,4 +1,5 @@
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use mosaic_adaptor_sigs::{Adaptor, Signature};
 use mosaic_common::{
     Byte32,
     constants::{
@@ -11,7 +12,7 @@ pub use mosaic_heap_array::HeapArray;
 pub use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 use mosaic_vs3::{Point, Scalar};
 
-use crate::{Adaptor, GarblingTableCommitment, Seed, Signature};
+use crate::{GarblingTableCommitment, Seed};
 
 /// Polynomials for all wide label values for a single wire.
 /// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
@@ -79,7 +80,7 @@ pub type OpenedInputShares = [CircuitInputShares; N_OPEN_CIRCUITS];
 /// wire. Uses HeapArray for serialization derive macro support.
 pub type ReservedSetupInputShares = HeapArray<Share, N_SETUP_INPUT_WIRES>;
 /// Reserved input shares for all wide label values corresponding to deposit input wires.
-pub type ReservedDepositInputShares = [WideLabelWireShares; N_DEPOSIT_INPUT_WIRES];
+pub type ReservedDepositInputShares = [Share; N_DEPOSIT_INPUT_WIRES];
 /// Reserved input shares for all wide labels corresponding to withdrawal input wires.
 pub type ReservedWithdrawalInputShares = [WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES];
 /// Shares for value 0 output wire for for all opened indices.

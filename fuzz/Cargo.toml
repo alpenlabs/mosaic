@@ -1,0 +1,20 @@
+[package]
+name = "mosaic-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+mosaic-adaptor-sigs = { path = "../crates/adaptor-sigs" }
+libfuzzer-sys = "0.4"
+k256 = "0.13.4"
+
+[[bin]]
+name = "adaptor_signature_from_bytes"
+path = "fuzz_targets/adaptor_signature_from_bytes.rs"
+test = false
+doc = false
+bench = false
