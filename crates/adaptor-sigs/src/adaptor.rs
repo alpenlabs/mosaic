@@ -14,7 +14,7 @@
 // - `extract_share` is intentionally a pure algebraic operation and does not verify `R`. Callers
 //   who want that check should compare `sig.R` to `adaptor.expected_R()`.
 
-use ark_ec::CurveGroup;
+use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{AdditiveGroup, BigInteger, PrimeField, UniformRand};
 use rand::{CryptoRng, Rng};
 use sha2::{Digest, Sha256};
@@ -128,32 +128,56 @@ impl Adaptor {
         evaluator_master_sk: ark_secp256k1::Fr,
         evaluator_master_pk: ark_secp256k1::Projective,
         sighash: &[u8],
-    ) -> Self {
-        assert_ne!(evaluator_master_sk, ark_secp256k1::Fr::ZERO);
+    ) -> Result<Self, Error> {
+        if evaluator_master_sk == ark_secp256k1::Fr::ZERO {
+            return Err(Error::AdaptorGenerationFailed(
+                "input evaluator_master_sk can't be zero",
+            ));
+        }
+        // P = x·G
+        let evaluator_master_pk = evaluator_master_pk.into_affine();
+        if evaluator_master_pk.is_zero() {
+            return Err(Error::AdaptorGenerationFailed(
+                "input evaluator_master_pk can't be inf",
+            ));
+        }
+        if evaluator_master_pk.y.into_bigint().is_odd() {
+            return Err(Error::AdaptorGenerationFailed(
+                "input evaluator_master_pk can't have odd y",
+            ));
+        }
+
         // r', R' = r'·G
         let mut r_dash = ark_secp256k1::Fr::rand(rng);
-        assert_ne!(r_dash, ark_secp256k1::Fr::ZERO);
+        if r_dash == ark_secp256k1::Fr::ZERO {
+            return Err(Error::AdaptorGenerationFailed(
+                "sampled partial nonce can't be zero",
+            ));
+        }
         let R_dash_commit = gen_mul(&r_dash);
 
         // R = R' + S
         let expected_R = (R_dash_commit + share_commitment).into_affine();
+        if expected_R.is_zero() {
+            return Err(Error::AdaptorGenerationFailed(
+                "evaluator can guess garbler's secret share",
+            ));
+        }
 
-        // P = x·G
-        let P = evaluator_master_pk.into_affine();
-
-        let e = challenge_e(expected_R, P, sighash);
+        let e = challenge_e(expected_R, evaluator_master_pk, sighash);
 
         if expected_R.y.into_bigint().is_odd() {
+            // negate to make commitment of completed nonce (i.e. r_dash + share) even
             r_dash.neg_in_place();
         }
         // s' = ±r' + e·x
         let tweaked_s = r_dash + e * evaluator_master_sk;
 
-        Adaptor {
+        Ok(Adaptor {
             tweaked_s,
             R_dash_commit,
             share_commitment,
-        }
+        })
     }
 
     /// Expected R value for this adaptor, i.e. `R' + S`.
@@ -169,10 +193,24 @@ impl Adaptor {
         sighash: &[u8],
     ) -> Result<(), Error> {
         let expected_R = self.expected_R().into_affine();
+        if expected_R.is_zero() {
+            return Err(Error::AdaptorGenerationFailed(
+                "evaluator can guess garbler's secret share",
+            ));
+        }
+        let evaluator_master_pk_affine = evaluator_master_pk.into_affine();
+        if evaluator_master_pk_affine.is_zero() {
+            return Err(Error::AdaptorGenerationFailed(
+                "input evaluator_master_pk can't be inf",
+            ));
+        }
+        if evaluator_master_pk_affine.y.into_bigint().is_odd() {
+            return Err(Error::AdaptorGenerationFailed(
+                "input evaluator_master_pk can't have odd y",
+            ));
+        }
 
-        let P_aff = evaluator_master_pk.into_affine();
-
-        let e = challenge_e(expected_R, P_aff, sighash);
+        let e = challenge_e(expected_R, evaluator_master_pk_affine, sighash);
 
         // LHS: s'·G - e.P
         let lhs = gen_mul(&self.tweaked_s) - evaluator_master_pk * e;
@@ -196,11 +234,21 @@ impl Adaptor {
     /// Purely algebraic operation that can't fail.
     pub fn complete(&self, share: ark_secp256k1::Fr) -> Signature {
         let R = self.expected_R().into_affine();
+        assert!(
+            !R.is_zero(),
+            "a verified adaptor can not have expected R to be zero"
+        );
         let s = if R.y.into_bigint().is_odd() {
             self.tweaked_s - share
         } else {
             self.tweaked_s + share
         };
+        // Note: bip-0340 suggests the signing method to validate the computed Signature before
+        // returning it. If so, we need to implement signature validation here.
+        // Also Note: signature validation differs from adaptor verification `verify()` method above
+        // in that adaptor verify works over partial signature while signature verification works
+        // over completed one. As such signature verify will mimick bip-0340 suggested
+        // `Verification` protocol.
         Signature { s, r: R.x }
     }
 
@@ -208,7 +256,12 @@ impl Adaptor {
     /// Purely algebraic operation that can't fail.
     /// `signature` is obtained from a value committed on chain, so it is assumed to be valid
     pub fn extract_share(&self, signature: &Signature) -> ark_secp256k1::Fr {
-        let is_odd = self.expected_R().into_affine().y.into_bigint().is_odd();
+        let R = self.expected_R().into_affine();
+        assert!(
+            !R.is_zero(),
+            "a verified adaptor can not have expected R to be zero"
+        );
+        let is_odd = R.y.into_bigint().is_odd();
         let diff = signature.s - self.tweaked_s;
         if is_odd { -diff } else { diff }
     }
@@ -261,15 +314,19 @@ mod tests {
         let S = gen_mul(&share);
 
         // Evaluator’s master secret/public
-        let x = ark_secp256k1::Fr::rand(rng);
-        let P = gen_mul(&x);
+        let mut x = ark_secp256k1::Fr::rand(rng);
+        let mut P = gen_mul(&x);
+        if P.into_affine().y.into_bigint().is_odd() {
+            x.neg_in_place();
+            P.neg_in_place();
+        }
 
         // Transcript
         let wire_index = 7usize;
         let sighash = Sha256::digest(b"demo message").to_vec();
 
         // Generate adaptor
-        let adaptor = Adaptor::generate(rng, S, x, P, &sighash);
+        let adaptor = Adaptor::generate(rng, S, x, P, &sighash).expect("expected valid Adaptor");
 
         Fix {
             share,
@@ -379,13 +436,17 @@ mod tests {
         let share = ark_secp256k1::Fr::zero();
         let S = ark_secp256k1::Projective::zero();
 
-        let x = ark_secp256k1::Fr::rand(&mut rng);
-        let P = gen_mul(&x);
+        let mut x = ark_secp256k1::Fr::rand(&mut rng);
+        let mut P = gen_mul(&x);
+        if P.into_affine().y.into_bigint().is_odd() {
+            x.neg_in_place();
+            P.neg_in_place();
+        }
 
         let sighash = Sha256::digest(b"zero-share").to_vec();
 
         let mut rng = thread_rng();
-        let ad = Adaptor::generate(&mut rng, S, x, P, &sighash);
+        let ad = Adaptor::generate(&mut rng, S, x, P, &sighash).expect("expected valid adaptor");
 
         // Still should verify
         ad.verify(P, &sighash).unwrap();
@@ -426,13 +487,17 @@ mod tests {
         let share = ark_secp256k1::Fr::from(42u64);
         let S = gen_mul(&share);
 
-        let x = ark_secp256k1::Fr::from(999u64);
-        let P = gen_mul(&x);
+        let mut x = ark_secp256k1::Fr::from(999u64);
+        let mut P = gen_mul(&x);
+        if P.into_affine().y.into_bigint().is_odd() {
+            x.neg_in_place();
+            P.neg_in_place();
+        }
 
         let sighash = Sha256::digest(b"entropy").to_vec();
 
-        let ad1 = Adaptor::generate(&mut rng, S, x, P, &sighash);
-        let ad2 = Adaptor::generate(&mut rng, S, x, P, &sighash);
+        let ad1 = Adaptor::generate(&mut rng, S, x, P, &sighash).expect("expected valid adaptor");
+        let ad2 = Adaptor::generate(&mut rng, S, x, P, &sighash).expect("expected valid adaptor");
 
         // With a single RNG stream, two sequential calls still produce different tweaked_r by
         // construction (two independent ark_secp256k1::Fr::rand draws)
@@ -465,8 +530,13 @@ mod tests {
         let mut rng = ChaCha20Rng::seed_from_u64(20);
         for _ in 0..10 {
             let evaluator_privkey = SigningKey::random(&mut rng);
-            let evaluator_secret_fr = fr_from_sk(&evaluator_privkey);
-            let evaluator_master_pk = gen_mul(&evaluator_secret_fr);
+            let mut evaluator_secret_fr = fr_from_sk(&evaluator_privkey);
+            let mut evaluator_master_pk = gen_mul(&evaluator_secret_fr);
+            if evaluator_master_pk.into_affine().y.into_bigint().is_odd() {
+                evaluator_secret_fr.neg_in_place();
+                evaluator_master_pk.neg_in_place();
+            }
+
             let garbler_secret_fr = ark_secp256k1::Fr::rand(&mut rng);
             let garbler_commit = ark_secp256k1::Projective::generator() * garbler_secret_fr;
 
@@ -477,7 +547,8 @@ mod tests {
                 evaluator_secret_fr,
                 evaluator_master_pk,
                 sighash.as_slice(),
-            );
+            )
+            .expect("expected valid adaptor");
 
             let garbler_sig = adaptor.complete(garbler_secret_fr);
             let garbler_sig_bytes = garbler_sig.to_bytes();
@@ -579,10 +650,16 @@ mod tests {
         for _ in 0..10 {
             let evaluator_privkey = SigningKey::random(&mut rng);
             let evaluator_pubkey = evaluator_privkey.verifying_key().as_affine().x().to_vec();
-            let evaluator_secret_fr = {
+            let mut evaluator_secret_fr = {
                 let b = evaluator_privkey.to_bytes();
                 ark_secp256k1::Fr::from_be_bytes_mod_order(b.as_slice())
             };
+            let mut evaluator_master_pk = gen_mul(&evaluator_secret_fr);
+            if evaluator_master_pk.into_affine().y.into_bigint().is_odd() {
+                evaluator_secret_fr.neg_in_place();
+                evaluator_master_pk.neg_in_place();
+            }
+
             let garbler_secret_fr = ark_secp256k1::Fr::rand(&mut rng);
             let garbler_commit = ark_secp256k1::Projective::generator() * garbler_secret_fr;
 
@@ -625,9 +702,10 @@ mod tests {
                 &mut rng,
                 garbler_commit,
                 evaluator_secret_fr,
-                gen_mul(&evaluator_secret_fr),
+                evaluator_master_pk,
                 &sighash,
-            );
+            )
+            .expect("expected valid adaptor");
 
             let garbler_sig = adaptor.complete(garbler_secret_fr);
             let garbler_sig_bytes = garbler_sig.to_bytes();

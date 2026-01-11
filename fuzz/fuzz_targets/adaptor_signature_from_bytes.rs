@@ -2,7 +2,6 @@
 
 use libfuzzer_sys::fuzz_target;
 use adaptor_sigs::adaptor::Signature;
-use adaptor_sigs::error::Error;
 
 fuzz_target!(|data: [u8; 64]| {
     // fuzzed code goes here
@@ -14,16 +13,9 @@ fuzz_target!(|data: [u8; 64]| {
             assert_eq!(r.to_bytes(), data, "roundtrip: serialization should yield input");
             assert!(ksig_decode.is_ok(), "k256 reported error {:?}", ksig_decode.err().unwrap()); // it should be possible to extract signature
         },
-        Err(er) => {
+        Err(_) => {
             // If deserialization fails, k256 should have also reported error
-            match er {
-                Error::DeserializationErrorInPointOnCurve => {
-                    // Special Case: error not caught by k256 but caught here
-                }
-                _ => {
-                    assert!(!ksig_decode.is_ok(), "expected k256 to raise error");
-                }
-            }
+            assert!(!ksig_decode.is_ok(), "expected k256 to raise error");
         }
     }
 });

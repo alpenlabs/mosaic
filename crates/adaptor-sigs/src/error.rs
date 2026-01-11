@@ -9,6 +9,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum Error {
+    #[error("adaptor generation failed: {0}")]
+    AdaptorGenerationFailed(&'static str),
+
     /// Verification failed (semantic mismatch without another more specific error).
     #[error("verification failed: {what}")]
     VerificationFailed { what: &'static str },
@@ -16,8 +19,4 @@ pub enum Error {
     /// Deserialization error.
     #[error("deserialization error: {0}")]
     Deserialization(&'static str),
-
-    /// Deserialization error.
-    #[error("deserialization error while checking point on curve")]
-    DeserializationErrorInPointOnCurve,
 }
