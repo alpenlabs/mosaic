@@ -14,11 +14,8 @@
 // - `extract_share` is intentionally a pure algebraic operation and does not verify `R`. Callers
 //   who want that check should compare `sig.R` to `adaptor.expected_R()`.
 
-use std::str::FromStr;
-
-use ark_ec::{CurveGroup, PrimeGroup};
-use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField, UniformRand};
-use ark_serialize::Valid;
+use ark_ec::CurveGroup;
+use ark_ff::{AdditiveGroup, BigInteger, PrimeField, UniformRand};
 use rand::{CryptoRng, Rng};
 use sha2::{Digest, Sha256};
 
@@ -57,10 +54,10 @@ fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
 /// Adaptor for the VSSS
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adaptor {
-    /// s' = r' + e * x  (the evaluator’s partial Schnorr s)
+    /// s' = ±r' + e * x  (the evaluator’s partial Schnorr s)
     pub tweaked_s: ark_secp256k1::Fr,
     /// R' = r'*G
-    pub tweaked_R: ark_secp256k1::Projective,
+    pub R_dash_commit: ark_secp256k1::Projective,
     /// S = share*G
     pub share_commitment: ark_secp256k1::Projective,
 }
@@ -68,17 +65,16 @@ pub struct Adaptor {
 /// Signature for the VSSS
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signature {
-    /// s = s' + share
+    /// s = s' ± share
     pub s: ark_secp256k1::Fr,
-    /// R = R' + S
-    pub R: ark_secp256k1::Projective,
+    /// r = (R' + S).x
+    pub r: ark_secp256k1::Fq,
 }
 
 impl Signature {
     /// Signature to bytes
     pub fn to_bytes(&self) -> [u8; 64] {
-        let rx = self.R.into_affine().x;
-        let r_x = serialize_field(&rx);
+        let r_x = serialize_field(&self.r);
         let s_bytes = serialize_field(&self.s);
         let mut out = [0u8; 64];
         out[..32].copy_from_slice(&r_x);
@@ -96,36 +92,25 @@ impl Signature {
         if s == ark_secp256k1::Fr::ZERO {
             return Err(Error::Deserialization("signature.s can not be zero"));
         }
-        let ry = {
-            let coeff_b = ark_secp256k1::Fq::from_str("7").unwrap();
-            let x3b = rx.square() * rx + coeff_b;
-            let mut y = x3b
-                .sqrt()
-                .ok_or(Error::DeserializationErrorInPointOnCurve)?;
-            if y.into_bigint().is_odd() {
-                y.neg_in_place();
-            }
-            y
-        };
-        let R = ark_secp256k1::Affine::new_unchecked(rx, ry);
-        if R.check().is_err() {
-            return Err(Error::Deserialization("ark_secp256k1::Affine::check fails"));
-        }
-        Ok(Signature { s, R: R.into() })
+        Ok(Signature { s, r: rx })
     }
 }
 
 /* ----------------------------- Challenge helper --------------------------- */
 
 /// e = H(BIP0340/challenge, R.x, P.x, wire_index, sighash)
-fn challenge_e(Rx: &[u8], Px: &[u8], sighash: &[u8]) -> ark_secp256k1::Fr {
+fn challenge_e(
+    R: ark_secp256k1::Affine,
+    P: ark_secp256k1::Affine,
+    sighash: &[u8],
+) -> ark_secp256k1::Fr {
     // BIP340 tag
     let tag_hash = Sha256::digest(b"BIP0340/challenge");
     let mut h = Sha256::new();
     h.update(tag_hash);
     h.update(tag_hash);
-    h.update(Rx);
-    h.update(Px);
+    h.update(serialize_field(&R.x));
+    h.update(serialize_field(&P.x));
     h.update(sighash);
     let digest = h.finalize();
     ark_secp256k1::Fr::from_be_bytes_mod_order(&digest)
@@ -146,38 +131,34 @@ impl Adaptor {
     ) -> Self {
         assert_ne!(evaluator_master_sk, ark_secp256k1::Fr::ZERO);
         // r', R' = r'·G
-        let mut tweaked_r = ark_secp256k1::Fr::rand(rng);
-        assert_ne!(tweaked_r, ark_secp256k1::Fr::ZERO);
-        let tweaked_R = gen_mul(&tweaked_r);
+        let mut r_dash = ark_secp256k1::Fr::rand(rng);
+        assert_ne!(r_dash, ark_secp256k1::Fr::ZERO);
+        let R_dash_commit = gen_mul(&r_dash);
 
         // R = R' + S
-        let R = tweaked_R + share_commitment;
+        let expected_R = (R_dash_commit + share_commitment).into_affine();
 
         // P = x·G
         let P = evaluator_master_pk.into_affine();
-        let Px = serialize_field(&P.x);
 
-        let R_aff = R.into_affine();
-        let Rx = serialize_field(&R_aff.x);
+        let e = challenge_e(expected_R, P, sighash);
 
-        let e = challenge_e(&Rx, &Px, sighash);
-
-        // s' = ±r' + e·x
-        if R_aff.y.into_bigint().is_odd() {
-            tweaked_r.neg_in_place();
+        if expected_R.y.into_bigint().is_odd() {
+            r_dash.neg_in_place();
         }
-        let tweaked_s = tweaked_r + e * evaluator_master_sk;
+        // s' = ±r' + e·x
+        let tweaked_s = r_dash + e * evaluator_master_sk;
 
         Adaptor {
             tweaked_s,
-            tweaked_R,
+            R_dash_commit,
             share_commitment,
         }
     }
 
     /// Expected R value for this adaptor, i.e. `R' + S`.
     fn expected_R(&self) -> ark_secp256k1::Projective {
-        self.tweaked_R + self.share_commitment
+        self.R_dash_commit + self.share_commitment
     }
 
     /// Verifies that this adaptor is well-formed for `(P, wire_index, sighash)`:
@@ -187,25 +168,20 @@ impl Adaptor {
         evaluator_master_pk: ark_secp256k1::Projective,
         sighash: &[u8],
     ) -> Result<(), Error> {
-        let R = self.expected_R();
-        let R_aff = R.into_affine();
-        let Rx = serialize_field(&R_aff.x);
+        let expected_R = self.expected_R().into_affine();
 
         let P_aff = evaluator_master_pk.into_affine();
-        let Px = serialize_field(&P_aff.x);
 
-        let e = challenge_e(&Rx, &Px, sighash);
+        let e = challenge_e(expected_R, P_aff, sighash);
 
-        // LHS: s'·G
-        let lhs = gen_mul(&self.tweaked_s);
-        // RHS: R' + e·P
-        let tweaked_R = if R_aff.y.into_bigint().is_odd() {
-            let neg_one = -ark_secp256k1::Fr::ONE;
-            self.tweaked_R.mul_bigint(neg_one.into_bigint())
+        // LHS: s'·G - e.P
+        let lhs = gen_mul(&self.tweaked_s) - evaluator_master_pk * e;
+        // RHS: R'
+        let rhs = if expected_R.y.into_bigint().is_odd() {
+            -self.R_dash_commit
         } else {
-            self.tweaked_R
+            self.R_dash_commit
         };
-        let rhs = tweaked_R + evaluator_master_pk * e;
 
         if lhs == rhs {
             Ok(())
@@ -219,21 +195,18 @@ impl Adaptor {
     /// Completes the adaptor with the garbler’s ark_secp256k1::Fr share to produce a `(s, R)` pair.
     /// Purely algebraic operation that can't fail.
     pub fn complete(&self, share: ark_secp256k1::Fr) -> Signature {
-        let R = self.expected_R();
-        let ry = R.into_affine().y;
-        let (R, s) = if ry.into_bigint().is_odd() {
-            (-R, self.tweaked_s - share)
+        let R = self.expected_R().into_affine();
+        let s = if R.y.into_bigint().is_odd() {
+            self.tweaked_s - share
         } else {
-            (R, self.tweaked_s + share)
+            self.tweaked_s + share
         };
-        Signature { s, R }
+        Signature { s, r: R.x }
     }
 
     /// Recovers the share from `(s, R)` and this adaptor as `s − s'`.
     /// Purely algebraic operation that can't fail.
-    ///
-    /// Note: This method does **not** check that `R == self.expected_R()`. Callers who require
-    /// that binding must check `sig.R == adaptor.expected_R()` themselves before extraction.
+    /// `signature` is obtained from a value committed on chain, so it is assumed to be valid
     pub fn extract_share(&self, signature: &Signature) -> ark_secp256k1::Fr {
         let is_odd = self.expected_R().into_affine().y.into_bigint().is_odd();
         let diff = signature.s - self.tweaked_s;
@@ -244,6 +217,8 @@ impl Adaptor {
 /* ---------------------------------- Tests ---------------------------------- */
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use ark_ec::PrimeGroup;
     use ark_ff::{UniformRand, Zero};
     use bitcoin::{
@@ -318,13 +293,6 @@ mod tests {
 
             // Complete with the garbler’s share and check R binding
             let sig = fx.adaptor.complete(fx.share);
-            let expected_r = fx.adaptor.expected_R();
-            let is_odd = expected_r.into_affine().y.into_bigint().is_odd();
-            if is_odd {
-                assert_eq!(-sig.R, expected_r);
-            } else {
-                assert_eq!(sig.R, expected_r);
-            }
             // Extract share back
             let extracted = fx.adaptor.extract_share(&sig);
             assert_eq!(extracted, fx.share);
@@ -392,7 +360,7 @@ mod tests {
         let mut rng = thread_rng();
         let mut fx = fixture(&mut rng);
         // Tamper tweaked_R (equivalent to changing r')
-        fx.adaptor.tweaked_R += ark_secp256k1::Projective::generator(); // any non-identity tweak should break relation
+        fx.adaptor.R_dash_commit += ark_secp256k1::Projective::generator(); // any non-identity tweak should break relation
         assert!(fx.adaptor.verify(fx.P, &fx.sighash).is_err());
     }
 
@@ -437,14 +405,13 @@ mod tests {
         // Recompute e like verify() does
         let R = fx.adaptor.expected_R().into_affine();
         let P = fx.P.into_affine();
-        let e = super::challenge_e(&serialize_field(&R.x), &serialize_field(&P.x), &fx.sighash);
+        let e = super::challenge_e(R, P, &fx.sighash);
 
         let lhs = gen_mul(&fx.adaptor.tweaked_s); // s'·G
         let tweaked_R = if R.y.into_bigint().is_odd() {
-            let neg_one = -ark_secp256k1::Fr::ONE;
-            fx.adaptor.tweaked_R.mul_bigint(neg_one.into_bigint())
+            -fx.adaptor.R_dash_commit
         } else {
-            fx.adaptor.tweaked_R
+            fx.adaptor.R_dash_commit
         };
         let rhs = tweaked_R + fx.P * e; // R' + e·P
         assert_eq!(lhs, rhs);
@@ -469,7 +436,7 @@ mod tests {
 
         // With a single RNG stream, two sequential calls still produce different tweaked_r by
         // construction (two independent ark_secp256k1::Fr::rand draws)
-        assert_ne!(ad1.tweaked_R, ad2.tweaked_R);
+        assert_ne!(ad1.R_dash_commit, ad2.R_dash_commit);
         assert_ne!(ad1.tweaked_s, ad2.tweaked_s);
 
         // Both should verify with the same transcript and key

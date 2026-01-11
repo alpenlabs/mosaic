@@ -9,7 +9,6 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-secp256k1",
- "ark-serialize",
  "bitcoin",
  "bitcoin-script",
  "bitcoin-scriptexec",
