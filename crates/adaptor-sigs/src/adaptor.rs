@@ -41,9 +41,6 @@ fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
         bits
     }
     let rint = F::BigInt::from_bits_be(&bytes_be_to_bits_be(&bytes));
-    if rint > F::MODULUS {
-        return Err(Error::Deserialization("integer greater than field modulus"));
-    }
     F::from_bigint(rint).ok_or(Error::Deserialization(
         "conversion from bigint to field element",
     ))
