@@ -11,15 +11,30 @@ pub const N_EVAL_CIRCUITS: usize = N_CIRCUITS - N_VERIFICAITON_CIRCUITS;
 
 // Garbling table wires constants
 
-/// TODO: number of input wires
+/// Number of bits in a single wide label
+pub const WIDE_LABEL_WIDTH: usize = 8;
+/// Total number of values represented by a single wide label
+pub const WIDE_LABEL_VALUE_COUNT: usize = 1 << WIDE_LABEL_WIDTH;
+/// Type for a wide label value
+pub type WideLabelValue = u8;
+
+const _: () = assert!(
+    WIDE_LABEL_WIDTH <= WideLabelValue::BITS as usize,
+    "WideLabelValue type is too small for WIDE_LABEL_WIDTH"
+);
+
+// NOTE: *_INPUT_WIRES are groups of `WIDE_LABEL_WIDTH` wires.
+
+/// Total number of input wire groups.
 pub const N_INPUT_WIRES: usize = 160;
-/// TODO: number of setup input wires
+/// TODO: number of setup input wire groups.
 pub const N_SETUP_INPUT_WIRES: usize = 4;
-/// TODO: number of deposit input wires
+/// TODO: number of deposit input wire groups.
 pub const N_DEPOSIT_INPUT_WIRES: usize = 4;
-/// TODO: number of withdrawal input wires
+/// TODO: number of withdrawal input wire groups.
 pub const N_WITHDRAWAL_INPUT_WIRES: usize = 152;
 
 const _: () = assert!(
-    N_INPUT_WIRES == N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES
+    N_INPUT_WIRES == N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES,
+    "N_INPUT_WIRES count does not match"
 );
