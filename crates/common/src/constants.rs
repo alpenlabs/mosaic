@@ -5,9 +5,9 @@
 /// Number of circuits in a tableset. (N)
 pub const N_CIRCUITS: usize = 181;
 /// Number of circuits opened during CaC for verification. (K)
-pub const N_VERIFICAITON_CIRCUITS: usize = 174;
+pub const N_OPEN_CIRCUITS: usize = 174;
 /// Number of circuits for evaluation. (N - K)
-pub const N_EVAL_CIRCUITS: usize = N_CIRCUITS - N_VERIFICAITON_CIRCUITS;
+pub const N_EVAL_CIRCUITS: usize = N_CIRCUITS - N_OPEN_CIRCUITS;
 
 // Garbling table wires constants
 

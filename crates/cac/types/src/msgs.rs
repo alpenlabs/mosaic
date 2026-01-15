@@ -1,49 +1,10 @@
 use std::fmt::Display;
 
-use mosaic_common::constants::{
-    N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
+use crate::{
+    ChallengeIndices, DepositAdaptors, GarblingTableCommitments, OpenedGarblingSeeds,
+    OpenedInputShares, OpenedOutputShares, PolynomialCommitments, ReservedSetupInputShares,
+    WithdrawalAdaptors,
 };
-use mosaic_vs3::{Index, N_CIRCUITS, N_COEFFICIENTS, PolynomialCommitment, Share};
-
-use crate::{Adaptor, GarblingTableCommitment, Seed};
-
-/// Setup input values, represents bridge operator pubky
-pub type SetupInputs = [u8; N_SETUP_INPUT_WIRES];
-
-/// N_INPUT_WIRES * 256 + 1
-pub type PolynomialCommitments = [[PolynomialCommitment; 256 + 1]; N_INPUT_WIRES];
-/// N_CIRCUITS
-pub type GarblingTableCommitments = [GarblingTableCommitment; N_CIRCUITS];
-/// N_COEFFICIENTS
-pub type ChallengeIndices = [Index; N_COEFFICIENTS];
-/// N_CIRCUITS - N_COEFFICIENTS
-pub type EvaluationIndices = [Index; N_CIRCUITS - N_COEFFICIENTS];
-/// N_COEFFICIENTS * N_INPUT_WIRES * 256
-pub type OpenedInputShares = [[[Share; 256]; N_INPUT_WIRES]; N_COEFFICIENTS];
-/// N_SETUP_INPUT_WIRES * 256
-pub type ReservedSetupInputShares = [[Share; 256]; N_SETUP_INPUT_WIRES];
-/// N_COEFFICIENTS
-pub type OpenedOutputShares = [Share; N_COEFFICIENTS];
-/// N_COEFFICIENTS
-pub type OpenedGarblingSeeds = [Seed; N_COEFFICIENTS];
-
-/// Unique identifier for a message passed between garbler and evaluator nodes.
-/// Used for deduplication and ACKs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MsgId(pub [u8; 32]);
-
-impl Display for MsgId {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
-    }
-}
-
-/// Provide MsgId from specific msg types.
-pub trait HasMsgId {
-    /// get MsgId.
-    fn id(&self) -> MsgId;
-}
-
 /// CommitMsg: Garbler -> Evaluator
 #[derive(Clone, Debug)]
 pub struct CommitMsg {
@@ -74,11 +35,6 @@ pub struct ChallengeResponseMsg {
     pub opened_garbling_seeds: Box<OpenedGarblingSeeds>,
 }
 
-/// N_DEPOSIT_INPUT_WIRES
-pub type DepositAdaptors = [Adaptor; N_DEPOSIT_INPUT_WIRES];
-/// N_WITHDRAWAL_INPUT_WIRES * 256
-pub type WithdrawalAdaptors = [[Adaptor; 256]; N_WITHDRAWAL_INPUT_WIRES];
-
 /// AdaptorMsg: Evaluator -> Garbler
 #[derive(Clone, Debug)]
 pub struct AdaptorMsg {
@@ -86,6 +42,23 @@ pub struct AdaptorMsg {
     pub deposit_adaptors: Box<DepositAdaptors>,
     /// N_WITHDRAWAL_INPUT_WIRES * 256
     pub withdrawal_adaptors: Box<WithdrawalAdaptors>,
+}
+
+/// Unique identifier for a message passed between garbler and evaluator nodes.
+/// Used for deduplication and ACKs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MsgId(pub [u8; 32]);
+
+impl Display for MsgId {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+
+/// Provide MsgId from specific msg types.
+pub trait HasMsgId {
+    /// get MsgId.
+    fn id(&self) -> MsgId;
 }
 
 impl HasMsgId for CommitMsg {

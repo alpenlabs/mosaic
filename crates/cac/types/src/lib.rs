@@ -6,10 +6,12 @@
 
 mod adaptor;
 mod msgs;
+mod protocol;
 
 pub use adaptor::*;
 use mosaic_common::Byte32;
 pub use msgs::*;
+pub use protocol::*;
 
 /// Commitment to a Garbling Table
 pub type GarblingTableCommitment = Byte32;
