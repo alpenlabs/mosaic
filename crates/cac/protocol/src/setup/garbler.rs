@@ -2,7 +2,7 @@
 
 use mosaic_cac_types::{
     ChallengeIndices, ChallengeMsg, ChallengeResponseMsg, CommitMsg, EvaluationIndices,
-    GarblingTableCommitments, HasMsgId, MsgId, PolynomialCommitments, Seed, SetupInputs,
+    GarblingTableCommitments, HasMsgId, MsgId, AllPolynomialCommitments, Seed, SetupInputs,
 };
 use mosaic_state_machine_api::{StateMachinePairId, StateMachineSpec};
 
@@ -172,7 +172,7 @@ fn emit_actions(config: &Config, state: &State) -> Vec<Action> {
     }
 }
 
-fn generate_polynomial_commmitments(_seed: Seed) -> PolynomialCommitments {
+fn generate_polynomial_commmitments(_seed: Seed) -> AllPolynomialCommitments {
     todo!()
 }
 

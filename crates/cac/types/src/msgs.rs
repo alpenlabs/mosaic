@@ -1,15 +1,15 @@
 use std::fmt::Display;
 
 use crate::{
-    ChallengeIndices, DepositAdaptors, GarblingTableCommitments, OpenedGarblingSeeds,
-    OpenedInputShares, OpenedOutputShares, PolynomialCommitments, ReservedSetupInputShares,
+    AllPolynomialCommitments, ChallengeIndices, DepositAdaptors, GarblingTableCommitments,
+    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, ReservedSetupInputShares,
     WithdrawalAdaptors,
 };
 /// CommitMsg: Garbler -> Evaluator
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitMsg {
     /// N_INPUT_WIRES * 256 + 1
-    pub polynomial_commitments: Box<PolynomialCommitments>,
+    pub polynomial_commitments: Box<AllPolynomialCommitments>,
     /// N_CIRCUITS
     pub garbling_table_commitments: Box<GarblingTableCommitments>,
 }
@@ -23,7 +23,7 @@ pub struct ChallengeMsg {
 
 /// ChallengeResponseMsg: Garbler -> Evaluator
 /// Note: Garbling Tables are sent separately
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChallengeResponseMsg {
     /// N_COEFFICIENTS * N_INPUT_WIRES * 256
     pub opened_input_shares: Box<OpenedInputShares>,

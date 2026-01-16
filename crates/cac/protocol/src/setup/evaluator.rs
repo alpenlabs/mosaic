@@ -3,7 +3,7 @@
 use mosaic_cac_types::{
     ChallengeIndices, ChallengeMsg, ChallengeResponseMsg, CommitMsg, GarblingTableCommitments,
     HasMsgId, MsgId, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
-    PolynomialCommitments, ReservedSetupInputShares, Seed, SetupInputs,
+    AllPolynomialCommitments, ReservedSetupInputShares, Seed, SetupInputs,
 };
 use mosaic_state_machine_api::{StateMachinePairId, StateMachineSpec};
 
@@ -46,12 +46,12 @@ pub enum State {
     // challenge sent, waiting for challenge response
     ReceivedCommitments {
         commit_msg_id: MsgId,
-        polynomial_commitments: Box<PolynomialCommitments>,
+        polynomial_commitments: Box<AllPolynomialCommitments>,
         garbling_table_commitments: Box<GarblingTableCommitments>,
     },
     // got challenge ack, now waiting for challenge response
     WaitChallengeResponse {
-        polynomial_commitments: Box<PolynomialCommitments>,
+        polynomial_commitments: Box<AllPolynomialCommitments>,
         garbling_table_commitments: Box<GarblingTableCommitments>,
     },
     // received challenge response
@@ -60,7 +60,7 @@ pub enum State {
     // waiting for verification to complete
     ReceivedChallegeResponse {
         challenge_response_msg_id: MsgId,
-        polynomial_commitments: Box<PolynomialCommitments>,
+        polynomial_commitments: Box<AllPolynomialCommitments>,
         garbling_table_commitments: Box<GarblingTableCommitments>,
         opened_input_shares: Box<OpenedInputShares>,
         opened_output_shares: Box<OpenedOutputShares>,
@@ -71,7 +71,7 @@ pub enum State {
     // triggered receive and verify remaining tables
     // waiting for tables to be received
     VerifiedGarblingTableCommitments {
-        polynomial_commitments: Box<PolynomialCommitments>,
+        polynomial_commitments: Box<AllPolynomialCommitments>,
         garbling_table_commitments: Box<GarblingTableCommitments>,
         challenge_indices: Box<ChallengeIndices>,
         opened_input_shares: Box<OpenedInputShares>,
@@ -81,7 +81,7 @@ pub enum State {
     },
     SetupComplete {
         // TODO: remove states that are not needed
-        polynomial_commitments: Box<PolynomialCommitments>,
+        polynomial_commitments: Box<AllPolynomialCommitments>,
         garbling_table_commitments: Box<GarblingTableCommitments>,
         challenge_indices: Box<ChallengeIndices>,
         opened_input_shares: Box<OpenedInputShares>,
