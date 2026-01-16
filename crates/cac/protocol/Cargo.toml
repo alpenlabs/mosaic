@@ -12,7 +12,10 @@ keywords.workspace = true
 
 [dependencies]
 mosaic-cac-types.workspace = true
+mosaic-common.workspace = true
 mosaic-state-machine-api.workspace = true
+
+fasm.workspace = true
 
 tracing.workspace = true
 

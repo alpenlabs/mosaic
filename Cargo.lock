@@ -507,6 +507,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "fasm"
+version = "0.3.0"
+source = "git+https://github.com/zk2u/fasm.git#dde254b8ae1396e742ed4c0e843a036ee6b5293c"
+
+[[package]]
 name = "fastbloom"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -919,7 +924,9 @@ dependencies = [
 name = "mosaic-cac-protocol"
 version = "0.1.0"
 dependencies = [
+ "fasm",
  "mosaic-cac-types",
+ "mosaic-common",
  "mosaic-state-machine-api",
  "tracing",
 ]
