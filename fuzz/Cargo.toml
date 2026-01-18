@@ -8,7 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-adaptor-sigs = { path = "../crates/adaptor-sigs" }
+mosaic-adaptor-sigs = { path = "../crates/adaptor-sigs" }
 libfuzzer-sys = "0.4"
 k256 = "0.13.4"
 

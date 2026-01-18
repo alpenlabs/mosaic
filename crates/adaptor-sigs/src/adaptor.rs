@@ -20,8 +20,8 @@ use rand::{CryptoRng, Rng};
 use sha2::{Digest, Sha256};
 
 use crate::{error::Error, fixed_base::gen_mul};
-/* ------------------------------ Utilities --------------------------------- */
 
+/// Helpers to serialize and deserialize field as per BIP340
 fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
     // `Fq` modulus is 256 bits, so its big-endian encoding always fits in 32 bytes.
     x.into_bigint()
@@ -44,19 +44,6 @@ fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
     F::from_bigint(rint).ok_or(Error::Deserialization(
         "conversion from bigint to field element",
     ))
-}
-
-/* --------------------------------- Types ---------------------------------- */
-
-/// Adaptor for the VSSS
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Adaptor {
-    /// s' = ±r' + e * x  (the evaluator’s partial Schnorr s)
-    pub tweaked_s: ark_secp256k1::Fr,
-    /// R' = r'*G
-    pub R_dash_commit: ark_secp256k1::Projective,
-    /// S = share*G
-    pub share_commitment: ark_secp256k1::Projective,
 }
 
 /// Signature for the VSSS
@@ -93,27 +80,16 @@ impl Signature {
     }
 }
 
-/* ----------------------------- Challenge helper --------------------------- */
-
-/// e = H(BIP0340/challenge, R.x, P.x, wire_index, sighash)
-fn challenge_e(
-    R: ark_secp256k1::Affine,
-    P: ark_secp256k1::Affine,
-    sighash: &[u8],
-) -> ark_secp256k1::Fr {
-    // BIP340 tag
-    let tag_hash = Sha256::digest(b"BIP0340/challenge");
-    let mut h = Sha256::new();
-    h.update(tag_hash);
-    h.update(tag_hash);
-    h.update(serialize_field(&R.x));
-    h.update(serialize_field(&P.x));
-    h.update(sighash);
-    let digest = h.finalize();
-    ark_secp256k1::Fr::from_be_bytes_mod_order(&digest)
+/// Adaptor for the VSSS
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adaptor {
+    /// s' = ±r' + e * x  (the evaluator’s partial Schnorr s)
+    pub tweaked_s: ark_secp256k1::Fr,
+    /// R' = r'*G
+    pub R_dash_commit: ark_secp256k1::Projective,
+    /// S = share*G
+    pub share_commitment: ark_secp256k1::Projective,
 }
-
-/* --------------------------------- Methods -------------------------------- */
 
 impl Adaptor {
     /// Generates an adaptor from the evaluator’s master secret key `x`, a commitment
@@ -161,7 +137,7 @@ impl Adaptor {
             ));
         }
 
-        let e = challenge_e(expected_R, evaluator_master_pk, sighash);
+        let e = Self::challenge_e(expected_R, evaluator_master_pk, sighash);
 
         if expected_R.y.into_bigint().is_odd() {
             // negate to make commitment of completed nonce (i.e. r_dash + share) even
@@ -207,7 +183,7 @@ impl Adaptor {
             ));
         }
 
-        let e = challenge_e(expected_R, evaluator_master_pk_affine, sighash);
+        let e = Self::challenge_e(expected_R, evaluator_master_pk_affine, sighash);
 
         // LHS: s'·G - e.P
         let lhs = gen_mul(&self.tweaked_s) - evaluator_master_pk * e;
@@ -261,6 +237,24 @@ impl Adaptor {
         let is_odd = R.y.into_bigint().is_odd();
         let diff = signature.s - self.tweaked_s;
         if is_odd { -diff } else { diff }
+    }
+
+    /// e = H(BIP0340/challenge, R.x, P.x, wire_index, sighash)
+    fn challenge_e(
+        R: ark_secp256k1::Affine,
+        P: ark_secp256k1::Affine,
+        sighash: &[u8],
+    ) -> ark_secp256k1::Fr {
+        // BIP340 tag
+        let tag_hash = Sha256::digest(b"BIP0340/challenge");
+        let mut h = Sha256::new();
+        h.update(tag_hash);
+        h.update(tag_hash);
+        h.update(serialize_field(&R.x));
+        h.update(serialize_field(&P.x));
+        h.update(sighash);
+        let digest = h.finalize();
+        ark_secp256k1::Fr::from_be_bytes_mod_order(&digest)
     }
 }
 
@@ -463,7 +457,7 @@ mod tests {
         // Recompute e like verify() does
         let R = fx.adaptor.expected_R().into_affine();
         let P = fx.P.into_affine();
-        let e = super::challenge_e(R, P, &fx.sighash);
+        let e = Adaptor::challenge_e(R, P, &fx.sighash);
 
         let lhs = gen_mul(&fx.adaptor.tweaked_s); // s'·G
         let tweaked_R = if R.y.into_bigint().is_odd() {

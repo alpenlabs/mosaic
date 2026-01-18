@@ -3,24 +3,6 @@
 version = 4
 
 [[package]]
-name = "adaptor-sigs"
-version = "0.1.0"
-dependencies = [
- "ark-ec",
- "ark-ff",
- "ark-secp256k1",
- "bitcoin",
- "bitcoin-script",
- "bitcoin-scriptexec",
- "k256",
- "once_cell",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "sha2",
- "thiserror 2.0.17",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1267,6 +1249,25 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mosaic-adaptor-sigs"
+version = "0.1.0"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-secp256k1",
+ "bitcoin",
+ "bitcoin-script",
+ "bitcoin-scriptexec",
+ "k256",
+ "mosaic-common",
+ "once_cell",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "sha2",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

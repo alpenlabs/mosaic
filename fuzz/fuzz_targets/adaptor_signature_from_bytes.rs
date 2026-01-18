@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use adaptor_sigs::adaptor::Signature;
+use mosaic_adaptor_sigs::Signature;
 
 fuzz_target!(|data: [u8; 64]| {
     // fuzzed code goes here
