@@ -1,7 +1,7 @@
 //! Polynomial arithmetic over the secp256k1 curve for the VS3 protocol.
 
 use ark_ff::{UniformRand, Zero};
-use ark_secp256k1::{Fr as Scalar, Projective as Point};
+pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::{

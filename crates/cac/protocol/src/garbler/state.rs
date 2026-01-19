@@ -1,22 +1,23 @@
 use std::collections::HashMap;
 
+use bitvec::BitArr;
 use mosaic_cac_types::{
-    Adaptors, AllPolynomialCommitments, AllPolynomials, AllShares, ChallengeIndices,
-    GarblingTableCommitments, MsgId, Seed,
+    AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials, ChallengeIndices,
+    CompletedSignatures, DepositAdaptors, DepositInput, EvalGarblingSeeds,
+    EvalGarblingTableCommitments, InputShares, MsgId, OutputShares, ReservedInputShares, Seed,
+    Sighashes, WithdrawalAdaptors, WithdrawalInput,
 };
-use mosaic_common::Byte32;
+use mosaic_common::constants::N_EVAL_CIRCUITS;
 
-use crate::garbler::GarblerResult;
+use super::error::GarblerResult;
+use crate::garbler::deposit::{DepositId, DepositState};
 
-pub trait GarblerState: Sized {
-    fn save_state(&mut self, s: &State) -> impl Future<Output = GarblerResult<()>>;
-    fn load_state(&self) -> impl Future<Output = GarblerResult<State>>;
-
+pub trait GarblerArtifactStore: Sized {
     fn save_polynomials(
         &mut self,
         polynomials: &AllPolynomials,
     ) -> impl Future<Output = GarblerResult<()>>;
-    fn load_polynomials(&mut self) -> impl Future<Output = GarblerResult<Box<AllPolynomials>>>;
+    fn load_polynomials(&self) -> impl Future<Output = GarblerResult<Box<AllPolynomials>>>;
 
     fn save_polynomial_commitments(
         &mut self,
@@ -26,16 +27,25 @@ pub trait GarblerState: Sized {
         &self,
     ) -> impl Future<Output = GarblerResult<Box<AllPolynomialCommitments>>>;
 
-    fn save_shares(&mut self, shares: &AllShares) -> impl Future<Output = GarblerResult<()>>;
-    fn load_shares(&self) -> impl Future<Output = GarblerResult<Box<AllShares>>>;
+    fn save_shares(
+        &mut self,
+        input_shares: &InputShares,
+        output_shares: &OutputShares,
+    ) -> impl Future<Output = GarblerResult<()>>;
+    fn load_shares(
+        &self,
+    ) -> impl Future<Output = GarblerResult<(Box<InputShares>, Box<OutputShares>)>>;
+    fn load_reserved_input_shares(
+        &self,
+    ) -> impl Future<Output = GarblerResult<Box<ReservedInputShares>>>;
 
     fn save_garbling_table_commitments(
         &mut self,
-        commitments: &GarblingTableCommitments,
+        commitments: &AllGarblingTableCommitments,
     ) -> impl Future<Output = GarblerResult<()>>;
     fn load_garbling_table_commitments(
         &self,
-    ) -> impl Future<Output = GarblerResult<GarblingTableCommitments>>;
+    ) -> impl Future<Output = GarblerResult<Box<AllGarblingTableCommitments>>>;
 
     fn save_challenge_indices(
         &mut self,
@@ -43,24 +53,65 @@ pub trait GarblerState: Sized {
     ) -> impl Future<Output = GarblerResult<()>>;
     fn load_challenge_indices(&self) -> impl Future<Output = GarblerResult<Box<ChallengeIndices>>>;
 
-    fn save_adaptor_for_deposit(
+    fn save_sighashes_for_deposit(
         &mut self,
         deposit_id: DepositId,
-        adaptors: Adaptors,
+        sighashes: &Sighashes,
+    ) -> impl Future<Output = GarblerResult<()>>;
+    fn load_sighashes_for_deposit(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = GarblerResult<Box<Sighashes>>>;
+
+    fn save_inputs_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        inputs: &DepositInput,
+    ) -> impl Future<Output = GarblerResult<()>>;
+    fn load_inputs_for_deposit(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = GarblerResult<Box<DepositInput>>>;
+
+    fn save_adaptors_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        deposit_adaptors: &DepositAdaptors,
+        withdrawal_adaptors: &WithdrawalAdaptors,
     ) -> impl Future<Output = GarblerResult<()>>;
     fn load_adaptors_for_deposit(
         &self,
         deposit_id: DepositId,
-    ) -> impl Future<Output = GarblerResult<Adaptors>>;
+    ) -> impl Future<Output = GarblerResult<(Box<DepositAdaptors>, Box<WithdrawalAdaptors>)>>;
+
+    fn save_withdrawal_input(
+        &mut self,
+        deposit_id: DepositId,
+        withdrawal_input: &WithdrawalInput,
+    ) -> impl Future<Output = GarblerResult<()>>;
+    fn load_withdrawal_input(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = GarblerResult<Box<WithdrawalInput>>>;
+
+    fn save_completed_signatures(
+        &mut self,
+        deposit_id: DepositId,
+        signatures: &CompletedSignatures,
+    ) -> impl Future<Output = GarblerResult<()>>;
+    fn load_completed_signatures(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = GarblerResult<Box<CompletedSignatures>>>;
 }
 
 #[derive(Debug)]
-#[expect(dead_code)]
-pub struct State {
+pub struct State<S: GarblerArtifactStore> {
     pub(crate) config: Config,
     pub(crate) context: Context,
     pub(crate) step: Step,
     pub(crate) deposits: HashMap<DepositId, DepositState>,
+    pub(crate) artifact_store: S,
 }
 
 /// Immutable state that is set during init and never updated
@@ -72,7 +123,6 @@ pub struct Config {
 /// Mutable state that is relevant to multiple steps.
 /// This should only hold simple bookkeeping related states.
 #[derive(Debug, Default)]
-#[expect(dead_code)]
 pub struct Context {
     /// ID of commit msg that has been sent.
     pub(crate) sent_commit_msg_id: Option<MsgId>,
@@ -82,21 +132,9 @@ pub struct Context {
     pub(crate) sent_challenge_response_msg_id: Option<MsgId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DepositId(pub Byte32);
-
-#[derive(Debug)]
-pub enum DepositState {
-    WaitForAdaptors,
-    DepositReady,
-    WithdrawnUndisputed,
-    Consumed,
-}
-
 /// Valid states.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-#[repr(u8)]
 pub enum Step {
     #[default]
     Uninit,
@@ -116,13 +154,19 @@ pub enum Step {
     /// Send challenge response and wait for ack.
     SendingChallengeResponse,
     /// Challenge response msg ack received, send garbling tables
-    TransferGarblingTables,
+    TransferringGarblingTables {
+        eval_seeds: Box<EvalGarblingSeeds>,
+        eval_commitments: Box<EvalGarblingTableCommitments>,
+        transferred: BitArr!(for N_EVAL_CIRCUITS),
+    },
     /// Setup is completed, ready to be used for deposits.
     /// Accepts deposit inputs
     SetupComplete,
-    // TODO: withdrawals steps
+    /// Disputed Withdrawal is triggered.
+    /// Compleing adaptor sigs.
+    CompletingAdaptors { deposit_id: DepositId },
     /// Setup is consumed by a withdrawal dispute. Cannot be reused.
-    SetupConsumed { by_deposit: DepositId },
+    SetupConsumed { deposit_id: DepositId },
     /// Setup was aborted due to a protocol violation.
     Aborted { reason: String },
 }

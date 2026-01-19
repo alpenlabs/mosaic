@@ -2,7 +2,7 @@
 
 use mosaic_cac_types::{
     ChallengeIndices, ChallengeMsg, ChallengeResponseMsg, CommitMsg, EvaluationIndices,
-    GarblingTableCommitments, HasMsgId, MsgId, AllPolynomialCommitments, Seed, SetupInputs,
+    AllGarblingTableCommitments, HasMsgId, MsgId, AllPolynomialCommitments, Seed, SetupInputs,
 };
 use mosaic_state_machine_api::{StateMachinePairId, StateMachineSpec};
 
@@ -40,7 +40,7 @@ pub enum State {
     ///
     /// Q: should polynomial commitments be stored or re-generated when needed ?
     SendCommit {
-        garbling_table_commitments: Box<GarblingTableCommitments>,
+        garbling_table_commitments: Box<AllGarblingTableCommitments>,
     },
     /// Wait for challenge msg
     WaitForChallenge,
@@ -75,7 +75,7 @@ pub struct Config {
 #[derive(Debug)]
 #[expect(missing_docs, reason = "wip")]
 pub enum Input {
-    GTCommitmentsGenerated(Box<GarblingTableCommitments>),
+    GTCommitmentsGenerated(Box<AllGarblingTableCommitments>),
     RecvCommitMessageAck,
     RecvChallengeMsg(ChallengeMsg),
     RecvChallengeReponseAck,

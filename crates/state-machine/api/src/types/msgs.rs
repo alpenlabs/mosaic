@@ -1,5 +1,5 @@
 use mosaic_cac_types::{
-    EvaluationIndices, GarblingTableCommitments, Msg, OpenedGarblingSeeds, Seed, SetupInputs,
+    EvaluationIndices, AllGarblingTableCommitments, Msg, OpenedGarblingSeeds, Seed, SetupInputs,
 };
 
 use crate::{StateMachineMetadata, StateMachinePairId};
@@ -43,7 +43,7 @@ pub enum ExecutorInputMsgType {
 #[derive(Debug)]
 #[expect(missing_docs, reason = "wip")]
 pub enum JobCompletionReport {
-    GTCommitmentsGenerated(Box<GarblingTableCommitments>),
+    GTCommitmentsGenerated(Box<AllGarblingTableCommitments>),
     GarblingTablesTransferred,
     GarblingTablesReceived(bool),
     GTCommitmentsVerified(bool),
@@ -100,7 +100,7 @@ pub enum ExecutorOutputMsgType {
 pub enum JobExecution {
     GenerateGTCommitments(Seed),
     TransferGarblingTables(Seed, Box<EvaluationIndices>),
-    ReceiveAndVerifyGarblingTables(Box<EvaluationIndices>, Box<GarblingTableCommitments>),
-    VerifyGTCommitments(Box<OpenedGarblingSeeds>, Box<GarblingTableCommitments>),
+    ReceiveAndVerifyGarblingTables(Box<EvaluationIndices>, Box<AllGarblingTableCommitments>),
+    VerifyGTCommitments(Box<OpenedGarblingSeeds>, Box<AllGarblingTableCommitments>),
     EvaluateGarbTables(()),
 }

@@ -1,7 +1,7 @@
 //! Setup Evaluator state machine.
 
 use mosaic_cac_types::{
-    ChallengeIndices, ChallengeMsg, ChallengeResponseMsg, CommitMsg, GarblingTableCommitments,
+    ChallengeIndices, ChallengeMsg, ChallengeResponseMsg, CommitMsg, AllGarblingTableCommitments,
     HasMsgId, MsgId, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
     AllPolynomialCommitments, ReservedSetupInputShares, Seed, SetupInputs,
 };
@@ -47,12 +47,12 @@ pub enum State {
     ReceivedCommitments {
         commit_msg_id: MsgId,
         polynomial_commitments: Box<AllPolynomialCommitments>,
-        garbling_table_commitments: Box<GarblingTableCommitments>,
+        garbling_table_commitments: Box<AllGarblingTableCommitments>,
     },
     // got challenge ack, now waiting for challenge response
     WaitChallengeResponse {
         polynomial_commitments: Box<AllPolynomialCommitments>,
-        garbling_table_commitments: Box<GarblingTableCommitments>,
+        garbling_table_commitments: Box<AllGarblingTableCommitments>,
     },
     // received challenge response
     // verified shares are correct
@@ -61,7 +61,7 @@ pub enum State {
     ReceivedChallegeResponse {
         challenge_response_msg_id: MsgId,
         polynomial_commitments: Box<AllPolynomialCommitments>,
-        garbling_table_commitments: Box<GarblingTableCommitments>,
+        garbling_table_commitments: Box<AllGarblingTableCommitments>,
         opened_input_shares: Box<OpenedInputShares>,
         opened_output_shares: Box<OpenedOutputShares>,
         reserved_setup_input_shares: Box<ReservedSetupInputShares>,
@@ -72,7 +72,7 @@ pub enum State {
     // waiting for tables to be received
     VerifiedGarblingTableCommitments {
         polynomial_commitments: Box<AllPolynomialCommitments>,
-        garbling_table_commitments: Box<GarblingTableCommitments>,
+        garbling_table_commitments: Box<AllGarblingTableCommitments>,
         challenge_indices: Box<ChallengeIndices>,
         opened_input_shares: Box<OpenedInputShares>,
         opened_output_shares: Box<OpenedOutputShares>,
@@ -82,7 +82,7 @@ pub enum State {
     SetupComplete {
         // TODO: remove states that are not needed
         polynomial_commitments: Box<AllPolynomialCommitments>,
-        garbling_table_commitments: Box<GarblingTableCommitments>,
+        garbling_table_commitments: Box<AllGarblingTableCommitments>,
         challenge_indices: Box<ChallengeIndices>,
         opened_input_shares: Box<OpenedInputShares>,
         opened_output_shares: Box<OpenedOutputShares>,
@@ -115,7 +115,7 @@ pub enum Action {
     SendCommitAck(MsgId),
     SendChallengeMsg(ChallengeMsg),
     SendChallengeResponseAck(MsgId),
-    VerifyOpenedGarbTableCommitments(Box<OpenedGarblingSeeds>, Box<GarblingTableCommitments>),
+    VerifyOpenedGarbTableCommitments(Box<OpenedGarblingSeeds>, Box<AllGarblingTableCommitments>),
     ReceiveGarblingTables(()), // TODO: types
 }
 

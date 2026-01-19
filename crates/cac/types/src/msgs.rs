@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use crate::{
-    AllPolynomialCommitments, ChallengeIndices, DepositAdaptors, GarblingTableCommitments,
+    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices, DepositAdaptors,
     OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, ReservedSetupInputShares,
     WithdrawalAdaptors,
 };
@@ -11,7 +11,7 @@ pub struct CommitMsg {
     /// N_INPUT_WIRES * 256 + 1
     pub polynomial_commitments: Box<AllPolynomialCommitments>,
     /// N_CIRCUITS
-    pub garbling_table_commitments: Box<GarblingTableCommitments>,
+    pub garbling_table_commitments: Box<AllGarblingTableCommitments>,
 }
 
 /// ChallengeMsg: Evaluator -> Garbler

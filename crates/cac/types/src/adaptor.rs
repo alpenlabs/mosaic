@@ -10,3 +10,13 @@ pub struct Adaptor {
     /// Commitment to the signer's share, used for verification.
     pub share_commitment: Point,
 }
+
+/// A completed signature
+// TODO: replace this type after adaptor related changes are merged.
+#[derive(Debug)]
+pub struct Signature {
+    /// S
+    pub s: Scalar,
+    /// R
+    pub r: Point,
+}

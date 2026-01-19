@@ -13,6 +13,8 @@ pub use error::Error;
 // Re-export interpolation function
 pub use interpolate::interpolate;
 // Re-export polynomial types
-pub use polynomial::{Index, Polynomial, PolynomialCommitment, Share, ShareCommitment};
+pub use polynomial::{
+    Index, Point, Polynomial, PolynomialCommitment, Scalar, Share, ShareCommitment,
+};
 // Re-export point scalar multiplication functions
 pub use psm::{gen_batch_mul, gen_mul, precomp};
