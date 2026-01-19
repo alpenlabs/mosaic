@@ -1,8 +1,4 @@
 use mosaic_cac_types::{MsgId, PubKey};
-use mosaic_common::Byte32;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DepositId(pub Byte32);
 
 #[derive(Debug)]
 pub enum DepositStep {

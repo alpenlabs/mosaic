@@ -1,8 +1,6 @@
 use std::error::Error;
 
-use mosaic_cac_types::MsgId;
-
-use crate::garbler::deposit::DepositId;
+use mosaic_cac_types::{DepositId, MsgId};
 
 /// State machine error
 #[derive(Debug)]

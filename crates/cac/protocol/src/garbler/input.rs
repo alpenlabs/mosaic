@@ -1,10 +1,10 @@
 use mosaic_cac_types::{
     AdaptorMsg, AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials,
-    ChallengeMsg, CompletedSignatures, DepositInput, GarblingSeed, GarblingTableCommitment,
-    InputShares, MsgId, OutputShares, PubKey, Sighashes, WithdrawalInput,
+    ChallengeMsg, CompletedSignatures, DepositId, DepositInput, GarblingSeed,
+    GarblingTableCommitment, InputShares, MsgId, OutputShares, PubKey, Sighashes, WithdrawalInput,
 };
 
-use super::{deposit::DepositId, state::Config};
+use super::state::Config;
 
 #[derive(Debug)]
 #[non_exhaustive]

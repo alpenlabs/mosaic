@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use bitvec::BitArr;
 use mosaic_cac_types::{
     AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials, ChallengeIndices,
-    CompletedSignatures, DepositAdaptors, DepositInput, EvalGarblingSeeds,
+    CompletedSignatures, DepositAdaptors, DepositId, DepositInput, EvalGarblingSeeds,
     EvalGarblingTableCommitments, InputShares, MsgId, OutputShares, ReservedInputShares, Seed,
     Sighashes, WithdrawalAdaptors, WithdrawalInput,
 };
 use mosaic_common::constants::N_EVAL_CIRCUITS;
 
-use super::deposit::{DepositId, DepositState};
+use super::deposit::DepositState;
 use crate::SMResult;
 
 pub trait GarblerArtifactStore: Sized {

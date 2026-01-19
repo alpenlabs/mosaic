@@ -1,17 +1,8 @@
 use mosaic_cac_types::{
-    AllGarblingSeeds, AllPolynomials, ChallengeResponseMsg, CommitMsg, DepositAdaptors,
-    GarblingSeed, GarblingTableCommitment, InputShares, MsgId, OutputShares, PubKey,
-    ReservedDepositInputShares, ReservedWithdrawalInputShares, Seed, Sighashes, WithdrawalAdaptors,
-    WithdrawalInput,
+    AllGarblingSeeds, AllPolynomials, ChallengeResponseMsg, CommitMsg, DepositAdaptors, DepositId,
+    GarblingSeed, InputShares, MsgId, OutputShares, PubKey, ReservedDepositInputShares,
+    ReservedWithdrawalInputShares, Seed, Sighashes, WithdrawalAdaptors, WithdrawalInput,
 };
-
-use super::deposit::DepositId;
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct TableTransferRequest {
-    pub seed: Seed,
-    pub commitment: GarblingTableCommitment,
-}
 
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]

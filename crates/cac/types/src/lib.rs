@@ -18,3 +18,7 @@ pub type GarblingTableCommitment = Byte32;
 
 /// Seed for deterministic Garbling Table generation
 pub type Seed = Byte32;
+
+/// Unique deposit id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DepositId(pub Byte32);
