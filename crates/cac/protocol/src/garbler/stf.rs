@@ -7,7 +7,7 @@ use mosaic_cac_types::{
 };
 
 use super::{
-    GarblerError, GarblerResult,
+    SMResult, SMError,
     action::Action,
     input::Input,
     state::{GarblerArtifactStore, State, Step},
@@ -21,7 +21,7 @@ use crate::garbler::{
 pub(crate) async fn stf<S: GarblerArtifactStore>(
     state: &mut State<S>,
     input: Input,
-) -> GarblerResult<Vec<Action>> {
+) -> SMResult<Vec<Action>> {
     let mut actions = vec![];
     match input {
         Input::Init(config) => {
@@ -34,7 +34,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     // generate actions
                     actions.push(Action::GeneratePolynomials(state.config.seed));
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::PolynomialsGenerated(polynomials, commitments) => {
@@ -54,7 +54,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     // generate actions
                     actions.push(Action::GenerateShares(polynomials));
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::SharesGenerated(input_shares, output_shares) => {
@@ -76,7 +76,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                         output_shares,
                     ));
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::TableCommitmentsGenerated(garbling_table_commitments) => {
@@ -98,24 +98,22 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     };
                     actions.push(Action::SendCommitMsg(commit_msg));
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::CommitMsgAcked(msg_id) => match state.step {
             Step::SendingCommit => {
                 let Some(sent_msg_id) = state.context.sent_commit_msg_id else {
-                    return Err(GarblerError::StateInconsistency(
-                        "missing sent_commit_msg_id",
-                    ));
+                    return Err(SMError::StateInconsistency("missing sent_commit_msg_id"));
                 };
 
                 if sent_msg_id != msg_id {
-                    return Err(GarblerError::UnexpectedMsgId(msg_id));
+                    return Err(SMError::UnexpectedMsgId(msg_id));
                 }
 
                 state.step = Step::WaitingForChallenge;
             }
-            _ => return Err(GarblerError::UnexpectedInput),
+            _ => return Err(SMError::UnexpectedInput),
         },
         Input::RecvChallengeMsg(challenge_msg) => {
             if let Some(ackd_challenge_msg_id) = state.context.ackd_challenge_msg_id {
@@ -124,7 +122,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 let incoming_msg_id = challenge_msg.id();
 
                 if ackd_challenge_msg_id != incoming_msg_id {
-                    return Err(GarblerError::UnexpectedMsgId(incoming_msg_id));
+                    return Err(SMError::UnexpectedMsgId(incoming_msg_id));
                 }
 
                 actions.push(Action::AckChallengeMsg(ackd_challenge_msg_id));
@@ -159,20 +157,20 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                             };
                         }
                     }
-                    _ => return Err(GarblerError::UnexpectedInput),
+                    _ => return Err(SMError::UnexpectedInput),
                 }
             }
         }
         Input::ChallengeResponseAcked(msg_id) => match state.step {
             Step::SendingChallengeResponse => {
                 let Some(sent_msg_id) = state.context.sent_challenge_response_msg_id else {
-                    return Err(GarblerError::StateInconsistency(
+                    return Err(SMError::StateInconsistency(
                         "missing sent_challenge_response_msg_id",
                     ));
                 };
 
                 if sent_msg_id != msg_id {
-                    return Err(GarblerError::UnexpectedMsgId(msg_id));
+                    return Err(SMError::UnexpectedMsgId(msg_id));
                 }
 
                 let challenge_indices = state.artifact_store.load_challenge_indices().await?;
@@ -198,7 +196,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     actions.push(Action::TransferGarblingTable(*seed));
                 }
             }
-            _ => return Err(GarblerError::UnexpectedInput),
+            _ => return Err(SMError::UnexpectedInput),
         },
         Input::GarblingTableTransferred(garbling_seed, commitment) => match &mut state.step {
             Step::TransferringGarblingTables {
@@ -213,11 +211,11 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                         None
                     }
                 }) else {
-                    return Err(GarblerError::InvalidInputData);
+                    return Err(SMError::InvalidInputData);
                 };
 
                 if eval_commitments[index] != commitment {
-                    return Err(GarblerError::InvalidInputData);
+                    return Err(SMError::InvalidInputData);
                 }
 
                 transferred.set(index, true);
@@ -228,7 +226,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 }
                 // else stay on same step and wait all tables to be transferred
             }
-            _ => return Err(GarblerError::UnexpectedInput),
+            _ => return Err(SMError::UnexpectedInput),
         },
         Input::DepositInit(
             deposit_id,
@@ -241,7 +239,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
             Step::SetupComplete => {
                 if state.deposits.contains_key(&deposit_id) {
                     // deposit already exists
-                    return Err(GarblerError::DepositAlreadyExists(deposit_id));
+                    return Err(SMError::DepositAlreadyExists(deposit_id));
                 }
 
                 state
@@ -255,14 +253,14 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
 
                 state.deposits.insert(deposit_id, DepositState::init(pk));
             }
-            _ => return Err(GarblerError::UnexpectedInput),
+            _ => return Err(SMError::UnexpectedInput),
         },
         Input::DepositRecvAdaptorMsg(deposit_id, adaptor_msg) => {
             match state.step {
                 Step::SetupComplete => {
                     let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
                         // deposit does not exist
-                        return Err(GarblerError::UnknownDeposit(deposit_id));
+                        return Err(SMError::UnknownDeposit(deposit_id));
                     };
 
                     if let Some(ackd_adaptor_msg_id) = deposit_state.ackd_adaptor_msg_id {
@@ -271,7 +269,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                         let incoming_msg_id = adaptor_msg.id();
 
                         if ackd_adaptor_msg_id != incoming_msg_id {
-                            return Err(GarblerError::UnexpectedMsgId(incoming_msg_id));
+                            return Err(SMError::UnexpectedMsgId(incoming_msg_id));
                         }
 
                         actions.push(Action::DepositAckAdaptorMsg(
@@ -318,11 +316,11 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                                     adaptor_verif_data,
                                 ));
                             }
-                            _ => return Err(GarblerError::UnexpectedInput),
+                            _ => return Err(SMError::UnexpectedInput),
                         };
                     }
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::DepositAdaptorVerificationResult(deposit_id, verification_success) => {
@@ -330,7 +328,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 Step::SetupComplete => {
                     let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
                         // deposit does not exist
-                        return Err(GarblerError::UnknownDeposit(deposit_id));
+                        return Err(SMError::UnknownDeposit(deposit_id));
                     };
                     match deposit_state.step {
                         DepositStep::VerifyingAdaptors => {
@@ -342,10 +340,10 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                                 };
                             }
                         }
-                        _ => return Err(GarblerError::UnexpectedInput),
+                        _ => return Err(SMError::UnexpectedInput),
                     }
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::DepositUndisputedWithdrawal(deposit_id) => {
@@ -353,16 +351,16 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 Step::SetupComplete => {
                     let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
                         // deposit does not exist
-                        return Err(GarblerError::UnknownDeposit(deposit_id));
+                        return Err(SMError::UnknownDeposit(deposit_id));
                     };
                     match deposit_state.step {
                         DepositStep::DepositReady => {
                             deposit_state.step = DepositStep::WithdrawnUndisputed;
                         }
-                        _ => return Err(GarblerError::UnexpectedInput),
+                        _ => return Err(SMError::UnexpectedInput),
                     }
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::DisputedWithdrawal(deposit_id, withdrawal_input) => {
@@ -370,7 +368,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 Step::SetupComplete => {
                     let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
                         // deposit does not exist
-                        return Err(GarblerError::UnknownDeposit(deposit_id));
+                        return Err(SMError::UnknownDeposit(deposit_id));
                     };
 
                     match deposit_state.step {
@@ -411,10 +409,10 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                                 },
                             ));
                         }
-                        _ => return Err(GarblerError::UnexpectedInput),
+                        _ => return Err(SMError::UnexpectedInput),
                     }
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::AdaptorSignaturesCompleted(signature_deposit_id, signatures) => {
@@ -422,7 +420,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 Step::CompletingAdaptors { deposit_id } => {
                     // just in case
                     if signature_deposit_id != deposit_id {
-                        return Err(GarblerError::UnexpectedInput);
+                        return Err(SMError::UnexpectedInput);
                     }
 
                     state
@@ -433,7 +431,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     // next step
                     state.step = Step::SetupConsumed { deposit_id };
                 }
-                _ => return Err(GarblerError::UnexpectedInput),
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
     };
@@ -443,7 +441,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
 
 pub(crate) async fn restore<S: GarblerArtifactStore>(
     state: &State<S>,
-) -> GarblerResult<Vec<Action>> {
+) -> SMResult<Vec<Action>> {
     let mut actions = vec![];
 
     match &state.step {
@@ -479,7 +477,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
         Step::WaitingForChallenge => {}
         Step::SendingChallengeResponse => {
             let Some(challenge_msg_id) = state.context.ackd_challenge_msg_id else {
-                return Err(GarblerError::StateInconsistency(
+                return Err(SMError::StateInconsistency(
                     "SendingChallengeResponse: missing expected ackd_challenge_msg_id",
                 ));
             };
@@ -496,12 +494,12 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
             // sanity check
             let Some(challenge_response_msg_id) = state.context.sent_challenge_response_msg_id
             else {
-                return Err(GarblerError::StateInconsistency(
+                return Err(SMError::StateInconsistency(
                     "SendingChallengeResponse: missing expected sent_challenge_response_msg_id",
                 ));
             };
             if challenge_response_msg_id != challenge_response_msg.id() {
-                return Err(GarblerError::StateInconsistency(
+                return Err(SMError::StateInconsistency(
                     "SendingChallengeResponse: unexpected challenge_response_msg id",
                 ));
             }
@@ -527,7 +525,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
                     DepositStep::WaitingForAdaptors => {}
                     DepositStep::VerifyingAdaptors => {
                         let Some(msg_id) = deposit_state.ackd_adaptor_msg_id else {
-                            return Err(GarblerError::StateInconsistency(
+                            return Err(SMError::StateInconsistency(
                                 "missing expected deposit ackd_adaptor_msg_id",
                             ));
                         };
@@ -565,7 +563,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
         Step::CompletingAdaptors { deposit_id } => {
             let Some(deposit_state) = state.deposits.get(deposit_id) else {
                 // deposit does not exist
-                return Err(GarblerError::StateInconsistency(
+                return Err(SMError::StateInconsistency(
                     "CompletingAdaptors: missing expected deposit",
                 ));
             };

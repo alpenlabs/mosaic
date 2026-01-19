@@ -8,16 +8,16 @@ use fasm::{
 
 pub mod action;
 pub mod deposit;
-mod error;
 pub mod input;
 pub mod state;
 mod stf;
 
-pub use error::{GarblerError, GarblerResult};
-
-use crate::garbler::{
-    input::Input,
-    state::{GarblerArtifactStore, State},
+use crate::{
+    SMError, SMResult,
+    garbler::{
+        input::Input,
+        state::{GarblerArtifactStore, State},
+    },
 };
 
 #[derive(Debug)]
@@ -36,9 +36,9 @@ impl<S: GarblerArtifactStore> StateMachine for GarblerSM<S> {
 
     type Actions = Vec<Action<GarblerUntrackedAction, GarblerTrackedActionTypes>>;
 
-    type TransitionError = GarblerError;
+    type TransitionError = SMError;
 
-    type RestoreError = GarblerError;
+    type RestoreError = SMError;
 
     async fn stf(
         state: &mut Self::State,

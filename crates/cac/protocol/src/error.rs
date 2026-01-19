@@ -4,8 +4,9 @@ use mosaic_cac_types::MsgId;
 
 use crate::garbler::deposit::DepositId;
 
+/// State machine error
 #[derive(Debug)]
-pub enum GarblerError {
+pub enum SMError {
     /// Received Input that is not expected at current state.
     UnexpectedInput,
     /// Received Input whose data is invalid.
@@ -22,4 +23,5 @@ pub enum GarblerError {
     Storage(Box<dyn Error>),
 }
 
-pub type GarblerResult<T> = Result<T, GarblerError>;
+/// State machine result
+pub type SMResult<T> = Result<T, SMError>;
