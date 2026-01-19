@@ -2,6 +2,7 @@
 
 pub mod deposit;
 mod error;
+pub mod evaluator;
 pub mod garbler;
 pub mod setup;
 
