@@ -34,7 +34,7 @@ impl<S: GarblerArtifactStore> StateMachine for GarblerSM<S> {
 
     type UntrackedAction = GarblerUntrackedAction;
 
-    type Actions = Vec<Action<GarblerUntrackedAction, GarblerTrackedActionTypes>>;
+    type Actions = ActionContainer;
 
     type TransitionError = SMError;
 
@@ -89,3 +89,5 @@ impl TrackedActionTypes for GarblerTrackedActionTypes {
 
     type Result = ();
 }
+
+pub type ActionContainer = Vec<Action<GarblerUntrackedAction, GarblerTrackedActionTypes>>;

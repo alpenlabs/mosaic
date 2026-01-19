@@ -34,7 +34,7 @@ impl<S: EvaluatorArtifactStore> StateMachine for EvaluatorSM<S> {
 
     type UntrackedAction = EvaluatorUntrackedAction;
 
-    type Actions = Vec<Action<EvaluatorUntrackedAction, EvaluatorTrackedActionTypes>>;
+    type Actions = ActionContainer;
 
     type TransitionError = SMError;
 
@@ -89,3 +89,5 @@ impl TrackedActionTypes for EvaluatorTrackedActionTypes {
 
     type Result = ();
 }
+
+pub type ActionContainer = Vec<Action<EvaluatorUntrackedAction, EvaluatorTrackedActionTypes>>;

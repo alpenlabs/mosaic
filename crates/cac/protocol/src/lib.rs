@@ -1,5 +1,6 @@
 //! protocol state machines
 
+pub mod composite;
 pub mod deposit;
 mod error;
 pub mod evaluator;
