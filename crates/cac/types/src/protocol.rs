@@ -10,9 +10,6 @@ use mosaic_vs3::{Point, Scalar};
 
 use crate::{Adaptor, GarblingTableCommitment, Seed, Signature};
 
-/// Setup input values, represents bridge operator pubkey.
-pub type SetupInputs = [WideLabelValue; N_SETUP_INPUT_WIRES];
-
 /// Input wire polynomials.
 pub type InputPolynomials = [[Polynomial; WIDE_LABEL_VALUE_COUNT]; N_INPUT_WIRES];
 /// Input wire polynomial commitments.
@@ -85,10 +82,12 @@ pub struct Sighash(pub Byte32);
 /// List of sighashes corresponding to deposit and withdrawal input wires.
 pub type Sighashes = [Sighash; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
 
-/// Values of deposit input wires.
-pub type DepositInput = [WideLabelValue; N_DEPOSIT_INPUT_WIRES];
-/// Values of withdrawal input wires.
-pub type WithdrawalInput = [WideLabelValue; N_WITHDRAWAL_INPUT_WIRES];
+/// Values of setup input wires, represents bridge operator pubkey.
+pub type SetupInputs = [WideLabelValue; N_SETUP_INPUT_WIRES];
+/// Values of deposit input wires, represents deposit index.
+pub type DepositInputs = [WideLabelValue; N_DEPOSIT_INPUT_WIRES];
+/// Values of withdrawal input wires, represents a groth16 proof and its public inputs.
+pub type WithdrawalInputs = [WideLabelValue; N_WITHDRAWAL_INPUT_WIRES];
 
 /// Completed adaptor signatures.
 pub type CompletedSignatures = [Signature; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];

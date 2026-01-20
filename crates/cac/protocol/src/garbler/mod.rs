@@ -3,22 +3,21 @@ use std::marker::PhantomData;
 
 use fasm::{
     StateMachine,
-    actions::{Action, TrackedAction, TrackedActionTypes},
+    actions::{Action as FasmAction, TrackedAction},
+};
+use mosaic_cac_types::state_machine::garbler::{
+    ActionContainer, GarblerTrackedActionTypes, Input, UntrackedAction,
 };
 
-pub mod action;
+pub mod artifact;
 pub mod deposit;
-pub mod input;
 pub mod state;
 mod stf;
 
-use crate::{
-    SMError, SMResult,
-    garbler::{
-        input::Input,
-        state::{GarblerArtifactStore, State},
-    },
-};
+use artifact::GarblerArtifactStore;
+use state::State;
+
+use crate::SMError;
 
 #[derive(Debug)]
 pub struct GarblerSM<S: GarblerArtifactStore> {
@@ -32,7 +31,7 @@ impl<S: GarblerArtifactStore> StateMachine for GarblerSM<S> {
 
     type TrackedAction = GarblerTrackedActionTypes;
 
-    type UntrackedAction = GarblerUntrackedAction;
+    type UntrackedAction = UntrackedAction;
 
     type Actions = ActionContainer;
 
@@ -51,7 +50,7 @@ impl<S: GarblerArtifactStore> StateMachine for GarblerSM<S> {
                 let emitted_actions = stf::stf(state, input).await?;
                 let mut tracked_actions = emitted_actions
                     .into_iter()
-                    .map(|action| Action::Tracked(TrackedAction::new((), action)))
+                    .map(|action| FasmAction::Tracked(TrackedAction::new((), action)))
                     .collect();
                 actions.append(&mut tracked_actions);
             }
@@ -68,26 +67,10 @@ impl<S: GarblerArtifactStore> StateMachine for GarblerSM<S> {
         let emitted_actions = stf::restore(state).await?;
         let mut tracked_actions = emitted_actions
             .into_iter()
-            .map(|action| Action::Tracked(TrackedAction::new((), action)))
+            .map(|action| FasmAction::Tracked(TrackedAction::new((), action)))
             .collect();
         actions.append(&mut tracked_actions);
 
         Ok(())
     }
 }
-
-#[derive(Debug)]
-pub enum GarblerUntrackedAction {}
-
-#[derive(Debug)]
-pub struct GarblerTrackedActionTypes;
-
-impl TrackedActionTypes for GarblerTrackedActionTypes {
-    type Id = ();
-
-    type Action = action::Action;
-
-    type Result = ();
-}
-
-pub type ActionContainer = Vec<Action<GarblerUntrackedAction, GarblerTrackedActionTypes>>;

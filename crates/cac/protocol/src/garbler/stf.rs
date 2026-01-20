@@ -3,20 +3,19 @@ use mosaic_cac_types::{
     AdaptorMsg, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsg, CommitMsg, EvalGarblingSeeds, EvalGarblingTableCommitments,
     EvaluationIndices, HasMsgId, InputShares, OutputShares, ReservedDepositInputShares,
-    ReservedInputShares, ReservedWithdrawalInputShares, Seed,
+    ReservedInputShares, ReservedWithdrawalInputShares, Seed, SetupInputs,
+    state_machine::garbler::{
+        Action, AdaptorVerificationData, CompleteAdaptorSignaturesData, GarblerDepositInitData,
+        Input,
+    },
 };
 
 use super::{
-    SMResult, SMError,
-    action::Action,
-    input::Input,
-    state::{GarblerArtifactStore, State, Step},
-};
-use crate::garbler::{
-    action::{AdaptorVerificationData, CompleteAdaptorSignaturesData},
+    artifact::GarblerArtifactStore,
     deposit::{DepositState, DepositStep},
-    input::DepositInitData,
+    state::{State, Step},
 };
+use crate::{SMError, SMResult, garbler::state::Config};
 
 pub(crate) async fn stf<S: GarblerArtifactStore>(
     state: &mut State<S>,
@@ -24,11 +23,14 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
 ) -> SMResult<Vec<Action>> {
     let mut actions = vec![];
     match input {
-        Input::Init(config) => {
+        Input::Init(data) => {
             match state.step {
                 Step::Uninit => {
                     // state update
-                    state.config = config;
+                    state.config = Config {
+                        seed: data.seed,
+                        setup_inputs: data.setup_inputs,
+                    };
                     state.step = Step::GeneratingPolynomials;
 
                     // generate actions
@@ -139,6 +141,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                                 input_shares,
                                 output_shares,
                                 seeds,
+                                state.config.setup_inputs,
                             );
                             state
                                 .artifact_store
@@ -230,10 +233,10 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
         },
         Input::DepositInit(
             deposit_id,
-            DepositInitData {
+            GarblerDepositInitData {
                 pk,
                 sighashes,
-                deposit_input,
+                deposit_inputs,
             },
         ) => match state.step {
             Step::SetupComplete => {
@@ -248,7 +251,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     .await?;
                 state
                     .artifact_store
-                    .save_inputs_for_deposit(deposit_id, deposit_input.as_ref())
+                    .save_inputs_for_deposit(deposit_id, deposit_inputs.as_ref())
                     .await?;
 
                 state.deposits.insert(deposit_id, DepositState::init(pk));
@@ -393,7 +396,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
 
                             let reserved_input_shares =
                                 state.artifact_store.load_reserved_input_shares().await?;
-                            let (deposit_input_shares, withdrawal_input_shares) =
+                            let (reserved_deposit_input_shares, reserved_withdrawal_input_shares) =
                                 get_reserved_deposit_withdrawal_shares(reserved_input_shares);
 
                             actions.push(Action::CompleteAdaptorSignatures(
@@ -403,8 +406,8 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                                     sighashes,
                                     deposit_adaptors,
                                     withdrawal_adaptors,
-                                    deposit_input_shares,
-                                    withdrawal_input_shares,
+                                    reserved_deposit_input_shares,
+                                    reserved_withdrawal_input_shares,
                                     withdrawal_input,
                                 },
                             ));
@@ -434,14 +437,13 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
+        _ => unreachable!(),
     };
 
     Ok(actions)
 }
 
-pub(crate) async fn restore<S: GarblerArtifactStore>(
-    state: &State<S>,
-) -> SMResult<Vec<Action>> {
+pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResult<Vec<Action>> {
     let mut actions = vec![];
 
     match &state.step {
@@ -489,6 +491,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
                 input_shares,
                 output_shares,
                 seeds,
+                state.config.setup_inputs,
             );
 
             // sanity check
@@ -594,8 +597,8 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
                     sighashes,
                     deposit_adaptors,
                     withdrawal_adaptors,
-                    deposit_input_shares,
-                    withdrawal_input_shares,
+                    reserved_deposit_input_shares: deposit_input_shares,
+                    reserved_withdrawal_input_shares: withdrawal_input_shares,
                     withdrawal_input,
                 },
             ));
@@ -623,7 +626,8 @@ fn create_challenge_response_msg(
     challenge_idxs: &ChallengeIndices,
     input_shares: Box<InputShares>,
     output_shares: Box<OutputShares>,
-    seeds: AllGarblingSeeds,
+    garbling_seeds: AllGarblingSeeds,
+    setup_inputs: SetupInputs,
 ) -> ChallengeResponseMsg {
     todo!()
 }

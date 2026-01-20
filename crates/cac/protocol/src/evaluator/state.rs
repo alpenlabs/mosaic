@@ -2,11 +2,8 @@ use std::collections::HashMap;
 
 use mosaic_cac_types::{DepositId, MsgId, Seed};
 
+use super::artifact::EvaluatorArtifactStore;
 use crate::evaluator::deposit::DepositState;
-
-pub trait EvaluatorArtifactStore: Sized {
-    // TODO: methods
-}
 
 #[derive(Debug)]
 #[expect(dead_code)]

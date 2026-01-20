@@ -946,8 +946,7 @@ dependencies = [
  "fasm",
  "mosaic-cac-types",
  "mosaic-common",
- "mosaic-state-machine-api",
- "tracing",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -955,8 +954,10 @@ name = "mosaic-cac-types"
 version = "0.1.0"
 dependencies = [
  "ark-secp256k1",
+ "fasm",
  "mosaic-common",
  "mosaic-vs3",
+ "sha2",
 ]
 
 [[package]]
@@ -1041,24 +1042,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "mosaic-state-machine-api"
-version = "0.1.0"
-dependencies = [
- "mosaic-cac-proto-types",
- "mosaic-cac-types",
- "mosaic-common",
-]
-
-[[package]]
 name = "mosaic-state-machine-executor"
 version = "0.1.0"
 dependencies = [
- "mosaic-cac-proto-types",
+ "fasm",
  "mosaic-cac-protocol",
  "mosaic-cac-types",
- "mosaic-state-machine-api",
- "mosaic-storage-api",
- "tracing",
 ]
 
 [[package]]
@@ -1066,7 +1055,6 @@ name = "mosaic-storage-api"
 version = "0.1.0"
 dependencies = [
  "mosaic-job-types",
- "mosaic-state-machine-api",
  "thiserror 2.0.17",
 ]
 

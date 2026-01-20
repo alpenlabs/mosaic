@@ -41,8 +41,8 @@ impl std::fmt::Display for Byte32 {
 }
 
 /// Represents a stable identifier for a node over p2p.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PeerId(Vec<u8>);
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PeerId(pub Vec<u8>);
 
 impl std::fmt::Display for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

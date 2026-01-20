@@ -1,9 +1,6 @@
-use super::{
-    SMResult,
-    action::Action,
-    input::Input,
-    state::{EvaluatorArtifactStore, State},
-};
+use mosaic_cac_types::state_machine::evaluator::{Action, Input};
+
+use super::{SMResult, artifact::EvaluatorArtifactStore, state::State};
 
 #[expect(unused_variables)]
 pub(crate) async fn stf<S: EvaluatorArtifactStore>(
