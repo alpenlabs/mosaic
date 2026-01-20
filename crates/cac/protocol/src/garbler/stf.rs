@@ -27,14 +27,15 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
             match state.step {
                 Step::Uninit => {
                     // state update
-                    state.config = Config {
+                    state.config = Some(Config {
                         seed: data.seed,
                         setup_inputs: data.setup_inputs,
-                    };
+                    });
                     state.step = Step::GeneratingPolynomials;
 
                     // generate actions
-                    actions.push(Action::GeneratePolynomials(state.config.seed));
+                    let seed = state.config.expect("just set").seed;
+                    actions.push(Action::GeneratePolynomials(seed));
                 }
                 _ => return Err(SMError::UnexpectedInput),
             }
@@ -71,7 +72,8 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     state.step = Step::GeneratingTableCommitments;
 
                     // generate actions
-                    let seeds = generate_garbling_table_seeds(state.config.seed);
+                    let config = require_config(&state)?;
+                    let seeds = generate_garbling_table_seeds(config.seed);
                     actions.push(Action::GenerateTableCommitments(
                         Box::new(seeds),
                         input_shares,
@@ -135,13 +137,14 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                             let msg_id = challenge_msg.id();
                             let (input_shares, output_shares) =
                                 state.artifact_store.load_shares().await?;
-                            let seeds = generate_garbling_table_seeds(state.config.seed);
+                            let config = require_config(&state)?;
+                            let seeds = generate_garbling_table_seeds(config.seed);
                             let challenge_response_msg = create_challenge_response_msg(
                                 challenge_msg.challenge_indices.as_ref(),
                                 input_shares,
                                 output_shares,
                                 seeds,
-                                state.config.setup_inputs,
+                                config.setup_inputs,
                             );
                             state
                                 .artifact_store
@@ -186,7 +189,8 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 let eval_commitments =
                     get_eval_commitments(&eval_indices, garbling_table_commitments.as_ref());
 
-                let garbling_seeds = generate_garbling_table_seeds(state.config.seed);
+                let config = require_config(&state)?;
+                let garbling_seeds = generate_garbling_table_seeds(config.seed);
                 let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
 
                 state.step = Step::TransferringGarblingTables {
@@ -449,14 +453,16 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
     match &state.step {
         Step::Uninit => {}
         Step::GeneratingPolynomials => {
-            actions.push(Action::GeneratePolynomials(state.config.seed));
+            let config = require_config(state)?;
+            actions.push(Action::GeneratePolynomials(config.seed));
         }
         Step::GeneratingShares => {
             let polynomials = state.artifact_store.load_polynomials().await?;
             actions.push(Action::GenerateShares(polynomials));
         }
         Step::GeneratingTableCommitments => {
-            let seeds = generate_garbling_table_seeds(state.config.seed);
+            let config = require_config(state)?;
+            let seeds = generate_garbling_table_seeds(config.seed);
             let (input_shares, output_shares) = state.artifact_store.load_shares().await?;
             actions.push(Action::GenerateTableCommitments(
                 Box::new(seeds),
@@ -485,13 +491,14 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
             };
             let challenge_indices = state.artifact_store.load_challenge_indices().await?;
             let (input_shares, output_shares) = state.artifact_store.load_shares().await?;
-            let seeds = generate_garbling_table_seeds(state.config.seed);
+            let config = require_config(state)?;
+            let seeds = generate_garbling_table_seeds(config.seed);
             let challenge_response_msg = create_challenge_response_msg(
                 challenge_indices.as_ref(),
                 input_shares,
                 output_shares,
                 seeds,
-                state.config.setup_inputs,
+                config.setup_inputs,
             );
 
             // sanity check
@@ -608,6 +615,12 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
     };
 
     Ok(actions)
+}
+
+fn require_config<S>(state: &State<S>) -> SMResult<Config> {
+    state
+        .config
+        .ok_or_else(|| SMError::StateInconsistency("expected config to not be None"))
 }
 
 #[expect(unused_variables)]

@@ -2,17 +2,28 @@ use std::collections::HashMap;
 
 use mosaic_cac_types::{DepositId, MsgId, Seed};
 
-use super::artifact::EvaluatorArtifactStore;
 use crate::evaluator::deposit::DepositState;
 
 #[derive(Debug)]
 #[expect(dead_code)]
-pub struct State<S: EvaluatorArtifactStore> {
-    pub(crate) config: Config,
+pub struct State<S> {
+    pub(crate) config: Option<Config>,
     pub(crate) context: Context,
     pub(crate) step: Step,
     pub(crate) deposits: HashMap<DepositId, DepositState>,
     pub(crate) artifact_store: S,
+}
+
+impl<S> State<S> {
+    pub fn new_empty(artifact_store: S) -> Self {
+        Self {
+            config: None,
+            context: Context::default(),
+            step: Step::Uninit,
+            deposits: HashMap::default(),
+            artifact_store,
+        }
+    }
 }
 
 /// Immutable state that is set during init and never updated
