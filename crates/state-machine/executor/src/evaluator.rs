@@ -6,7 +6,7 @@ use mosaic_cac_protocol::evaluator::{
 };
 use mosaic_cac_types::state_machine::{
     StateMachineId,
-    evaluator::{ActionContainer, Input},
+    evaluator::{ActionContainer, EvaluatorInitData, Input},
 };
 
 use crate::{Db, ExecutorError, ExecutorResult};
@@ -31,6 +31,23 @@ pub(crate) async fn handle_evaluator_input<D: Db>(
     save_evaluator_state(db.as_ref(), &state).await?;
 
     Ok(actions)
+}
+
+#[expect(unused_variables)]
+pub(crate) async fn handle_evaluator_init<D: Db>(
+    sm_id: StateMachineId,
+    init_data: EvaluatorInitData,
+    db: Arc<D>,
+) -> ExecutorResult<ActionContainer> {
+    unimplemented!()
+}
+
+#[expect(unused_variables)]
+pub(crate) async fn handle_evaluator_restore<D: Db>(
+    sm_id: StateMachineId,
+    db: Arc<D>,
+) -> ExecutorResult<ActionContainer> {
+    unimplemented!()
 }
 
 #[derive(Debug, Default)]

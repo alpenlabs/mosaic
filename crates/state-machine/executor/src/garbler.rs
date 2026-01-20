@@ -9,7 +9,7 @@ use mosaic_cac_types::{
     AllPolynomialCommitments, AllPolynomials, InputShares, OutputShares,
     state_machine::{
         StateMachineId,
-        garbler::{ActionContainer, Input},
+        garbler::{ActionContainer, GarblerInitData, Input},
     },
 };
 
@@ -37,6 +37,50 @@ pub(crate) async fn handle_garbler_input<D: Db>(
     Ok(actions)
 }
 
+pub(crate) async fn handle_garbler_restore<D: Db>(
+    sm_id: StateMachineId,
+    db: Arc<D>,
+) -> ExecutorResult<ActionContainer> {
+    let state = load_garbler_state(sm_id, db.clone()).await?;
+
+    let mut actions = vec![];
+
+    GarblerSM::<GarblerArtifactStoreImpl<D>>::restore(&state, &mut actions)
+        .await
+        .map_err(|err| ExecutorError::StateMachine(Box::new(err)))?;
+
+    Ok(actions)
+}
+
+pub(crate) async fn handle_garbler_init<D: Db>(
+    sm_id: StateMachineId,
+    init_data: GarblerInitData,
+    db: Arc<D>,
+) -> ExecutorResult<ActionContainer> {
+    let mut state = init_garbler_state(sm_id, db.clone());
+
+    let mut actions = vec![];
+    let input = FasmInput::Normal(Input::Init(init_data));
+
+    GarblerSM::<GarblerArtifactStoreImpl<D>>::stf(&mut state, input, &mut actions)
+        .await
+        .map_err(|err| ExecutorError::StateMachine(Box::new(err)))?;
+
+    Ok(actions)
+}
+
+fn init_garbler_state<D: Db>(
+    sm_id: StateMachineId,
+    db: Arc<D>,
+) -> State<GarblerArtifactStoreImpl<D>> {
+    let artifact_store = GarblerArtifactStoreImpl {
+        sm_id,
+        saved: Default::default(),
+        db,
+    };
+    State::new_empty(artifact_store)
+}
+
 #[expect(unused_variables)]
 async fn load_garbler_state<D: Db>(
     sm_id: StateMachineId,
@@ -54,7 +98,7 @@ async fn save_garbler_state<D: Db>(
     todo!()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[expect(dead_code)]
 struct SaveCache {
     polynomials: Option<Box<AllPolynomials>>,

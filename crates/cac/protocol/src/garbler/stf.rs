@@ -72,7 +72,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     state.step = Step::GeneratingTableCommitments;
 
                     // generate actions
-                    let config = require_config(&state)?;
+                    let config = require_config(state)?;
                     let seeds = generate_garbling_table_seeds(config.seed);
                     actions.push(Action::GenerateTableCommitments(
                         Box::new(seeds),
@@ -137,7 +137,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                             let msg_id = challenge_msg.id();
                             let (input_shares, output_shares) =
                                 state.artifact_store.load_shares().await?;
-                            let config = require_config(&state)?;
+                            let config = require_config(state)?;
                             let seeds = generate_garbling_table_seeds(config.seed);
                             let challenge_response_msg = create_challenge_response_msg(
                                 challenge_msg.challenge_indices.as_ref(),
@@ -189,7 +189,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 let eval_commitments =
                     get_eval_commitments(&eval_indices, garbling_table_commitments.as_ref());
 
-                let config = require_config(&state)?;
+                let config = require_config(state)?;
                 let garbling_seeds = generate_garbling_table_seeds(config.seed);
                 let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
 
