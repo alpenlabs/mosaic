@@ -3,6 +3,8 @@
 //! This module handles the per-stream tasks that bridge QUIC streams to the
 //! channel-based `Stream` API exposed to users.
 
+use std::sync::{Arc, Mutex};
+
 use kanal::{AsyncReceiver, AsyncSender, bounded_async};
 use quinn::{RecvStream, SendStream};
 
@@ -13,6 +15,37 @@ use crate::tls::PeerId;
 const PAYLOAD_CHANNEL_SIZE: usize = 16;
 const REQUEST_CHANNEL_SIZE: usize = 16;
 const BUF_RETURN_CHANNEL_SIZE: usize = 16;
+
+/// Shared close state for a stream.
+///
+/// We use shared state so the close reason is deterministic even if both the
+/// read and write tasks encounter terminal errors around the same time.
+/// A single notification is sent via `close_tx` to wake any waiters.
+#[derive(Debug)]
+struct CloseState {
+    reason: Mutex<Option<StreamClosed>>,
+}
+
+impl CloseState {
+    fn new() -> Self {
+        Self {
+            reason: Mutex::new(None),
+        }
+    }
+
+    /// Set the close reason if it hasn't been set yet.
+    ///
+    /// Returns `true` if this call set the reason (i.e. first terminal event).
+    fn set_if_empty(&self, reason: StreamClosed) -> bool {
+        let mut guard = self.reason.lock().expect("close state lock poisoned");
+        if guard.is_none() {
+            *guard = Some(reason);
+            true
+        } else {
+            false
+        }
+    }
+}
 
 /// Create a new stream handle and spawn the bridge tasks.
 ///
@@ -25,14 +58,18 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
     let (buf_return_tx, buf_return_rx) = bounded_async(BUF_RETURN_CHANNEL_SIZE);
     let (close_tx, close_rx) = bounded_async(1);
 
+    // Shared close state so multiple tasks converge on a single deterministic reason.
+    let close_state = Arc::new(CloseState::new());
+
     // Spawn bridge tasks
     tokio::spawn(write_task(
         send,
         request_rx,
         buf_return_tx,
         close_tx.clone(),
+        close_state.clone(),
     ));
-    tokio::spawn(read_task(recv, payload_tx, close_tx));
+    tokio::spawn(read_task(recv, payload_tx, close_tx, close_state));
 
     Stream::new(peer, payload_rx, request_tx, buf_return_rx, close_rx)
 }
@@ -46,6 +83,7 @@ async fn write_task(
     request_rx: AsyncReceiver<StreamRequest>,
     buf_return_tx: AsyncSender<PayloadBuf>,
     close_tx: AsyncSender<StreamClosed>,
+    close_state: Arc<CloseState>,
 ) {
     let mut frame_buf = Vec::with_capacity(4 + 64 * 1024);
 
@@ -68,7 +106,9 @@ async fn write_task(
                         // Write to QUIC stream
                         if let Err(e) = send.write_all(&frame_buf).await {
                             tracing::debug!(error = %e, "write error, closing stream");
-                            let _ = close_tx.send(StreamClosed::Disconnected).await;
+                            if close_state.set_if_empty(StreamClosed::Disconnected) {
+                                let _ = close_tx.send(StreamClosed::Disconnected).await;
+                            }
                             // Return buffer
                             let mut buf = buf;
                             buf.clear();
@@ -91,6 +131,11 @@ async fn write_task(
                     StreamRequest::Reset(code) => {
                         tracing::debug!(code = code, "resetting stream");
                         let _ = send.reset(code.into());
+                        // Intentional: local reset does not try to provide a "peer" close reason.
+                        // The caller initiated this and the Stream handle is consumed.
+                        if close_state.set_if_empty(StreamClosed::Disconnected) {
+                            let _ = close_tx.send(StreamClosed::Disconnected).await;
+                        }
                         break;
                     }
                 }
@@ -102,6 +147,9 @@ async fn write_task(
                 if let Err(e) = send.finish() {
                     tracing::trace!(error = %e, "error finishing stream");
                 }
+                // We do not set a close reason here. The read side will typically
+                // observe FIN/peer reset, and if it doesn't, the stream will be
+                // treated as disconnected.
                 break;
             }
         }
@@ -116,6 +164,7 @@ async fn read_task(
     mut recv: RecvStream,
     payload_tx: AsyncSender<PayloadBuf>,
     close_tx: AsyncSender<StreamClosed>,
+    close_state: Arc<CloseState>,
 ) {
     let limits = net_wire::FrameLimits::default();
     let mut buf = Vec::with_capacity(limits.max_recv_size as usize + 4);
@@ -141,12 +190,16 @@ async fn read_task(
             }
             Err(net_wire::DecodeError::FrameTooLarge { size, max }) => {
                 tracing::warn!(size = size, max = max, "frame too large, closing stream");
-                let _ = close_tx.send(StreamClosed::Disconnected).await;
+                if close_state.set_if_empty(StreamClosed::Disconnected) {
+                    let _ = close_tx.send(StreamClosed::Disconnected).await;
+                }
                 break;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "frame decode error, closing stream");
-                let _ = close_tx.send(StreamClosed::Disconnected).await;
+                if close_state.set_if_empty(StreamClosed::Disconnected) {
+                    let _ = close_tx.send(StreamClosed::Disconnected).await;
+                }
                 break;
             }
         }
@@ -171,7 +224,9 @@ async fn read_task(
                     }
                 }
 
-                let _ = close_tx.send(StreamClosed::PeerFinished).await;
+                if close_state.set_if_empty(StreamClosed::PeerFinished) {
+                    let _ = close_tx.send(StreamClosed::PeerFinished).await;
+                }
                 break;
             }
             Err(e) => {
@@ -190,7 +245,9 @@ async fn read_task(
                     _ => StreamClosed::Disconnected,
                 };
 
-                let _ = close_tx.send(close_reason).await;
+                if close_state.set_if_empty(close_reason) {
+                    let _ = close_tx.send(close_reason).await;
+                }
                 break;
             }
         }

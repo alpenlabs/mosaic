@@ -20,7 +20,7 @@
 //! let config = NetServiceConfig::new(signing_key, bind_addr, peers);
 //!
 //! // Start the service (spawns background thread)
-//! let (handle, controller) = NetService::new(config);
+//! let (handle, controller) = NetService::new(config)?;
 //!
 //! // Use handle from any thread
 //! let stream = handle.open_protocol_stream(peer_id, 0).await?;

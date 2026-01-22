@@ -11,6 +11,12 @@
 //! - Spawns tasks (instant)
 //!
 //! All network I/O and potentially-blocking channel sends happen in spawned tasks.
+//!
+//! # Startup semantics
+//!
+//! `NetService::new` returns `Result` and uses a startup handshake so callers
+//! can fail fast on endpoint/TLS/runtime errors instead of later seeing
+//! `ServiceDown` when issuing commands.
 
 mod conn;
 mod handlers;
@@ -18,6 +24,7 @@ mod state;
 mod stream;
 mod tasks;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -31,7 +38,7 @@ use crate::api::{NetCommand, NetServiceHandle, Stream};
 use crate::config::NetServiceConfig;
 use crate::tls::{self, PeerId};
 
-use state::{ServiceEvent, ServiceState};
+use state::{ServiceEvent, ServiceState, TrackedConnection};
 
 /// Handle to control the network service.
 pub struct NetServiceController {
@@ -82,6 +89,11 @@ pub enum ServiceError {
     ThreadPanicked,
     /// Runtime creation failed.
     RuntimeCreation(String),
+    /// Startup handshake channel failed (unexpected internal error).
+    ///
+    /// This generally indicates the service thread panicked or exited before it
+    /// could report startup success/failure back to the constructor.
+    StartupHandshakeFailed,
 }
 
 impl std::fmt::Display for ServiceError {
@@ -91,6 +103,7 @@ impl std::fmt::Display for ServiceError {
             Self::TlsConfig(e) => write!(f, "failed to create TLS config: {}", e),
             Self::ThreadPanicked => write!(f, "service thread panicked"),
             Self::RuntimeCreation(e) => write!(f, "failed to create runtime: {}", e),
+            Self::StartupHandshakeFailed => write!(f, "startup handshake failed"),
         }
     }
 }
@@ -119,7 +132,7 @@ impl NetService {
     /// # Example
     ///
     /// ```ignore
-    /// let (handle, controller) = NetService::new(config);
+    /// let (handle, controller) = NetService::new(config)?;
     ///
     /// // Use handle from any thread
     /// let stream = handle.open_protocol_stream(peer_id, 0).await?;
@@ -127,8 +140,13 @@ impl NetService {
     /// // Later, shut down gracefully
     /// controller.shutdown()?;
     /// ```
-    pub fn new(config: NetServiceConfig) -> (NetServiceHandle, NetServiceController) {
+    pub fn new(
+        config: NetServiceConfig,
+    ) -> Result<(NetServiceHandle, NetServiceController), ServiceError> {
         let config = Arc::new(config);
+
+        // Precompute allowed peers set once (avoid per-accept allocation).
+        let allowed_peers: Arc<HashSet<PeerId>> = Arc::new(config.peer_ids().copied().collect());
 
         // Command channel (handles -> service)
         let (command_tx, command_rx) = bounded_async(64);
@@ -139,6 +157,10 @@ impl NetService {
         // Shutdown channel
         let (shutdown_tx, shutdown_rx) = bounded_async(1);
 
+        // Startup handshake: service thread reports readiness or startup error.
+        // Bounded(1) so send is infallible unless receiver is dropped.
+        let (startup_tx, startup_rx) = bounded_async::<Result<(), ServiceError>>(1);
+
         let handle = NetServiceHandle::new(config.clone(), command_tx, protocol_stream_rx);
 
         // Clone for the thread
@@ -146,45 +168,87 @@ impl NetService {
 
         let thread_handle = thread::Builder::new()
             .name("net-svc".to_string())
-            .spawn(move || run_service(config, command_rx, protocol_stream_tx, shutdown_rx))
+            .spawn(move || {
+                run_service(
+                    config,
+                    allowed_peers,
+                    command_rx,
+                    protocol_stream_tx,
+                    shutdown_rx,
+                    startup_tx,
+                )
+            })
             .expect("failed to spawn net-svc thread");
 
-        let controller = NetServiceController {
-            thread_handle: Some(thread_handle),
-            shutdown_tx: shutdown_tx_clone,
-        };
-
-        (handle, controller)
+        // Wait for startup handshake.
+        //
+        // This makes endpoint/TLS/runtime failures deterministic and immediate
+        // for callers of `NetService::new`.
+        match startup_rx.to_sync().recv() {
+            Ok(Ok(())) => {
+                let controller = NetServiceController {
+                    thread_handle: Some(thread_handle),
+                    shutdown_tx: shutdown_tx_clone,
+                };
+                Ok((handle, controller))
+            }
+            Ok(Err(e)) => {
+                // Thread may have already exited; ensure we join to avoid leaks.
+                let _ = thread_handle.join();
+                Err(e)
+            }
+            Err(_) => {
+                // Startup channel closed before we got a result.
+                // Join the thread and, if it returned an error, surface it instead
+                // of a generic handshake failure.
+                match thread_handle.join() {
+                    Ok(Ok(())) => Err(ServiceError::StartupHandshakeFailed),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(ServiceError::ThreadPanicked),
+                }
+            }
+        }
     }
 }
 
 /// Run the network service (called on the spawned thread).
 fn run_service(
     config: Arc<NetServiceConfig>,
+    allowed_peers: Arc<HashSet<PeerId>>,
     command_rx: AsyncReceiver<NetCommand>,
     protocol_stream_tx: AsyncSender<Stream>,
     shutdown_rx: AsyncReceiver<()>,
+    startup_tx: AsyncSender<Result<(), ServiceError>>,
 ) -> Result<(), ServiceError> {
     // Create single-threaded tokio runtime
-    let runtime = Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| ServiceError::RuntimeCreation(e.to_string()))?;
+    let runtime = match Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            let _ = startup_tx
+                .to_sync()
+                .send(Err(ServiceError::RuntimeCreation(e.to_string())));
+            return Err(ServiceError::RuntimeCreation(e.to_string()));
+        }
+    };
 
     runtime.block_on(run_service_async(
         config,
+        allowed_peers,
         command_rx,
         protocol_stream_tx,
         shutdown_rx,
+        startup_tx,
     ))
 }
 
 /// Async main loop.
 async fn run_service_async(
     config: Arc<NetServiceConfig>,
+    allowed_peers: Arc<HashSet<PeerId>>,
     command_rx: AsyncReceiver<NetCommand>,
     protocol_stream_tx: AsyncSender<Stream>,
     shutdown_rx: AsyncReceiver<()>,
+    startup_tx: AsyncSender<Result<(), ServiceError>>,
 ) -> Result<(), ServiceError> {
     // Create TLS configs
     let peer_ids: Vec<PeerId> = config.peer_ids().copied().collect();
@@ -202,6 +266,9 @@ async fn run_service_async(
     let client_config = tls::make_client_config(&config.signing_key, peer_ids)
         .map_err(|e| ServiceError::TlsConfig(e.to_string()))?;
 
+    // Signal successful startup now that endpoint + TLS config are created.
+    let _ = startup_tx.send(Ok(())).await;
+
     // Internal event channel for tasks to communicate back to main loop
     let (event_tx, event_rx) = bounded_async::<ServiceEvent>(256);
 
@@ -210,7 +277,7 @@ async fn run_service_async(
         config: config.clone(),
         endpoint: endpoint.clone(),
         client_config,
-        connections: HashMap::new(),
+        connections: HashMap::<PeerId, TrackedConnection>::new(),
         bulk_expectations: HashMap::new(),
         protocol_stream_tx,
         pending_reconnects: Vec::new(),
@@ -219,15 +286,31 @@ async fn run_service_async(
         event_tx: event_tx.clone(),
     };
 
-    // Schedule initial connections to all peers
+    // Schedule initial connections to all peers.
+    //
+    // NOTE: We also need to arm the reconnect timer based on the earliest deadline.
     let now = tokio::time::Instant::now();
     for peer_config in config.peers.iter() {
         state.pending_reconnects.push((peer_config.peer_id, now));
     }
 
-    // Reconnect ticker (check every second)
-    let mut reconnect_interval = tokio::time::interval(Duration::from_secs(1));
-    reconnect_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Reconnect timer (deadline-driven).
+    //
+    // Using a fixed 1s ticker makes reconnection effectively quantized to 1s even if
+    // `reconnect_backoff` is much smaller. Instead, drive reconnect attempts off the
+    // earliest pending reconnect deadline.
+    let reconnect_sleep = tokio::time::sleep(Duration::from_secs(3600));
+    tokio::pin!(reconnect_sleep);
+
+    // Arm reconnect timer for the first time.
+    if let Some((_peer, next)) = state.pending_reconnects.iter().min_by_key(|(_p, t)| *t) {
+        reconnect_sleep.as_mut().reset(*next);
+    } else {
+        // No reconnects pending; sleep far in the future.
+        reconnect_sleep
+            .as_mut()
+            .reset(tokio::time::Instant::now() + Duration::from_secs(3600));
+    }
 
     tracing::info!(
         bind_addr = %config.bind_addr,
@@ -237,6 +320,17 @@ async fn run_service_async(
 
     // Main event loop - NEVER blocks on I/O, only receives and dispatches
     loop {
+        // Re-arm reconnect timer each iteration based on the earliest pending deadline.
+        // (Cheap: peer counts are small; if this grows, we can switch to a binary heap.)
+        if let Some((_peer, next)) = state.pending_reconnects.iter().min_by_key(|(_p, t)| *t) {
+            reconnect_sleep.as_mut().reset(*next);
+        } else {
+            // No reconnects pending; sleep far in the future.
+            reconnect_sleep
+                .as_mut()
+                .reset(tokio::time::Instant::now() + Duration::from_secs(3600));
+        }
+
         tokio::select! {
             biased;  // Always check shutdown first
 
@@ -250,7 +344,7 @@ async fn run_service_async(
             Some(incoming) = endpoint.accept() => {
                 tasks::spawn_incoming_connection_handler(
                     incoming,
-                    state.config.peer_ids().copied().collect(),
+                    allowed_peers.clone(),
                     event_tx.clone(),
                 );
             }
@@ -265,8 +359,8 @@ async fn run_service_async(
                 handlers::handle_event(event, &mut state);
             }
 
-            // Periodic reconnection attempts - spawns tasks, doesn't await
-            _ = reconnect_interval.tick() => {
+            // Deadline-driven reconnection attempts - spawns tasks, doesn't await.
+            _ = &mut reconnect_sleep => {
                 handlers::process_pending_reconnects(&mut state);
             }
         }
@@ -277,7 +371,7 @@ async fn run_service_async(
 
     // Close all active connections - this will cause connection monitors to exit
     for (_peer, conn) in state.connections.drain() {
-        conn.close(0u32.into(), b"shutdown");
+        conn.connection.close(0u32.into(), b"shutdown");
     }
 
     // Clear pending state

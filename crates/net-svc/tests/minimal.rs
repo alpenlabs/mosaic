@@ -66,7 +66,7 @@ fn test_service_creation_and_shutdown() {
 
     let config_a = NetServiceConfig::new(key_a, addr_a, vec![PeerConfig::new(peer_id_b, addr_b)]);
 
-    let (handle_a, ctrl_a) = NetService::new(config_a);
+    let (handle_a, ctrl_a) = NetService::new(config_a).expect("create net service A");
     assert!(ctrl_a.is_running());
 
     // Give service time to start
@@ -92,7 +92,7 @@ fn test_service_no_peers() {
 
     let config = NetServiceConfig::new(key, addr, vec![]);
 
-    let (_handle, ctrl) = NetService::new(config);
+    let (_handle, ctrl) = NetService::new(config).expect("create net service");
     assert!(ctrl.is_running());
 
     std::thread::sleep(Duration::from_millis(500));

@@ -17,7 +17,9 @@ use kanal::{AsyncReceiver, bounded_async};
 use crate::api::{ExpectError, NetCommand, OpenStreamError, Stream};
 use crate::tls::PeerId;
 
-use super::state::{PendingStreamRequest, ServiceEvent, ServiceState};
+use super::state::{
+    ConnectionDirection, PendingStreamRequest, ServiceEvent, ServiceState, TrackedConnection,
+};
 use super::tasks;
 
 /// Handle a command from a NetServiceHandle.
@@ -77,11 +79,11 @@ fn handle_open_stream_request(
     }
 
     // Check for existing active connection
-    if let Some(connection) = state.connections.get(&peer).cloned()
-        && connection.close_reason().is_none()
+    if let Some(conn) = state.connections.get(&peer).cloned()
+        && conn.connection.close_reason().is_none()
     {
         // Have active connection - spawn stream opener
-        tasks::spawn_stream_opener(peer, connection, stream_type, priority, respond_to);
+        tasks::spawn_stream_opener(peer, conn.connection, stream_type, priority, respond_to);
         return;
     }
 
@@ -160,19 +162,54 @@ fn handle_expect_bulk_transfer(
 pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
     match event {
         ServiceEvent::IncomingConnectionReady { peer, connection } => {
-            tracing::info!(peer = %hex::encode(peer), "storing incoming connection");
+            tracing::info!(peer = %hex::encode(peer), "incoming connection ready");
 
             // Remove from connecting set if we were also trying to connect outbound
             state.connecting.remove(&peer);
 
-            // Close any existing connection first to ensure its monitor exits cleanly
-            // This prevents duplicate monitors when both peers connect simultaneously
+            // Deterministic connection selection based on peer_id ordering.
+            //
+            // Rule: prefer the connection initiated by the peer with the LOWER peer_id.
+            // - Incoming = they initiated the connection
+            // - Outgoing = we initiated the connection
+            //
+            // This ensures both sides agree on which connection to keep during
+            // simultaneous connect, avoiding the race where each side closes
+            // the other's chosen connection.
+            let our_id = state.config.our_peer_id();
+            let incoming_is_preferred = our_id > peer; // they have lower id, prefer their connection
+
+            if !incoming_is_preferred {
+                // This Incoming is NOT preferred (we have lower id, prefer Outgoing).
+                // Always reject it - we'll use our outbound connection instead.
+                // This avoids the race where we accept temporarily, process pending
+                // requests, then close when the preferred connection arrives.
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    "rejecting incoming; prefer outgoing (we have lower peer_id)"
+                );
+                connection.close(0u32.into(), b"redundant");
+                return;
+            }
+
+            // This Incoming is the preferred type. Accept it, replacing any existing.
             if let Some(old_conn) = state.connections.remove(&peer) {
-                old_conn.close(0u32.into(), b"replaced");
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    old_direction = ?old_conn.direction,
+                    "replacing existing connection with preferred incoming"
+                );
+                old_conn.connection.close(0u32.into(), b"replaced");
             }
 
             // Store new connection
-            state.connections.insert(peer, connection.clone());
+            state.connections.insert(
+                peer,
+                TrackedConnection {
+                    connection: connection.clone(),
+                    direction: ConnectionDirection::Incoming,
+                },
+            );
 
             // Remove from pending reconnects
             state.pending_reconnects.retain(|(p, _)| *p != peer);
@@ -204,14 +241,48 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
             // Remove from connecting set
             state.connecting.remove(&peer);
 
-            // Close any existing connection first to ensure its monitor exits cleanly
-            // This prevents duplicate monitors when both peers connect simultaneously
+            // Deterministic connection selection based on peer_id ordering.
+            //
+            // Rule: prefer the connection initiated by the peer with the LOWER peer_id.
+            // - Incoming = they initiated the connection
+            // - Outgoing = we initiated the connection
+            //
+            // This ensures both sides agree on which connection to keep during
+            // simultaneous connect.
+            let our_id = state.config.our_peer_id();
+            let outgoing_is_preferred = our_id < peer; // we have lower id, prefer our connection
+
+            if !outgoing_is_preferred {
+                // This Outgoing is NOT preferred (they have lower id, prefer Incoming).
+                // Always reject it - we'll use their inbound connection instead.
+                // This avoids the race where we accept temporarily, process pending
+                // requests, then close when the preferred connection arrives.
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    "rejecting outgoing; prefer incoming (they have lower peer_id)"
+                );
+                connection.close(0u32.into(), b"redundant");
+                return;
+            }
+
+            // This Outgoing is the preferred type. Accept it, replacing any existing.
             if let Some(old_conn) = state.connections.remove(&peer) {
-                old_conn.close(0u32.into(), b"replaced");
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    old_direction = ?old_conn.direction,
+                    "replacing existing connection with preferred outgoing"
+                );
+                old_conn.connection.close(0u32.into(), b"replaced");
             }
 
             // Store new connection
-            state.connections.insert(peer, connection.clone());
+            state.connections.insert(
+                peer,
+                TrackedConnection {
+                    connection: connection.clone(),
+                    direction: ConnectionDirection::Outgoing,
+                },
+            );
 
             // Remove from pending reconnects
             state.pending_reconnects.retain(|(p, _)| *p != peer);
@@ -257,15 +328,15 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
         }
 
         ServiceEvent::ConnectionLost { peer, reason } => {
-            // Check if we already have a valid connection (can happen if connection was replaced)
-            // In that case, this is a stale event from the old connection's monitor
+            // Check if we already have a valid connection.
+            // If so, this is a stale event from an older connection monitor.
             if let Some(existing) = state.connections.get(&peer)
-                && existing.close_reason().is_none()
+                && existing.connection.close_reason().is_none()
             {
                 tracing::debug!(
                     peer = %hex::encode(peer),
                     reason = %reason,
-                    "ignoring connection lost for replaced connection"
+                    "ignoring connection lost for non-current connection"
                 );
                 return;
             }
@@ -350,7 +421,7 @@ pub fn process_pending_reconnects(state: &mut ServiceState) {
     for peer in to_reconnect {
         // Skip if already connected
         if let Some(conn) = state.connections.get(&peer)
-            && conn.close_reason().is_none()
+            && conn.connection.close_reason().is_none()
         {
             continue;
         }

@@ -8,6 +8,8 @@
 //! The main loop never awaits I/O directly. Instead, it spawns tasks from this
 //! module which do the actual work and send events back when done.
 
+use std::{collections::HashSet, sync::Arc};
+
 use kanal::AsyncSender;
 use quinn::Endpoint;
 
@@ -24,7 +26,7 @@ use super::stream;
 /// verifies the peer is allowed, and sends the result back via the event channel.
 pub fn spawn_incoming_connection_handler(
     incoming: quinn::Incoming,
-    allowed_peers: Vec<PeerId>,
+    allowed_peers: Arc<HashSet<PeerId>>,
     event_tx: AsyncSender<ServiceEvent>,
 ) {
     tokio::spawn(async move {
@@ -55,7 +57,7 @@ pub fn spawn_incoming_connection_handler(
             }
         };
 
-        // Verify peer is allowed
+        // Verify peer is allowed (O(1) membership via HashSet)
         if !allowed_peers.contains(&peer_id) {
             tracing::warn!(peer = %hex::encode(peer_id), "rejected unknown peer");
             connection.close(2u32.into(), b"unknown peer");

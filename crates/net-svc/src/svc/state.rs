@@ -14,6 +14,25 @@ use crate::api::{OpenStreamError, Stream};
 use crate::config::NetServiceConfig;
 use crate::tls::PeerId;
 
+/// Direction metadata for a stored connection.
+///
+/// This is used to make deterministic choices when both peers connect
+/// simultaneously (inbound + outbound connections racing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionDirection {
+    /// Connection accepted by our endpoint.
+    Incoming,
+    /// Connection initiated by us.
+    Outgoing,
+}
+
+/// Stored connection plus metadata.
+#[derive(Debug, Clone)]
+pub struct TrackedConnection {
+    pub connection: quinn::Connection,
+    pub direction: ConnectionDirection,
+}
+
 /// Default connection timeout (5 seconds).
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -30,7 +49,11 @@ pub struct ServiceState {
     pub client_config: quinn::ClientConfig,
 
     /// Active connections by peer ID.
-    pub connections: HashMap<PeerId, quinn::Connection>,
+    ///
+    /// Connections are tracked with metadata so the service can make a
+    /// deterministic decision when inbound/outbound connections race, instead
+    /// of always closing/replacing arbitrarily.
+    pub connections: HashMap<PeerId, TrackedConnection>,
 
     /// Pending bulk transfer registrations.
     /// Key: (peer_id, blake3_hash(identifier))
