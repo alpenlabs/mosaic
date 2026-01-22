@@ -13,24 +13,35 @@ keywords.workspace = true
 [dependencies]
 hashbrown = "0.16.1"
 kanal = "0.1.1"
-tokio = { version = "1.49.0", default-features = false, features = ["macros", "net", "parking_lot", "rt", "time", "io-util", "sync"] }
+tokio = { version = "1.49.0", default-features = false, features = [
+  "macros",
+  "net",
+  "parking_lot",
+  "rt",
+  "time",
+  "io-util",
+  "sync",
+] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # TLS / QUIC
-quinn = "0.11"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rcgen = { version = "0.13", default-features = false, features = ["ring"] }
-x509-parser = "0.17"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
+quinn = "0.11"
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "std",
+] }
+x509-parser = "0.17"
 
 # Wire format
 net-wire = { path = "../net-wire" }
 
 # Utilities
-hex = "0.4"
-blake3 = "1"
-tracing = "0.1"
 ahash = "0.8"
+blake3 = "1"
+hex = "0.4"
+tracing = "0.1"
 
 [dev-dependencies]
 rand = "0.8"

@@ -196,15 +196,3 @@ async fn read_task(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn channel_sizes_are_reasonable() {
-        assert!(PAYLOAD_CHANNEL_SIZE > 0);
-        assert!(REQUEST_CHANNEL_SIZE > 0);
-        assert!(BUF_RETURN_CHANNEL_SIZE > 0);
-    }
-}

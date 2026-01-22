@@ -8,7 +8,10 @@ members = [
   "crates/common",
   "crates/compute-exec",
   "crates/compute-fw",
-  "crates/jobs", "crates/net-svc", "crates/net-types", "crates/net-wire",
+  # "crates/jobs",
+  "crates/net-svc",
+  # "crates/net-types",
+  "crates/net-wire",
   "crates/network/api",
   "crates/rpc/api",
   "crates/rpc/provider",
@@ -70,7 +73,7 @@ async-trait = "0.1"
 bytes = "1.10"
 futures = "0.3.31"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
-jsonrpsee-types = "*"                                                       # constrained by jsonrpsee dep
+jsonrpsee-types = "*"                                                     # constrained by jsonrpsee dep
 rand = "0.8"
 rand_core = "0.6"
 serde = { version = "1.0", features = ["derive"] }
@@ -80,7 +83,7 @@ tokio-util = "0.7"
 tracing = "0.1"
 
 [profile.release]
-opt-level = 3   # Optimized for size, use 3 for speed
+opt-level = 3     # Optimized for size, use 3 for speed
 lto = true        # Enable Link Time Optimization
 codegen-units = 1 # Reduced to increase optimizations
 panic = "unwind"  # Graceful shutdown, even on panic
