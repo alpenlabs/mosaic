@@ -1,4 +1,10 @@
-use crate::{DepositId, DepositInputs, SecretKey, Seed, SetupInputs, Sighashes};
+use mosaic_vs3::Index;
+
+use crate::{
+    ChallengeResponseMsg, CircuitOutputShare, CommitMsg, CompletedSignatures, DepositId,
+    DepositInputs, GarblingTableCommitment, MsgId, SecretKey, Seed, SetupInputs, Sighashes,
+    WithdrawalInputs,
+};
 
 /// Evaluator state machine inputs.
 #[derive(Debug)]
@@ -6,9 +12,28 @@ use crate::{DepositId, DepositInputs, SecretKey, Seed, SetupInputs, Sighashes};
 pub enum Input {
     /// Initialize evaluator state machine.
     Init(EvaluatorInitData),
-    // TODO: inputs
+    /// Commit message received.
+    RecvCommitMsg(CommitMsg),
+    /// Challenge message with specified `MsgId` was acked.
+    ChallengeMsgAcked(MsgId),
+    /// Challenge Response message received.
+    RecvChallengeResponseMsg(ChallengeResponseMsg),
+    /// Opened input shares verification failure message or None.
+    VerifyOpenedInputSharesResult(Option<String>),
+    /// Garbling table commitment generated.
+    TableCommitmentGenerated(Index, GarblingTableCommitment),
+    /// Garbling table received from garbler.
+    GarblingTableReceived(Index, GarblingTableCommitment),
     /// Initialize deposit for specified deposit id.
     DepositInit(DepositId, EvaluatorDepositInitData),
+    /// Adaptor message with specified `MsgId` was acked.
+    DepositAdaptorMsgAcked(DepositId, MsgId),
+    /// Mark deposit as withdrawn without dispute.
+    DepositUndisputedWithdrawal(DepositId),
+    /// Initiate disputed withdrawal for this deposit.
+    DisputedWithdrawal(DepositId, EvaluatorDisputedWithdrawalData),
+    /// Result of a garbling table evaluation.
+    TableEvaluationResult(GarblingTableCommitment, Option<CircuitOutputShare>),
 }
 
 /// Data required during evaluator state machine setup.
@@ -29,4 +54,15 @@ pub struct EvaluatorDepositInitData {
     pub sighashes: Box<Sighashes>,
     /// Deposit input wire values.
     pub deposit_inputs: Box<DepositInputs>,
+}
+
+/// Data required to initiate disputed withdrawal process.
+#[derive(Debug)]
+#[expect(dead_code)]
+pub struct EvaluatorDisputedWithdrawalData {
+    /// Withdrawal input wire values.
+    // NOTE: this might not be required
+    withdrawal_inputs: Box<WithdrawalInputs>,
+    /// Completed adaptor signatures extracted from on chain transaction.
+    signatures: Box<CompletedSignatures>,
 }

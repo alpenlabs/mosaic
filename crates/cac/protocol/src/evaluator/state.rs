@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use mosaic_cac_types::{DepositId, MsgId, Seed};
+use bitvec::BitArr;
+use mosaic_cac_types::{
+    ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices, MsgId,
+    OpenedGarblingSeeds, OpenedGarblingTableCommitments, Seed, SetupInputs,
+};
+use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
 use crate::evaluator::deposit::DepositState;
 
@@ -28,15 +33,14 @@ impl<S> State<S> {
 
 /// Immutable state that is set during init and never updated
 #[derive(Debug)]
-#[expect(dead_code)]
 pub struct Config {
     pub(crate) seed: Seed,
+    pub(crate) setup_inputs: SetupInputs,
 }
 
 /// Mutable state that is relevant to multiple steps.
 /// This should only hold simple bookkeeping related states.
 #[derive(Debug, Default)]
-#[expect(dead_code)]
 pub struct Context {
     /// ID of commit msg that has accepted and ACK'd.
     pub(crate) ackd_commit_msg_id: Option<MsgId>,
@@ -52,7 +56,29 @@ pub struct Context {
 pub enum Step {
     #[default]
     Uninit,
-    // TODO: steps
+    WaitingForCommit,
+    WaitingForChallengeResponse,
+    VerifyingOpenedInputShares,
+    VerifyingTableCommitments {
+        opened_indices: Box<ChallengeIndices>,
+        opened_seeds: Box<OpenedGarblingSeeds>,
+        opened_commitments: Box<OpenedGarblingTableCommitments>,
+        verified: BitArr!(for N_OPEN_CIRCUITS),
+    },
+    ReceivingGarblingTables {
+        eval_idxs: EvaluationIndices,
+        eval_commitments: Box<EvalGarblingTableCommitments>,
+        received: BitArr!(for N_EVAL_CIRCUITS),
+    },
+    SetupComplete,
+    EvaluatingTables,
+    /// Setup is consumed by a withdrawal dispute. Cannot be reused.
+    SetupConsumed {
+        /// Disputed withdrawal for deposit
+        deposit_id: DepositId,
+    },
     /// Setup was aborted due to a protocol violation.
-    Aborted { reason: String },
+    Aborted {
+        reason: String,
+    },
 }

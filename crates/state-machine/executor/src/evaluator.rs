@@ -1,15 +1,18 @@
 use std::sync::Arc;
 
 use fasm::{Input as FasmInput, StateMachine};
-use mosaic_cac_protocol::evaluator::{
-    EvaluatorSM, artifact::EvaluatorArtifactStore, state::State as EvaluatorState,
+use mosaic_cac_protocol::{
+    SMResult,
+    evaluator::{EvaluatorSM, artifact::EvaluatorArtifactStore, state::State as EvaluatorState},
 };
-use mosaic_cac_types::state_machine::{
-    StateMachineId,
-    evaluator::{ActionContainer, EvaluatorInitData, Input},
+use mosaic_cac_types::{
+    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
+    InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
+    OutputPolynomialCommitment, ReservedSetupInputShares,
+    state_machine::evaluator::{ActionContainer, EvaluatorInitData, Input},
 };
 
-use crate::{Db, ExecutorError, ExecutorResult};
+use crate::{Db, ExecutorError, ExecutorResult, StateMachineId};
 
 pub(crate) async fn handle_evaluator_input<D: Db>(
     sm_id: StateMachineId,
@@ -61,7 +64,90 @@ pub(crate) struct EvaluatorArtifactStoreImpl<D: Db> {
     db: Arc<D>,
 }
 
-impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {}
+#[expect(unused_variables)]
+impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
+    async fn save_polynomial_commitments(
+        &mut self,
+        commitments: &AllPolynomialCommitments,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_polynomial_commitments(&self) -> SMResult<AllPolynomialCommitments> {
+        todo!()
+    }
+
+    async fn load_input_polynomial_commitments(&self) -> SMResult<Box<InputPolynomialCommitments>> {
+        todo!()
+    }
+
+    async fn load_output_polynomial_commitment(&self) -> SMResult<Box<OutputPolynomialCommitment>> {
+        todo!()
+    }
+
+    async fn save_garbling_table_commitments(
+        &mut self,
+        commitments: &AllGarblingTableCommitments,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_garbling_table_commitments(&self) -> SMResult<Box<AllGarblingTableCommitments>> {
+        todo!()
+    }
+
+    async fn save_challenge_indices(&mut self, challenge_idxs: &ChallengeIndices) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_challenge_indices(&self) -> SMResult<Box<ChallengeIndices>> {
+        todo!()
+    }
+
+    async fn save_openend_input_shares(
+        &mut self,
+        opened_input_shares: &OpenedInputShares,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_openend_input_shares(&self) -> SMResult<Box<OpenedInputShares>> {
+        todo!()
+    }
+
+    async fn save_reserved_setup_input_shares(
+        &mut self,
+        reserved_setup_input_shares: &ReservedSetupInputShares,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_reserved_setup_input_shares(&self) -> SMResult<Box<ReservedSetupInputShares>> {
+        todo!()
+    }
+
+    async fn save_opened_output_shares(
+        &mut self,
+        opened_output_shares: &OpenedOutputShares,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_opened_output_shares(&self) -> SMResult<Box<OpenedOutputShares>> {
+        todo!()
+    }
+
+    async fn save_opened_garbling_seeds(
+        &mut self,
+        opened_garbling_seeds: &OpenedGarblingSeeds,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_opened_garbling_seeds(&self) -> SMResult<Box<OpenedGarblingSeeds>> {
+        todo!()
+    }
+}
 
 #[expect(unused_variables)]
 async fn load_evaluator_state<D: Db>(

@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Index(usize);
 
 impl std::fmt::Display for Index {

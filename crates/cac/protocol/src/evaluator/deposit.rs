@@ -11,6 +11,8 @@ pub struct DepositState {
 #[derive(Debug)]
 pub enum DepositStep {
     GeneratingAdaptors,
-    // TODO: steps
+    SendingAdaptors,
+    DepositReady,
+    WithdrawnUndisputed,
     Aborted { reason: String },
 }
