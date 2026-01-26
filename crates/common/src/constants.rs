@@ -25,16 +25,12 @@ const _: () = assert!(
 
 // NOTE: *_INPUT_WIRES are groups of `WIDE_LABEL_WIDTH` wires.
 
-/// Total number of input wire groups.
-pub const N_INPUT_WIRES: usize = 160;
 /// TODO: number of setup input wire groups.
 pub const N_SETUP_INPUT_WIRES: usize = 4;
 /// TODO: number of deposit input wire groups.
 pub const N_DEPOSIT_INPUT_WIRES: usize = 4;
 /// TODO: number of withdrawal input wire groups.
-pub const N_WITHDRAWAL_INPUT_WIRES: usize = 152;
-
-const _: () = assert!(
-    N_INPUT_WIRES == N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES,
-    "N_INPUT_WIRES count does not match"
-);
+pub const N_WITHDRAWAL_INPUT_WIRES: usize = 128 + 36;
+/// Total number of input wire groups.
+pub const N_INPUT_WIRES: usize =
+    N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES;
