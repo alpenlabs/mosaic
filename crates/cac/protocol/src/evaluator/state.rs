@@ -10,7 +10,6 @@ use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 use crate::evaluator::deposit::DepositState;
 
 #[derive(Debug)]
-#[expect(dead_code)]
 pub struct State<S> {
     pub(crate) config: Option<Config>,
     pub(crate) context: Context,

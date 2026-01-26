@@ -6,9 +6,10 @@ use mosaic_cac_protocol::{
     evaluator::{EvaluatorSM, artifact::EvaluatorArtifactStore, state::State as EvaluatorState},
 };
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
-    InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
-    OutputPolynomialCommitment, ReservedSetupInputShares,
+    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices, DepositAdaptors,
+    DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WithdrawalAdaptors,
     state_machine::evaluator::{ActionContainer, EvaluatorInitData, Input},
 };
 
@@ -145,6 +146,46 @@ impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
     }
 
     async fn load_opened_garbling_seeds(&self) -> SMResult<Box<OpenedGarblingSeeds>> {
+        todo!()
+    }
+
+    async fn save_sighashes_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        sighashes: &Sighashes,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_sighashes_for_deposit(&self, deposit_id: DepositId) -> SMResult<Box<Sighashes>> {
+        todo!()
+    }
+
+    async fn save_inputs_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        inputs: &DepositInputs,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_inputs_for_deposit(&self, deposit_id: DepositId) -> SMResult<Box<DepositInputs>> {
+        todo!()
+    }
+
+    async fn save_adaptors_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        deposit_adaptors: &DepositAdaptors,
+        withdrawal_adaptors: &WithdrawalAdaptors,
+    ) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn load_adaptors_for_deposit(
+        &self,
+        deposit_id: DepositId,
+    ) -> SMResult<(Box<DepositAdaptors>, Box<WithdrawalAdaptors>)> {
         todo!()
     }
 }

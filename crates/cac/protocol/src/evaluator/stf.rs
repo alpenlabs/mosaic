@@ -1,17 +1,20 @@
 use bitvec::array::BitArray;
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, ChallengeResponseMsg, CommitMsg,
-    EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment, HasMsgId, Index,
-    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
+    AdaptorMsg, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, ChallengeResponseMsg,
+    CommitMsg, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment, HasMsgId,
+    Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
     PolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs,
-    state_machine::evaluator::{Action, Input},
+    state_machine::evaluator::{Action, EvaluatorDepositInitData, Input},
 };
 use mosaic_common::constants::N_OPEN_CIRCUITS;
 
 use super::{SMResult, artifact::EvaluatorArtifactStore, state::State};
 use crate::{
     SMError,
-    evaluator::state::{Config, Step},
+    evaluator::{
+        deposit::{DepositState, DepositStep},
+        state::{Config, Step},
+    },
 };
 
 pub(crate) async fn stf<S: EvaluatorArtifactStore>(
@@ -124,7 +127,105 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
         Input::GarblingTableReceived(index, table_commitment) => {
             handle_table_received(state, index, table_commitment).await?;
         }
+        Input::DepositInit(
+            deposit_id,
+            EvaluatorDepositInitData {
+                sk,
+                sighashes,
+                deposit_inputs,
+            },
+        ) => {
+            match state.step {
+                Step::SetupComplete => {
+                    if state.deposits.contains_key(&deposit_id) {
+                        // deposit already exists
+                        return Err(SMError::DepositAlreadyExists(deposit_id));
+                    }
 
+                    state
+                        .artifact_store
+                        .save_sighashes_for_deposit(deposit_id, &sighashes)
+                        .await?;
+                    state
+                        .artifact_store
+                        .save_inputs_for_deposit(deposit_id, &deposit_inputs)
+                        .await?;
+
+                    state.deposits.insert(
+                        deposit_id,
+                        DepositState {
+                            step: DepositStep::GeneratingAdaptors,
+                            sk,
+                            sent_adaptor_msg_id: None,
+                        },
+                    );
+
+                    actions.push(Action::DepositGenerateAdaptors(deposit_id));
+                }
+                _ => return Err(SMError::UnexpectedInput),
+            }
+        }
+        Input::DepositAdaptorsGenerated(deposit_id, deposit_adaptors, withdrawal_adaptors) => {
+            match state.step {
+                Step::SetupComplete => {
+                    let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
+                        // deposit does not exist
+                        return Err(SMError::UnknownDeposit(deposit_id));
+                    };
+
+                    match deposit_state.step {
+                        DepositStep::GeneratingAdaptors => {
+                            state
+                                .artifact_store
+                                .save_adaptors_for_deposit(
+                                    deposit_id,
+                                    &deposit_adaptors,
+                                    &withdrawal_adaptors,
+                                )
+                                .await?;
+
+                            deposit_state.step = DepositStep::SendingAdaptors;
+
+                            let adaptor_msg = AdaptorMsg {
+                                deposit_adaptors,
+                                withdrawal_adaptors,
+                            };
+                            deposit_state.sent_adaptor_msg_id = Some(adaptor_msg.id());
+
+                            actions.push(Action::DepositSendAdaptorMsg(deposit_id, adaptor_msg));
+                        }
+                        _ => return Err(SMError::UnexpectedInput),
+                    }
+                }
+                _ => return Err(SMError::UnexpectedInput),
+            }
+        }
+        Input::DepositAdaptorMsgAcked(deposit_id, msg_id) => match state.step {
+            Step::SetupComplete => {
+                let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
+                    // deposit does not exist
+                    return Err(SMError::UnknownDeposit(deposit_id));
+                };
+
+                match deposit_state.step {
+                    DepositStep::SendingAdaptors => {
+                        let Some(sent_adaptor_msg_id) = deposit_state.sent_adaptor_msg_id else {
+                            return Err(SMError::StateInconsistency(
+                                "SendingAdaptors: missing expected sent_adaptor_msg_id",
+                            ));
+                        };
+
+                        if sent_adaptor_msg_id != msg_id {
+                            return Err(SMError::UnexpectedMsgId(msg_id));
+                        }
+
+                        deposit_state.step = DepositStep::DepositReady;
+                    }
+                    _ => return Err(SMError::UnexpectedInput),
+                }
+            }
+            _ => return Err(SMError::UnexpectedInput),
+        },
         _ => unimplemented!(),
     };
 
@@ -144,6 +245,19 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
             };
             let challenge_indices = state.artifact_store.load_challenge_indices().await?;
             let challenge_msg = ChallengeMsg { challenge_indices };
+
+            // sanity check
+            let Some(challenge_msg_id) = state.context.sent_challenge_msg_id else {
+                return Err(SMError::StateInconsistency(
+                    "WaitingForChallengeResponse: missing expected sent_challenge_msg_id",
+                ));
+            };
+            if challenge_msg_id != challenge_msg.id() {
+                return Err(SMError::StateInconsistency(
+                    "WaitingForChallengeResponse: unexpected challenge_msg id",
+                ));
+            }
+
             actions.push(Action::AckCommitMsg(commit_msg_id));
             actions.push(Action::SendChallengeMsg(challenge_msg));
         }
@@ -178,6 +292,47 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
                 // NOTE: required input and output shares to be fetched by the job directly
                 // from db.
                 actions.push(Action::GenerateTableCommitment(index, seed));
+            }
+        }
+        Step::ReceivingGarblingTables {
+            eval_commitments, ..
+        } => {
+            actions.push(Action::ReceiveGarblingTables(eval_commitments.clone()));
+        }
+        Step::SetupComplete => {
+            for (deposit_id, deposit_state) in state.deposits.iter() {
+                match &deposit_state.step {
+                    DepositStep::GeneratingAdaptors => {
+                        actions.push(Action::DepositGenerateAdaptors(*deposit_id));
+                    }
+                    DepositStep::SendingAdaptors => {
+                        let (deposit_adaptors, withdrawal_adaptors) = state
+                            .artifact_store
+                            .load_adaptors_for_deposit(*deposit_id)
+                            .await?;
+                        let adaptor_msg = AdaptorMsg {
+                            deposit_adaptors,
+                            withdrawal_adaptors,
+                        };
+
+                        // sanity check
+                        let Some(adaptor_msg_id) = deposit_state.sent_adaptor_msg_id else {
+                            return Err(SMError::StateInconsistency(
+                                "SendingAdaptors: missing expected sent_adaptor_msg_id",
+                            ));
+                        };
+                        if adaptor_msg_id != adaptor_msg.id() {
+                            return Err(SMError::StateInconsistency(
+                                "SendingAdaptors: unexpected adaptor_msg id",
+                            ));
+                        }
+
+                        actions.push(Action::DepositSendAdaptorMsg(*deposit_id, adaptor_msg));
+                    }
+                    DepositStep::DepositReady => {}
+                    DepositStep::WithdrawnUndisputed => {}
+                    DepositStep::Aborted { .. } => {}
+                }
             }
         }
         _ => unimplemented!(),

@@ -1,9 +1,9 @@
 use mosaic_vs3::Index;
 
 use crate::{
-    ChallengeResponseMsg, CircuitOutputShare, CommitMsg, CompletedSignatures, DepositId,
-    DepositInputs, GarblingTableCommitment, MsgId, SecretKey, Seed, SetupInputs, Sighashes,
-    WithdrawalInputs,
+    ChallengeResponseMsg, CircuitOutputShare, CommitMsg, CompletedSignatures, DepositAdaptors,
+    DepositId, DepositInputs, GarblingTableCommitment, MsgId, SecretKey, Seed, SetupInputs,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
 };
 
 /// Evaluator state machine inputs.
@@ -26,6 +26,8 @@ pub enum Input {
     GarblingTableReceived(Index, GarblingTableCommitment),
     /// Initialize deposit for specified deposit id.
     DepositInit(DepositId, EvaluatorDepositInitData),
+    /// Adaptors generated for deposit and withdrawal wires.
+    DepositAdaptorsGenerated(DepositId, Box<DepositAdaptors>, Box<WithdrawalAdaptors>),
     /// Adaptor message with specified `MsgId` was acked.
     DepositAdaptorMsgAcked(DepositId, MsgId),
     /// Mark deposit as withdrawn without dispute.

@@ -1,7 +1,8 @@
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
-    InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
-    OutputPolynomialCommitment, ReservedSetupInputShares,
+    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices, DepositAdaptors,
+    DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WithdrawalAdaptors,
 };
 
 use crate::SMResult;
@@ -62,4 +63,35 @@ pub trait EvaluatorArtifactStore: Sized {
     fn load_opened_garbling_seeds(
         &self,
     ) -> impl Future<Output = SMResult<Box<OpenedGarblingSeeds>>>;
+
+    fn save_sighashes_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        sighashes: &Sighashes,
+    ) -> impl Future<Output = SMResult<()>>;
+    fn load_sighashes_for_deposit(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = SMResult<Box<Sighashes>>>;
+
+    fn save_inputs_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        inputs: &DepositInputs,
+    ) -> impl Future<Output = SMResult<()>>;
+    fn load_inputs_for_deposit(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = SMResult<Box<DepositInputs>>>;
+
+    fn save_adaptors_for_deposit(
+        &mut self,
+        deposit_id: DepositId,
+        deposit_adaptors: &DepositAdaptors,
+        withdrawal_adaptors: &WithdrawalAdaptors,
+    ) -> impl Future<Output = SMResult<()>>;
+    fn load_adaptors_for_deposit(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = SMResult<(Box<DepositAdaptors>, Box<WithdrawalAdaptors>)>>;
 }

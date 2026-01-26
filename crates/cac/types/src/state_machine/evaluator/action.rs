@@ -27,6 +27,8 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
     ReceiveGarblingTables(Box<EvalGarblingTableCommitments>),
+    /// Generate adaptors for a deposit.
+    DepositGenerateAdaptors(DepositId),
     /// Send adaptors for a deposit to garbler.
     DepositSendAdaptorMsg(DepositId, AdaptorMsg),
     /// Evaluate a single garbling table with provided inputs
