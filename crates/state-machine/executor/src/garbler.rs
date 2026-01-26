@@ -6,14 +6,13 @@ use mosaic_cac_protocol::{
     garbler::{GarblerSM, artifact::GarblerArtifactStore, state::State},
 };
 use mosaic_cac_types::{
-    AllPolynomialCommitments, AllPolynomials, InputShares, OutputShares,
-    state_machine::{
-        StateMachineId,
-        garbler::{ActionContainer, GarblerInitData, Input},
-    },
+    AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials, ChallengeIndices,
+    CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, InputShares, OutputShares,
+    ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    state_machine::garbler::{ActionContainer, GarblerInitData, Input},
 };
 
-use crate::{Db, ExecutorError, ExecutorResult};
+use crate::{Db, ExecutorError, ExecutorResult, StateMachineId};
 
 pub(crate) async fn handle_garbler_input<D: Db>(
     sm_id: StateMachineId,
@@ -149,112 +148,96 @@ impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn load_reserved_input_shares(
-        &self,
-    ) -> SMResult<Box<mosaic_cac_types::ReservedInputShares>> {
+    async fn load_reserved_input_shares(&self) -> SMResult<Box<ReservedInputShares>> {
         todo!()
     }
 
     async fn save_garbling_table_commitments(
         &mut self,
-        commitments: &mosaic_cac_types::AllGarblingTableCommitments,
+        commitments: &AllGarblingTableCommitments,
     ) -> SMResult<()> {
         todo!()
     }
 
-    async fn load_garbling_table_commitments(
-        &self,
-    ) -> SMResult<Box<mosaic_cac_types::AllGarblingTableCommitments>> {
+    async fn load_garbling_table_commitments(&self) -> SMResult<Box<AllGarblingTableCommitments>> {
         todo!()
     }
 
-    async fn save_challenge_indices(
-        &mut self,
-        challenge_idxs: &mosaic_cac_types::ChallengeIndices,
-    ) -> SMResult<()> {
+    async fn save_challenge_indices(&mut self, challenge_idxs: &ChallengeIndices) -> SMResult<()> {
         todo!()
     }
 
-    async fn load_challenge_indices(&self) -> SMResult<Box<mosaic_cac_types::ChallengeIndices>> {
+    async fn load_challenge_indices(&self) -> SMResult<Box<ChallengeIndices>> {
         todo!()
     }
 
     async fn save_sighashes_for_deposit(
         &mut self,
-        deposit_id: mosaic_cac_types::DepositId,
-        sighashes: &mosaic_cac_types::Sighashes,
+        deposit_id: DepositId,
+        sighashes: &Sighashes,
     ) -> SMResult<()> {
         todo!()
     }
 
-    async fn load_sighashes_for_deposit(
-        &self,
-        deposit_id: mosaic_cac_types::DepositId,
-    ) -> SMResult<Box<mosaic_cac_types::Sighashes>> {
+    async fn load_sighashes_for_deposit(&self, deposit_id: DepositId) -> SMResult<Box<Sighashes>> {
         todo!()
     }
 
     async fn save_inputs_for_deposit(
         &mut self,
-        deposit_id: mosaic_cac_types::DepositId,
-        inputs: &mosaic_cac_types::DepositInputs,
+        deposit_id: DepositId,
+        inputs: &DepositInputs,
     ) -> SMResult<()> {
         todo!()
     }
 
-    async fn load_inputs_for_deposit(
-        &self,
-        deposit_id: mosaic_cac_types::DepositId,
-    ) -> SMResult<Box<mosaic_cac_types::DepositInputs>> {
+    async fn load_inputs_for_deposit(&self, deposit_id: DepositId) -> SMResult<Box<DepositInputs>> {
         todo!()
     }
 
     async fn save_adaptors_for_deposit(
         &mut self,
-        deposit_id: mosaic_cac_types::DepositId,
-        deposit_adaptors: &mosaic_cac_types::DepositAdaptors,
-        withdrawal_adaptors: &mosaic_cac_types::WithdrawalAdaptors,
+        deposit_id: DepositId,
+        deposit_adaptors: &DepositAdaptors,
+        withdrawal_adaptors: &WithdrawalAdaptors,
     ) -> SMResult<()> {
         todo!()
     }
 
     async fn load_adaptors_for_deposit(
         &self,
-        deposit_id: mosaic_cac_types::DepositId,
-    ) -> SMResult<(
-        Box<mosaic_cac_types::DepositAdaptors>,
-        Box<mosaic_cac_types::WithdrawalAdaptors>,
-    )> {
+        deposit_id: DepositId,
+    ) -> SMResult<(Box<DepositAdaptors>, Box<WithdrawalAdaptors>)> {
         todo!()
     }
 
     async fn save_withdrawal_input(
         &mut self,
-        deposit_id: mosaic_cac_types::DepositId,
-        withdrawal_input: &mosaic_cac_types::WithdrawalInputs,
+        deposit_id: DepositId,
+        withdrawal_input: &WithdrawalInputs,
     ) -> SMResult<()> {
         todo!()
     }
 
     async fn load_withdrawal_input(
         &self,
-        deposit_id: mosaic_cac_types::DepositId,
-    ) -> SMResult<Box<mosaic_cac_types::WithdrawalInputs>> {
+        deposit_id: DepositId,
+    ) -> SMResult<Box<WithdrawalInputs>> {
         todo!()
     }
 
     async fn save_completed_signatures(
         &mut self,
-        deposit_id: mosaic_cac_types::DepositId,
-        signatures: &mosaic_cac_types::CompletedSignatures,
+        deposit_id: DepositId,
+        signatures: &CompletedSignatures,
     ) -> SMResult<()> {
         todo!()
     }
 
     async fn load_completed_signatures(
         &self,
-        deposit_id: mosaic_cac_types::DepositId,
-    ) -> SMResult<Box<mosaic_cac_types::CompletedSignatures>> {
+        deposit_id: DepositId,
+    ) -> SMResult<Box<CompletedSignatures>> {
         todo!()
     }
 }
