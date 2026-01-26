@@ -9,13 +9,13 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitMsg {
     /// N_INPUT_WIRES * 256 + 1
-    pub polynomial_commitments: Box<AllPolynomialCommitments>,
+    pub polynomial_commitments: AllPolynomialCommitments,
     /// N_CIRCUITS
     pub garbling_table_commitments: Box<AllGarblingTableCommitments>,
 }
 
 /// ChallengeMsg: Evaluator -> Garbler
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChallengeMsg {
     /// N_COEFFICIENTS
     pub challenge_indices: Box<ChallengeIndices>,
@@ -36,7 +36,7 @@ pub struct ChallengeResponseMsg {
 }
 
 /// AdaptorMsg: Evaluator -> Garbler
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdaptorMsg {
     /// N_DEPOSIT_INPUT_WIRES
     pub deposit_adaptors: Box<DepositAdaptors>,

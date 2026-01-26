@@ -13,7 +13,13 @@ pub enum Action {
     /// Generate polynomials from the base seed.
     GeneratePolynomials(Seed),
     /// Generate input/output shares from polynomials.
-    GenerateShares(Box<AllPolynomials>),
+    GenerateShares(AllPolynomials),
+    // /// Generate single table's garbling table commitment from seeds and shares.
+    // GenerateTableCommitment(
+    //     GarblingSeed,
+    //     Box<CircuitInputShares>,
+    //     Box<CircuitOutputShare>,
+    // ),
     /// Generate garbling table commitments from seeds and shares.
     GenerateTableCommitments(Box<AllGarblingSeeds>, Box<InputShares>, Box<OutputShares>),
     /// Send commit message with polynomial and table commitments to evaluator.

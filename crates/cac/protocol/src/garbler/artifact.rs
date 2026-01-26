@@ -11,7 +11,7 @@ pub trait GarblerArtifactStore: Sized {
         &mut self,
         polynomials: &AllPolynomials,
     ) -> impl Future<Output = SMResult<()>>;
-    fn load_polynomials(&self) -> impl Future<Output = SMResult<Box<AllPolynomials>>>;
+    fn load_polynomials(&self) -> impl Future<Output = SMResult<AllPolynomials>>;
 
     fn save_polynomial_commitments(
         &mut self,
@@ -19,7 +19,7 @@ pub trait GarblerArtifactStore: Sized {
     ) -> impl Future<Output = SMResult<()>>;
     fn load_polynomial_commitments(
         &self,
-    ) -> impl Future<Output = SMResult<Box<AllPolynomialCommitments>>>;
+    ) -> impl Future<Output = SMResult<AllPolynomialCommitments>>;
 
     fn save_shares(
         &mut self,

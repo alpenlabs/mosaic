@@ -12,7 +12,7 @@ pub enum Input {
     /// Initialize garbler state machine.
     Init(GarblerInitData),
     /// Polynomials and polynomial commitments generated.
-    PolynomialsGenerated(Box<AllPolynomials>, Box<AllPolynomialCommitments>),
+    PolynomialsGenerated(AllPolynomials, AllPolynomialCommitments),
     /// Input and output wire shares generated.
     SharesGenerated(Box<InputShares>, Box<OutputShares>),
     /// Garbling table commitments generated.

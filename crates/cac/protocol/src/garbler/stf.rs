@@ -44,13 +44,10 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
             match state.step {
                 Step::GeneratingPolynomials => {
                     // state update
+                    state.artifact_store.save_polynomials(&polynomials).await?;
                     state
                         .artifact_store
-                        .save_polynomials(polynomials.as_ref())
-                        .await?;
-                    state
-                        .artifact_store
-                        .save_polynomial_commitments(commitments.as_ref())
+                        .save_polynomial_commitments(&commitments)
                         .await?;
                     state.step = Step::GeneratingShares;
 
@@ -617,9 +614,10 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
     Ok(actions)
 }
 
-fn require_config<S>(state: &State<S>) -> SMResult<Config> {
+fn require_config<S>(state: &State<S>) -> SMResult<&Config> {
     state
         .config
+        .as_ref()
         .ok_or_else(|| SMError::StateInconsistency("expected config to not be None"))
 }
 

@@ -21,9 +21,12 @@ pub type OutputPolynomial = Polynomial;
 pub type OutputPolynomialCommitment = PolynomialCommitment;
 
 /// All Polynomials.
-pub type AllPolynomials = (InputPolynomials, OutputPolynomial);
+pub type AllPolynomials = (Box<InputPolynomials>, Box<OutputPolynomial>);
 /// All Polynomial commitments.
-pub type AllPolynomialCommitments = (InputPolynomialCommitments, OutputPolynomialCommitment);
+pub type AllPolynomialCommitments = (
+    Box<InputPolynomialCommitments>,
+    Box<OutputPolynomialCommitment>,
+);
 
 /// Commitments for all `N_CIRCUITS` garbling tables.
 pub type AllGarblingTableCommitments = [GarblingTableCommitment; N_CIRCUITS];
@@ -37,30 +40,36 @@ pub type ChallengeIndices = [Index; N_OPEN_CIRCUITS];
 /// `N_CIRCUITS - N_COEFFICIENTS` indices for evaluation.
 pub type EvaluationIndices = [Index; N_EVAL_CIRCUITS];
 
+/// Shares for all wide label values for a single wire
+pub type WideLabelWireShares = [Share; WIDE_LABEL_VALUE_COUNT];
+/// Shares for all wide label values, for all input wires, for a single circuit
+pub type CircuitInputShares = [WideLabelWireShares; N_INPUT_WIRES];
+/// Share for value 0 of output wire for a single circuit
+pub type CircuitOutputShare = Share;
+
 /// Shares for all wide label values, for all input wires, for all circuit indices, with circuit
 /// index 0 being reserved index share.
-pub type InputShares = [[[Share; WIDE_LABEL_VALUE_COUNT]; N_INPUT_WIRES]; N_CIRCUITS + 1];
+pub type InputShares = [CircuitInputShares; N_CIRCUITS + 1];
 /// Shares for value 0 of output wire for all circuit, with circuit index 0 being reserved index
 /// share.
-pub type OutputShares = [Share; N_CIRCUITS + 1];
+pub type OutputShares = [CircuitOutputShare; N_CIRCUITS + 1];
 
 /// Input shares for all wide label values, for all input wires, for reserved index 0.
 /// Equivalent to `InputShares[0]`
-pub type ReservedInputShares = [[Share; WIDE_LABEL_VALUE_COUNT]; N_INPUT_WIRES];
+pub type ReservedInputShares = CircuitInputShares;
 
 /// Input shares for all wide label values, for all input wires, for all opened indices.
-pub type OpenedInputShares = [[[Share; WIDE_LABEL_VALUE_COUNT]; N_INPUT_WIRES]; N_OPEN_CIRCUITS];
+pub type OpenedInputShares = [CircuitInputShares; N_OPEN_CIRCUITS];
 
 /// Reserved input shares for wide labels corresponding to agreed setup inputs, for each setup input
 /// wire.
 pub type ReservedSetupInputShares = [Share; N_SETUP_INPUT_WIRES];
 /// Reserved input shares for all wide label values corresponding to deposit input wires.
-pub type ReservedDepositInputShares = [[Share; WIDE_LABEL_VALUE_COUNT]; N_DEPOSIT_INPUT_WIRES];
+pub type ReservedDepositInputShares = [WideLabelWireShares; N_DEPOSIT_INPUT_WIRES];
 /// Reserved input shares for all wide labels corresponding to withdrawal input wires.
-pub type ReservedWithdrawalInputShares =
-    [[Share; WIDE_LABEL_VALUE_COUNT]; N_WITHDRAWAL_INPUT_WIRES];
+pub type ReservedWithdrawalInputShares = [WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES];
 /// Shares for value 0 output wire for for all opened indices.
-pub type OpenedOutputShares = [Share; N_OPEN_CIRCUITS];
+pub type OpenedOutputShares = [CircuitOutputShare; N_OPEN_CIRCUITS];
 
 /// Seed for garbling table generation.
 pub type GarblingSeed = Seed;

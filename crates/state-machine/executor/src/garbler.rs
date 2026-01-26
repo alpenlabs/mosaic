@@ -122,7 +122,7 @@ impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn load_polynomials(&self) -> SMResult<Box<AllPolynomials>> {
+    async fn load_polynomials(&self) -> SMResult<AllPolynomials> {
         todo!()
     }
 
@@ -133,7 +133,7 @@ impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn load_polynomial_commitments(&self) -> SMResult<Box<AllPolynomialCommitments>> {
+    async fn load_polynomial_commitments(&self) -> SMResult<AllPolynomialCommitments> {
         todo!()
     }
 
