@@ -1,9 +1,10 @@
 use fasm::actions::TrackedActionTypes;
+use mosaic_vs3::Index;
 
 use crate::{
-    AllGarblingSeeds, AllPolynomials, ChallengeResponseMsg, CommitMsg, DepositAdaptors, DepositId,
-    GarblingSeed, InputShares, MsgId, OutputShares, PubKey, ReservedDepositInputShares,
-    ReservedWithdrawalInputShares, Seed, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    ChallengeResponseMsg, CommitMsg, DepositAdaptors, DepositId, GarblingSeed, InputShares, MsgId,
+    PubKey, ReservedDepositInputShares, ReservedWithdrawalInputShares, Sighashes,
+    WithdrawalAdaptors, WithdrawalInputs,
 };
 
 /// Actions emitted by the garbler state machine for external execution.
@@ -11,17 +12,11 @@ use crate::{
 #[non_exhaustive]
 pub enum Action {
     /// Generate polynomials from the base seed.
-    GeneratePolynomials(Seed),
+    GeneratePolynomialCommitments,
     /// Generate input/output shares from polynomials.
-    GenerateShares(AllPolynomials),
-    // /// Generate single table's garbling table commitment from seeds and shares.
-    // GenerateTableCommitment(
-    //     GarblingSeed,
-    //     Box<CircuitInputShares>,
-    //     Box<CircuitOutputShare>,
-    // ),
-    /// Generate garbling table commitments from seeds and shares.
-    GenerateTableCommitments(Box<AllGarblingSeeds>, Box<InputShares>, Box<OutputShares>),
+    GenerateShares(Index),
+    /// Generate single table's garbling table commitment from seeds and shares.
+    GenerateTableCommitment(Index, GarblingSeed),
     /// Send commit message with polynomial and table commitments to evaluator.
     SendCommitMsg(CommitMsg),
     /// Acknowledge receipt of challenge message from evaluator.

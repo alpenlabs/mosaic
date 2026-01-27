@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use bitvec::BitArr;
 use mosaic_cac_types::{
-    DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, MsgId, Seed, SetupInputs,
+    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, MsgId, Seed,
+    SetupInputs,
 };
-use mosaic_common::constants::N_EVAL_CIRCUITS;
+use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS};
 
 use super::deposit::DepositState;
 
@@ -55,14 +56,16 @@ pub enum Step {
     #[default]
     /// Not initialized; Default
     Uninit,
-    /// Initialized, start generating polynomial commitments
-    GeneratingPolynomials,
     /// Polynomials generated.
+    GeneratingPolynomialCommitments,
     /// Generate shares for all tables.
-    GeneratingShares,
+    GeneratingShares { generated: BitArr!(for N_CIRCUITS) },
     /// Dispatch actions to generate commitments.
     /// Wait for all table commitments to be provided.
-    GeneratingTableCommitments,
+    GeneratingTableCommitments {
+        seeds: Box<AllGarblingSeeds>,
+        generated: BitArr!(for N_CIRCUITS),
+    },
     /// Got table commitments, send commit msg.
     /// Wait for commit msg ack.
     SendingCommit,

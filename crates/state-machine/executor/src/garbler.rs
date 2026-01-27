@@ -7,8 +7,9 @@ use mosaic_cac_protocol::{
 };
 use mosaic_cac_types::{
     AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials, ChallengeIndices,
-    CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, InputShares, OutputShares,
-    ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares, ReservedInputShares,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{ActionContainer, GarblerInitData, Input},
 };
 
@@ -136,10 +137,11 @@ impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn save_shares(
+    async fn save_shares_for_index(
         &mut self,
-        input_shares: &InputShares,
-        output_shares: &OutputShares,
+        index: Index,
+        input_shares: &CircuitInputShares,
+        output_shares: &CircuitOutputShare,
     ) -> SMResult<()> {
         todo!()
     }
@@ -152,14 +154,24 @@ impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn save_garbling_table_commitments(
+    async fn save_garbling_table_commitment(
         &mut self,
-        commitments: &AllGarblingTableCommitments,
+        index: Index,
+        commitments: &GarblingTableCommitment,
     ) -> SMResult<()> {
         todo!()
     }
 
-    async fn load_garbling_table_commitments(&self) -> SMResult<Box<AllGarblingTableCommitments>> {
+    async fn load_garbling_table_commitment(
+        &mut self,
+        index: Index,
+    ) -> SMResult<GarblingTableCommitment> {
+        todo!()
+    }
+
+    async fn load_all_garbling_table_commitments(
+        &self,
+    ) -> SMResult<Box<AllGarblingTableCommitments>> {
         todo!()
     }
 

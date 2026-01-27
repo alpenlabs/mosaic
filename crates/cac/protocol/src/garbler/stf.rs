@@ -1,14 +1,15 @@
 use bitvec::array::BitArray;
 use mosaic_cac_types::{
-    AdaptorMsg, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
-    ChallengeResponseMsg, CommitMsg, EvalGarblingSeeds, EvalGarblingTableCommitments,
-    EvaluationIndices, HasMsgId, InputShares, OutputShares, ReservedDepositInputShares,
+    AdaptorMsg, AllGarblingSeeds, AllGarblingTableCommitments, AllPolynomials, ChallengeIndices,
+    ChallengeMsg, ChallengeResponseMsg, CommitMsg, EvalGarblingSeeds, EvalGarblingTableCommitments,
+    EvaluationIndices, HasMsgId, Index, InputShares, OutputShares, ReservedDepositInputShares,
     ReservedInputShares, ReservedWithdrawalInputShares, Seed, SetupInputs,
     state_machine::garbler::{
         Action, AdaptorVerificationData, CompleteAdaptorSignaturesData, GarblerDepositInitData,
         Input,
     },
 };
+use mosaic_common::constants::N_CIRCUITS;
 
 use super::{
     artifact::GarblerArtifactStore,
@@ -31,73 +32,114 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                         seed: data.seed,
                         setup_inputs: data.setup_inputs,
                     });
-                    state.step = Step::GeneratingPolynomials;
 
-                    // generate actions
-                    let seed = state.config.expect("just set").seed;
-                    actions.push(Action::GeneratePolynomials(seed));
+                    let polynomials = generate_polynomials(data.seed);
+
+                    state.artifact_store.save_polynomials(&polynomials).await?;
+                    state.step = Step::GeneratingPolynomialCommitments;
+
+                    // Get polynomials directly from db
+                    actions.push(Action::GeneratePolynomialCommitments);
                 }
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        Input::PolynomialsGenerated(polynomials, commitments) => {
+        Input::PolynomialCommitmentsGenerated(commitments) => {
             match state.step {
-                Step::GeneratingPolynomials => {
+                Step::GeneratingPolynomialCommitments => {
                     // state update
-                    state.artifact_store.save_polynomials(&polynomials).await?;
                     state
                         .artifact_store
                         .save_polynomial_commitments(&commitments)
                         .await?;
-                    state.step = Step::GeneratingShares;
-
-                    // generate actions
-                    actions.push(Action::GenerateShares(polynomials));
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
-        }
-        Input::SharesGenerated(input_shares, output_shares) => {
-            match state.step {
-                Step::GeneratingShares => {
-                    // state update
-                    state
-                        .artifact_store
-                        .save_shares(input_shares.as_ref(), output_shares.as_ref())
-                        .await?;
-
-                    state.step = Step::GeneratingTableCommitments;
-
-                    // generate actions
-                    let config = require_config(state)?;
-                    let seeds = generate_garbling_table_seeds(config.seed);
-                    actions.push(Action::GenerateTableCommitments(
-                        Box::new(seeds),
-                        input_shares,
-                        output_shares,
-                    ));
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
-        }
-        Input::TableCommitmentsGenerated(garbling_table_commitments) => {
-            match state.step {
-                Step::GeneratingTableCommitments => {
-                    // state update
-                    state
-                        .artifact_store
-                        .save_garbling_table_commitments(garbling_table_commitments.as_ref())
-                        .await?;
-                    state.step = Step::SendingCommit;
-
-                    // generate actions
-                    let polynomial_commitments =
-                        state.artifact_store.load_polynomial_commitments().await?;
-                    let commit_msg = CommitMsg {
-                        polynomial_commitments,
-                        garbling_table_commitments,
+                    state.step = Step::GeneratingShares {
+                        generated: BitArray::ZERO,
                     };
-                    actions.push(Action::SendCommitMsg(commit_msg));
+
+                    // generate actions
+                    for idx in 0..N_CIRCUITS {
+                        let index = Index::new(idx + 1).expect("valid index");
+                        actions.push(Action::GenerateShares(index));
+                    }
+                }
+                _ => return Err(SMError::UnexpectedInput),
+            }
+        }
+        Input::SharesGenerated(index, input_shares, output_shares) => {
+            match &mut state.step {
+                Step::GeneratingShares { generated } => {
+                    let idx = index.get().checked_sub(1).ok_or_else(|| {
+                        // not expecting reserved (0) index
+                        SMError::InvalidInputData
+                    })?;
+                    if generated[idx] {
+                        // already have this data
+                        return Err(SMError::InvalidInputData);
+                    }
+
+                    // state update
+                    generated.set(idx, true);
+                    state
+                        .artifact_store
+                        .save_shares_for_index(index, input_shares.as_ref(), output_shares.as_ref())
+                        .await?;
+
+                    if generated.all() {
+                        let config = require_config(state)?;
+                        let seeds = Box::new(generate_garbling_table_seeds(config.seed));
+
+                        // generate actions
+                        for idx in 0..N_CIRCUITS {
+                            let index = Index::new(idx + 1).expect("valid index");
+                            let seed = seeds[idx];
+                            actions.push(Action::GenerateTableCommitment(index, seed));
+                        }
+
+                        state.step = Step::GeneratingTableCommitments {
+                            seeds,
+                            generated: BitArray::ZERO,
+                        };
+                    }
+                }
+                _ => return Err(SMError::UnexpectedInput),
+            }
+        }
+        Input::TableCommitmentGenerated(index, commitment) => {
+            match &mut state.step {
+                Step::GeneratingTableCommitments { generated, .. } => {
+                    let idx = index.get().checked_sub(1).ok_or_else(|| {
+                        // not expecting reserved (0) index
+                        SMError::InvalidInputData
+                    })?;
+                    if generated[idx] {
+                        // already have this data
+                        return Err(SMError::InvalidInputData);
+                    }
+
+                    // state update
+                    generated.set(idx, true);
+                    state
+                        .artifact_store
+                        .save_garbling_table_commitment(index, &commitment)
+                        .await?;
+
+                    if generated.all() {
+                        state.step = Step::SendingCommit;
+
+                        // generate actions
+                        let polynomial_commitments =
+                            state.artifact_store.load_polynomial_commitments().await?;
+                        let garbling_table_commitments = state
+                            .artifact_store
+                            .load_all_garbling_table_commitments()
+                            .await?;
+                        let commit_msg = CommitMsg {
+                            polynomial_commitments,
+                            garbling_table_commitments,
+                        };
+                        actions.push(Action::SendCommitMsg(commit_msg));
+                    }
+                    // else stay on same step and wait for all table commitments to be generated
                 }
                 _ => return Err(SMError::UnexpectedInput),
             }
@@ -181,24 +223,26 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
 
                 let garbling_table_commitments = state
                     .artifact_store
-                    .load_garbling_table_commitments()
+                    .load_all_garbling_table_commitments()
                     .await?;
-                let eval_commitments =
-                    get_eval_commitments(&eval_indices, garbling_table_commitments.as_ref());
+                let eval_commitments = Box::new(get_eval_commitments(
+                    &eval_indices,
+                    garbling_table_commitments.as_ref(),
+                ));
 
                 let config = require_config(state)?;
                 let garbling_seeds = generate_garbling_table_seeds(config.seed);
-                let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
-
-                state.step = Step::TransferringGarblingTables {
-                    eval_seeds: Box::new(eval_seeds),
-                    eval_commitments: Box::new(eval_commitments),
-                    transferred: BitArray::ZERO,
-                };
+                let eval_seeds = Box::new(get_eval_seeds(&eval_indices, &garbling_seeds));
 
                 for seed in eval_seeds.as_ref() {
                     actions.push(Action::TransferGarblingTable(*seed));
                 }
+
+                state.step = Step::TransferringGarblingTables {
+                    eval_seeds,
+                    eval_commitments,
+                    transferred: BitArray::ZERO,
+                };
             }
             _ => return Err(SMError::UnexpectedInput),
         },
@@ -449,29 +493,33 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
 
     match &state.step {
         Step::Uninit => {}
-        Step::GeneratingPolynomials => {
-            let config = require_config(state)?;
-            actions.push(Action::GeneratePolynomials(config.seed));
+        Step::GeneratingPolynomialCommitments => {
+            actions.push(Action::GeneratePolynomialCommitments);
         }
-        Step::GeneratingShares => {
-            let polynomials = state.artifact_store.load_polynomials().await?;
-            actions.push(Action::GenerateShares(polynomials));
+        Step::GeneratingShares { generated } => {
+            for idx in 0..N_CIRCUITS {
+                if generated[idx] {
+                    continue;
+                }
+                let index = Index::new(idx + 1).expect("valid index");
+                actions.push(Action::GenerateShares(index));
+            }
         }
-        Step::GeneratingTableCommitments => {
-            let config = require_config(state)?;
-            let seeds = generate_garbling_table_seeds(config.seed);
-            let (input_shares, output_shares) = state.artifact_store.load_shares().await?;
-            actions.push(Action::GenerateTableCommitments(
-                Box::new(seeds),
-                input_shares,
-                output_shares,
-            ));
+        Step::GeneratingTableCommitments { seeds, generated } => {
+            for idx in 0..N_CIRCUITS {
+                if generated[idx] {
+                    continue;
+                }
+                let index = Index::new(idx + 1).expect("valid index");
+                let seed = seeds[idx];
+                actions.push(Action::GenerateTableCommitment(index, seed));
+            }
         }
         Step::SendingCommit => {
             let polynomial_commitments = state.artifact_store.load_polynomial_commitments().await?;
             let garbling_table_commitments = state
                 .artifact_store
-                .load_garbling_table_commitments()
+                .load_all_garbling_table_commitments()
                 .await?;
             let commit_msg = CommitMsg {
                 polynomial_commitments,
@@ -619,6 +667,11 @@ fn require_config<S>(state: &State<S>) -> SMResult<&Config> {
         .config
         .as_ref()
         .ok_or_else(|| SMError::StateInconsistency("expected config to not be None"))
+}
+
+#[expect(unused_variables)]
+fn generate_polynomials(seed: Seed) -> AllPolynomials {
+    todo!()
 }
 
 #[expect(unused_variables)]

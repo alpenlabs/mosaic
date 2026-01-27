@@ -1,7 +1,8 @@
 use mosaic_cac_types::{
     AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials, ChallengeIndices,
-    CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, InputShares, OutputShares,
-    ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares, ReservedInputShares,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
 };
 
 use crate::SMResult;
@@ -21,21 +22,27 @@ pub trait GarblerArtifactStore: Sized {
         &self,
     ) -> impl Future<Output = SMResult<AllPolynomialCommitments>>;
 
-    fn save_shares(
+    fn save_shares_for_index(
         &mut self,
-        input_shares: &InputShares,
-        output_shares: &OutputShares,
+        index: Index,
+        input_shares: &CircuitInputShares,
+        output_shares: &CircuitOutputShare,
     ) -> impl Future<Output = SMResult<()>>;
     fn load_shares(&self) -> impl Future<Output = SMResult<(Box<InputShares>, Box<OutputShares>)>>;
     fn load_reserved_input_shares(
         &self,
     ) -> impl Future<Output = SMResult<Box<ReservedInputShares>>>;
 
-    fn save_garbling_table_commitments(
+    fn save_garbling_table_commitment(
         &mut self,
-        commitments: &AllGarblingTableCommitments,
+        index: Index,
+        commitments: &GarblingTableCommitment,
     ) -> impl Future<Output = SMResult<()>>;
-    fn load_garbling_table_commitments(
+    fn load_garbling_table_commitment(
+        &mut self,
+        index: Index,
+    ) -> impl Future<Output = SMResult<GarblingTableCommitment>>;
+    fn load_all_garbling_table_commitments(
         &self,
     ) -> impl Future<Output = SMResult<Box<AllGarblingTableCommitments>>>;
 

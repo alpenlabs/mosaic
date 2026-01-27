@@ -1,8 +1,9 @@
+use mosaic_vs3::Index;
+
 use crate::{
-    AdaptorMsg, AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials,
-    ChallengeMsg, CompletedSignatures, DepositId, DepositInputs, GarblingSeed,
-    GarblingTableCommitment, InputShares, MsgId, OutputShares, PubKey, Seed, SetupInputs,
-    Sighashes, WithdrawalInputs,
+    AdaptorMsg, AllPolynomialCommitments, ChallengeMsg, CircuitInputShares, CircuitOutputShare,
+    CompletedSignatures, DepositId, DepositInputs, GarblingSeed, GarblingTableCommitment, MsgId,
+    PubKey, Seed, SetupInputs, Sighashes, WithdrawalInputs,
 };
 
 /// Garbler state machine inputs.
@@ -11,12 +12,12 @@ use crate::{
 pub enum Input {
     /// Initialize garbler state machine.
     Init(GarblerInitData),
-    /// Polynomials and polynomial commitments generated.
-    PolynomialsGenerated(AllPolynomials, AllPolynomialCommitments),
+    /// Polynomial commitments generated.
+    PolynomialCommitmentsGenerated(AllPolynomialCommitments),
     /// Input and output wire shares generated.
-    SharesGenerated(Box<InputShares>, Box<OutputShares>),
-    /// Garbling table commitments generated.
-    TableCommitmentsGenerated(Box<AllGarblingTableCommitments>),
+    SharesGenerated(Index, Box<CircuitInputShares>, Box<CircuitOutputShare>),
+    /// Garbling table commitment generated.
+    TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Commit message with specified `MsgId` was acked.
     CommitMsgAcked(MsgId),
     /// Challenge message received.
