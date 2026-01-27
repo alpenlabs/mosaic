@@ -5,21 +5,32 @@
 /// Number of circuits in a tableset. (N)
 pub const N_CIRCUITS: usize = 181;
 /// Number of circuits opened during CaC for verification. (K)
-pub const N_VERIFICAITON_CIRCUITS: usize = 174;
+pub const N_OPEN_CIRCUITS: usize = 174;
 /// Number of circuits for evaluation. (N - K)
-pub const N_EVAL_CIRCUITS: usize = N_CIRCUITS - N_VERIFICAITON_CIRCUITS;
+pub const N_EVAL_CIRCUITS: usize = N_CIRCUITS - N_OPEN_CIRCUITS;
 
 // Garbling table wires constants
 
-/// TODO: number of input wires
-pub const N_INPUT_WIRES: usize = 160;
-/// TODO: number of setup input wires
-pub const N_SETUP_INPUT_WIRES: usize = 4;
-/// TODO: number of deposit input wires
-pub const N_DEPOSIT_INPUT_WIRES: usize = 4;
-/// TODO: number of withdrawal input wires
-pub const N_WITHDRAWAL_INPUT_WIRES: usize = 152;
+/// Number of bits in a single wide label
+pub const WIDE_LABEL_WIDTH: usize = 8;
+/// Total number of values represented by a single wide label
+pub const WIDE_LABEL_VALUE_COUNT: usize = 1 << WIDE_LABEL_WIDTH;
+/// Type for a wide label value
+pub type WideLabelValue = u8;
 
 const _: () = assert!(
-    N_INPUT_WIRES == N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES
+    WIDE_LABEL_WIDTH <= WideLabelValue::BITS as usize,
+    "WideLabelValue type is too small for WIDE_LABEL_WIDTH"
 );
+
+// NOTE: *_INPUT_WIRES are groups of `WIDE_LABEL_WIDTH` wires.
+
+/// TODO: number of setup input wire groups.
+pub const N_SETUP_INPUT_WIRES: usize = 4;
+/// TODO: number of deposit input wire groups.
+pub const N_DEPOSIT_INPUT_WIRES: usize = 4;
+/// TODO: number of withdrawal input wire groups.
+pub const N_WITHDRAWAL_INPUT_WIRES: usize = 128 + 36;
+/// Total number of input wire groups.
+pub const N_INPUT_WIRES: usize =
+    N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES;

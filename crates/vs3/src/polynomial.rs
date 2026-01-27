@@ -1,7 +1,7 @@
 //! Polynomial arithmetic over the secp256k1 curve for the VS3 protocol.
 
 use ark_ff::{UniformRand, Zero};
-use ark_secp256k1::{Fr as Scalar, Projective as Point};
+pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Index(usize);
 
 impl std::fmt::Display for Index {

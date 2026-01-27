@@ -12,7 +12,6 @@ keywords.workspace = true
 
 [dependencies]
 mosaic-job-types.workspace = true
-mosaic-state-machine-api.workspace = true
 thiserror.workspace = true
 
 [lints]

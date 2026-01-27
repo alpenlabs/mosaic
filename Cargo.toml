@@ -17,7 +17,6 @@ members = [
   "crates/rpc/provider",
   "crates/rpc/server",
   "crates/rpc/types",
-  "crates/state-machine/api",
   "crates/state-machine/executor",
   "crates/storage/api",
   "crates/table-types",
@@ -59,7 +58,6 @@ mosaic-job-types = { path = "crates/job/types" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
-mosaic-state-machine-api = { path = "crates/state-machine/api" }
 mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
 mosaic-storage-api = { path = "crates/storage/api" }
 mosaic-table-types = { path = "crates/table-types" }
@@ -70,13 +68,16 @@ ark-ec = "0.5.0"
 ark-ff = "0.5.0"
 ark-secp256k1 = "0.5.0"
 async-trait = "0.1"
+bitvec = "1.0.1"
 bytes = "1.10"
+fasm = { git = "https://github.com/zk2u/fasm.git" }
 futures = "0.3.31"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
 jsonrpsee-types = "*"                                                     # constrained by jsonrpsee dep
 rand = "0.8"
 rand_core = "0.6"
 serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10.9"
 strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 thiserror = "2.0"
 tokio-util = "0.7"
