@@ -4,9 +4,11 @@ use mosaic_cac_types::{
     CommitMsg, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment, HasMsgId,
     Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
     PolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs,
-    state_machine::evaluator::{Action, EvaluatorDepositInitData, Input},
+    state_machine::evaluator::{
+        Action, EvaluatorDepositInitData, EvaluatorDisputedWithdrawalData, Input,
+    },
 };
-use mosaic_common::constants::N_OPEN_CIRCUITS;
+use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
 use super::{SMResult, artifact::EvaluatorArtifactStore, state::State};
 use crate::{
@@ -226,6 +228,83 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
             }
             _ => return Err(SMError::UnexpectedInput),
         },
+        Input::DepositUndisputedWithdrawal(deposit_id) => {
+            match state.step {
+                Step::SetupComplete => {
+                    let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
+                        // deposit does not exist
+                        return Err(SMError::UnknownDeposit(deposit_id));
+                    };
+
+                    match deposit_state.step {
+                        DepositStep::DepositReady => {
+                            deposit_state.step = DepositStep::WithdrawnUndisputed;
+                        }
+                        _ => return Err(SMError::UnexpectedInput),
+                    }
+                }
+                _ => return Err(SMError::UnexpectedInput),
+            }
+        }
+        Input::DisputedWithdrawal(
+            deposit_id,
+            EvaluatorDisputedWithdrawalData {
+                signatures,
+                withdrawal_inputs,
+            },
+        ) => {
+            match state.step {
+                Step::SetupComplete => {
+                    let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
+                        // deposit does not exist
+                        return Err(SMError::UnknownDeposit(deposit_id));
+                    };
+
+                    match deposit_state.step {
+                        DepositStep::DepositReady => {
+                            state
+                                .artifact_store
+                                .save_completed_signatures(deposit_id, &signatures)
+                                .await?;
+
+                            // TODO: get correct withdrawal inputs from signatures
+                            state
+                                .artifact_store
+                                .save_withdrawal_inputs(deposit_id, &withdrawal_inputs)
+                                .await?;
+
+                            // TODO: extract shares from signatures and evaluate polynomials for
+                            // table evaluation
+
+                            let challenge_indices =
+                                state.artifact_store.load_challenge_indices().await?;
+                            let garbling_commitments = state
+                                .artifact_store
+                                .load_garbling_table_commitments()
+                                .await?;
+
+                            let eval_indices = get_eval_indices(&challenge_indices);
+                            let eval_commitments =
+                                get_eval_commitments(&eval_indices, &garbling_commitments);
+
+                            state.step = Step::EvaluatingTables {
+                                eval_indices,
+                                eval_commitments,
+                                evaluated: BitArray::ZERO,
+                            };
+
+                            for idx in 0..N_EVAL_CIRCUITS {
+                                let index = eval_indices[idx];
+                                let commitment = eval_commitments[idx];
+                                actions.push(Action::EvaluateGarblingTable(index, commitment));
+                            }
+                        }
+                        _ => return Err(SMError::UnexpectedInput),
+                    }
+                }
+                _ => return Err(SMError::UnexpectedInput),
+            }
+        }
         _ => unimplemented!(),
     };
 
@@ -297,7 +376,7 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
         Step::ReceivingGarblingTables {
             eval_commitments, ..
         } => {
-            actions.push(Action::ReceiveGarblingTables(eval_commitments.clone()));
+            actions.push(Action::ReceiveGarblingTables(*eval_commitments));
         }
         Step::SetupComplete => {
             for (deposit_id, deposit_state) in state.deposits.iter() {
@@ -515,8 +594,8 @@ async fn handle_table_commitment_generated<S: EvaluatorArtifactStore>(
                     .await?;
                 let eval_commitments = get_eval_commitments(&eval_idxs, &garbling_commitments);
                 state.step = Step::ReceivingGarblingTables {
-                    eval_idxs,
-                    eval_commitments: eval_commitments.clone(),
+                    eval_indices: eval_idxs,
+                    eval_commitments,
                     received: BitArray::ZERO,
                 };
 
@@ -538,7 +617,7 @@ async fn handle_table_received<S: EvaluatorArtifactStore>(
 ) -> SMResult<()> {
     match &mut state.step {
         Step::ReceivingGarblingTables {
-            eval_idxs,
+            eval_indices: eval_idxs,
             eval_commitments,
             received,
         } => {
@@ -637,10 +716,10 @@ fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
 fn get_eval_commitments(
     eval_indices: &EvaluationIndices,
     garbling_commitments: &AllGarblingTableCommitments,
-) -> Box<EvalGarblingTableCommitments> {
-    Box::new(std::array::from_fn(|i| {
+) -> EvalGarblingTableCommitments {
+    std::array::from_fn(|i| {
         // eval_indices are 1-indexed (1..=181), garbling_commitments are 0-indexed (0..=180)
         let seed_idx = eval_indices[i].get() - 1;
         garbling_commitments[seed_idx]
-    }))
+    })
 }

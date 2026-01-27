@@ -60,11 +60,10 @@ pub struct EvaluatorDepositInitData {
 
 /// Data required to initiate disputed withdrawal process.
 #[derive(Debug)]
-#[expect(dead_code)]
 pub struct EvaluatorDisputedWithdrawalData {
     /// Withdrawal input wire values.
     // NOTE: this might not be required
-    withdrawal_inputs: Box<WithdrawalInputs>,
+    pub withdrawal_inputs: Box<WithdrawalInputs>,
     /// Completed adaptor signatures extracted from on chain transaction.
-    signatures: Box<CompletedSignatures>,
+    pub signatures: Box<CompletedSignatures>,
 }

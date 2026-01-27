@@ -1,8 +1,8 @@
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices, DepositAdaptors,
-    DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
-    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WithdrawalAdaptors,
+    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices, CompletedSignatures,
+    DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds,
+    OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
 };
 
 use crate::SMResult;
@@ -94,4 +94,24 @@ pub trait EvaluatorArtifactStore: Sized {
         &self,
         deposit_id: DepositId,
     ) -> impl Future<Output = SMResult<(Box<DepositAdaptors>, Box<WithdrawalAdaptors>)>>;
+
+    fn save_withdrawal_inputs(
+        &mut self,
+        deposit_id: DepositId,
+        withdrawal_input: &WithdrawalInputs,
+    ) -> impl Future<Output = SMResult<()>>;
+    fn load_withdrawal_inputs(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = SMResult<Box<WithdrawalInputs>>>;
+
+    fn save_completed_signatures(
+        &mut self,
+        deposit_id: DepositId,
+        signatures: &CompletedSignatures,
+    ) -> impl Future<Output = SMResult<()>>;
+    fn load_completed_signatures(
+        &self,
+        deposit_id: DepositId,
+    ) -> impl Future<Output = SMResult<Box<CompletedSignatures>>>;
 }

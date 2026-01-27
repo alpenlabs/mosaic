@@ -65,12 +65,16 @@ pub enum Step {
         verified: BitArr!(for N_OPEN_CIRCUITS),
     },
     ReceivingGarblingTables {
-        eval_idxs: EvaluationIndices,
-        eval_commitments: Box<EvalGarblingTableCommitments>,
+        eval_indices: EvaluationIndices,
+        eval_commitments: EvalGarblingTableCommitments,
         received: BitArr!(for N_EVAL_CIRCUITS),
     },
     SetupComplete,
-    EvaluatingTables,
+    EvaluatingTables {
+        eval_indices: EvaluationIndices,
+        eval_commitments: EvalGarblingTableCommitments,
+        evaluated: BitArr!(for N_EVAL_CIRCUITS),
+    },
     /// Setup is consumed by a withdrawal dispute. Cannot be reused.
     SetupConsumed {
         /// Disputed withdrawal for deposit
