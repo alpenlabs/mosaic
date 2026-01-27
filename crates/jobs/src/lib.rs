@@ -2,10 +2,6 @@ use kanal::{AsyncReceiver, AsyncSender};
 use monoio::io::stream::Stream;
 use std::{collections::VecDeque, fmt::Debug, sync::Arc};
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
 struct IncomingNetworkMessage;
 struct OutgoingNetworkMessage;
 
@@ -141,15 +137,4 @@ trait Job {
 
     /// Executes the job with a global job context.
     async fn execute(&self, context: &JobContext) -> Result<Self::Output, Box<dyn Debug>>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
 }
