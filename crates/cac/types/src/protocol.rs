@@ -10,11 +10,15 @@ use mosaic_vs3::{Point, Scalar};
 
 use crate::{Adaptor, GarblingTableCommitment, Seed, Signature};
 
+/// Polynomials for all wide label values for a single wire
+pub type WideLabelWirePolynomials = [Polynomial; WIDE_LABEL_VALUE_COUNT];
+/// Polynomial commitments for all wide label values for a single wire
+pub type WideLabelWirePolynomialCommitments = [PolynomialCommitment; WIDE_LABEL_VALUE_COUNT];
+
 /// Input wire polynomials.
-pub type InputPolynomials = [[Polynomial; WIDE_LABEL_VALUE_COUNT]; N_INPUT_WIRES];
+pub type InputPolynomials = [WideLabelWirePolynomials; N_INPUT_WIRES];
 /// Input wire polynomial commitments.
-pub type InputPolynomialCommitments =
-    [[PolynomialCommitment; WIDE_LABEL_VALUE_COUNT]; N_INPUT_WIRES];
+pub type InputPolynomialCommitments = [WideLabelWirePolynomialCommitments; N_INPUT_WIRES];
 /// Output wire polynomial.
 pub type OutputPolynomial = Polynomial;
 /// Output wire polynomial commitment.
@@ -80,10 +84,13 @@ pub type OpenedGarblingSeeds = [GarblingSeed; N_OPEN_CIRCUITS];
 /// Seeds for garbling table generation for evaluation indices.
 pub type EvalGarblingSeeds = [GarblingSeed; N_EVAL_CIRCUITS];
 
+/// Adaptor pre-signaures for all wide label values for a single wire
+pub type WideLabelWireAdaptors = [Adaptor; WIDE_LABEL_VALUE_COUNT];
+
 /// Adaptor pre-signatures corresponding to deposit input wide label values for deposit wires.
 pub type DepositAdaptors = [Adaptor; N_DEPOSIT_INPUT_WIRES];
 /// Adaptor pre-signatures for all wide label values for all withdrawal input wires.
-pub type WithdrawalAdaptors = [[Adaptor; WIDE_LABEL_VALUE_COUNT]; N_WITHDRAWAL_INPUT_WIRES];
+pub type WithdrawalAdaptors = [WideLabelWireAdaptors; N_WITHDRAWAL_INPUT_WIRES];
 
 /// Sighash used in transaction signing;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
