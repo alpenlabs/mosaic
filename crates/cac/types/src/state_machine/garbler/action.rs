@@ -1,6 +1,8 @@
 use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
+#[allow(unused_imports, reason = "docs")]
+use crate::state_machine::{evaluator, garbler};
 use crate::{
     ChallengeResponseMsg, CommitMsg, DepositAdaptors, DepositId, GarblingSeed, InputShares, MsgId,
     PubKey, ReservedDepositInputShares, ReservedWithdrawalInputShares, Sighashes,
@@ -12,26 +14,36 @@ use crate::{
 #[non_exhaustive]
 pub enum Action {
     /// Generate polynomials from the base seed.
+    /// Result: [`garbler::Input::PolynomialCommitmentsGenerated`]
     GeneratePolynomialCommitments,
     /// Generate input/output shares from polynomials.
+    /// Result: [`garbler::Input::SharesGenerated`]
     GenerateShares(Index),
+    /// Result: [`garbler::Input::TableCommitmentGenerated`]
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
     /// Send commit message with polynomial and table commitments to evaluator.
+    /// Result: [`evaluator::Input::RecvCommitMsg`] on evaluator
     SendCommitMsg(CommitMsg),
     /// Acknowledge receipt of challenge message from evaluator.
+    /// Result: [`evaluator::Input::ChallengeMsgAcked`] on evaluator
     AckChallengeMsg(MsgId),
     /// Send challenge response with revealed seeds and shares.
+    /// Result: [`evaluator::Input::RecvChallengeResponseMsg`] on evaluator
     SendChallengeResponseMsg(ChallengeResponseMsg),
     /// Transfer a garbling table to the evaluator.
+    /// Result: [`garbler::Input::GarblingTableTransferred`]
     TransferGarblingTable(GarblingSeed),
 
     /// Acknowledge receipt of adaptor signatures for a deposit.
+    /// Result: [`evaluator::Input::DepositAdaptorMsgAcked`] on evaluator
     DepositAckAdaptorMsg(DepositId, MsgId),
     /// Verify adaptor signatures received from evaluator.
+    /// Result: [`garbler::Input::DepositAdaptorVerificationResult`]
     DepositVerifyAdaptors(DepositId, AdaptorVerificationData),
 
     /// Complete adaptor signatures for a disputed withdrawal.
+    /// Result: [`garbler::Input::AdaptorSignaturesCompleted`]
     CompleteAdaptorSignatures(DepositId, CompleteAdaptorSignaturesData),
 }
 
