@@ -57,8 +57,12 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     };
 
                     // generate actions
-                    for idx in 0..N_CIRCUITS {
-                        let index = Index::new(idx + 1).expect("valid index");
+                    for idx in 0..N_CIRCUITS + 1 {
+                        let index = if idx == 0 {
+                            Index::reserved()
+                        } else {
+                            Index::new(idx).expect("valid index")
+                        };
                         actions.push(Action::GenerateShares(index));
                     }
                 }
@@ -68,10 +72,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
         Input::SharesGenerated(index, input_shares, output_shares) => {
             match &mut state.step {
                 Step::GeneratingShares { generated } => {
-                    let idx = index.get().checked_sub(1).ok_or_else(|| {
-                        // not expecting reserved (0) index
-                        SMError::InvalidInputData
-                    })?;
+                    let idx = index.get();
                     if generated[idx] {
                         // already have this data
                         return Err(SMError::InvalidInputData);
@@ -497,11 +498,15 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
             actions.push(Action::GeneratePolynomialCommitments);
         }
         Step::GeneratingShares { generated } => {
-            for idx in 0..N_CIRCUITS {
+            for idx in 0..N_CIRCUITS + 1 {
                 if generated[idx] {
                     continue;
                 }
-                let index = Index::new(idx + 1).expect("valid index");
+                let index = if idx == 0 {
+                    Index::reserved()
+                } else {
+                    Index::new(idx).expect("valid index")
+                };
                 actions.push(Action::GenerateShares(index));
             }
         }

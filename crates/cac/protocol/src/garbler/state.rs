@@ -59,7 +59,10 @@ pub enum Step {
     /// Polynomials generated.
     GeneratingPolynomialCommitments,
     /// Generate shares for all tables.
-    GeneratingShares { generated: BitArr!(for N_CIRCUITS) },
+    GeneratingShares {
+        // reserverd index (0) + all circuits (1..=N_CIRCUITS)
+        generated: BitArr!(for N_CIRCUITS + 1),
+    },
     /// Dispatch actions to generate commitments.
     /// Wait for all table commitments to be provided.
     GeneratingTableCommitments {
