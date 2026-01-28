@@ -57,6 +57,17 @@ use std::{alloc::alloc_zeroed, mem::MaybeUninit};
 /// });
 /// assert_eq!(arr[1][2][3], 523);
 /// ```
+///
+/// Real-world usage (committing to polynomials):
+/// ```ignore
+/// fn commit_polynomials(polynomials: &InputPolynomials) -> Box<InputPolynomialCommitments> {
+///     init_in_place(|wire, slot| {
+///         for (lbl, inner) in uninit_array_mut(slot).iter_mut().enumerate() {
+///             inner.write(polynomials[wire][lbl].commit());
+///         }
+///     })
+/// }
+/// ```
 pub fn init_in_place<V, const N: usize, F>(mut init: F) -> Box<[V; N]>
 where
     F: FnMut(usize, &mut MaybeUninit<V>),
