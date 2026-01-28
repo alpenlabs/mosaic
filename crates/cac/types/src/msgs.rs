@@ -81,17 +81,3 @@ impl HasMsgId for AdaptorMsg {
         todo!()
     }
 }
-
-/// All Valid message types between peers
-#[allow(missing_docs, reason = "wip")]
-#[derive(Debug)]
-pub enum Msg {
-    CommitMsg(CommitMsg),
-    ChallengeMsg(ChallengeMsg),
-    ChallengeResponseMsg(ChallengeResponseMsg),
-    AdaptorMsg(AdaptorMsg),
-    CommitMsgAck(MsgId),
-    ChallengeMsgAck(MsgId),
-    ChallengeResponseMsgAck(MsgId),
-    AdaptorMsgAck(MsgId),
-}
