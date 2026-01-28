@@ -1,6 +1,6 @@
 //! Boxed array utils
 
-use std::{alloc::alloc_zeroed, mem::MaybeUninit};
+use std::mem::MaybeUninit;
 
 /// Initialize a large fixed-size array directly on the heap, avoiding stack overflow.
 ///
@@ -132,4 +132,94 @@ pub fn uninit_array_mut<T, const N: usize>(
 ) -> &mut [MaybeUninit<T>; N] {
     // SAFETY: MaybeUninit<[T; N]> and [MaybeUninit<T>; N] have the same layout
     unsafe { &mut *(slot.as_mut_ptr() as *mut [MaybeUninit<T>; N]) }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// Helper to track drop calls for testing drop behavior.
+    struct DropCounter<'a>(&'a AtomicUsize);
+
+    impl Drop for DropCounter<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn panic_drops_initialized_elements() {
+        let drop_count = AtomicUsize::new(0);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Box<[DropCounter<'_>; 10]> = init_in_place(|i, slot| {
+                if i == 5 {
+                    panic!("deliberate panic at index 5");
+                }
+                slot.write(DropCounter(&drop_count));
+            });
+        }));
+
+        assert!(result.is_err(), "should have panicked");
+        assert_eq!(
+            drop_count.load(Ordering::SeqCst),
+            5,
+            "elements 0..5 should have been dropped"
+        );
+    }
+
+    #[test]
+    fn all_elements_dropped_on_box_drop() {
+        let drop_count = AtomicUsize::new(0);
+
+        {
+            let _arr: Box<[DropCounter<'_>; 10]> = init_in_place(|_, slot| {
+                slot.write(DropCounter(&drop_count));
+            });
+            assert_eq!(drop_count.load(Ordering::SeqCst), 0, "no drops yet");
+        }
+
+        assert_eq!(
+            drop_count.load(Ordering::SeqCst),
+            10,
+            "all 10 elements should be dropped exactly once"
+        );
+    }
+
+    #[test]
+    fn zero_sized_array() {
+        let arr: Box<[u64; 0]> = init_in_place(|_, slot| {
+            slot.write(42);
+        });
+        assert_eq!(arr.len(), 0);
+    }
+
+    #[test]
+    fn single_element_array() {
+        let arr: Box<[u64; 1]> = init_in_place(|i, slot| {
+            slot.write(i as u64 * 7);
+        });
+        assert_eq!(arr[0], 0);
+    }
+
+    #[test]
+    fn zero_sized_type() {
+        let arr: Box<[(); 100]> = init_in_place(|_, slot| {
+            slot.write(());
+        });
+        assert_eq!(arr.len(), 100);
+    }
+
+    #[test]
+    fn large_array_exceeding_stack_size() {
+        // 16MB array - larger than typical stack size (8MB on Linux, 1MB on Windows)
+        const SIZE: usize = 2 * 1024 * 1024; // 2M elements × 8 bytes = 16MB
+        let arr: Box<[u64; SIZE]> = init_in_place(|i, slot| {
+            slot.write(i as u64);
+        });
+        assert_eq!(arr[0], 0);
+        assert_eq!(arr[SIZE - 1], (SIZE - 1) as u64);
+    }
 }
