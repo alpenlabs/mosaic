@@ -13,6 +13,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Action {
+    // ----- SETUP -----
     /// Generate polynomials from the base seed.
     /// Result: [`garbler::Input::PolynomialCommitmentsGenerated`]
     GeneratePolynomialCommitments,
@@ -35,6 +36,7 @@ pub enum Action {
     /// Result: [`garbler::Input::GarblingTableTransferred`]
     TransferGarblingTable(GarblingSeed),
 
+    // ----- DEPOSIT -----
     /// Acknowledge receipt of adaptor signatures for a deposit.
     /// Result: [`evaluator::Input::DepositAdaptorMsgAcked`] on evaluator
     DepositAckAdaptorMsg(DepositId, MsgId),
@@ -42,6 +44,7 @@ pub enum Action {
     /// Result: [`garbler::Input::DepositAdaptorVerificationResult`]
     DepositVerifyAdaptors(DepositId, AdaptorVerificationData),
 
+    // ----- WITHDRAWAL -----
     /// Complete adaptor signatures for a disputed withdrawal.
     /// Result: [`garbler::Input::AdaptorSignaturesCompleted`]
     CompleteAdaptorSignatures(DepositId, CompleteAdaptorSignaturesData),

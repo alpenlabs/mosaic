@@ -10,6 +10,7 @@ use crate::{
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Input {
+    // ----- SETUP -----
     /// Initialize evaluator state machine.
     Init(EvaluatorInitData),
     /// Commit message received.
@@ -25,6 +26,7 @@ pub enum Input {
     /// Garbling table received from garbler.
     GarblingTableReceived(GarblingTableCommitment),
 
+    // ----- DEPOSIT -----
     /// Initialize deposit for specified deposit id.
     DepositInit(DepositId, EvaluatorDepositInitData),
     /// Adaptors generated for deposit and withdrawal wires.
@@ -32,6 +34,7 @@ pub enum Input {
     /// Adaptor message with specified `MsgId` was acked.
     DepositAdaptorMsgAcked(DepositId, MsgId),
 
+    // ----- WITHDRAWAL -----
     /// Mark deposit as withdrawn without dispute.
     DepositUndisputedWithdrawal(DepositId),
     /// Initiate disputed withdrawal for this deposit.

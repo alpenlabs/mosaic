@@ -10,6 +10,7 @@ use crate::{
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Input {
+    // ----- SETUP -----
     /// Initialize garbler state machine.
     Init(GarblerInitData),
     /// Polynomial commitments generated.
@@ -27,12 +28,15 @@ pub enum Input {
     /// Garbling table generated with specified seed was transferred to the other party.
     GarblingTableTransferred(GarblingSeed, GarblingTableCommitment),
 
+    // ----- DEPOSIT -----
     /// Initialize deposit for specified deposit id.
     DepositInit(DepositId, GarblerDepositInitData),
     /// Adaptor message received for this deposit.
     DepositRecvAdaptorMsg(DepositId, AdaptorMsg),
     /// Deposit adaptor verification passed or failed.
     DepositAdaptorVerificationResult(DepositId, bool),
+
+    // ----- WITHDRAWAL -----
     /// Mark deposit as withdrawn without dispute.
     DepositUndisputedWithdrawal(DepositId),
     /// Initiate disputed withdrawal for this deposit.

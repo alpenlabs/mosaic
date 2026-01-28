@@ -12,6 +12,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Action {
+    // ----- SETUP -----
     /// Acknowledge receipt of commit message from garbler.
     /// Result: [`garbler::Input::CommitMsgAcked`] on garbler
     AckCommitMsg(MsgId),
@@ -31,6 +32,7 @@ pub enum Action {
     /// Result: [`evaluator::Input::GarblingTableReceived`]
     AcceptGarblingTableTransfer(GarblingTableCommitment),
 
+    // ----- DEPOSIT -----
     /// Generate adaptors for a deposit.
     /// Result: [`evaluator::Input::DepositAdaptorsGenerated`]
     DepositGenerateAdaptors(DepositId),
@@ -38,6 +40,7 @@ pub enum Action {
     /// Result: [`garbler::Input::DepositRecvAdaptorMsg`] on garbler
     DepositSendAdaptorMsg(DepositId, AdaptorMsg),
 
+    // ----- WITHDRAWAL -----
     /// Evaluate a single garbling table with provided inputs
     /// Result: [`evaluator::Input::TableEvaluationResult`]
     EvaluateGarblingTable(Index, GarblingTableCommitment),

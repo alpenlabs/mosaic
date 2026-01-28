@@ -53,6 +53,7 @@ pub struct Context {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Step {
+    // ----- SETUP -----
     #[default]
     /// Not initialized; Default
     Uninit,
@@ -88,6 +89,8 @@ pub enum Step {
     /// Setup is completed, ready to be used for deposits.
     /// Accepts deposit inputs
     SetupComplete,
+
+    // ----- WITHDRAWAL -----
     /// Disputed Withdrawal is triggered.
     /// Compleing adaptor sigs.
     CompletingAdaptors {
@@ -99,6 +102,8 @@ pub enum Step {
         /// Disputed withdrawal for deposit
         deposit_id: DepositId,
     },
+
+    // ----- ABORT -----
     /// Setup was aborted due to a protocol violation.
     Aborted {
         /// Abort reason

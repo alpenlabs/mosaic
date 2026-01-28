@@ -53,6 +53,7 @@ pub struct Context {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Step {
+    // ----- SETUP -----
     #[default]
     Uninit,
     WaitingForCommit,
@@ -69,6 +70,8 @@ pub enum Step {
         received: BitArr!(for N_EVAL_CIRCUITS),
     },
     SetupComplete,
+
+    // ----- WITHDRAWAL -----
     EvaluatingTables {
         eval_indices: EvaluationIndices,
         eval_commitments: EvalGarblingTableCommitments,
@@ -79,6 +82,8 @@ pub enum Step {
         /// Disputed withdrawal for deposit
         deposit_id: DepositId,
     },
+
+    // ----- ABORT -----
     /// Setup was aborted due to a protocol violation.
     Aborted {
         reason: String,
