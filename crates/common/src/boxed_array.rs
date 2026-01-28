@@ -23,7 +23,7 @@ use std::mem::MaybeUninit;
 ///
 /// 1D array:
 /// ```
-/// use common::array::init_in_place;
+/// use mosaic_common::boxed_array::init_in_place;
 ///
 /// let arr: Box<[u64; 1000]> = init_in_place(|i, slot| {
 ///     slot.write(i as u64 * 2);
@@ -34,7 +34,7 @@ use std::mem::MaybeUninit;
 ///
 /// 2D array (no intermediate stack allocation):
 /// ```
-/// use common::array::{init_in_place, uninit_array_mut};
+/// use mosaic_common::boxed_array::{init_in_place, uninit_array_mut};
 ///
 /// let arr: Box<[[u64; 50]; 100]> = init_in_place(|i, slot| {
 ///     for (j, inner) in uninit_array_mut(slot).iter_mut().enumerate() {
@@ -46,7 +46,7 @@ use std::mem::MaybeUninit;
 ///
 /// 3D array:
 /// ```
-/// use common::array::{init_in_place, uninit_array_mut};
+/// use mosaic_common::boxed_array::{init_in_place, uninit_array_mut};
 ///
 /// let arr: Box<[[[u64; 10]; 50]; 100]> = init_in_place(|i, slot| {
 ///     for (j, middle) in uninit_array_mut(slot).iter_mut().enumerate() {
