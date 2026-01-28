@@ -253,16 +253,12 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 eval_commitments,
                 transferred,
             } => {
-                let Some(index) = eval_seeds.iter().enumerate().find_map(|(idx, seed)| {
-                    if seed == &garbling_seed {
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                }) else {
+                let Some(index) = eval_seeds.iter().position(|&seed| seed == garbling_seed) else {
+                    // Not a garbling table we are expecting to be transferred.
                     return Err(SMError::InvalidInputData);
                 };
 
+                // sanity check
                 if eval_commitments[index] != commitment {
                     return Err(SMError::InvalidInputData);
                 }
