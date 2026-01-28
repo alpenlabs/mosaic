@@ -65,7 +65,6 @@ pub enum Step {
         verified: BitArr!(for N_OPEN_CIRCUITS),
     },
     ReceivingGarblingTables {
-        eval_indices: EvaluationIndices,
         eval_commitments: EvalGarblingTableCommitments,
         received: BitArr!(for N_EVAL_CIRCUITS),
     },

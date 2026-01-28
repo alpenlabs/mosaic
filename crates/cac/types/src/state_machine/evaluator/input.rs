@@ -23,13 +23,15 @@ pub enum Input {
     /// Garbling table commitment generated.
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Garbling table received from garbler.
-    GarblingTableReceived(Index, GarblingTableCommitment),
+    GarblingTableReceived(GarblingTableCommitment),
+
     /// Initialize deposit for specified deposit id.
     DepositInit(DepositId, EvaluatorDepositInitData),
     /// Adaptors generated for deposit and withdrawal wires.
     DepositAdaptorsGenerated(DepositId, Box<DepositAdaptors>, Box<WithdrawalAdaptors>),
     /// Adaptor message with specified `MsgId` was acked.
     DepositAdaptorMsgAcked(DepositId, MsgId),
+
     /// Mark deposit as withdrawn without dispute.
     DepositUndisputedWithdrawal(DepositId),
     /// Initiate disputed withdrawal for this deposit.

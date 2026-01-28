@@ -126,8 +126,8 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
         Input::TableCommitmentGenerated(index, table_commitment) => {
             handle_table_commitment_generated(state, index, table_commitment, &mut actions).await?;
         }
-        Input::GarblingTableReceived(index, table_commitment) => {
-            handle_table_received(state, index, table_commitment).await?;
+        Input::GarblingTableReceived(table_commitment) => {
+            handle_table_received(state, table_commitment).await?;
         }
         Input::DepositInit(
             deposit_id,
@@ -342,18 +342,10 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
         }
         Step::VerifyingOpenedInputShares => {
             let challenge_idxs = state.artifact_store.load_challenge_indices().await?;
-            let input_polynomial_commitments = state
-                .artifact_store
-                .load_input_polynomial_commitments()
-                .await?;
 
-            let opened_input_shares = state.artifact_store.load_openend_input_shares().await?;
-
-            actions.push(Action::VerifyOpenedInputShares(
-                challenge_idxs,
-                opened_input_shares,
-                input_polynomial_commitments,
-            ));
+            // NOTE: required input polynomials and shares should be fetched by the job directly
+            // from db.
+            actions.push(Action::VerifyOpenedInputShares(challenge_idxs));
         }
         Step::VerifyingTableCommitments {
             opened_indices,
@@ -374,9 +366,17 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
             }
         }
         Step::ReceivingGarblingTables {
-            eval_commitments, ..
+            eval_commitments,
+            received,
+            ..
         } => {
-            actions.push(Action::ReceiveGarblingTables(*eval_commitments));
+            for idx in 0..N_EVAL_CIRCUITS {
+                if received[idx] {
+                    continue;
+                }
+                let commitment = eval_commitments[idx];
+                actions.push(Action::AcceptGarblingTableTransfer(commitment));
+            }
         }
         Step::SetupComplete => {
             for (deposit_id, deposit_state) in state.deposits.iter() {
@@ -543,11 +543,7 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
 
             // generate actions
             // exec_verify: 1) Verify opened input shares against polynomial commitments
-            actions.push(Action::VerifyOpenedInputShares(
-                challenge_idxs,
-                response_msg.opened_input_shares,
-                input_polynomial_commitments,
-            ));
+            actions.push(Action::VerifyOpenedInputShares(challenge_idxs));
 
             Ok(())
         }
@@ -594,13 +590,16 @@ async fn handle_table_commitment_generated<S: EvaluatorArtifactStore>(
                     .await?;
                 let eval_commitments = get_eval_commitments(&eval_idxs, &garbling_commitments);
                 state.step = Step::ReceivingGarblingTables {
-                    eval_indices: eval_idxs,
                     eval_commitments,
                     received: BitArray::ZERO,
                 };
 
                 // expect to receive garbling tables with these commitments
-                actions.push(Action::ReceiveGarblingTables(eval_commitments));
+                #[allow(clippy::needless_range_loop, reason = "consistent pattern")]
+                for idx in 0..N_EVAL_CIRCUITS {
+                    let commitment = eval_commitments[idx];
+                    actions.push(Action::AcceptGarblingTableTransfer(commitment));
+                }
             }
             // else stay on same step and wait for all tables to be verified
 
@@ -612,27 +611,17 @@ async fn handle_table_commitment_generated<S: EvaluatorArtifactStore>(
 
 async fn handle_table_received<S: EvaluatorArtifactStore>(
     state: &mut State<S>,
-    index: Index,
     table_commitment: GarblingTableCommitment,
 ) -> SMResult<()> {
     match &mut state.step {
         Step::ReceivingGarblingTables {
-            eval_indices: eval_idxs,
             eval_commitments,
             received,
         } => {
-            let Some(idx) = eval_idxs.iter().position(|&x| x == index) else {
-                // not an index that we are expecting
+            let Some(idx) = eval_commitments.iter().position(|&x| x == table_commitment) else {
+                // not a garbling table that we are expecting
                 return Err(SMError::InvalidInputData);
             };
-
-            let expected_commitment = eval_commitments[idx];
-            if table_commitment != expected_commitment {
-                state.step = Step::Aborted {
-                    reason: format!("invalid table for index {}", index),
-                };
-                return Ok(());
-            }
 
             received.set(idx, true);
 
