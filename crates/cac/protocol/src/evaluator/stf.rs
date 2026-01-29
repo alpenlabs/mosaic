@@ -5,7 +5,7 @@ use mosaic_cac_types::{
     Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
     PolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs,
     state_machine::evaluator::{
-        Action, EvaluatorDepositInitData, EvaluatorDisputedWithdrawalData, Input,
+        Action, EvaluatorContestedWithdrawalData, EvaluatorDepositInitData, Input,
     },
 };
 use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
@@ -228,7 +228,7 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
             }
             _ => return Err(SMError::UnexpectedInput),
         },
-        Input::DepositUndisputedWithdrawal(deposit_id) => {
+        Input::DepositUncontestedWithdrawal(deposit_id) => {
             match state.step {
                 Step::SetupComplete => {
                     let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
@@ -238,7 +238,7 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
 
                     match deposit_state.step {
                         DepositStep::DepositReady => {
-                            deposit_state.step = DepositStep::WithdrawnUndisputed;
+                            deposit_state.step = DepositStep::WithdrawnUncontested;
                         }
                         _ => return Err(SMError::UnexpectedInput),
                     }
@@ -246,9 +246,9 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        Input::DisputedWithdrawal(
+        Input::ContestedWithdrawal(
             deposit_id,
-            EvaluatorDisputedWithdrawalData {
+            EvaluatorContestedWithdrawalData {
                 signatures,
                 withdrawal_inputs,
             },
@@ -409,7 +409,7 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
                         actions.push(Action::DepositSendAdaptorMsg(*deposit_id, adaptor_msg));
                     }
                     DepositStep::DepositReady => {}
-                    DepositStep::WithdrawnUndisputed => {}
+                    DepositStep::WithdrawnUncontested => {}
                     DepositStep::Aborted { .. } => {}
                 }
             }

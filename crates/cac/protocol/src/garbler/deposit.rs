@@ -5,7 +5,7 @@ pub enum DepositStep {
     WaitingForAdaptors,
     VerifyingAdaptors,
     DepositReady,
-    WithdrawnUndisputed,
+    WithdrawnUncontested,
     Aborted { reason: String },
 }
 

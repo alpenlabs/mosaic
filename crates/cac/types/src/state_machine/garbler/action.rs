@@ -45,7 +45,7 @@ pub enum Action {
     DepositVerifyAdaptors(DepositId, AdaptorVerificationData),
 
     // ----- WITHDRAWAL -----
-    /// Complete adaptor signatures for a disputed withdrawal.
+    /// Complete adaptor signatures for a contested withdrawal.
     /// Result: [`garbler::Input::AdaptorSignaturesCompleted`]
     CompleteAdaptorSignatures(DepositId, CompleteAdaptorSignaturesData),
 }
@@ -65,7 +65,7 @@ pub struct AdaptorVerificationData {
     pub sighashes: Box<Sighashes>,
 }
 
-/// Data required to complete adaptor signatures during a disputed withdrawal.
+/// Data required to complete adaptor signatures during a contested withdrawal.
 #[derive(Debug, PartialEq, Eq)]
 pub struct CompleteAdaptorSignaturesData {
     /// Public key used to verify adaptors created under evaluator's secret key.

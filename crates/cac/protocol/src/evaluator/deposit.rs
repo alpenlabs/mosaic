@@ -13,6 +13,6 @@ pub enum DepositStep {
     GeneratingAdaptors,
     SendingAdaptors,
     DepositReady,
-    WithdrawnUndisputed,
+    WithdrawnUncontested,
     Aborted { reason: String },
 }

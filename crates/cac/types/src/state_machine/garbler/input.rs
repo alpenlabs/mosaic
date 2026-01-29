@@ -38,9 +38,9 @@ pub enum Input {
 
     // ----- WITHDRAWAL -----
     /// Mark deposit as withdrawn without dispute.
-    DepositUndisputedWithdrawal(DepositId),
-    /// Initiate disputed withdrawal for this deposit.
-    DisputedWithdrawal(DepositId, Box<WithdrawalInputs>),
+    DepositUncontestedWithdrawal(DepositId),
+    /// Initiate contested withdrawal for this deposit.
+    ContestedWithdrawal(DepositId, Box<WithdrawalInputs>),
     /// Adaptor signatures completed for this deposit.
     AdaptorSignaturesCompleted(DepositId, Box<CompletedSignatures>),
 }

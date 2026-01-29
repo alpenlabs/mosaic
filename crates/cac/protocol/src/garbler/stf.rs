@@ -391,7 +391,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        Input::DepositUndisputedWithdrawal(deposit_id) => {
+        Input::DepositUncontestedWithdrawal(deposit_id) => {
             match state.step {
                 Step::SetupComplete => {
                     let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
@@ -400,7 +400,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     };
                     match deposit_state.step {
                         DepositStep::DepositReady => {
-                            deposit_state.step = DepositStep::WithdrawnUndisputed;
+                            deposit_state.step = DepositStep::WithdrawnUncontested;
                         }
                         _ => return Err(SMError::UnexpectedInput),
                     }
@@ -408,7 +408,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        Input::DisputedWithdrawal(deposit_id, withdrawal_input) => {
+        Input::ContestedWithdrawal(deposit_id, withdrawal_input) => {
             match state.step {
                 Step::SetupComplete => {
                     let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
@@ -611,7 +611,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
                         ));
                     }
                     DepositStep::DepositReady => {}
-                    DepositStep::WithdrawnUndisputed => {}
+                    DepositStep::WithdrawnUncontested => {}
                     DepositStep::Aborted { .. } => {}
                 }
             }

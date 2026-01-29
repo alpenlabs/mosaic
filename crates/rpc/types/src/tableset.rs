@@ -53,7 +53,7 @@ pub enum RpcTablesetSetupStatus {
     /// This setup can noew be used to process deposits.
     SetupComplete,
 
-    /// Setup has been used for withdrawal dispute resolution.
+    /// Setup has been used for contested withdrawal.
     /// DO NOT USE THIS SETUP AGAIN.
     Consumed,
 

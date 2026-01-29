@@ -36,9 +36,9 @@ pub enum Input {
 
     // ----- WITHDRAWAL -----
     /// Mark deposit as withdrawn without dispute.
-    DepositUndisputedWithdrawal(DepositId),
-    /// Initiate disputed withdrawal for this deposit.
-    DisputedWithdrawal(DepositId, EvaluatorDisputedWithdrawalData),
+    DepositUncontestedWithdrawal(DepositId),
+    /// Initiate contested withdrawal for this deposit.
+    ContestedWithdrawal(DepositId, EvaluatorContestedWithdrawalData),
     /// Result of a garbling table evaluation.
     TableEvaluationResult(GarblingTableCommitment, Option<CircuitOutputShare>),
 }
@@ -63,9 +63,9 @@ pub struct EvaluatorDepositInitData {
     pub deposit_inputs: Box<DepositInputs>,
 }
 
-/// Data required to initiate disputed withdrawal process.
+/// Data required to initiate contested withdrawal process.
 #[derive(Debug)]
-pub struct EvaluatorDisputedWithdrawalData {
+pub struct EvaluatorContestedWithdrawalData {
     /// Withdrawal input wire values.
     // NOTE: this might not be required
     pub withdrawal_inputs: Box<WithdrawalInputs>,

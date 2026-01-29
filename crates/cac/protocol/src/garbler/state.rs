@@ -91,15 +91,15 @@ pub enum Step {
     SetupComplete,
 
     // ----- WITHDRAWAL -----
-    /// Disputed Withdrawal is triggered.
+    /// Contested Withdrawal is triggered.
     /// Compleing adaptor sigs.
     CompletingAdaptors {
-        /// Disputed withdrawal for deposit
+        /// Contested withdrawal for deposit
         deposit_id: DepositId,
     },
     /// Setup is consumed by a withdrawal dispute. Cannot be reused.
     SetupConsumed {
-        /// Disputed withdrawal for deposit
+        /// Contested withdrawal for deposit
         deposit_id: DepositId,
     },
 

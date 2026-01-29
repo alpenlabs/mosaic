@@ -79,7 +79,7 @@ pub enum Step {
     },
     /// Setup is consumed by a withdrawal dispute. Cannot be reused.
     SetupConsumed {
-        /// Disputed withdrawal for deposit
+        /// Contested withdrawal for deposit
         deposit_id: DepositId,
     },
 
