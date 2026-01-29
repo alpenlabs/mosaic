@@ -68,8 +68,9 @@ pub type OpenedInputShares = [CircuitInputShares; N_OPEN_CIRCUITS];
 /// Reserved input shares for wide labels corresponding to agreed setup inputs, for each setup input
 /// wire.
 pub type ReservedSetupInputShares = [Share; N_SETUP_INPUT_WIRES];
-/// Reserved input shares for all wide label values corresponding to deposit input wires.
-pub type ReservedDepositInputShares = [WideLabelWireShares; N_DEPOSIT_INPUT_WIRES];
+/// Reserved input shares for wide label values corresponding to agreed deposit inputs, for each
+/// deposit input wire.
+pub type ReservedDepositInputShares = [Share; N_DEPOSIT_INPUT_WIRES];
 /// Reserved input shares for all wide labels corresponding to withdrawal input wires.
 pub type ReservedWithdrawalInputShares = [WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES];
 /// Shares for value 0 output wire for for all opened indices.
