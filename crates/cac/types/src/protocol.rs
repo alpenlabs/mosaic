@@ -1,19 +1,25 @@
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use mosaic_common::{
     Byte32,
     constants::{
         N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS,
-        N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT, WideLabelValue,
+        N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
+        WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK, WideLabelValue,
     },
 };
+pub use mosaic_heap_array::HeapArray;
 pub use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 use mosaic_vs3::{Point, Scalar};
 
 use crate::{Adaptor, GarblingTableCommitment, Seed, Signature};
 
-/// Polynomials for all wide label values for a single wire
-pub type WideLabelWirePolynomials = [Polynomial; WIDE_LABEL_VALUE_COUNT];
-/// Polynomial commitments for all wide label values for a single wire
-pub type WideLabelWirePolynomialCommitments = [PolynomialCommitment; WIDE_LABEL_VALUE_COUNT];
+/// Polynomials for all wide label values for a single wire.
+/// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
+pub type WideLabelWirePolynomials = HeapArray<Polynomial, WIDE_LABEL_VALUE_COUNT>;
+/// Polynomial commitments for all wide label values for a single wire.
+/// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
+pub type WideLabelWirePolynomialCommitments =
+    HeapArray<PolynomialCommitment, WIDE_LABEL_VALUE_COUNT>;
 
 /// Input wire polynomials.
 pub type InputPolynomials = [WideLabelWirePolynomials; N_INPUT_WIRES];
@@ -40,14 +46,17 @@ pub type OpenedGarblingTableCommitments = [GarblingTableCommitment; N_OPEN_CIRCU
 pub type EvalGarblingTableCommitments = [GarblingTableCommitment; N_EVAL_CIRCUITS];
 
 /// Challenged `N_COEFFICIENTS` indices. Must NOT include reserved index 0.
-pub type ChallengeIndices = [Index; N_OPEN_CIRCUITS];
+/// Uses HeapArray for derive macro support.
+pub type ChallengeIndices = HeapArray<Index, N_OPEN_CIRCUITS>;
 /// `N_CIRCUITS - N_COEFFICIENTS` indices for evaluation.
 pub type EvaluationIndices = [Index; N_EVAL_CIRCUITS];
 
-/// Shares for all wide label values for a single wire
-pub type WideLabelWireShares = [Share; WIDE_LABEL_VALUE_COUNT];
-/// Shares for all wide label values, for all input wires, for a single circuit
-pub type CircuitInputShares = [WideLabelWireShares; N_INPUT_WIRES];
+/// Shares for all wide label values for a single wire.
+/// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
+pub type WideLabelWireShares = HeapArray<Share, WIDE_LABEL_VALUE_COUNT>;
+/// Shares for all wide label values, for all input wires, for a single circuit.
+/// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
+pub type CircuitInputShares = HeapArray<WideLabelWireShares, N_INPUT_WIRES>;
 /// Share for value 0 of output wire for a single circuit
 pub type CircuitOutputShare = Share;
 
@@ -84,16 +93,21 @@ pub type OpenedGarblingSeeds = [GarblingSeed; N_OPEN_CIRCUITS];
 /// Seeds for garbling table generation for evaluation indices.
 pub type EvalGarblingSeeds = [GarblingSeed; N_EVAL_CIRCUITS];
 
-/// Adaptor pre-signaures for all wide label values for a single wire
-pub type WideLabelWireAdaptors = [Adaptor; WIDE_LABEL_VALUE_COUNT];
+/// Adaptor pre-signaures for all wide label values for a single wire.
+/// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
+pub type WideLabelWireAdaptors = HeapArray<Adaptor, WIDE_LABEL_VALUE_COUNT>;
 
 /// Adaptor pre-signatures corresponding to deposit input wide label values for deposit wires.
 pub type DepositAdaptors = [Adaptor; N_DEPOSIT_INPUT_WIRES];
 /// Adaptor pre-signatures for all wide label values for all withdrawal input wires.
 pub type WithdrawalAdaptors = [WideLabelWireAdaptors; N_WITHDRAWAL_INPUT_WIRES];
+/// Adaptor pre-signatures for withdrawal wires in a single chunk (41 wires × 256 values).
+/// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
+pub type AdaptorMsgChunkWithdrawals =
+    HeapArray<WideLabelWireAdaptors, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK>;
 
 /// Sighash used in transaction signing;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Sighash(pub Byte32);
 /// List of sighashes corresponding to deposit and withdrawal input wires.
 pub type Sighashes = [Sighash; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
@@ -109,9 +123,9 @@ pub type WithdrawalInputs = [WideLabelValue; N_WITHDRAWAL_INPUT_WIRES];
 pub type CompletedSignatures = [Signature; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
 
 /// A public key.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct SecretKey(pub Scalar);
 
 /// A secret Key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct PubKey(pub Point);

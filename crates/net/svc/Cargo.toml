@@ -1,5 +1,5 @@
 [package]
-name = "net-svc"
+name = "mosaic-net-svc"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -35,7 +35,7 @@ rustls = { version = "0.23", default-features = false, features = [
 x509-parser = "0.17"
 
 # Wire format
-net-wire = { path = "../net-wire" }
+mosaic-net-wire = { path = "../wire" }
 
 # Utilities
 ahash = "0.8"

@@ -2,8 +2,8 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    ChallengeResponseMsg, CommitMsg, DepositAdaptors, DepositId, GarblingSeed, InputShares, MsgId,
-    PubKey, ReservedDepositInputShares, ReservedWithdrawalInputShares, Sighashes,
+    ChallengeResponseMsgChunk, CommitMsgChunk, DepositAdaptors, DepositId, GarblingSeed,
+    InputShares, PubKey, ReservedDepositInputShares, ReservedWithdrawalInputShares, Sighashes,
     WithdrawalAdaptors, WithdrawalInputs,
 };
 
@@ -17,17 +17,17 @@ pub enum Action {
     GenerateShares(Index),
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
-    /// Send commit message with polynomial and table commitments to evaluator.
-    SendCommitMsg(CommitMsg),
+    /// Send commit message chunk with polynomial commitments for a single wire to evaluator.
+    SendCommitMsgChunk(CommitMsgChunk),
     /// Acknowledge receipt of challenge message from evaluator.
-    AckChallengeMsg(MsgId),
-    /// Send challenge response with revealed seeds and shares.
-    SendChallengeResponseMsg(ChallengeResponseMsg),
+    AckChallengeMsg,
+    /// Send challenge response chunk with revealed shares for a single circuit.
+    SendChallengeResponseMsgChunk(ChallengeResponseMsgChunk),
     /// Transfer a garbling table to the evaluator.
     TransferGarblingTable(GarblingSeed),
 
     /// Acknowledge receipt of adaptor signatures for a deposit.
-    DepositAckAdaptorMsg(DepositId, MsgId),
+    DepositAckAdaptorMsg(DepositId),
     /// Verify adaptor signatures received from evaluator.
     DepositVerifyAdaptors(DepositId, AdaptorVerificationData),
 

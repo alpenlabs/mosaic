@@ -1,5 +1,7 @@
 //! Verifiable secret sharing over the secp256k1 curve.
 
+pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+
 mod constants;
 mod error;
 mod interpolate;

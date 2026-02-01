@@ -34,7 +34,7 @@ pub fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
         } => {
             handle_open_stream_request(
                 peer,
-                net_wire::StreamType::Protocol,
+                mosaic_net_wire::StreamType::Protocol,
                 priority,
                 respond_to,
                 state,
@@ -47,7 +47,7 @@ pub fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
             priority,
             respond_to,
         } => {
-            let stream_type = net_wire::StreamType::BulkTransfer { identifier };
+            let stream_type = mosaic_net_wire::StreamType::BulkTransfer { identifier };
             handle_open_stream_request(peer, stream_type, priority, respond_to, state);
         }
 
@@ -64,7 +64,7 @@ pub fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
 /// Handle a request to open a stream.
 fn handle_open_stream_request(
     peer: PeerId,
-    stream_type: net_wire::StreamType,
+    stream_type: mosaic_net_wire::StreamType,
     priority: i32,
     respond_to: kanal::AsyncSender<Result<Stream, OpenStreamError>>,
     state: &mut ServiceState,
@@ -367,7 +367,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
         } => {
             // Route the stream based on its type
             match stream_type {
-                net_wire::StreamType::Protocol => {
+                mosaic_net_wire::StreamType::Protocol => {
                     tasks::spawn_protocol_stream_router(
                         peer,
                         send,
@@ -375,7 +375,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                         state.protocol_stream_tx.clone(),
                     );
                 }
-                net_wire::StreamType::BulkTransfer { identifier } => {
+                mosaic_net_wire::StreamType::BulkTransfer { identifier } => {
                     let hash: [u8; 32] = blake3::hash(&identifier).into();
                     let key = (peer, hash);
 

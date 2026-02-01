@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use bitvec::BitArr;
 use mosaic_cac_types::{
-    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, MsgId, Seed,
-    SetupInputs,
+    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, Seed, SetupInputs,
 };
 use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS};
 
@@ -41,12 +40,12 @@ pub struct Config {
 /// This should only hold simple bookkeeping related states.
 #[derive(Debug, Default)]
 pub struct Context {
-    /// ID of commit msg that has been sent.
-    pub(crate) sent_commit_msg_id: Option<MsgId>,
-    /// ID of challenge msg that has been accepted and ACK'd.
-    pub(crate) ackd_challenge_msg_id: Option<MsgId>,
-    /// ID of challenge response msg that has been sent.
-    pub(crate) sent_challenge_response_msg_id: Option<MsgId>,
+    /// Commit message was sent.
+    pub(crate) sent_commit_msg: bool,
+    /// Challenge message was accepted and ACK'd.
+    pub(crate) ackd_challenge_msg: bool,
+    /// Challenge response message was sent.
+    pub(crate) sent_challenge_response_msg: bool,
 }
 
 /// Valid states.

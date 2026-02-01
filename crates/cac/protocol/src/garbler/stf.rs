@@ -2,7 +2,7 @@ use bitvec::array::BitArray;
 use mosaic_cac_types::{
     AdaptorMsg, AllGarblingSeeds, AllGarblingTableCommitments, AllPolynomials, ChallengeIndices,
     ChallengeMsg, ChallengeResponseMsg, CommitMsg, EvalGarblingSeeds, EvalGarblingTableCommitments,
-    EvaluationIndices, HasMsgId, Index, InputShares, OutputShares, ReservedDepositInputShares,
+    EvaluationIndices, Index, InputShares, OutputShares, ReservedDepositInputShares,
     ReservedInputShares, ReservedWithdrawalInputShares, Seed, SetupInputs,
     state_machine::garbler::{
         Action, AdaptorVerificationData, CompleteAdaptorSignaturesData, GarblerDepositInitData,
@@ -144,36 +144,19 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        Input::CommitMsgAcked(msg_id) => match state.step {
+        Input::CommitMsgAcked => match state.step {
             Step::SendingCommit => {
-                let Some(sent_msg_id) = state.context.sent_commit_msg_id else {
-                    return Err(SMError::StateInconsistency("missing sent_commit_msg_id"));
-                };
-
-                if sent_msg_id != msg_id {
-                    return Err(SMError::UnexpectedMsgId(msg_id));
-                }
-
                 state.step = Step::WaitingForChallenge;
             }
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::RecvChallengeMsg(challenge_msg) => {
-            if let Some(ackd_challenge_msg_id) = state.context.ackd_challenge_msg_id {
-                // a challenge message has already been acked.
-                // should ack again if it is the same message, ignore if different.
-                let incoming_msg_id = challenge_msg.id();
-
-                if ackd_challenge_msg_id != incoming_msg_id {
-                    return Err(SMError::UnexpectedMsgId(incoming_msg_id));
-                }
-
-                actions.push(Action::AckChallengeMsg(ackd_challenge_msg_id));
+            if state.context.ackd_challenge_msg {
+                actions.push(Action::AckChallengeMsg);
             } else {
                 match state.step {
                     Step::SendingCommit | Step::WaitingForChallenge => {
                         if is_valid_challenge(&challenge_msg) {
-                            let msg_id = challenge_msg.id();
                             let (input_shares, output_shares) =
                                 state.artifact_store.load_shares().await?;
                             let config = require_config(state)?;
@@ -189,11 +172,11 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                                 .artifact_store
                                 .save_challenge_indices(challenge_msg.challenge_indices.as_ref())
                                 .await?;
-                            state.context.ackd_challenge_msg_id = Some(msg_id);
+                            state.context.ackd_challenge_msg = true;
 
                             state.step = Step::SendingChallengeResponse;
 
-                            actions.push(Action::AckChallengeMsg(msg_id));
+                            actions.push(Action::AckChallengeMsg);
                             actions.push(Action::SendChallengeResponseMsg(challenge_response_msg));
                         } else {
                             // TODO: should this abort, or just ignore and stay at same state ?
@@ -206,18 +189,8 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                 }
             }
         }
-        Input::ChallengeResponseAcked(msg_id) => match state.step {
+        Input::ChallengeResponseAcked => match state.step {
             Step::SendingChallengeResponse => {
-                let Some(sent_msg_id) = state.context.sent_challenge_response_msg_id else {
-                    return Err(SMError::StateInconsistency(
-                        "missing sent_challenge_response_msg_id",
-                    ));
-                };
-
-                if sent_msg_id != msg_id {
-                    return Err(SMError::UnexpectedMsgId(msg_id));
-                }
-
                 let challenge_indices = state.artifact_store.load_challenge_indices().await?;
                 let eval_indices = get_eval_indices(challenge_indices.as_ref());
 
@@ -311,61 +284,47 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                         return Err(SMError::UnknownDeposit(deposit_id));
                     };
 
-                    if let Some(ackd_adaptor_msg_id) = deposit_state.ackd_adaptor_msg_id {
-                        // an adaptor message has already been acked for this deposit.
-                        // should ack again if it is the same message, ignore if different.
-                        let incoming_msg_id = adaptor_msg.id();
-
-                        if ackd_adaptor_msg_id != incoming_msg_id {
-                            return Err(SMError::UnexpectedMsgId(incoming_msg_id));
-                        }
-
-                        actions.push(Action::DepositAckAdaptorMsg(
-                            deposit_id,
-                            ackd_adaptor_msg_id,
-                        ));
-                    } else {
-                        match deposit_state.step {
-                            DepositStep::WaitingForAdaptors => {
-                                let msg_id = adaptor_msg.id();
-                                let AdaptorMsg {
-                                    deposit_adaptors,
-                                    withdrawal_adaptors,
-                                } = adaptor_msg;
-                                state
-                                    .artifact_store
-                                    .save_adaptors_for_deposit(
-                                        deposit_id,
-                                        deposit_adaptors.as_ref(),
-                                        withdrawal_adaptors.as_ref(),
-                                    )
-                                    .await?;
-
-                                let (input_shares, _) = state.artifact_store.load_shares().await?;
-                                let sighashes = state
-                                    .artifact_store
-                                    .load_sighashes_for_deposit(deposit_id)
-                                    .await?;
-
-                                let adaptor_verif_data = AdaptorVerificationData {
-                                    pk: deposit_state.pk,
-                                    deposit_adaptors,
-                                    withdrawal_adaptors,
-                                    input_shares,
-                                    sighashes,
-                                };
-
-                                deposit_state.ackd_adaptor_msg_id = Some(msg_id);
-                                deposit_state.step = DepositStep::VerifyingAdaptors;
-
-                                actions.push(Action::DepositAckAdaptorMsg(deposit_id, msg_id));
-                                actions.push(Action::DepositVerifyAdaptors(
+                    match deposit_state.step {
+                        DepositStep::WaitingForAdaptors => {
+                            let AdaptorMsg {
+                                deposit_adaptors,
+                                withdrawal_adaptors,
+                            } = adaptor_msg;
+                            state
+                                .artifact_store
+                                .save_adaptors_for_deposit(
                                     deposit_id,
-                                    adaptor_verif_data,
-                                ));
-                            }
-                            _ => return Err(SMError::UnexpectedInput),
-                        };
+                                    deposit_adaptors.as_ref(),
+                                    withdrawal_adaptors.as_ref(),
+                                )
+                                .await?;
+
+                            let (input_shares, _) = state.artifact_store.load_shares().await?;
+                            let sighashes = state
+                                .artifact_store
+                                .load_sighashes_for_deposit(deposit_id)
+                                .await?;
+
+                            let adaptor_verif_data = AdaptorVerificationData {
+                                pk: deposit_state.pk,
+                                deposit_adaptors,
+                                withdrawal_adaptors,
+                                input_shares,
+                                sighashes,
+                            };
+
+                            deposit_state.step = DepositStep::VerifyingAdaptors;
+
+                            actions.push(Action::DepositAckAdaptorMsg(deposit_id));
+                            actions.push(Action::DepositVerifyAdaptors(
+                                deposit_id,
+                                adaptor_verif_data,
+                            ));
+                        }
+                        _ => {
+                            // If we've already processed adaptors, re-ack for idempotency.
+                            actions.push(Action::DepositAckAdaptorMsg(deposit_id));
+                        }
                     }
                 }
                 _ => return Err(SMError::UnexpectedInput),
@@ -529,11 +488,11 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
         }
         Step::WaitingForChallenge => {}
         Step::SendingChallengeResponse => {
-            let Some(challenge_msg_id) = state.context.ackd_challenge_msg_id else {
+            if !state.context.ackd_challenge_msg {
                 return Err(SMError::StateInconsistency(
-                    "SendingChallengeResponse: missing expected ackd_challenge_msg_id",
+                    "SendingChallengeResponse: challenge message not acknowledged",
                 ));
-            };
+            }
             let challenge_indices = state.artifact_store.load_challenge_indices().await?;
             let (input_shares, output_shares) = state.artifact_store.load_shares().await?;
             let config = require_config(state)?;
@@ -546,20 +505,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
                 config.setup_inputs,
             );
 
-            // sanity check
-            let Some(challenge_response_msg_id) = state.context.sent_challenge_response_msg_id
-            else {
-                return Err(SMError::StateInconsistency(
-                    "SendingChallengeResponse: missing expected sent_challenge_response_msg_id",
-                ));
-            };
-            if challenge_response_msg_id != challenge_response_msg.id() {
-                return Err(SMError::StateInconsistency(
-                    "SendingChallengeResponse: unexpected challenge_response_msg id",
-                ));
-            }
-
-            actions.push(Action::AckChallengeMsg(challenge_msg_id));
+            actions.push(Action::AckChallengeMsg);
             actions.push(Action::SendChallengeResponseMsg(challenge_response_msg));
         }
         Step::TransferringGarblingTables {
@@ -579,12 +525,6 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
                 match &deposit_state.step {
                     DepositStep::WaitingForAdaptors => {}
                     DepositStep::VerifyingAdaptors => {
-                        let Some(msg_id) = deposit_state.ackd_adaptor_msg_id else {
-                            return Err(SMError::StateInconsistency(
-                                "missing expected deposit ackd_adaptor_msg_id",
-                            ));
-                        };
-
                         let (input_shares, _) = state.artifact_store.load_shares().await?;
                         let sighashes = state
                             .artifact_store
@@ -603,7 +543,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
                             sighashes,
                         };
 
-                        actions.push(Action::DepositAckAdaptorMsg(*deposit_id, msg_id));
+                        actions.push(Action::DepositAckAdaptorMsg(*deposit_id));
                         actions.push(Action::DepositVerifyAdaptors(
                             *deposit_id,
                             adaptor_verif_data,
