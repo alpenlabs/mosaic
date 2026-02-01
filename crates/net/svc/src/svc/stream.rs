@@ -94,7 +94,7 @@ async fn write_task(
                     StreamRequest::Write { buf } => {
                         // Encode frame with length prefix
                         frame_buf.clear();
-                        if let Err(e) = net_wire::encode_frame_unchecked(&buf, &mut frame_buf) {
+                        if let Err(e) = mosaic_net_wire::encode_frame_unchecked(&buf, &mut frame_buf) {
                             tracing::warn!(error = %e, "failed to encode frame");
                             // Return buffer anyway
                             let mut buf = buf;
@@ -166,13 +166,13 @@ async fn read_task(
     close_tx: AsyncSender<StreamClosed>,
     close_state: Arc<CloseState>,
 ) {
-    let limits = net_wire::FrameLimits::default();
+    let limits = mosaic_net_wire::FrameLimits::default();
     let mut buf = Vec::with_capacity(limits.max_recv_size as usize + 4);
     let mut read_buf = [0u8; 64 * 1024];
 
     loop {
         // Try to decode a complete frame from buffer
-        match net_wire::decode_frame(&buf, &limits) {
+        match mosaic_net_wire::decode_frame(&buf, &limits) {
             Ok((payload, consumed)) => {
                 // Send payload to caller
                 if payload_tx.send(payload).await.is_err() {
@@ -185,10 +185,10 @@ async fn read_task(
                 buf.drain(..consumed);
                 continue; // Try to decode more frames
             }
-            Err(net_wire::DecodeError::Incomplete { .. }) => {
+            Err(mosaic_net_wire::DecodeError::Incomplete { .. }) => {
                 // Need more data - fall through to read
             }
-            Err(net_wire::DecodeError::FrameTooLarge { size, max }) => {
+            Err(mosaic_net_wire::DecodeError::FrameTooLarge { size, max }) => {
                 tracing::warn!(size = size, max = max, "frame too large, closing stream");
                 if close_state.set_if_empty(StreamClosed::Disconnected) {
                     let _ = close_tx.send(StreamClosed::Disconnected).await;
@@ -215,7 +215,7 @@ async fn read_task(
 
                 // Process any remaining data in buffer
                 while !buf.is_empty() {
-                    match net_wire::decode_frame(&buf, &limits) {
+                    match mosaic_net_wire::decode_frame(&buf, &limits) {
                         Ok((payload, consumed)) => {
                             let _ = payload_tx.send(payload).await;
                             buf.drain(..consumed);

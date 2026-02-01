@@ -34,3 +34,13 @@ pub const N_WITHDRAWAL_INPUT_WIRES: usize = 128 + 36;
 /// Total number of input wire groups.
 pub const N_INPUT_WIRES: usize =
     N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES;
+
+/// Number of withdrawal wires per AdaptorMsgChunk.
+/// This divides evenly: 164 / 4 = 41 wires per chunk.
+pub const WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK: usize =
+    N_WITHDRAWAL_INPUT_WIRES / N_DEPOSIT_INPUT_WIRES;
+
+const _: () = assert!(
+    N_WITHDRAWAL_INPUT_WIRES % N_DEPOSIT_INPUT_WIRES == 0,
+    "N_WITHDRAWAL_INPUT_WIRES must be divisible by N_DEPOSIT_INPUT_WIRES for clean chunking"
+);

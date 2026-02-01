@@ -78,7 +78,7 @@ pub struct ServiceState {
 /// A pending request to open a stream.
 pub struct PendingStreamRequest {
     /// Type of stream to open.
-    pub stream_type: net_wire::StreamType,
+    pub stream_type: mosaic_net_wire::StreamType,
     /// Stream priority.
     pub priority: i32,
     /// Channel to send the result back to the caller.
@@ -116,7 +116,7 @@ pub enum ServiceEvent {
     /// Stream header was read, ready for routing.
     StreamReady {
         peer: PeerId,
-        stream_type: net_wire::StreamType,
+        stream_type: mosaic_net_wire::StreamType,
         send: quinn::SendStream,
         recv: quinn::RecvStream,
     },

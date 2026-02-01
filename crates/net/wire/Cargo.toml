@@ -1,5 +1,5 @@
 [package]
-name = "net-wire"
+name = "mosaic-net-wire"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use net_svc::{
+use mosaic_net_svc::{
     PeerId,
     api::StreamClosed,
     config::{NetServiceConfig, PeerConfig},
@@ -53,8 +53,8 @@ fn test_addr(port: u16) -> SocketAddr {
 }
 
 struct TestPeer {
-    handle: net_svc::NetServiceHandle,
-    controller: net_svc::svc::NetServiceController,
+    handle: mosaic_net_svc::NetServiceHandle,
+    controller: mosaic_net_svc::svc::NetServiceController,
     peer_id: PeerId,
 }
 
@@ -220,7 +220,7 @@ fn test_peer_not_found_error() {
 
     assert!(matches!(
         result,
-        Err(net_svc::api::OpenStreamError::PeerNotFound)
+        Err(mosaic_net_svc::api::OpenStreamError::PeerNotFound)
     ));
 
     peer_a.shutdown();

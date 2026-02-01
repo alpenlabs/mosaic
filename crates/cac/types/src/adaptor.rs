@@ -1,7 +1,8 @@
 use ark_secp256k1::{Fr as Scalar, Projective as Point};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 /// An adaptor pre-signature (verifiably encrypted signature).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Adaptor {
     /// The tweaked scalar component.
     pub tweaked_s: Scalar,
@@ -13,7 +14,7 @@ pub struct Adaptor {
 
 /// A completed signature
 // TODO: replace this type after adaptor related changes are merged.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Signature {
     /// S
     pub s: Scalar,

@@ -1,9 +1,9 @@
 use mosaic_vs3::Index;
 
 use crate::{
-    AdaptorMsg, AllPolynomialCommitments, ChallengeMsg, CircuitInputShares, CircuitOutputShare,
-    CompletedSignatures, DepositId, DepositInputs, GarblingSeed, GarblingTableCommitment, MsgId,
-    PubKey, Seed, SetupInputs, Sighashes, WithdrawalInputs,
+    AdaptorMsgChunk, AllPolynomialCommitments, ChallengeMsg, CircuitInputShares,
+    CircuitOutputShare, CompletedSignatures, DepositId, DepositInputs, GarblingSeed,
+    GarblingTableCommitment, PubKey, Seed, SetupInputs, Sighashes, WithdrawalInputs,
 };
 
 /// Garbler state machine inputs.
@@ -18,19 +18,19 @@ pub enum Input {
     SharesGenerated(Index, Box<CircuitInputShares>, Box<CircuitOutputShare>),
     /// Garbling table commitment generated.
     TableCommitmentGenerated(Index, GarblingTableCommitment),
-    /// Commit message with specified `MsgId` was acked.
-    CommitMsgAcked(MsgId),
+    /// Commit message was acked by peer.
+    CommitMsgAcked,
     /// Challenge message received.
     RecvChallengeMsg(ChallengeMsg),
-    /// Challenge response message with specified `MsgId` was acked.
-    ChallengeResponseAcked(MsgId),
+    /// Challenge response message was acked by peer.
+    ChallengeResponseAcked,
     /// Garbling table generated with specified seed was transferred to the other party.
     GarblingTableTransferred(GarblingSeed, GarblingTableCommitment),
 
     /// Initialize deposit for specified deposit id.
     DepositInit(DepositId, GarblerDepositInitData),
-    /// Adaptor message received for this deposit.
-    DepositRecvAdaptorMsg(DepositId, AdaptorMsg),
+    /// Adaptor message chunk received for this deposit.
+    DepositRecvAdaptorMsgChunk(DepositId, AdaptorMsgChunk),
     /// Deposit adaptor verification passed or failed.
     DepositAdaptorVerificationResult(DepositId, bool),
     /// Mark deposit as withdrawn without dispute.

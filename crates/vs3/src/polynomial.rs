@@ -2,6 +2,7 @@
 
 use ark_ff::{UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::{
@@ -13,6 +14,37 @@ use crate::{
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Index(usize);
+
+impl CanonicalSerialize for Index {
+    fn serialize_with_mode<W: ark_serialize::Write>(
+        &self,
+        writer: W,
+        compress: ark_serialize::Compress,
+    ) -> Result<(), ark_serialize::SerializationError> {
+        (self.0 as u64).serialize_with_mode(writer, compress)
+    }
+
+    fn serialized_size(&self, compress: ark_serialize::Compress) -> usize {
+        (self.0 as u64).serialized_size(compress)
+    }
+}
+
+impl CanonicalDeserialize for Index {
+    fn deserialize_with_mode<R: ark_serialize::Read>(
+        reader: R,
+        compress: ark_serialize::Compress,
+        validate: Validate,
+    ) -> Result<Self, ark_serialize::SerializationError> {
+        let value = u64::deserialize_with_mode(reader, compress, validate)?;
+        Ok(Self(value as usize))
+    }
+}
+
+impl Valid for Index {
+    fn check(&self) -> Result<(), ark_serialize::SerializationError> {
+        Ok(())
+    }
+}
 
 impl std::fmt::Display for Index {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -52,7 +84,7 @@ impl Index {
 }
 
 /// A share of a polynomial, representing an index and an evaluation value at that index.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Share(Index, Scalar);
 
 impl Share {
@@ -78,11 +110,11 @@ impl Share {
 }
 
 /// A commitment to a share of a polynomial.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct ShareCommitment(Index, Point);
 
 /// A polynomial with scalar coefficients.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Polynomial {
     coefficients: [Scalar; N_COEFFICIENTS],
 }
@@ -119,7 +151,7 @@ impl Polynomial {
 
 /// A polynomial with point coefficients, representing a commitment to the polynomial's scalar
 /// coefficients.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct PolynomialCommitment {
     coefficients: [Point; N_COEFFICIENTS],
 }

@@ -217,7 +217,7 @@ pub fn spawn_stream_header_reader(
 
             // Decode header
             let (header, _) =
-                net_wire::StreamHeader::decode(&buf[..1 + remaining]).map_err(|e| e.to_string())?;
+                mosaic_net_wire::StreamHeader::decode(&buf[..1 + remaining]).map_err(|e| e.to_string())?;
 
             Ok(header.stream_type)
         }
@@ -251,7 +251,7 @@ pub fn spawn_stream_header_reader(
 pub fn spawn_stream_opener(
     peer: PeerId,
     connection: quinn::Connection,
-    stream_type: net_wire::StreamType,
+    stream_type: mosaic_net_wire::StreamType,
     priority: i32,
     respond_to: AsyncSender<Result<Stream, OpenStreamError>>,
 ) {
@@ -267,7 +267,7 @@ pub fn spawn_stream_opener(
             let _ = send.set_priority(priority);
 
             // Write stream header
-            let header = net_wire::StreamHeader::new(stream_type);
+            let header = mosaic_net_wire::StreamHeader::new(stream_type);
             let mut header_buf = Vec::new();
             header.encode(&mut header_buf);
 

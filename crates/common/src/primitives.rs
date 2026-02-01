@@ -1,7 +1,21 @@
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use serde::{Deserialize, Serialize};
 
 /// A 32 byte value.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Deserialize, Serialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Hash,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Deserialize,
+    Serialize,
+    CanonicalSerialize,
+    CanonicalDeserialize,
+)]
 pub struct Byte32([u8; 32]);
 
 impl AsRef<[u8]> for Byte32 {
@@ -41,7 +55,9 @@ impl std::fmt::Display for Byte32 {
 }
 
 /// Represents a stable identifier for a node over p2p.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, Deserialize, Serialize, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize,
+)]
 pub struct PeerId(pub Vec<u8>);
 
 impl std::fmt::Display for PeerId {

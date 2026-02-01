@@ -1,8 +1,8 @@
 use bitvec::array::BitArray;
 use mosaic_cac_types::{
     AdaptorMsg, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, ChallengeResponseMsg,
-    CommitMsg, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment, HasMsgId,
-    Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
+    CommitMsg, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment, Index,
+    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
     PolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs,
     state_machine::evaluator::{
         Action, EvaluatorDepositInitData, EvaluatorDisputedWithdrawalData, Input,
@@ -40,44 +40,24 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
             }
         }
         Input::RecvCommitMsg(commit_msg) => {
-            if let Some(ackd_commit_msg_id) = state.context.ackd_commit_msg_id {
-                // a commit message has already been acked.
-                // should ack again if its teh same message, ignore if different.
-                let incoming_msg_id = commit_msg.id();
-
-                if ackd_commit_msg_id != incoming_msg_id {
-                    return Err(SMError::UnexpectedMsgId(incoming_msg_id));
-                }
-
-                actions.push(Action::AckCommitMsg(ackd_commit_msg_id));
+            if state.context.ackd_commit_msg {
+                actions.push(Action::AckCommitMsg);
             } else {
                 handle_commit_msg(state, commit_msg, &mut actions).await?;
             }
         }
         // NOTE: This input might be unnecessary
-        Input::ChallengeMsgAcked(msg_id) => match state.step {
+        Input::ChallengeMsgAcked => match state.step {
             Step::WaitingForChallengeResponse => {
-                let Some(sent_msg_id) = state.context.sent_challenge_msg_id else {
-                    return Err(SMError::StateInconsistency("missing sent_challenge_msg_id"));
-                };
-
-                if sent_msg_id != msg_id {
-                    return Err(SMError::UnexpectedMsgId(msg_id));
+                if !state.context.sent_challenge_msg {
+                    return Err(SMError::StateInconsistency("missing sent_challenge_msg"));
                 }
             }
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::RecvChallengeResponseMsg(response_msg) => {
-            if let Some(ackd_response_msg_id) = state.context.ackd_challenge_response_msg_id {
-                // a challenge response message has already been acked.
-                // should ack again if it is the same message, ignore if different.
-                let incoming_msg_id = response_msg.id();
-
-                if ackd_response_msg_id != incoming_msg_id {
-                    return Err(SMError::UnexpectedMsgId(incoming_msg_id));
-                }
-
-                actions.push(Action::AckChallengeResponseMsg(ackd_response_msg_id));
+            if state.context.ackd_challenge_response_msg {
+                actions.push(Action::AckChallengeResponseMsg);
             } else {
                 handle_recv_challenge_response_msg(state, response_msg, &mut actions).await?;
             }
@@ -158,7 +138,6 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
                         DepositState {
                             step: DepositStep::GeneratingAdaptors,
                             sk,
-                            sent_adaptor_msg_id: None,
                         },
                     );
 
@@ -192,8 +171,6 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
                                 deposit_adaptors,
                                 withdrawal_adaptors,
                             };
-                            deposit_state.sent_adaptor_msg_id = Some(adaptor_msg.id());
-
                             actions.push(Action::DepositSendAdaptorMsg(deposit_id, adaptor_msg));
                         }
                         _ => return Err(SMError::UnexpectedInput),
@@ -202,7 +179,7 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        Input::DepositAdaptorMsgAcked(deposit_id, msg_id) => match state.step {
+        Input::DepositAdaptorMsgAcked(deposit_id) => match state.step {
             Step::SetupComplete => {
                 let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
                     // deposit does not exist
@@ -211,16 +188,6 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
 
                 match deposit_state.step {
                     DepositStep::SendingAdaptors => {
-                        let Some(sent_adaptor_msg_id) = deposit_state.sent_adaptor_msg_id else {
-                            return Err(SMError::StateInconsistency(
-                                "SendingAdaptors: missing expected sent_adaptor_msg_id",
-                            ));
-                        };
-
-                        if sent_adaptor_msg_id != msg_id {
-                            return Err(SMError::UnexpectedMsgId(msg_id));
-                        }
-
                         deposit_state.step = DepositStep::DepositReady;
                     }
                     _ => return Err(SMError::UnexpectedInput),
@@ -317,27 +284,20 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
         Step::Uninit => {}
         Step::WaitingForCommit => {}
         Step::WaitingForChallengeResponse => {
-            let Some(commit_msg_id) = state.context.ackd_commit_msg_id else {
+            if !state.context.ackd_commit_msg {
                 return Err(SMError::StateInconsistency(
-                    "WaitingForChallengeResponse: missing expected ackd_commit_msg_id",
+                    "WaitingForChallengeResponse: missing expected ackd_commit_msg",
                 ));
-            };
+            }
+            if !state.context.sent_challenge_msg {
+                return Err(SMError::StateInconsistency(
+                    "WaitingForChallengeResponse: missing expected sent_challenge_msg",
+                ));
+            }
             let challenge_indices = state.artifact_store.load_challenge_indices().await?;
             let challenge_msg = ChallengeMsg { challenge_indices };
 
-            // sanity check
-            let Some(challenge_msg_id) = state.context.sent_challenge_msg_id else {
-                return Err(SMError::StateInconsistency(
-                    "WaitingForChallengeResponse: missing expected sent_challenge_msg_id",
-                ));
-            };
-            if challenge_msg_id != challenge_msg.id() {
-                return Err(SMError::StateInconsistency(
-                    "WaitingForChallengeResponse: unexpected challenge_msg id",
-                ));
-            }
-
-            actions.push(Action::AckCommitMsg(commit_msg_id));
+            actions.push(Action::AckCommitMsg);
             actions.push(Action::SendChallengeMsg(challenge_msg));
         }
         Step::VerifyingOpenedInputShares => {
@@ -394,18 +354,6 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
                             withdrawal_adaptors,
                         };
 
-                        // sanity check
-                        let Some(adaptor_msg_id) = deposit_state.sent_adaptor_msg_id else {
-                            return Err(SMError::StateInconsistency(
-                                "SendingAdaptors: missing expected sent_adaptor_msg_id",
-                            ));
-                        };
-                        if adaptor_msg_id != adaptor_msg.id() {
-                            return Err(SMError::StateInconsistency(
-                                "SendingAdaptors: unexpected adaptor_msg id",
-                            ));
-                        }
-
                         actions.push(Action::DepositSendAdaptorMsg(*deposit_id, adaptor_msg));
                     }
                     DepositStep::DepositReady => {}
@@ -436,7 +384,6 @@ async fn handle_commit_msg<S: EvaluatorArtifactStore>(
             }
 
             // state update
-            let msg_id = commit_msg.id();
             let config = require_config(state)?;
             let challenge_indices = sample_challenge_indices(config.seed);
             debug_assert!(is_sorted(challenge_indices.as_ref()));
@@ -454,12 +401,13 @@ async fn handle_commit_msg<S: EvaluatorArtifactStore>(
                 .save_challenge_indices(&challenge_indices)
                 .await?;
 
-            state.context.ackd_challenge_response_msg_id = Some(msg_id);
+            state.context.ackd_commit_msg = true;
+            state.context.sent_challenge_msg = true;
             state.step = Step::WaitingForChallengeResponse;
 
             // generate actions
             let challenge_msg = ChallengeMsg { challenge_indices };
-            actions.push(Action::AckCommitMsg(msg_id));
+            actions.push(Action::AckCommitMsg);
             actions.push(Action::SendChallengeMsg(challenge_msg));
             Ok(())
         }
@@ -538,6 +486,9 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
                 .artifact_store
                 .save_opened_garbling_seeds(&response_msg.opened_garbling_seeds)
                 .await?;
+
+            state.context.ackd_challenge_response_msg = true;
+            actions.push(Action::AckChallengeResponseMsg);
 
             state.step = Step::VerifyingOpenedInputShares;
 

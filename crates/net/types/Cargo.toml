@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-vs3"
+name = "mosaic-net-types"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,15 +11,6 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-ark-ec.workspace = true
-ark-ff.workspace = true
-ark-secp256k1.workspace = true
-ark-serialize.workspace = true
-rand_core.workspace = true
-thiserror.workspace = true
 
-[dev-dependencies]
-rand.workspace = true
-
-[lints]
-workspace = true
+# [lints]
+# workspace = true

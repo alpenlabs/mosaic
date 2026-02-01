@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use mosaic_cac_types::{DepositId, MsgId};
+use mosaic_cac_types::DepositId;
 
 /// State machine error
 #[derive(Debug, thiserror::Error)]
@@ -11,9 +11,7 @@ pub enum SMError {
     /// Received Input whose data is invalid.
     #[error("Received Input whose data is invalid")]
     InvalidInputData,
-    /// Received Ack for unexpected msg id.
-    #[error("Received Ack for unexpected msg id: {0}")]
-    UnexpectedMsgId(MsgId),
+
     /// Received init for existing deposit.
     #[error("Received init for existing deposit: {0}")]
     DepositAlreadyExists(DepositId),

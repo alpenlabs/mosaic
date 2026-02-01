@@ -50,7 +50,7 @@ fn test_tokio_runtime_in_thread() {
 fn test_service_creation_and_shutdown() {
     // Test creating a service with a peer configured and shutting it down
     use ed25519_dalek::SigningKey;
-    use net_svc::{
+    use mosaic_net_svc::{
         config::{NetServiceConfig, PeerConfig},
         svc::NetService,
         tls::peer_id_from_signing_key,
@@ -85,7 +85,7 @@ fn test_service_creation_and_shutdown() {
 fn test_service_no_peers() {
     // Test service with no peers - verifies basic lifecycle works
     use ed25519_dalek::SigningKey;
-    use net_svc::{config::NetServiceConfig, svc::NetService};
+    use mosaic_net_svc::{config::NetServiceConfig, svc::NetService};
 
     let key = SigningKey::from_bytes(&[1u8; 32]);
     let addr: std::net::SocketAddr = "127.0.0.1:29050".parse().unwrap();
@@ -106,7 +106,7 @@ fn test_service_no_peers() {
 fn test_endpoint_bind() {
     // Test that we can bind a QUIC endpoint directly
     use ed25519_dalek::SigningKey;
-    use net_svc::tls;
+    use mosaic_net_svc::tls;
 
     let key = SigningKey::from_bytes(&[1u8; 32]);
     let peer_id = tls::peer_id_from_signing_key(&key);

@@ -2,8 +2,8 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    AdaptorMsg, ChallengeIndices, ChallengeMsg, DepositId, EvalGarblingTableCommitments,
-    GarblingSeed, GarblingTableCommitment, InputPolynomialCommitments, MsgId, OpenedInputShares,
+    AdaptorMsgChunk, ChallengeIndices, ChallengeMsg, DepositId, EvalGarblingTableCommitments,
+    GarblingSeed, GarblingTableCommitment, InputPolynomialCommitments, OpenedInputShares,
 };
 
 /// Actions emitted by the evaluator state machine for external execution.
@@ -11,11 +11,11 @@ use crate::{
 #[non_exhaustive]
 pub enum Action {
     /// Acknowledge receipt of commit message from garbler.
-    AckCommitMsg(MsgId),
+    AckCommitMsg,
     /// Send challenge message with set of challenge indices.
     SendChallengeMsg(ChallengeMsg),
     /// Acknowledge receipt of challenge response message from garbler.
-    AckChallengeResponseMsg(MsgId),
+    AckChallengeResponseMsg,
     /// Verify opened input shares against polynomial commitments.
     VerifyOpenedInputShares(
         Box<ChallengeIndices>,
@@ -28,8 +28,8 @@ pub enum Action {
     ReceiveGarblingTables(EvalGarblingTableCommitments),
     /// Generate adaptors for a deposit.
     DepositGenerateAdaptors(DepositId),
-    /// Send adaptors for a deposit to garbler.
-    DepositSendAdaptorMsg(DepositId, AdaptorMsg),
+    /// Send adaptor chunk for a deposit to garbler.
+    DepositSendAdaptorMsgChunk(DepositId, AdaptorMsgChunk),
     /// Evaluate a single garbling table with provided inputs
     EvaluateGarblingTable(Index, GarblingTableCommitment),
 }
