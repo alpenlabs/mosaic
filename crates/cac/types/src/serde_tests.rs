@@ -476,6 +476,116 @@ fn test_invalid_msg_variant_fails() {
 }
 
 #[test]
+fn test_invalid_point_deserialization_fails() {
+    // Test that invalid curve points are rejected during deserialization.
+    // We serialize a valid point, then corrupt the bytes to create invalid data.
+
+    // First, get a valid point and its serialization
+    let valid_point = Point::generator();
+    let mut valid_bytes = Vec::new();
+    valid_point
+        .serialize_with_mode(&mut valid_bytes, Compress::Yes)
+        .unwrap();
+
+    // Sanity check: valid point should deserialize successfully
+    assert!(
+        Point::deserialize_with_mode(&valid_bytes[..], Compress::Yes, Validate::Yes).is_ok(),
+        "valid point should deserialize successfully"
+    );
+
+    // Case 1: Corrupt the point data by flipping bits - this creates an invalid point
+    let mut corrupted_bytes = valid_bytes.clone();
+    // Flip several bits in the middle of the serialized data
+    for byte in corrupted_bytes.iter_mut().skip(5).take(10) {
+        *byte ^= 0xFF;
+    }
+    assert!(
+        Point::deserialize_with_mode(&corrupted_bytes[..], Compress::Yes, Validate::Yes).is_err(),
+        "corrupted point data should fail deserialization"
+    );
+
+    // Case 2: Truncated point data should fail
+    let truncated = &valid_bytes[..valid_bytes.len() / 2];
+    assert!(
+        Point::deserialize_with_mode(truncated, Compress::Yes, Validate::Yes).is_err(),
+        "truncated point should fail deserialization"
+    );
+
+    // Case 3: Empty data should fail
+    let empty: &[u8] = &[];
+    assert!(
+        Point::deserialize_with_mode(empty, Compress::Yes, Validate::Yes).is_err(),
+        "empty point data should fail deserialization"
+    );
+
+    // Case 4: All zeros is not a valid point (not on curve)
+    let zeros = vec![0u8; valid_bytes.len()];
+    assert!(
+        Point::deserialize_with_mode(&zeros[..], Compress::Yes, Validate::Yes).is_err(),
+        "all-zero bytes should fail as invalid point"
+    );
+
+    // Case 5: All 0xFF bytes should fail
+    let all_ff = vec![0xFF; valid_bytes.len()];
+    assert!(
+        Point::deserialize_with_mode(&all_ff[..], Compress::Yes, Validate::Yes).is_err(),
+        "all-0xFF bytes should fail as invalid point"
+    );
+}
+
+#[test]
+fn test_invalid_scalar_deserialization_fails() {
+    // Test that invalid/malformed scalar data is rejected during deserialization.
+    // Note: For scalars, ark-serialize accepts any 32-byte value and reduces mod field order,
+    // so we focus on structural invalidity (wrong size).
+
+    // First, get a valid scalar and its serialization
+    let valid_scalar = Scalar::from(12345u64);
+    let mut valid_bytes = Vec::new();
+    valid_scalar
+        .serialize_with_mode(&mut valid_bytes, Compress::Yes)
+        .unwrap();
+
+    // Sanity check: valid scalar should roundtrip correctly
+    let recovered =
+        Scalar::deserialize_with_mode(&valid_bytes[..], Compress::Yes, Validate::Yes).unwrap();
+    assert_eq!(
+        valid_scalar, recovered,
+        "valid scalar should roundtrip correctly"
+    );
+
+    // Case 1: Truncated scalar data should fail
+    let truncated = &valid_bytes[..valid_bytes.len() / 2];
+    assert!(
+        Scalar::deserialize_with_mode(truncated, Compress::Yes, Validate::Yes).is_err(),
+        "truncated scalar should fail deserialization"
+    );
+
+    // Case 2: Empty data should fail
+    let empty: &[u8] = &[];
+    assert!(
+        Scalar::deserialize_with_mode(empty, Compress::Yes, Validate::Yes).is_err(),
+        "empty scalar should fail deserialization"
+    );
+
+    // Case 3: Single byte should fail
+    let single_byte: &[u8] = &[0x42];
+    assert!(
+        Scalar::deserialize_with_mode(single_byte, Compress::Yes, Validate::Yes).is_err(),
+        "single byte should fail scalar deserialization"
+    );
+
+    // Case 4: Scalar value >= field order should fail with Validate::Yes
+    // ark-serialize rejects out-of-range scalars during validation
+    let out_of_range_bytes: [u8; 32] = [0xFF; 32];
+    assert!(
+        Scalar::deserialize_with_mode(&out_of_range_bytes[..], Compress::Yes, Validate::Yes)
+            .is_err(),
+        "scalar >= field order should fail deserialization with validation"
+    );
+}
+
+#[test]
 fn test_deterministic_serialization() {
     use rand::SeedableRng;
 
