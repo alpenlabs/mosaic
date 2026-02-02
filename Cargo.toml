@@ -90,6 +90,7 @@ thiserror = "2.0"
 tokio-util = "0.7"
 tracing = "0.1"
 proptest = "1.5"
+criterion = "0.5"
 
 [profile.release]
 opt-level = 3     # Optimized for size, use 3 for speed
