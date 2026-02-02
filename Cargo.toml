@@ -5,7 +5,6 @@ members = [
   "crates/cac/proto-types",
   "crates/cac/protocol",
   "crates/cac/types",
-  "crates/cac/fdb-bench",
   "crates/common",
   "crates/heap-array",
   "crates/compute-exec",
