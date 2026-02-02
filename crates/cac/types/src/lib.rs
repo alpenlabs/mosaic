@@ -10,6 +10,10 @@ pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_ec as _;
 use ark_ff as _;
 
+// Used by benchmarks
+#[cfg(test)]
+use criterion as _;
+
 mod adaptor;
 mod msgs;
 mod protocol;
