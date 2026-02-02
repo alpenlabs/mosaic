@@ -4,7 +4,7 @@
 //! This module implements an adaptor-based disclosure of per-wire VSSS shares (does not support
 //! wide labels yet):
 //! - `Adaptor::generate` constructs (s', R', S) where R' = r'G, R = R' + S, e = H(tag, R.x, P.x,
-//!   wire_index, sighash),  s' = r' + e·x.
+//!   sighash),  s' = r' + e·x.
 //! - `Adaptor::verify`   checks s'·G == R' + e·P.
 //! - `Adaptor::complete` produces a Schnorr-like (s, R) by s = s' + share, R = R' + S.
 //! - `Adaptor::extract_share` recovers `share` from (s, R) and the adaptor as s − s'.
@@ -93,8 +93,7 @@ pub struct Adaptor {
 
 impl Adaptor {
     /// Generates an adaptor from the evaluator’s master secret key `x`, a commitment
-    /// to the garbler’s share (`S = share·G`), and the `(wire_index, sighash)` transcript data.
-    /// Purely algebraic operation that can't fail.
+    /// to the garbler’s share (`S = share·G`), and the `sighash`
     pub fn generate<R: Rng + CryptoRng>(
         rng: &mut R,
         share_commitment: ark_secp256k1::Projective,
@@ -158,8 +157,8 @@ impl Adaptor {
         self.R_dash_commit + self.share_commitment
     }
 
-    /// Verifies that this adaptor is well-formed for `(P, wire_index, sighash)`:
-    /// checks `s'·G == R' + e·P`, where `e = H(tag, (R'+S).x, P.x, wire_index, sighash)`.
+    /// Verifies that this adaptor is well-formed for `(P, sighash)`:
+    /// checks `s'·G - e.P == R'`, where `e = H(tag, (R'+S).x, P.x, sighash)`.
     pub fn verify(
         &self,
         evaluator_master_pk: ark_secp256k1::Projective,
@@ -239,7 +238,7 @@ impl Adaptor {
         if is_odd { -diff } else { diff }
     }
 
-    /// e = H(BIP0340/challenge, R.x, P.x, wire_index, sighash)
+    /// e = H(BIP0340/challenge, R.x, P.x, sighash)
     fn challenge_e(
         R: ark_secp256k1::Affine,
         P: ark_secp256k1::Affine,
@@ -294,7 +293,6 @@ mod tests {
         S: ark_secp256k1::Projective,
         x: ark_secp256k1::Fr,
         P: ark_secp256k1::Projective,
-        wire_index: usize,
         sighash: Vec<u8>,
         adaptor: Adaptor,
     }
@@ -313,7 +311,6 @@ mod tests {
         }
 
         // Transcript
-        let wire_index = 7usize;
         let sighash = Sha256::digest(b"demo message").to_vec();
 
         // Generate adaptor
@@ -324,7 +321,6 @@ mod tests {
             S,
             x,
             P,
-            wire_index,
             sighash,
             adaptor,
         }
@@ -392,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_fails_with_wrong_sighash_or_wire_index() {
+    fn verify_fails_with_wrong_sighash() {
         let mut rng = thread_rng();
         let fx = fixture(&mut rng);
         // Wrong sighash
@@ -450,7 +446,7 @@ mod tests {
 
     #[test]
     fn verify_equation_matches_definition() {
-        // Cross-check: s'·G == R' + e·P with e computed from (R'+S).x, P.x, wire_index, sighash.
+        // Cross-check: s'·G == R' + e·P with e computed from (R'+S).x, P.x, sighash.
         let mut rng = thread_rng();
         let fx = fixture(&mut rng);
 
