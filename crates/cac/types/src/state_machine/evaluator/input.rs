@@ -27,7 +27,7 @@ pub enum Input {
     /// Initialize deposit for specified deposit id.
     DepositInit(DepositId, EvaluatorDepositInitData),
     /// Adaptors generated for deposit and withdrawal wires.
-    DepositAdaptorsGenerated(DepositId, Box<DepositAdaptors>, Box<WithdrawalAdaptors>),
+    DepositAdaptorsGenerated(DepositId, DepositAdaptors, WithdrawalAdaptors),
     /// Adaptor message was acked by peer for this deposit.
     DepositAdaptorMsgAcked(DepositId),
     /// Mark deposit as withdrawn without dispute.

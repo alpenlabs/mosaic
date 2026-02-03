@@ -98,9 +98,9 @@ pub type EvalGarblingSeeds = [GarblingSeed; N_EVAL_CIRCUITS];
 pub type WideLabelWireAdaptors = HeapArray<Adaptor, WIDE_LABEL_VALUE_COUNT>;
 
 /// Adaptor pre-signatures corresponding to deposit input wide label values for deposit wires.
-pub type DepositAdaptors = [Adaptor; N_DEPOSIT_INPUT_WIRES];
+pub type DepositAdaptors = HeapArray<Adaptor, N_DEPOSIT_INPUT_WIRES>;
 /// Adaptor pre-signatures for all wide label values for all withdrawal input wires.
-pub type WithdrawalAdaptors = [WideLabelWireAdaptors; N_WITHDRAWAL_INPUT_WIRES];
+pub type WithdrawalAdaptors = HeapArray<WideLabelWireAdaptors, N_WITHDRAWAL_INPUT_WIRES>;
 /// Adaptor pre-signatures for withdrawal wires in a single chunk (41 wires × 256 values).
 /// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
 pub type AdaptorMsgChunkWithdrawals =

@@ -1,8 +1,8 @@
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials, ChallengeIndices,
-    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares, ReservedInputShares,
-    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials,
+    ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors,
+    DepositId, DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares,
+    ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
 };
 
 use crate::SMResult;
@@ -44,7 +44,7 @@ pub trait GarblerArtifactStore: Sized {
     ) -> impl Future<Output = SMResult<GarblingTableCommitment>>;
     fn load_all_garbling_table_commitments(
         &self,
-    ) -> impl Future<Output = SMResult<Box<AllGarblingTableCommitments>>>;
+    ) -> impl Future<Output = SMResult<AllGarblingTableCommitments>>;
 
     fn save_challenge_indices(
         &mut self,
@@ -72,11 +72,10 @@ pub trait GarblerArtifactStore: Sized {
         deposit_id: DepositId,
     ) -> impl Future<Output = SMResult<Box<DepositInputs>>>;
 
-    fn save_adaptors_for_deposit(
+    fn save_adaptor_msg_chunk_for_deposit(
         &mut self,
         deposit_id: DepositId,
-        deposit_adaptors: &DepositAdaptors,
-        withdrawal_adaptors: &WithdrawalAdaptors,
+        adaptor_chunk: &AdaptorMsgChunk,
     ) -> impl Future<Output = SMResult<()>>;
     fn load_adaptors_for_deposit(
         &self,

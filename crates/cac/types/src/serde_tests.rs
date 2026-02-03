@@ -6,6 +6,11 @@
 use ark_ec::PrimeGroup;
 use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+use mosaic_common::{
+    Byte32,
+    constants::{N_CIRCUITS, N_OPEN_CIRCUITS},
+};
+use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 use proptest::prelude::*;
 
 use crate::{
@@ -14,9 +19,6 @@ use crate::{
     SecretKey, Sighash, Signature, WideLabelWireAdaptors, WideLabelWirePolynomialCommitments,
     WideLabelWireShares,
 };
-use mosaic_common::Byte32;
-use mosaic_common::constants::{N_CIRCUITS, N_OPEN_CIRCUITS};
-use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 
 /// Helper to perform a serialization roundtrip and verify equality.
 fn roundtrip<T>(value: &T) -> T
