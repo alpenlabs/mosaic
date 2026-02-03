@@ -2,10 +2,22 @@
 
 // Garbling table count constants
 
+#[cfg(not(feature = "reduced-circuits"))]
+mod values {
+    pub(super) const N_CIRCUITS: usize = 181;
+    pub(super) const N_OPEN_CIRCUITS: usize = 174;
+}
+
+#[cfg(feature = "reduced-circuits")]
+mod values {
+    pub(super) const N_CIRCUITS: usize = 5;
+    pub(super) const N_OPEN_CIRCUITS: usize = 3;
+}
+
 /// Number of circuits in a tableset. (N)
-pub const N_CIRCUITS: usize = 181;
+pub const N_CIRCUITS: usize = values::N_CIRCUITS;
 /// Number of circuits opened during CaC for verification. (K)
-pub const N_OPEN_CIRCUITS: usize = 174;
+pub const N_OPEN_CIRCUITS: usize = values::N_OPEN_CIRCUITS;
 /// Number of circuits for evaluation. (N - K)
 pub const N_EVAL_CIRCUITS: usize = N_CIRCUITS - N_OPEN_CIRCUITS;
 

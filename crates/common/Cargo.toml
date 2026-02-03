@@ -10,6 +10,9 @@ repository.workspace = true
 categories.workspace = true
 keywords.workspace = true
 
+[features]
+reduced-circuits = []
+
 [dependencies]
 serde.workspace = true
 
