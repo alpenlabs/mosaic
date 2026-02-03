@@ -8,8 +8,7 @@ use std::sync::Arc;
 
 use kanal::{AsyncReceiver, AsyncSender};
 
-use crate::config::NetServiceConfig;
-use crate::tls::PeerId;
+use crate::{config::NetServiceConfig, tls::PeerId};
 
 /// A buffer for payload data.
 ///
@@ -315,8 +314,8 @@ impl NetServiceHandle {
     /// # Arguments
     ///
     /// * `peer` - The peer to open the stream to (must be in config).
-    /// * `priority` - Stream priority. Higher = more important. Use 0 for normal,
-    ///   1 for high (ACKs), -1 for low.
+    /// * `priority` - Stream priority. Higher = more important. Use 0 for normal, 1 for high
+    ///   (ACKs), -1 for low.
     pub async fn open_protocol_stream(
         &self,
         peer: PeerId,

@@ -13,12 +13,15 @@ use std::{collections::HashSet, sync::Arc};
 use kanal::AsyncSender;
 use quinn::Endpoint;
 
-use crate::api::{OpenStreamError, Stream};
-use crate::tls::PeerId;
-
-use super::conn;
-use super::state::{CONNECTION_TIMEOUT, HEADER_READ_TIMEOUT, ServiceEvent};
-use super::stream;
+use super::{
+    conn,
+    state::{CONNECTION_TIMEOUT, HEADER_READ_TIMEOUT, ServiceEvent},
+    stream,
+};
+use crate::{
+    api::{OpenStreamError, Stream},
+    tls::PeerId,
+};
 
 /// Spawn a task to handle an incoming connection's TLS handshake.
 ///
@@ -216,8 +219,8 @@ pub fn spawn_stream_header_reader(
             }
 
             // Decode header
-            let (header, _) =
-                mosaic_net_wire::StreamHeader::decode(&buf[..1 + remaining]).map_err(|e| e.to_string())?;
+            let (header, _) = mosaic_net_wire::StreamHeader::decode(&buf[..1 + remaining])
+                .map_err(|e| e.to_string())?;
 
             Ok(header.stream_type)
         }
