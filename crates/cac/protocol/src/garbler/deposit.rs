@@ -1,25 +1,22 @@
+use bitvec::BitArr;
 use mosaic_cac_types::PubKey;
+use mosaic_common::constants::N_ADAPTOR_MSG_CHUNKS;
 
 #[derive(Debug)]
 pub enum DepositStep {
-    WaitingForAdaptors,
+    WaitingForAdaptors {
+        chunks: BitArr!(for N_ADAPTOR_MSG_CHUNKS),
+    },
     VerifyingAdaptors,
     DepositReady,
     WithdrawnUndisputed,
-    Aborted { reason: String },
+    Aborted {
+        reason: String,
+    },
 }
 
 #[derive(Debug)]
 pub struct DepositState {
     pub step: DepositStep,
     pub pk: PubKey,
-}
-
-impl DepositState {
-    pub(crate) fn init(pk: PubKey) -> Self {
-        Self {
-            step: DepositStep::WaitingForAdaptors,
-            pk,
-        }
-    }
 }

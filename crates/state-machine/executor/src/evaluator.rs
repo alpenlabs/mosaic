@@ -6,10 +6,11 @@ use mosaic_cac_protocol::{
     evaluator::{EvaluatorSM, artifact::EvaluatorArtifactStore, state::State as EvaluatorState},
 };
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds,
-    OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
-    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
+    ChallengeResponseMsgChunk, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{ActionContainer, EvaluatorInitData, Input},
 };
 
@@ -94,6 +95,17 @@ impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
     }
 
     async fn load_garbling_table_commitments(&self) -> SMResult<Box<AllGarblingTableCommitments>> {
+        todo!()
+    }
+
+    async fn save_commit_msg_chunk(&mut self, chunk: CommitMsgChunk) -> SMResult<()> {
+        todo!()
+    }
+
+    async fn save_challenge_response_msg_chunk(
+        &mut self,
+        chunk: ChallengeResponseMsgChunk,
+    ) -> SMResult<()> {
         todo!()
     }
 

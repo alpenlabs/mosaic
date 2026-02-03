@@ -5,7 +5,9 @@ use mosaic_cac_types::{
     ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
     OpenedGarblingSeeds, OpenedGarblingTableCommitments, Seed, SetupInputs,
 };
-use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
+use mosaic_common::constants::{
+    N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
+};
 
 use crate::evaluator::deposit::DepositState;
 
@@ -55,8 +57,12 @@ pub struct Context {
 pub enum Step {
     #[default]
     Uninit,
-    WaitingForCommit,
-    WaitingForChallengeResponse,
+    WaitingForCommit {
+        chunks: BitArr!(for N_CIRCUITS),
+    },
+    WaitingForChallengeResponse {
+        chunks: BitArr!(for N_CHALLENGE_RESPONSE_CHUNKS),
+    },
     VerifyingOpenedInputShares,
     VerifyingTableCommitments {
         opened_indices: Box<ChallengeIndices>,

@@ -5,11 +5,10 @@
 #![allow(missing_docs)]
 #![allow(unused_crate_dependencies)]
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-
 use ark_ec::PrimeGroup;
 use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use mosaic_cac_types::{
     Adaptor, AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, CircuitInputShares, CommitMsgChunk, WideLabelWireAdaptors,

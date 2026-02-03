@@ -1,9 +1,10 @@
 use bitvec::array::BitArray;
 use mosaic_cac_types::{
-    AdaptorMsg, AllGarblingSeeds, AllGarblingTableCommitments, AllPolynomials, ChallengeIndices,
-    ChallengeMsg, ChallengeResponseMsg, CommitMsg, EvalGarblingSeeds, EvalGarblingTableCommitments,
-    EvaluationIndices, Index, InputShares, OutputShares, ReservedDepositInputShares,
-    ReservedInputShares, ReservedWithdrawalInputShares, Seed, SetupInputs,
+    AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, AllPolynomialCommitments,
+    AllPolynomials, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, CommitMsgChunk,
+    DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, Index,
+    InputShares, OutputShares, ReservedDepositInputShares, ReservedInputShares,
+    ReservedWithdrawalInputShares, Seed, SetupInputs,
     state_machine::garbler::{
         Action, AdaptorVerificationData, CompleteAdaptorSignaturesData, GarblerDepositInitData,
         Input,
@@ -133,11 +134,12 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                             .artifact_store
                             .load_all_garbling_table_commitments()
                             .await?;
-                        let commit_msg = CommitMsg {
+                        for chunk in create_commit_msg_chunks(
                             polynomial_commitments,
                             garbling_table_commitments,
-                        };
-                        actions.push(Action::SendCommitMsg(commit_msg));
+                        ) {
+                            actions.push(Action::SendCommitMsgChunk(chunk));
+                        }
                     }
                     // else stay on same step and wait for all table commitments to be generated
                 }
@@ -161,23 +163,26 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                                 state.artifact_store.load_shares().await?;
                             let config = require_config(state)?;
                             let seeds = generate_garbling_table_seeds(config.seed);
-                            let challenge_response_msg = create_challenge_response_msg(
-                                challenge_msg.challenge_indices.as_ref(),
-                                input_shares,
-                                output_shares,
-                                seeds,
-                                config.setup_inputs,
-                            );
+                            let challenge_response_msg_chunks =
+                                create_challenge_response_msg_chunks(
+                                    &challenge_msg.challenge_indices,
+                                    input_shares,
+                                    output_shares,
+                                    seeds,
+                                    config.setup_inputs,
+                                );
                             state
                                 .artifact_store
-                                .save_challenge_indices(challenge_msg.challenge_indices.as_ref())
+                                .save_challenge_indices(&challenge_msg.challenge_indices)
                                 .await?;
                             state.context.ackd_challenge_msg = true;
 
                             state.step = Step::SendingChallengeResponse;
 
                             actions.push(Action::AckChallengeMsg);
-                            actions.push(Action::SendChallengeResponseMsg(challenge_response_msg));
+                            for chunk in challenge_response_msg_chunks {
+                                actions.push(Action::SendChallengeResponseMsgChunk(chunk));
+                            }
                         } else {
                             // TODO: should this abort, or just ignore and stay at same state ?
                             state.step = Step::Aborted {
@@ -200,7 +205,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     .await?;
                 let eval_commitments = Box::new(get_eval_commitments(
                     &eval_indices,
-                    garbling_table_commitments.as_ref(),
+                    &garbling_table_commitments,
                 ));
 
                 let config = require_config(state)?;
@@ -272,63 +277,26 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                     .save_inputs_for_deposit(deposit_id, deposit_inputs.as_ref())
                     .await?;
 
-                state.deposits.insert(deposit_id, DepositState::init(pk));
+                state.deposits.insert(
+                    deposit_id,
+                    DepositState {
+                        step: DepositStep::WaitingForAdaptors {
+                            chunks: BitArray::ZERO,
+                        },
+                        pk,
+                    },
+                );
             }
             _ => return Err(SMError::UnexpectedInput),
         },
-        Input::DepositRecvAdaptorMsg(deposit_id, adaptor_msg) => {
-            match state.step {
-                Step::SetupComplete => {
-                    let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                        // deposit does not exist
-                        return Err(SMError::UnknownDeposit(deposit_id));
-                    };
-
-                    match deposit_state.step {
-                        DepositStep::WaitingForAdaptors => {
-                            let AdaptorMsg {
-                                deposit_adaptors,
-                                withdrawal_adaptors,
-                            } = adaptor_msg;
-                            state
-                                .artifact_store
-                                .save_adaptors_for_deposit(
-                                    deposit_id,
-                                    deposit_adaptors.as_ref(),
-                                    withdrawal_adaptors.as_ref(),
-                                )
-                                .await?;
-
-                            let (input_shares, _) = state.artifact_store.load_shares().await?;
-                            let sighashes = state
-                                .artifact_store
-                                .load_sighashes_for_deposit(deposit_id)
-                                .await?;
-
-                            let adaptor_verif_data = AdaptorVerificationData {
-                                pk: deposit_state.pk,
-                                deposit_adaptors,
-                                withdrawal_adaptors,
-                                input_shares,
-                                sighashes,
-                            };
-
-                            deposit_state.step = DepositStep::VerifyingAdaptors;
-
-                            actions.push(Action::DepositAckAdaptorMsg(deposit_id));
-                            actions.push(Action::DepositVerifyAdaptors(
-                                deposit_id,
-                                adaptor_verif_data,
-                            ));
-                        }
-                        _ => {
-                            // If we've already processed adaptors, re-ack for idempotency.
-                            actions.push(Action::DepositAckAdaptorMsg(deposit_id));
-                        }
-                    }
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
+        Input::DepositRecvAdaptorMsgChunk(deposit_id, adaptor_msg_chunk) => {
+            handle_recv_deposit_adaptor_msg_chunk(
+                state,
+                deposit_id,
+                adaptor_msg_chunk,
+                &mut actions,
+            )
+            .await?;
         }
         Input::DepositAdaptorVerificationResult(deposit_id, verification_success) => {
             match state.step {
@@ -401,7 +369,7 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
                             let reserved_input_shares =
                                 state.artifact_store.load_reserved_input_shares().await?;
                             let (reserved_deposit_input_shares, reserved_withdrawal_input_shares) =
-                                get_reserved_deposit_withdrawal_shares(reserved_input_shares);
+                                get_reserved_deposit_withdrawal_shares(&reserved_input_shares);
 
                             actions.push(Action::CompleteAdaptorSignatures(
                                 deposit_id,
@@ -447,6 +415,78 @@ pub(crate) async fn stf<S: GarblerArtifactStore>(
     Ok(actions)
 }
 
+async fn handle_recv_deposit_adaptor_msg_chunk<S: GarblerArtifactStore>(
+    state: &mut State<S>,
+    deposit_id: DepositId,
+    adaptor_msg_chunk: AdaptorMsgChunk,
+    actions: &mut Vec<Action>,
+) -> SMResult<()> {
+    match state.step {
+        Step::SetupComplete => {
+            let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
+                // deposit does not exist
+                return Err(SMError::UnknownDeposit(deposit_id));
+            };
+
+            match deposit_state.step {
+                DepositStep::WaitingForAdaptors { chunks } => {
+                    let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
+
+                    if chunks[chunk_idx] {
+                        // message for this chunk already seen
+                        return Err(SMError::InvalidInputData);
+                    }
+
+                    state
+                        .artifact_store
+                        .save_adaptor_msg_chunk_for_deposit(deposit_id, &adaptor_msg_chunk)
+                        .await?;
+
+                    if !chunks.all() {
+                        // Not all chunks received, wait for more
+                        return Ok(());
+                    }
+
+                    // all chunks received
+
+                    let (input_shares, _) = state.artifact_store.load_shares().await?;
+                    let sighashes = state
+                        .artifact_store
+                        .load_sighashes_for_deposit(deposit_id)
+                        .await?;
+                    let (deposit_adaptors, withdrawal_adaptors) = state
+                        .artifact_store
+                        .load_adaptors_for_deposit(deposit_id)
+                        .await?;
+
+                    let adaptor_verif_data = AdaptorVerificationData {
+                        pk: deposit_state.pk,
+                        deposit_adaptors,
+                        withdrawal_adaptors,
+                        input_shares,
+                        sighashes,
+                    };
+
+                    deposit_state.step = DepositStep::VerifyingAdaptors;
+
+                    actions.push(Action::DepositAckAdaptorMsg(deposit_id));
+                    actions.push(Action::DepositVerifyAdaptors(
+                        deposit_id,
+                        adaptor_verif_data,
+                    ));
+                }
+                _ => {
+                    // If we've already processed adaptors, re-ack for idempotency.
+                    actions.push(Action::DepositAckAdaptorMsg(deposit_id));
+                }
+            }
+        }
+        _ => return Err(SMError::UnexpectedInput),
+    };
+
+    Ok(())
+}
+
 pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResult<Vec<Action>> {
     let mut actions = vec![];
 
@@ -480,11 +520,12 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
                 .artifact_store
                 .load_all_garbling_table_commitments()
                 .await?;
-            let commit_msg = CommitMsg {
-                polynomial_commitments,
-                garbling_table_commitments,
-            };
-            actions.push(Action::SendCommitMsg(commit_msg));
+
+            for chunk in
+                create_commit_msg_chunks(polynomial_commitments, garbling_table_commitments)
+            {
+                actions.push(Action::SendCommitMsgChunk(chunk));
+            }
         }
         Step::WaitingForChallenge => {}
         Step::SendingChallengeResponse => {
@@ -497,16 +538,17 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
             let (input_shares, output_shares) = state.artifact_store.load_shares().await?;
             let config = require_config(state)?;
             let seeds = generate_garbling_table_seeds(config.seed);
-            let challenge_response_msg = create_challenge_response_msg(
+            for chunk in create_challenge_response_msg_chunks(
                 challenge_indices.as_ref(),
                 input_shares,
                 output_shares,
                 seeds,
                 config.setup_inputs,
-            );
+            ) {
+                actions.push(Action::SendChallengeResponseMsgChunk(chunk));
+            }
 
             actions.push(Action::AckChallengeMsg);
-            actions.push(Action::SendChallengeResponseMsg(challenge_response_msg));
         }
         Step::TransferringGarblingTables {
             eval_seeds,
@@ -523,7 +565,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
         Step::SetupComplete => {
             for (deposit_id, deposit_state) in state.deposits.iter() {
                 match &deposit_state.step {
-                    DepositStep::WaitingForAdaptors => {}
+                    DepositStep::WaitingForAdaptors { .. } => {}
                     DepositStep::VerifyingAdaptors => {
                         let (input_shares, _) = state.artifact_store.load_shares().await?;
                         let sighashes = state
@@ -575,7 +617,7 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(state: &State<S>) -> SMResu
 
             let reserved_input_shares = state.artifact_store.load_reserved_input_shares().await?;
             let (deposit_input_shares, withdrawal_input_shares) =
-                get_reserved_deposit_withdrawal_shares(reserved_input_shares);
+                get_reserved_deposit_withdrawal_shares(&reserved_input_shares);
 
             let withdrawal_input = state
                 .artifact_store
@@ -626,13 +668,21 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
 }
 
 #[expect(unused_variables)]
-fn create_challenge_response_msg(
+fn create_commit_msg_chunks(
+    polynomial_commitments: AllPolynomialCommitments,
+    garbling_table_commitments: AllGarblingTableCommitments,
+) -> Vec<CommitMsgChunk> {
+    todo!()
+}
+
+#[expect(unused_variables)]
+fn create_challenge_response_msg_chunks(
     challenge_idxs: &ChallengeIndices,
     input_shares: Box<InputShares>,
     output_shares: Box<OutputShares>,
     garbling_seeds: AllGarblingSeeds,
     setup_inputs: SetupInputs,
-) -> ChallengeResponseMsg {
+) -> Vec<ChallengeResponseMsgChunk> {
     todo!()
 }
 
@@ -665,7 +715,7 @@ fn get_eval_commitments(
 
 #[expect(unused_variables)]
 fn get_reserved_deposit_withdrawal_shares(
-    reserved_input_shares: Box<ReservedInputShares>,
+    reserved_input_shares: &ReservedInputShares,
 ) -> (
     Box<ReservedDepositInputShares>,
     Box<ReservedWithdrawalInputShares>,

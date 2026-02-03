@@ -6,10 +6,10 @@ use mosaic_cac_protocol::{
     garbler::{GarblerSM, artifact::GarblerArtifactStore, state::State},
 };
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials, ChallengeIndices,
-    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares, ReservedInputShares,
-    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials,
+    ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors,
+    DepositId, DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares,
+    ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{ActionContainer, GarblerInitData, Input},
 };
 
@@ -169,9 +169,7 @@ impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn load_all_garbling_table_commitments(
-        &self,
-    ) -> SMResult<Box<AllGarblingTableCommitments>> {
+    async fn load_all_garbling_table_commitments(&self) -> SMResult<AllGarblingTableCommitments> {
         todo!()
     }
 
@@ -207,11 +205,10 @@ impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn save_adaptors_for_deposit(
+    async fn save_adaptor_msg_chunk_for_deposit(
         &mut self,
         deposit_id: DepositId,
-        deposit_adaptors: &DepositAdaptors,
-        withdrawal_adaptors: &WithdrawalAdaptors,
+        adaptor_chunk: &AdaptorMsgChunk,
     ) -> SMResult<()> {
         todo!()
     }

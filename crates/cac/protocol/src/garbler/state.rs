@@ -40,12 +40,8 @@ pub struct Config {
 /// This should only hold simple bookkeeping related states.
 #[derive(Debug, Default)]
 pub struct Context {
-    /// Commit message was sent.
-    pub(crate) sent_commit_msg: bool,
     /// Challenge message was accepted and ACK'd.
     pub(crate) ackd_challenge_msg: bool,
-    /// Challenge response message was sent.
-    pub(crate) sent_challenge_response_msg: bool,
 }
 
 /// Valid states.

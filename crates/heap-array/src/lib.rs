@@ -4,8 +4,10 @@
 //! constructs elements directly on the heap via a `Vec`, avoiding LLVM optimization
 //! issues that can occur with large fixed-size arrays on the stack.
 
-use std::ops::{Deref, DerefMut, Index, IndexMut};
-use std::slice::SliceIndex;
+use std::{
+    ops::{Deref, DerefMut, Index, IndexMut},
+    slice::SliceIndex,
+};
 
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
@@ -380,7 +382,7 @@ mod tests {
     #[test]
     fn test_deref() {
         let arr: HeapArray<i32, 3> = HeapArray::new(|i| i as i32);
-        let slice: &[i32; 3] = &*arr;
+        let slice: &[i32; 3] = &arr;
         assert_eq!(slice, &[0, 1, 2]);
     }
 

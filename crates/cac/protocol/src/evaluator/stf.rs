@@ -1,14 +1,15 @@
 use bitvec::array::BitArray;
 use mosaic_cac_types::{
-    AdaptorMsg, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, ChallengeResponseMsg,
-    CommitMsg, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment, Index,
-    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
-    PolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs,
+    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
+    ChallengeResponseMsgChunk, CommitMsgChunk, DepositAdaptors, EvalGarblingTableCommitments,
+    EvaluationIndices, GarblingTableCommitment, Index, InputPolynomialCommitments,
+    OpenedGarblingTableCommitments, OpenedOutputShares, PolynomialCommitment,
+    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors,
     state_machine::evaluator::{
         Action, EvaluatorDepositInitData, EvaluatorDisputedWithdrawalData, Input,
     },
 };
-use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
+use mosaic_common::constants::{N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
 use super::{SMResult, artifact::EvaluatorArtifactStore, state::State};
 use crate::{
@@ -34,28 +35,30 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
                         seed: data.seed,
                         setup_inputs: data.setup_inputs,
                     });
-                    state.step = Step::WaitingForCommit;
+                    state.step = Step::WaitingForCommit {
+                        chunks: BitArray::ZERO,
+                    };
                 }
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        Input::RecvCommitMsg(commit_msg) => {
+        Input::RecvCommitMsgChunk(commit_msg) => {
             if state.context.ackd_commit_msg {
                 actions.push(Action::AckCommitMsg);
             } else {
-                handle_commit_msg(state, commit_msg, &mut actions).await?;
+                handle_commit_msg_chunk(state, commit_msg, &mut actions).await?;
             }
         }
         // NOTE: This input might be unnecessary
         Input::ChallengeMsgAcked => match state.step {
-            Step::WaitingForChallengeResponse => {
+            Step::WaitingForChallengeResponse { .. } => {
                 if !state.context.sent_challenge_msg {
                     return Err(SMError::StateInconsistency("missing sent_challenge_msg"));
                 }
             }
             _ => return Err(SMError::UnexpectedInput),
         },
-        Input::RecvChallengeResponseMsg(response_msg) => {
+        Input::RecvChallengeResponseMsgChunk(response_msg) => {
             if state.context.ackd_challenge_response_msg {
                 actions.push(Action::AckChallengeResponseMsg);
             } else {
@@ -167,11 +170,11 @@ pub(crate) async fn stf<S: EvaluatorArtifactStore>(
 
                             deposit_state.step = DepositStep::SendingAdaptors;
 
-                            let adaptor_msg = AdaptorMsg {
-                                deposit_adaptors,
-                                withdrawal_adaptors,
-                            };
-                            actions.push(Action::DepositSendAdaptorMsg(deposit_id, adaptor_msg));
+                            for chunk in
+                                create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)
+                            {
+                                actions.push(Action::DepositSendAdaptorMsgChunk(deposit_id, chunk));
+                            }
                         }
                         _ => return Err(SMError::UnexpectedInput),
                     }
@@ -282,8 +285,8 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
     let mut actions = vec![];
     match &state.step {
         Step::Uninit => {}
-        Step::WaitingForCommit => {}
-        Step::WaitingForChallengeResponse => {
+        Step::WaitingForCommit { .. } => {}
+        Step::WaitingForChallengeResponse { .. } => {
             if !state.context.ackd_commit_msg {
                 return Err(SMError::StateInconsistency(
                     "WaitingForChallengeResponse: missing expected ackd_commit_msg",
@@ -294,7 +297,7 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
                     "WaitingForChallengeResponse: missing expected sent_challenge_msg",
                 ));
             }
-            let challenge_indices = state.artifact_store.load_challenge_indices().await?;
+            let challenge_indices = *state.artifact_store.load_challenge_indices().await?;
             let challenge_msg = ChallengeMsg { challenge_indices };
 
             actions.push(Action::AckCommitMsg);
@@ -349,12 +352,12 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
                             .artifact_store
                             .load_adaptors_for_deposit(*deposit_id)
                             .await?;
-                        let adaptor_msg = AdaptorMsg {
-                            deposit_adaptors,
-                            withdrawal_adaptors,
-                        };
 
-                        actions.push(Action::DepositSendAdaptorMsg(*deposit_id, adaptor_msg));
+                        for chunk in
+                            create_adaptor_message_chunks(*deposit_adaptors, *withdrawal_adaptors)
+                        {
+                            actions.push(Action::DepositSendAdaptorMsgChunk(*deposit_id, chunk));
+                        }
                     }
                     DepositStep::DepositReady => {}
                     DepositStep::WithdrawnUndisputed => {}
@@ -368,34 +371,53 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(state: &State<S>) -> SMRe
     Ok(actions)
 }
 
-async fn handle_commit_msg<S: EvaluatorArtifactStore>(
+async fn handle_commit_msg_chunk<S: EvaluatorArtifactStore>(
     state: &mut State<S>,
-    commit_msg: CommitMsg,
+    commit_msg_chunk: CommitMsgChunk,
     actions: &mut Vec<Action>,
 ) -> SMResult<()> {
     match state.step {
-        Step::WaitingForCommit => {
-            if !is_valid_commit(&commit_msg) {
+        Step::WaitingForCommit { chunks } => {
+            if !is_valid_commit_chunk(&commit_msg_chunk) {
                 // invalid commit message
                 state.step = Step::Aborted {
-                    reason: "invalid commit msg".into(),
+                    reason: "invalid commit msg chunk".into(),
                 };
                 return Ok(());
             }
 
+            let chunk_idx = commit_msg_chunk.wire_index as usize;
+            if chunks[chunk_idx] {
+                // message for this chunk already seen
+                return Err(SMError::InvalidInputData);
+            }
+
+            // save chunk
+            state
+                .artifact_store
+                .save_commit_msg_chunk(commit_msg_chunk)
+                .await?;
+
+            let received_chunks_count = chunks.count_ones();
+            if received_chunks_count < N_COMMIT_MSG_CHUNKS {
+                // Not all chunks received, wait for more
+                return Ok(());
+            }
+            // sanity check
+            if received_chunks_count > N_COMMIT_MSG_CHUNKS {
+                return Err(SMError::StateInconsistency(
+                    "saved more commit message chunks than expected",
+                ));
+            }
+            // all chunks received
+
+            //
+
             // state update
             let config = require_config(state)?;
             let challenge_indices = sample_challenge_indices(config.seed);
-            debug_assert!(is_sorted(challenge_indices.as_ref()));
+            debug_assert!(is_sorted(challenge_indices.as_slice()));
 
-            state
-                .artifact_store
-                .save_polynomial_commitments(&commit_msg.polynomial_commitments)
-                .await?;
-            state
-                .artifact_store
-                .save_garbling_table_commitments(&commit_msg.garbling_table_commitments)
-                .await?;
             state
                 .artifact_store
                 .save_challenge_indices(&challenge_indices)
@@ -403,7 +425,9 @@ async fn handle_commit_msg<S: EvaluatorArtifactStore>(
 
             state.context.ackd_commit_msg = true;
             state.context.sent_challenge_msg = true;
-            state.step = Step::WaitingForChallengeResponse;
+            state.step = Step::WaitingForChallengeResponse {
+                chunks: BitArray::ZERO,
+            };
 
             // generate actions
             let challenge_msg = ChallengeMsg { challenge_indices };
@@ -417,28 +441,50 @@ async fn handle_commit_msg<S: EvaluatorArtifactStore>(
 
 async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
     state: &mut State<S>,
-    response_msg: ChallengeResponseMsg,
+    response_msg_chunk: ChallengeResponseMsgChunk,
     actions: &mut Vec<Action>,
 ) -> SMResult<()> {
     match state.step {
-        Step::WaitingForChallengeResponse => {
+        Step::WaitingForChallengeResponse { chunks } => {
             let challenge_idxs = state.artifact_store.load_challenge_indices().await?;
-            if !is_valid_challenge_response(&response_msg, &challenge_idxs) {
+            if !is_valid_challenge_response_chunk(&response_msg_chunk, &challenge_idxs) {
                 state.step = Step::Aborted {
                     reason: "invalid challenge response message".into(),
                 };
                 return Ok(());
             }
+
+            let chunk_idx = (response_msg_chunk.circuit_index as usize)
+                .checked_sub(1)
+                .unwrap();
+            if chunks[chunk_idx] {
+                // message for this chunk already seen
+                return Err(SMError::InvalidInputData);
+            }
+
+            // save chunk
+            state
+                .artifact_store
+                .save_challenge_response_msg_chunk(response_msg_chunk)
+                .await?;
+
+            if !chunks.all() {
+                // Not all chunks received, wait for more
+                return Ok(());
+            }
+
+            // all chunks received
+            let opened_output_shares = state.artifact_store.load_opened_output_shares().await?;
+
             let output_polynomial_commitment = state
                 .artifact_store
                 .load_output_polynomial_commitment()
                 .await?;
 
             // exec_verify: 2) Verify opened output (false) shares
-            if let Some(failure_reason) = verify_opened_output_shares(
-                &response_msg.opened_output_shares,
-                &output_polynomial_commitment,
-            ) {
+            if let Some(failure_reason) =
+                verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
+            {
                 state.step = Step::Aborted {
                     reason: format!(
                         "opened output share verification failed: {}",
@@ -449,6 +495,10 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
             }
 
             let config = require_config(state)?;
+            let reserved_setup_input_shares = state
+                .artifact_store
+                .load_reserved_setup_input_shares()
+                .await?;
             let input_polynomial_commitments = state
                 .artifact_store
                 .load_input_polynomial_commitments()
@@ -457,7 +507,7 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
             // exec_verify: 4) Verify setup input shares against setup input and polynomial
             // commitments
             if let Some(failure_reason) = verify_reserved_setup_input_shares(
-                &response_msg.reserved_setup_input_shares,
+                &reserved_setup_input_shares,
                 &config.setup_inputs,
                 &input_polynomial_commitments,
             ) {
@@ -470,23 +520,6 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
                 return Ok(());
             }
 
-            state
-                .artifact_store
-                .save_openend_input_shares(&response_msg.opened_input_shares)
-                .await?;
-            state
-                .artifact_store
-                .save_reserved_setup_input_shares(&response_msg.reserved_setup_input_shares)
-                .await?;
-            state
-                .artifact_store
-                .save_opened_garbling_seeds(&response_msg.opened_garbling_seeds)
-                .await?;
-            state
-                .artifact_store
-                .save_opened_garbling_seeds(&response_msg.opened_garbling_seeds)
-                .await?;
-
             state.context.ackd_challenge_response_msg = true;
             actions.push(Action::AckChallengeResponseMsg);
 
@@ -494,9 +527,10 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
 
             // generate actions
             // exec_verify: 1) Verify opened input shares against polynomial commitments
+            let opened_input_shares = state.artifact_store.load_openend_input_shares().await?;
             actions.push(Action::VerifyOpenedInputShares(
                 challenge_idxs,
-                response_msg.opened_input_shares,
+                opened_input_shares,
                 input_polynomial_commitments,
             ));
 
@@ -607,18 +641,18 @@ fn require_config<S>(state: &State<S>) -> SMResult<&Config> {
 }
 
 #[expect(unused_variables)]
-fn is_valid_commit(commit_msg: &CommitMsg) -> bool {
+fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
     todo!()
 }
 
 #[expect(unused_variables)]
-fn sample_challenge_indices(seed: Seed) -> Box<ChallengeIndices> {
+fn sample_challenge_indices(seed: Seed) -> ChallengeIndices {
     todo!()
 }
 
 #[expect(unused_variables)]
-fn is_valid_challenge_response(
-    response_msg: &ChallengeResponseMsg,
+fn is_valid_challenge_response_chunk(
+    response_msg_chunk: &ChallengeResponseMsgChunk,
     challenge_idxs: &ChallengeIndices,
 ) -> bool {
     // simple input validations
@@ -673,4 +707,12 @@ fn get_eval_commitments(
         let seed_idx = eval_indices[i].get() - 1;
         garbling_commitments[seed_idx]
     })
+}
+
+#[expect(unused_variables)]
+fn create_adaptor_message_chunks(
+    deposit_adaptors: DepositAdaptors,
+    withdrawal_adaptors: WithdrawalAdaptors,
+) -> Vec<AdaptorMsgChunk> {
+    todo!()
 }
