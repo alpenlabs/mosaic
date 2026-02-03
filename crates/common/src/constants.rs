@@ -47,6 +47,8 @@ pub const N_ADAPTOR_MSG_CHUNKS: usize = N_DEPOSIT_INPUT_WIRES;
 pub const WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK: usize =
     N_WITHDRAWAL_INPUT_WIRES / N_DEPOSIT_INPUT_WIRES;
 
+// TODO: Do we really want to have this constraint ?
+#[expect(clippy::manual_is_multiple_of)]
 const _: () = assert!(
     N_WITHDRAWAL_INPUT_WIRES % N_DEPOSIT_INPUT_WIRES == 0,
     "N_WITHDRAWAL_INPUT_WIRES must be divisible by N_DEPOSIT_INPUT_WIRES for clean chunking"
