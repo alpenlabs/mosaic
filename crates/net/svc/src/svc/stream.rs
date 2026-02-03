@@ -8,8 +8,10 @@ use std::sync::{Arc, Mutex};
 use kanal::{AsyncReceiver, AsyncSender, bounded_async};
 use quinn::{RecvStream, SendStream};
 
-use crate::api::{PayloadBuf, Stream, StreamClosed, StreamRequest};
-use crate::tls::PeerId;
+use crate::{
+    api::{PayloadBuf, Stream, StreamClosed, StreamRequest},
+    tls::PeerId,
+};
 
 /// Channel buffer sizes for stream communication.
 const PAYLOAD_CHANNEL_SIZE: usize = 16;
@@ -94,7 +96,9 @@ async fn write_task(
                     StreamRequest::Write { buf } => {
                         // Encode frame with length prefix
                         frame_buf.clear();
-                        if let Err(e) = mosaic_net_wire::encode_frame_unchecked(&buf, &mut frame_buf) {
+                        if let Err(e) =
+                            mosaic_net_wire::encode_frame_unchecked(&buf, &mut frame_buf)
+                        {
                             tracing::warn!(error = %e, "failed to encode frame");
                             // Return buffer anyway
                             let mut buf = buf;
