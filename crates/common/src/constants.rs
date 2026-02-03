@@ -35,6 +35,13 @@ pub const N_WITHDRAWAL_INPUT_WIRES: usize = 128 + 36;
 pub const N_INPUT_WIRES: usize =
     N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES;
 
+/// Number of chunks of commit message
+pub const N_COMMIT_MSG_CHUNKS: usize = N_INPUT_WIRES;
+/// Number of chunks of challenge response message
+pub const N_CHALLENGE_RESPONSE_CHUNKS: usize = N_OPEN_CIRCUITS;
+/// Number of chunks of adaptor message
+pub const N_ADAPTOR_MSG_CHUNKS: usize = N_DEPOSIT_INPUT_WIRES;
+
 /// Number of withdrawal wires per AdaptorMsgChunk.
 /// This divides evenly: 164 / 4 = 41 wires per chunk.
 pub const WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK: usize =

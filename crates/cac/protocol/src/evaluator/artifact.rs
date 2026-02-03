@@ -1,8 +1,9 @@
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds,
-    OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
-    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
+    ChallengeResponseMsgChunk, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WithdrawalAdaptors, WithdrawalInputs,
 };
 
 use crate::SMResult;
@@ -29,6 +30,16 @@ pub trait EvaluatorArtifactStore: Sized {
     fn load_garbling_table_commitments(
         &self,
     ) -> impl Future<Output = SMResult<Box<AllGarblingTableCommitments>>>;
+
+    fn save_commit_msg_chunk(
+        &mut self,
+        chunk: CommitMsgChunk,
+    ) -> impl Future<Output = SMResult<()>>;
+
+    fn save_challenge_response_msg_chunk(
+        &mut self,
+        chunk: ChallengeResponseMsgChunk,
+    ) -> impl Future<Output = SMResult<()>>;
 
     fn save_challenge_indices(
         &mut self,
