@@ -56,22 +56,22 @@ mod tests {
     fn paths_have_expected_structure() {
         let id = TableId {
             peer_id: PeerId::from_bytes([0xab; 32]),
-            index: Index::new(42).unwrap(),
+            index: Index::new(4).unwrap(),
         };
         let paths = TablePaths::new("tables", &id);
 
         let peer_hex = "ab".repeat(32);
         assert_eq!(
             paths.ciphertexts.to_string(),
-            format!("tables/{peer_hex}/42/ciphertexts")
+            format!("tables/{peer_hex}/4/ciphertexts")
         );
         assert_eq!(
             paths.translation.to_string(),
-            format!("tables/{peer_hex}/42/translation")
+            format!("tables/{peer_hex}/4/translation")
         );
         assert_eq!(
             paths.metadata.to_string(),
-            format!("tables/{peer_hex}/42/metadata")
+            format!("tables/{peer_hex}/4/metadata")
         );
     }
 }
