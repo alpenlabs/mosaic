@@ -7,10 +7,14 @@
 //! That is inherently flaky in CI. Prefer waiting for an actual successful
 //! operation with a timeout.
 
-use std::net::SocketAddr;
-use std::sync::Once;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::time::Duration;
+use std::{
+    net::SocketAddr,
+    sync::{
+        Once,
+        atomic::{AtomicU16, Ordering},
+    },
+    time::Duration,
+};
 
 use ed25519_dalek::SigningKey;
 use mosaic_net_svc::{
@@ -168,8 +172,8 @@ where
 /// Receive a value with a timeout.
 ///
 /// This is intentionally *not* a retry loop:
-/// - If the channel is open but no value arrives, `recv().await` may wait indefinitely,
-///   so we bound it with a timeout.
+/// - If the channel is open but no value arrives, `recv().await` may wait indefinitely, so we bound
+///   it with a timeout.
 /// - If the channel is closed, `recv().await` should return promptly with an error.
 /// - If the value is merely delayed, increasing the timeout is the right fix (not retries).
 async fn recv_with_timeout<Fut, T>(timeout: Duration, fut: Fut) -> T

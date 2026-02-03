@@ -14,13 +14,16 @@
 
 use kanal::{AsyncReceiver, bounded_async};
 
-use crate::api::{ExpectError, NetCommand, OpenStreamError, Stream};
-use crate::tls::PeerId;
-
-use super::state::{
-    ConnectionDirection, PendingStreamRequest, ServiceEvent, ServiceState, TrackedConnection,
+use super::{
+    state::{
+        ConnectionDirection, PendingStreamRequest, ServiceEvent, ServiceState, TrackedConnection,
+    },
+    tasks,
 };
-use super::tasks;
+use crate::{
+    api::{ExpectError, NetCommand, OpenStreamError, Stream},
+    tls::PeerId,
+};
 
 /// Handle a command from a NetServiceHandle.
 ///

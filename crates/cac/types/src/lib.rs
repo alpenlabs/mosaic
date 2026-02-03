@@ -4,12 +4,10 @@
 //! to ever interact with directly, so this can have types that we don't want to
 //! expose in the RPC interface (or be compiled into RPC libraries).
 
-pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-
 // Used by examples
 use ark_ec as _;
 use ark_ff as _;
-
+pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 // Used by benchmarks
 #[cfg(test)]
 use criterion as _;

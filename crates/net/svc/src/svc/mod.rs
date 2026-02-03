@@ -24,21 +24,24 @@ mod state;
 mod stream;
 mod tasks;
 
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 
 use ahash::{HashMap, HashMapExt};
 use kanal::{AsyncReceiver, AsyncSender, bounded_async};
 use quinn::{Endpoint, ServerConfig};
+use state::{ServiceEvent, ServiceState, TrackedConnection};
 use tokio::runtime::Builder;
 
-use crate::api::{NetCommand, NetServiceHandle, Stream};
-use crate::config::NetServiceConfig;
-use crate::tls::{self, PeerId};
-
-use state::{ServiceEvent, ServiceState, TrackedConnection};
+use crate::{
+    api::{NetCommand, NetServiceHandle, Stream},
+    config::NetServiceConfig,
+    tls::{self, PeerId},
+};
 
 /// Handle to control the network service.
 pub struct NetServiceController {

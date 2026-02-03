@@ -3,16 +3,17 @@
 //! This module contains the service state, internal events, and helper types
 //! used by the main loop and handlers.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use ahash::HashMap;
 use kanal::AsyncSender;
 use quinn::Endpoint;
 
-use crate::api::{OpenStreamError, Stream};
-use crate::config::NetServiceConfig;
-use crate::tls::PeerId;
+use crate::{
+    api::{OpenStreamError, Stream},
+    config::NetServiceConfig,
+    tls::PeerId,
+};
 
 /// Direction metadata for a stored connection.
 ///
