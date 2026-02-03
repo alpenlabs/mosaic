@@ -10,8 +10,8 @@ members = [
   "crates/compute-exec",
   "crates/compute-fw",
   # "crates/jobs",
+  "crates/net/client",
   "crates/net/svc",
-  # "crates/net/types",
   "crates/net/wire",
   "crates/network/api",
   "crates/rpc/api",
@@ -54,12 +54,12 @@ mosaic-cac-proto-types = { path = "crates/cac/proto-types" }
 mosaic-cac-protocol = { path = "crates/cac/protocol" }
 mosaic-cac-types = { path = "crates/cac/types" }
 mosaic-common = { path = "crates/common" }
+mosaic-compute-fw = { path = "crates/compute-fw" }
 mosaic-heap-array = { path = "crates/heap-array" }
+mosaic-job-types = { path = "crates/job/types" }
 mosaic-net-svc = { path = "crates/net/svc" }
 mosaic-net-types = { path = "crates/net/types" }
 mosaic-net-wire = { path = "crates/net/wire" }
-mosaic-compute-fw = { path = "crates/compute-fw" }
-mosaic-job-types = { path = "crates/job/types" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
@@ -77,9 +77,11 @@ async-trait = "0.1"
 bitvec = "1.0.1"
 bytes = "1.10"
 fasm = "0.3.0"
+criterion = "0.5"
 futures = "0.3.31"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
 jsonrpsee-types = "*"                                                     # constrained by jsonrpsee dep
+proptest = "1.5"
 rand = "0.8"
 rand_core = "0.6"
 serde = { version = "1.0", features = ["derive"] }
@@ -89,8 +91,6 @@ strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 thiserror = "2.0"
 tokio-util = "0.7"
 tracing = "0.1"
-proptest = "1.5"
-criterion = "0.5"
 
 [profile.release]
 opt-level = 3     # Optimized for size, use 3 for speed

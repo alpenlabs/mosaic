@@ -40,6 +40,12 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for reading stream headers (5 seconds).
 pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Timeout for opening bidirectional streams (5 seconds).
+pub const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for writing stream headers (5 seconds).
+pub const STREAM_HEADER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Internal service state (owned by main loop, no mutex needed).
 pub struct ServiceState {
     /// Shared configuration.

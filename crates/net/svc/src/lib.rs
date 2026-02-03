@@ -52,6 +52,7 @@ pub mod tls;
 // Re-export main types for convenience
 pub use api::{NetServiceHandle, Stream, StreamClosed};
 pub use config::{NetServiceConfig, PeerConfig};
+pub use mosaic_net_wire::FrameLimits;
 pub use svc::{NetService, NetServiceController, ServiceError};
 pub use tls::PeerId;
 
