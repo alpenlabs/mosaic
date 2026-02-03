@@ -206,3 +206,31 @@ impl Valid for Msg {
         }
     }
 }
+
+// ============================================================================
+// From impls for ergonomic message construction
+// ============================================================================
+
+impl From<CommitMsgChunk> for Msg {
+    fn from(msg: CommitMsgChunk) -> Self {
+        Msg::CommitChunk(msg)
+    }
+}
+
+impl From<ChallengeMsg> for Msg {
+    fn from(msg: ChallengeMsg) -> Self {
+        Msg::Challenge(msg)
+    }
+}
+
+impl From<ChallengeResponseMsgChunk> for Msg {
+    fn from(msg: ChallengeResponseMsgChunk) -> Self {
+        Msg::ChallengeResponseChunk(msg)
+    }
+}
+
+impl From<AdaptorMsgChunk> for Msg {
+    fn from(msg: AdaptorMsgChunk) -> Self {
+        Msg::AdaptorChunk(msg)
+    }
+}

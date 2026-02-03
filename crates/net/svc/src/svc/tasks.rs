@@ -20,6 +20,7 @@ use super::{
 };
 use crate::{
     api::{OpenStreamError, Stream},
+    svc::state::{STREAM_HEADER_WRITE_TIMEOUT, STREAM_OPEN_TIMEOUT},
     tls::PeerId,
 };
 
@@ -116,10 +117,13 @@ pub fn spawn_outbound_connection(
                     .send(ServiceEvent::OutboundConnectionReady { peer, connection })
                     .await;
             }
-            Err(error) => {
+            Err(ref error) => {
                 tracing::debug!(peer = %hex::encode(peer), error = %error, "outbound connection failed");
                 let _ = event_tx
-                    .send(ServiceEvent::OutboundConnectionFailed { peer, error })
+                    .send(ServiceEvent::OutboundConnectionFailed {
+                        peer,
+                        error: error.clone(),
+                    })
                     .await;
             }
         }
@@ -186,7 +190,7 @@ pub fn spawn_connection_monitor(
 /// via the event channel for routing.
 pub fn spawn_stream_header_reader(
     peer: PeerId,
-    send: quinn::SendStream,
+    mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     event_tx: AsyncSender<ServiceEvent>,
 ) {
@@ -239,6 +243,7 @@ pub fn spawn_stream_header_reader(
             }
             Err(error) => {
                 tracing::debug!(peer = %hex::encode(peer), error = %error, "failed to read stream header");
+                let _ = send.reset(0u32.into());
                 let _ = event_tx
                     .send(ServiceEvent::StreamHeaderFailed { peer, error })
                     .await;
@@ -261,9 +266,9 @@ pub fn spawn_stream_opener(
     tokio::spawn(async move {
         let result = async {
             // Open bidirectional stream
-            let (mut send, recv) = connection
-                .open_bi()
+            let (mut send, recv) = tokio::time::timeout(STREAM_OPEN_TIMEOUT, connection.open_bi())
                 .await
+                .map_err(|_| OpenStreamError::StreamFailed("open stream timed out".to_string()))?
                 .map_err(|e| OpenStreamError::StreamFailed(e.to_string()))?;
 
             // Set priority
@@ -274,9 +279,21 @@ pub fn spawn_stream_opener(
             let mut header_buf = Vec::new();
             header.encode(&mut header_buf);
 
-            send.write_all(&header_buf)
+            match tokio::time::timeout(STREAM_HEADER_WRITE_TIMEOUT, send.write_all(&header_buf))
                 .await
-                .map_err(|e| OpenStreamError::StreamFailed(e.to_string()))?;
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    let _ = send.reset(0u32.into());
+                    return Err(OpenStreamError::StreamFailed(e.to_string()));
+                }
+                Err(_) => {
+                    let _ = send.reset(0u32.into());
+                    return Err(OpenStreamError::StreamFailed(
+                        "stream header write timed out".to_string(),
+                    ));
+                }
+            }
 
             // Create stream handle
             Ok(stream::create_stream(peer, send, recv))

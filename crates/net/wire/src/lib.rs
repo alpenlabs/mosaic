@@ -15,8 +15,8 @@ use std::mem::size_of;
 // Frame Size Limits
 // ============================================================================
 
-/// Default maximum frame size (1 MB).
-pub const DEFAULT_MAX_FRAME_SIZE: u32 = 1024 * 1024;
+/// Default maximum frame size (4 MiB).
+pub const DEFAULT_MAX_FRAME_SIZE: u32 = 4 * 1024 * 1024;
 
 /// Absolute maximum frame size (u32::MAX).
 /// Individual connections may enforce smaller limits.
@@ -454,6 +454,7 @@ mod tests {
     #[test]
     fn frame_limits_default() {
         let limits = FrameLimits::default();
+        assert_eq!(DEFAULT_MAX_FRAME_SIZE, 4 * 1024 * 1024);
         assert_eq!(limits.max_recv_size, DEFAULT_MAX_FRAME_SIZE);
         assert_eq!(limits.max_send_size, DEFAULT_MAX_FRAME_SIZE);
     }

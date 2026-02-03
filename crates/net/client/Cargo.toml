@@ -1,0 +1,43 @@
+[package]
+name = "mosaic-net-client"
+version = "0.1.0"
+edition = "2024"
+description = "Typed network client API for Mosaic protocol messages"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Workspace crates
+mosaic-cac-types = { path = "../../cac/types" }
+mosaic-net-svc = { path = "../svc" }
+
+# Serialization
+ark-serialize = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Async runtime for timeouts
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+# Workspace crates for tests
+mosaic-vs3 = { path = "../../vs3" }
+
+# Async runtime for tests
+tokio = { version = "1", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "time",
+] }
+
+# Cryptography for test key generation
+ed25519-dalek = "2.2"
+rand = { workspace = true }
+
+# Logging for debugging tests
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true

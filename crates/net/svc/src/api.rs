@@ -382,7 +382,12 @@ impl NetServiceHandle {
     /// Register to receive a specific bulk transfer.
     ///
     /// When a peer opens a bulk stream with a matching identifier, it will be
-    /// sent to the returned receiver.
+    /// sent to the returned expectation handle.
+    ///
+    /// Only one waiter per `(peer, identifier)` is supported. If another task
+    /// registers the same identifier, it will receive `ExpectError::AlreadyRegistered`.
+    ///
+    /// Dropping the returned expectation handle cancels the registration.
     ///
     /// **Call this before the peer sends**, otherwise the transfer may be
     /// rejected (peer will retry after timeout).
@@ -390,7 +395,7 @@ impl NetServiceHandle {
         &self,
         peer: PeerId,
         identifier: [u8; 32],
-    ) -> Result<AsyncReceiver<Stream>, ExpectError> {
+    ) -> Result<BulkTransferExpectation, ExpectError> {
         if !self.config.has_peer(&peer) {
             return Err(ExpectError::PeerNotFound);
         }
@@ -405,7 +410,52 @@ impl NetServiceHandle {
             .await
             .map_err(|_| ExpectError::ServiceDown)?;
 
-        resp_rx.recv().await.map_err(|_| ExpectError::ServiceDown)?
+        let rx = resp_rx
+            .recv()
+            .await
+            .map_err(|_| ExpectError::ServiceDown)??;
+
+        Ok(BulkTransferExpectation {
+            peer,
+            identifier,
+            command_tx: self.command_tx.clone(),
+            rx,
+        })
+    }
+}
+
+/// Handle for a registered bulk transfer expectation.
+///
+/// Dropping this handle signals net-svc to cancel the expectation.
+pub struct BulkTransferExpectation {
+    peer: PeerId,
+    identifier: [u8; 32],
+    command_tx: AsyncSender<NetCommand>,
+    rx: AsyncReceiver<Stream>,
+}
+
+impl BulkTransferExpectation {
+    /// Receive the bulk transfer stream.
+    pub async fn recv(self) -> Result<Stream, kanal::ReceiveError> {
+        self.rx.recv().await
+    }
+
+    /// Borrow the underlying receiver.
+    pub fn receiver(&self) -> &AsyncReceiver<Stream> {
+        &self.rx
+    }
+}
+
+impl Drop for BulkTransferExpectation {
+    fn drop(&mut self) {
+        let _ = self
+            .command_tx
+            .clone()
+            .to_sync()
+            .try_send(NetCommand::CancelBulkTransfer {
+                peer: self.peer,
+                identifier: self.identifier,
+            });
     }
 }
 
@@ -430,6 +480,10 @@ pub(crate) enum NetCommand {
         peer: PeerId,
         identifier: [u8; 32],
         respond_to: AsyncSender<Result<AsyncReceiver<Stream>, ExpectError>>,
+    },
+    CancelBulkTransfer {
+        peer: PeerId,
+        identifier: [u8; 32],
     },
 }
 

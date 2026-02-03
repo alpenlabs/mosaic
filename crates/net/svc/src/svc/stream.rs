@@ -87,6 +87,7 @@ async fn write_task(
     close_tx: AsyncSender<StreamClosed>,
     close_state: Arc<CloseState>,
 ) {
+    let limits = mosaic_net_wire::FrameLimits::default();
     let mut frame_buf = Vec::with_capacity(4 + 64 * 1024);
 
     loop {
@@ -96,15 +97,18 @@ async fn write_task(
                     StreamRequest::Write { buf } => {
                         // Encode frame with length prefix
                         frame_buf.clear();
-                        if let Err(e) =
-                            mosaic_net_wire::encode_frame_unchecked(&buf, &mut frame_buf)
+                        if let Err(e) = mosaic_net_wire::encode_frame(&buf, &mut frame_buf, &limits)
                         {
                             tracing::warn!(error = %e, "failed to encode frame");
+                            if close_state.set_if_empty(StreamClosed::Disconnected) {
+                                let _ = close_tx.send(StreamClosed::Disconnected).await;
+                            }
+                            let _ = send.reset(0u32.into());
                             // Return buffer anyway
                             let mut buf = buf;
                             buf.clear();
                             let _ = buf_return_tx.send(buf).await;
-                            continue;
+                            break;
                         }
 
                         // Write to QUIC stream

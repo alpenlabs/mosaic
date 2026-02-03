@@ -1,0 +1,257 @@
+// Dev-dependencies are used in tests but the unused_crate_dependencies lint
+// incorrectly fires on lib.rs
+#![allow(unused_crate_dependencies)]
+
+//! Typed network client for Mosaic protocol messages.
+//!
+//! This crate provides a high-level API for sending and receiving protocol
+//! messages between Mosaic instances. It wraps [`mosaic_net_svc`] and handles
+//! serialization/deserialization of [`Msg`] types from [`mosaic_cac_types`].
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────┐
+//! │  SM Scheduler / Job Scheduler                           │
+//! ├─────────────────────────────────────────────────────────┤
+//! │  net-client  (this crate)                               │
+//! │  - typed send/recv for protocol messages                │
+//! │  - serialization with ark-serialize                     │
+//! ├─────────────────────────────────────────────────────────┤
+//! │  net-svc     (connection management, QUIC streams)      │
+//! └─────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Protocol Message Flow
+//!
+//! Each protocol message follows a request-response pattern:
+//!
+//! 1. Sender opens a protocol stream (priority 0)
+//! 2. Sender writes the serialized message
+//! 3. Receiver reads and deserializes the message
+//! 4. Receiver sends an acknowledgment (priority 1)
+//! 5. Stream closes
+//!
+//! # Example
+//!
+//! ```ignore
+//! use mosaic_net_client::NetClient;
+//! use mosaic_cac_types::ChallengeMsg;
+//!
+//! // Sending a message
+//! let ack = client.send(peer_id, challenge_msg).await?;
+//!
+//! // Receiving messages
+//! loop {
+//!     let request = client.recv().await?;
+//!     match &request.message {
+//!         Msg::Challenge(challenge) => { /* handle */ }
+//!         _ => { /* handle other types */ }
+//!     }
+//!     request.ack().await?;
+//! }
+//! ```
+
+pub mod error;
+pub mod protocol;
+
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+use mosaic_cac_types::Msg;
+use mosaic_net_svc::FrameLimits;
+use mosaic_net_svc::NetServiceHandle;
+use std::time::{Duration, Instant};
+
+pub use error::{AckError, RecvError, SendError};
+pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
+
+/// Typed network client for Mosaic protocol messages.
+///
+/// This client wraps a [`NetServiceHandle`] and provides typed send/receive
+/// operations for protocol messages. It handles serialization internally
+/// using `ark-serialize` with no compression for performance.
+///
+/// # Cloning
+///
+/// `NetClient` is cheaply cloneable (it only contains channel handles).
+/// Clone it freely to use from multiple tasks.
+#[derive(Clone)]
+pub struct NetClient {
+    handle: NetServiceHandle,
+}
+
+impl std::fmt::Debug for NetClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetClient").finish_non_exhaustive()
+    }
+}
+
+impl NetClient {
+    /// Create a new client wrapping the given service handle.
+    pub fn new(handle: NetServiceHandle) -> Self {
+        Self { handle }
+    }
+
+    /// Get a reference to the underlying service handle.
+    pub fn handle(&self) -> &NetServiceHandle {
+        &self.handle
+    }
+
+    /// Send a protocol message to a peer and wait for acknowledgment.
+    ///
+    /// This method:
+    /// 1. Opens a protocol stream to the peer (priority 0)
+    /// 2. Serializes and writes the message
+    /// 3. Waits for the peer to acknowledge
+    /// 4. Returns [`Ack`] on success
+    ///
+    /// The message type must implement `Into<Msg>`, which is implemented for
+    /// all protocol message types (`CommitMsgChunk`, `ChallengeMsg`, etc.).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Failed to open stream to peer ([`SendError::Open`])
+    /// - Serialization failed ([`SendError::Serialize`])
+    /// - Write failed ([`SendError::Write`])
+    /// - Acknowledgment not received ([`SendError::NoAck`])
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Send a specific message type (uses Into<Msg>)
+    /// client.send(peer, commit_chunk).await?;
+    ///
+    /// // Or wrap manually
+    /// client.send(peer, Msg::CommitChunk(chunk)).await?;
+    /// ```
+    pub async fn send(&self, peer: PeerId, msg: impl Into<Msg>) -> Result<Ack, SendError> {
+        let started = Instant::now();
+        let msg: Msg = msg.into();
+
+        // Open protocol stream with normal priority
+        let mut stream = match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.handle
+                .open_protocol_stream(peer, StreamPriority::Normal.as_i32()),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(err)) => return Err(SendError::Open(err)),
+            Err(_) => {
+                return Err(SendError::Open(
+                    mosaic_net_svc::api::OpenStreamError::ConnectionFailed(
+                        "open stream timed out".to_string(),
+                    ),
+                ));
+            }
+        };
+        let opened_at = started.elapsed();
+
+        // Serialize message (uncompressed for performance)
+        let bytes = serialize(&msg).map_err(SendError::Serialize)?;
+        let payload_len = bytes.len();
+        let serialized_at = started.elapsed();
+
+        let limits = FrameLimits::default();
+        if payload_len > limits.max_send_size as usize {
+            return Err(SendError::FrameTooLarge {
+                size: payload_len,
+                max: limits.max_send_size as usize,
+            });
+        }
+
+        // Write to stream
+        stream.write(bytes).await.map_err(SendError::Write)?;
+        let written_at = started.elapsed();
+
+        // Wait for ack (empty response)
+        let _ack = stream.read().await.map_err(SendError::NoAck)?;
+        let acked_at = started.elapsed();
+
+        if cfg!(test) {
+            eprintln!(
+                "net-client send timings: open={:?}, serialize={:?}, write={:?}, ack={:?}, total={:?}, bytes={}",
+                opened_at, serialized_at, written_at, acked_at, acked_at, payload_len
+            );
+        }
+
+        Ok(Ack)
+    }
+
+    /// Receive the next incoming protocol message.
+    ///
+    /// This method:
+    /// 1. Accepts the next incoming protocol stream
+    /// 2. Reads and deserializes the message
+    /// 3. Returns an [`InboundRequest`] containing the message and a handle
+    ///    to send acknowledgment
+    ///
+    /// The returned [`InboundRequest`] must be acknowledged by calling
+    /// [`InboundRequest::ack`] after processing the message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No more incoming streams (service shut down) ([`RecvError::Closed`])
+    /// - Read failed ([`RecvError::Read`])
+    /// - Deserialization failed ([`RecvError::Deserialize`])
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = client.recv().await?;
+    /// match request.message {
+    ///     Msg::CommitChunk(chunk) => { /* process */ }
+    ///     Msg::Challenge(challenge) => { /* process */ }
+    ///     // ...
+    /// }
+    /// request.ack().await?;
+    /// ```
+    pub async fn recv(&self) -> Result<InboundRequest, RecvError> {
+        // Accept next incoming protocol stream
+        let mut stream = self
+            .handle
+            .protocol_streams()
+            .recv()
+            .await
+            .map_err(|_| RecvError::Closed)?;
+
+        // Read message bytes
+        let bytes = stream.read().await.map_err(RecvError::Read)?;
+
+        // Deserialize message (uncompressed, with validation)
+        let msg = deserialize(&bytes).map_err(RecvError::Deserialize)?;
+
+        Ok(InboundRequest::new(msg, stream))
+    }
+}
+
+/// Serialize a message to bytes using uncompressed mode.
+fn serialize(msg: &Msg) -> Result<Vec<u8>, ark_serialize::SerializationError> {
+    let mut bytes = Vec::with_capacity(msg.serialized_size(Compress::No));
+    msg.serialize_with_mode(&mut bytes, Compress::No)?;
+    Ok(bytes)
+}
+
+/// Deserialize a message from bytes using uncompressed mode with validation.
+fn deserialize(bytes: &[u8]) -> Result<Msg, ark_serialize::SerializationError> {
+    Msg::deserialize_with_mode(&mut &bytes[..], Compress::No, Validate::Yes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn net_client_is_clone() {
+        fn assert_clone<T: Clone>() {}
+        assert_clone::<NetClient>();
+    }
+
+    #[test]
+    fn net_client_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NetClient>();
+    }
+}

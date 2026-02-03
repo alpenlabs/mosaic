@@ -61,6 +61,17 @@ pub fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
         } => {
             handle_expect_bulk_transfer(peer, identifier, respond_to, state);
         }
+
+        NetCommand::CancelBulkTransfer { peer, identifier } => {
+            let key = (peer, blake3::hash(&identifier).into());
+            if state.bulk_expectations.remove(&key).is_some() {
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    identifier = %hex::encode(identifier),
+                    "cancelled bulk transfer expectation"
+                );
+            }
+        }
     }
 }
 

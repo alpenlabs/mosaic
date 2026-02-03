@@ -458,7 +458,7 @@ fn test_bulk_transfer_registered() {
         // around connection establishment or replacement.
         let received = retry_until_ok(Duration::from_secs(8), || async {
             // B registers to expect bulk transfer from A
-            let expect_rx = peer_b
+            let expectation = peer_b
                 .handle
                 .expect_bulk_transfer(peer_a.peer_id, identifier)
                 .await
@@ -472,7 +472,7 @@ fn test_bulk_transfer_registered() {
                 .map_err(|_| ())?;
 
             // B receives via registered channel
-            let mut stream_b = tokio::time::timeout(Duration::from_secs(3), expect_rx.recv())
+            let mut stream_b = tokio::time::timeout(Duration::from_secs(3), expectation.recv())
                 .await
                 .map_err(|_| ())?
                 .map_err(|_| ())?;
