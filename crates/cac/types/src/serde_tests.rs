@@ -538,8 +538,9 @@ fn test_invalid_point_deserialization_fails() {
 #[test]
 fn test_invalid_scalar_deserialization_fails() {
     // Test that invalid/malformed scalar data is rejected during deserialization.
-    // Note: For scalars, ark-serialize accepts any 32-byte value and reduces mod field order,
-    // so we focus on structural invalidity (wrong size).
+    // Note: ark-serialize rejects scalar values >= field order (returns InvalidData error),
+    // it does NOT reduce them mod field order. We test both structural invalidity (wrong size)
+    // and out-of-range values.
 
     // First, get a valid scalar and its serialization
     let valid_scalar = Scalar::from(12345u64);
