@@ -43,6 +43,11 @@ use crate::{
     tls::{self, PeerId},
 };
 
+/// Transport-level limits and timeouts.
+const MAX_CONCURRENT_BIDI_STREAMS: u32 = 100;
+const MAX_CONCURRENT_UNI_STREAMS: u32 = 0;
+const MAX_IDLE_TIMEOUT_MS: u32 = 30_000;
+
 /// Handle to control the network service.
 pub struct NetServiceController {
     /// Thread handle for joining.
@@ -268,6 +273,7 @@ async fn run_service_async(
     // Create client config for outbound connections
     let client_config = tls::make_client_config(&config.signing_key, peer_ids)
         .map_err(|e| ServiceError::TlsConfig(e.to_string()))?;
+    let client_config = apply_client_transport_config(client_config, &config);
 
     // Signal successful startup now that endpoint + TLS config are created.
     let _ = startup_tx.send(Ok(())).await;
@@ -397,8 +403,29 @@ fn apply_transport_config(
     mut server_config: ServerConfig,
     config: &NetServiceConfig,
 ) -> ServerConfig {
-    let mut transport = quinn::TransportConfig::default();
-    transport.keep_alive_interval(Some(config.keep_alive_interval));
+    let transport = build_transport_config(config);
     server_config.transport_config(Arc::new(transport));
     server_config
+}
+
+/// Apply transport configuration to a client config.
+fn apply_client_transport_config(
+    mut client_config: quinn::ClientConfig,
+    config: &NetServiceConfig,
+) -> quinn::ClientConfig {
+    let transport = build_transport_config(config);
+    client_config.transport_config(Arc::new(transport));
+    client_config
+}
+
+/// Build shared transport configuration (server + client).
+fn build_transport_config(config: &NetServiceConfig) -> quinn::TransportConfig {
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(config.keep_alive_interval));
+    transport.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
+    transport.max_concurrent_uni_streams(MAX_CONCURRENT_UNI_STREAMS.into());
+    transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(
+        MAX_IDLE_TIMEOUT_MS,
+    ))));
+    transport
 }

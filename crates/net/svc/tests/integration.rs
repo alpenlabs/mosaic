@@ -19,7 +19,7 @@ use std::{
 use ed25519_dalek::SigningKey;
 use mosaic_net_svc::{
     PeerId,
-    api::StreamClosed,
+    api::{OpenStreamError, StreamClosed},
     config::{NetServiceConfig, PeerConfig},
     svc::NetService,
     tls::peer_id_from_signing_key,
@@ -200,6 +200,68 @@ fn test_services_start_and_shutdown() {
 
     peer_a.shutdown();
     peer_b.shutdown();
+}
+
+#[test]
+fn test_outbound_peer_mismatch_rejected() {
+    let port_a = next_port();
+    let port_b = next_port();
+
+    let key_a = test_key(10);
+    let key_b = test_key(11);
+    let key_c = test_key(12);
+
+    let peer_id_a = peer_id_from_signing_key(&key_a);
+    let peer_id_b = peer_id_from_signing_key(&key_b);
+    let peer_id_c = peer_id_from_signing_key(&key_c);
+
+    let addr_a = test_addr(port_a);
+    let addr_c = test_addr(port_b);
+
+    // A expects to connect to B at addr_c (but C is actually listening there).
+    // Include C in the allowed peer set so TLS succeeds, then the outbound
+    // peer-id check should reject the mismatch.
+    let config_a = NetServiceConfig::new(
+        key_a,
+        addr_a,
+        vec![
+            PeerConfig::new(peer_id_b, addr_c),
+            PeerConfig::new(peer_id_c, addr_c),
+        ],
+    )
+    .with_reconnect_backoff(Duration::from_millis(50));
+
+    // C actually listens at addr_c but allows A.
+    let config_c = NetServiceConfig::new(key_c, addr_c, vec![PeerConfig::new(peer_id_a, addr_a)])
+        .with_reconnect_backoff(Duration::from_millis(50));
+
+    let (handle_a, ctrl_a) = NetService::new(config_a).expect("create net service A");
+    let (_handle_c, ctrl_c) = NetService::new(config_c).expect("create net service C");
+
+    run_async(async {
+        retry_until_ok(Duration::from_secs(5), || {
+            let handle_a = handle_a.clone();
+            async move {
+                match handle_a.open_protocol_stream(peer_id_b, 0).await {
+                    Err(OpenStreamError::ConnectionFailed(msg))
+                        if msg.contains("peer id mismatch") =>
+                    {
+                        Ok(())
+                    }
+                    Ok(stream) => {
+                        // Unexpected success; reset and retry.
+                        stream.reset(0).await;
+                        Err(())
+                    }
+                    Err(_) => Err(()),
+                }
+            }
+        })
+        .await;
+    });
+
+    let _ = ctrl_a.shutdown();
+    let _ = ctrl_c.shutdown();
 }
 
 #[test]

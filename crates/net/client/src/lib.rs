@@ -64,6 +64,24 @@ use std::time::{Duration, Instant};
 pub use error::{AckError, RecvError, SendError};
 pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
 
+/// Configuration for [`NetClient`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetClientConfig {
+    /// Timeout for opening a protocol stream.
+    pub open_timeout: Duration,
+    /// Timeout for waiting on acknowledgments.
+    pub ack_timeout: Duration,
+}
+
+impl Default for NetClientConfig {
+    fn default() -> Self {
+        Self {
+            open_timeout: Duration::from_secs(5),
+            ack_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
 /// Typed network client for Mosaic protocol messages.
 ///
 /// This client wraps a [`NetServiceHandle`] and provides typed send/receive
@@ -77,6 +95,7 @@ pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
 #[derive(Clone)]
 pub struct NetClient {
     handle: NetServiceHandle,
+    config: NetClientConfig,
 }
 
 impl std::fmt::Debug for NetClient {
@@ -88,7 +107,15 @@ impl std::fmt::Debug for NetClient {
 impl NetClient {
     /// Create a new client wrapping the given service handle.
     pub fn new(handle: NetServiceHandle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            config: NetClientConfig::default(),
+        }
+    }
+
+    /// Create a new client with custom configuration.
+    pub fn with_config(handle: NetServiceHandle, config: NetClientConfig) -> Self {
+        Self { handle, config }
     }
 
     /// Get a reference to the underlying service handle.
@@ -130,7 +157,7 @@ impl NetClient {
 
         // Open protocol stream with normal priority
         let mut stream = match tokio::time::timeout(
-            Duration::from_secs(5),
+            self.config.open_timeout,
             self.handle
                 .open_protocol_stream(peer, StreamPriority::Normal.as_i32()),
         )
@@ -166,7 +193,15 @@ impl NetClient {
         let written_at = started.elapsed();
 
         // Wait for ack (empty response)
-        let _ack = stream.read().await.map_err(SendError::NoAck)?;
+        let _ack = match tokio::time::timeout(self.config.ack_timeout, stream.read()).await {
+            Ok(Ok(ack)) => ack,
+            Ok(Err(err)) => return Err(SendError::NoAck(err)),
+            Err(_) => {
+                // Timeout waiting for ack - reset stream and surface as NoAck.
+                stream.reset(0).await;
+                return Err(SendError::NoAck(mosaic_net_svc::StreamClosed::Disconnected));
+            }
+        };
         let acked_at = started.elapsed();
 
         if cfg!(test) {
