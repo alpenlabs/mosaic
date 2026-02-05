@@ -112,6 +112,32 @@ pub fn spawn_outbound_connection(
 
         match result {
             Ok(connection) => {
+                // Verify the remote peer identity matches the intended peer.
+                let observed_peer = match conn::extract_peer_id(&connection) {
+                    Some(id) => id,
+                    None => {
+                        connection.close(3u32.into(), b"invalid peer id");
+                        let _ = event_tx
+                            .send(ServiceEvent::OutboundConnectionFailed {
+                                peer,
+                                error: "invalid peer id".to_string(),
+                            })
+                            .await;
+                        return;
+                    }
+                };
+
+                if observed_peer != peer {
+                    connection.close(4u32.into(), b"peer id mismatch");
+                    let _ = event_tx
+                        .send(ServiceEvent::OutboundConnectionFailed {
+                            peer,
+                            error: "peer id mismatch".to_string(),
+                        })
+                        .await;
+                    return;
+                }
+
                 tracing::info!(peer = %hex::encode(peer), "outbound connection ready");
                 let _ = event_tx
                     .send(ServiceEvent::OutboundConnectionReady { peer, connection })

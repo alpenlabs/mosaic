@@ -21,7 +21,7 @@ use mosaic_cac_types::{
     ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, CircuitInputShares, CommitMsgChunk,
     Msg, WideLabelWirePolynomialCommitments, WideLabelWireShares,
 };
-use mosaic_net_client::{NetClient, RecvError};
+use mosaic_net_client::{NetClient, NetClientConfig, RecvError, SendError};
 use mosaic_net_svc::{
     PeerId,
     config::{NetServiceConfig, PeerConfig},
@@ -87,6 +87,10 @@ impl TestPeer {
 /// Services are created in sequence with a delay to avoid the simultaneous
 /// connect race condition in net-svc's deterministic connection selection.
 fn create_client_pair() -> (TestPeer, TestPeer) {
+    create_client_pair_with_config(NetClientConfig::default())
+}
+
+fn create_client_pair_with_config(config: NetClientConfig) -> (TestPeer, TestPeer) {
     init_tracing();
 
     for attempt in 0..50 {
@@ -135,12 +139,12 @@ fn create_client_pair() -> (TestPeer, TestPeer) {
 
         return (
             TestPeer {
-                client: NetClient::new(handle_a),
+                client: NetClient::with_config(handle_a, config),
                 peer_id: peer_id_a,
                 _controller: ctrl_a,
             },
             TestPeer {
-                client: NetClient::new(handle_b),
+                client: NetClient::with_config(handle_b, config),
                 peer_id: peer_id_b,
                 _controller: ctrl_b,
             },
@@ -564,6 +568,43 @@ fn test_ack_completes_send() {
             .expect("send task panicked");
 
         assert!(matches!(result, mosaic_net_client::Ack));
+    });
+}
+
+#[test]
+fn test_send_times_out_without_ack() {
+    let config = NetClientConfig {
+        open_timeout: Duration::from_secs(2),
+        ack_timeout: Duration::from_millis(200),
+    };
+    let (peer_a, peer_b) = create_client_pair_with_config(config);
+
+    run_async(async {
+        let msg = make_challenge_msg(42);
+        let peer_b_id = peer_b.peer_id();
+        let client_a = peer_a.client.clone();
+        let handle_b = peer_b.client.handle().clone();
+
+        let send_handle = tokio::spawn(async move { client_a.send(peer_b_id, msg).await });
+
+        // Receive raw stream but do not ack it.
+        let mut stream = with_timeout(Duration::from_secs(2), handle_b.protocol_streams().recv())
+            .await
+            .expect("recv failed");
+        let _bytes = stream.read().await.expect("read failed");
+
+        // Hold the stream open past the ack timeout to force a timeout on sender.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let result = with_timeout(Duration::from_secs(2), send_handle)
+            .await
+            .expect("send task panicked");
+
+        match result {
+            Err(SendError::NoAck(_)) => {}
+            Ok(_) => panic!("expected NoAck error, got Ok"),
+            Err(other) => panic!("expected NoAck error, got {:?}", other),
+        }
     });
 }
 
