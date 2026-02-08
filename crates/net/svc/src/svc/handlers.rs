@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     api::{ExpectError, NetCommand, OpenStreamError, Stream},
+    close_codes::CLOSE_NORMAL,
     tls::PeerId,
 };
 
@@ -202,7 +203,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     peer = %hex::encode(peer),
                     "rejecting incoming; prefer outgoing (we have lower peer_id)"
                 );
-                connection.close(0u32.into(), b"redundant");
+                connection.close(CLOSE_NORMAL, b"redundant");
                 return;
             }
 
@@ -213,7 +214,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     old_direction = ?old_conn.direction,
                     "replacing existing connection with preferred incoming"
                 );
-                old_conn.connection.close(0u32.into(), b"replaced");
+                old_conn.connection.close(CLOSE_NORMAL, b"replaced");
             }
 
             // Store new connection
@@ -275,7 +276,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     peer = %hex::encode(peer),
                     "rejecting outgoing; prefer incoming (they have lower peer_id)"
                 );
-                connection.close(0u32.into(), b"redundant");
+                connection.close(CLOSE_NORMAL, b"redundant");
                 return;
             }
 
@@ -286,7 +287,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     old_direction = ?old_conn.direction,
                     "replacing existing connection with preferred outgoing"
                 );
-                old_conn.connection.close(0u32.into(), b"replaced");
+                old_conn.connection.close(CLOSE_NORMAL, b"replaced");
             }
 
             // Store new connection

@@ -20,6 +20,10 @@ use super::{
 };
 use crate::{
     api::{OpenStreamError, Stream},
+    close_codes::{
+        CLOSE_INVALID_PEER_ID_INCOMING, CLOSE_INVALID_PEER_ID_OUTBOUND, CLOSE_PEER_ID_MISMATCH,
+        CLOSE_UNKNOWN_PEER,
+    },
     svc::state::{STREAM_HEADER_WRITE_TIMEOUT, STREAM_OPEN_TIMEOUT},
     tls::PeerId,
 };
@@ -51,7 +55,7 @@ pub fn spawn_incoming_connection_handler(
         let peer_id = match conn::extract_peer_id(&connection) {
             Some(id) => id,
             None => {
-                connection.close(1u32.into(), b"invalid peer id");
+                connection.close(CLOSE_INVALID_PEER_ID_INCOMING, b"invalid peer id");
                 let _ = event_tx
                     .send(ServiceEvent::IncomingConnectionRejected {
                         reason: "invalid peer id".to_string(),
@@ -64,7 +68,7 @@ pub fn spawn_incoming_connection_handler(
         // Verify peer is allowed (O(1) membership via HashSet)
         if !allowed_peers.contains(&peer_id) {
             tracing::warn!(peer = %hex::encode(peer_id), "rejected unknown peer");
-            connection.close(2u32.into(), b"unknown peer");
+            connection.close(CLOSE_UNKNOWN_PEER, b"unknown peer");
             let _ = event_tx
                 .send(ServiceEvent::IncomingConnectionRejected {
                     reason: "unknown peer".to_string(),
@@ -116,7 +120,7 @@ pub fn spawn_outbound_connection(
                 let observed_peer = match conn::extract_peer_id(&connection) {
                     Some(id) => id,
                     None => {
-                        connection.close(3u32.into(), b"invalid peer id");
+                        connection.close(CLOSE_INVALID_PEER_ID_OUTBOUND, b"invalid peer id");
                         let _ = event_tx
                             .send(ServiceEvent::OutboundConnectionFailed {
                                 peer,
@@ -128,7 +132,7 @@ pub fn spawn_outbound_connection(
                 };
 
                 if observed_peer != peer {
-                    connection.close(4u32.into(), b"peer id mismatch");
+                    connection.close(CLOSE_PEER_ID_MISMATCH, b"peer id mismatch");
                     let _ = event_tx
                         .send(ServiceEvent::OutboundConnectionFailed {
                             peer,

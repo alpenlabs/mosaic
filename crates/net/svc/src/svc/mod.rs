@@ -39,6 +39,7 @@ use tokio::runtime::Builder;
 
 use crate::{
     api::{NetCommand, NetServiceHandle, Stream},
+    close_codes::CLOSE_NORMAL,
     config::NetServiceConfig,
     tls::{self, PeerId},
 };
@@ -380,7 +381,7 @@ async fn run_service_async(
 
     // Close all active connections - this will cause connection monitors to exit
     for (_peer, conn) in state.connections.drain() {
-        conn.connection.close(0u32.into(), b"shutdown");
+        conn.connection.close(CLOSE_NORMAL, b"shutdown");
     }
 
     // Clear pending state
@@ -389,7 +390,7 @@ async fn run_service_async(
     state.pending_stream_requests.clear();
 
     // Close endpoint
-    endpoint.close(0u32.into(), b"shutdown");
+    endpoint.close(CLOSE_NORMAL, b"shutdown");
 
     // Brief wait for cleanup
     let _ = tokio::time::timeout(Duration::from_millis(100), endpoint.wait_idle()).await;

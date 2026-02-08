@@ -8,6 +8,8 @@
 
 use std::time::Duration;
 
+use mosaic_net_svc::close_codes::CLOSE_NORMAL;
+
 #[test]
 fn test_channel_across_threads() {
     // Verify kanal channels work correctly across thread boundaries
@@ -122,7 +124,7 @@ fn test_endpoint_bind() {
 
     rt.block_on(async {
         let endpoint = quinn::Endpoint::server(server_config, addr).expect("bind endpoint");
-        endpoint.close(0u32.into(), b"test");
+        endpoint.close(CLOSE_NORMAL, b"test");
         endpoint.wait_idle().await;
     });
 }

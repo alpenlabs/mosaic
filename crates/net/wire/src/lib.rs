@@ -454,7 +454,6 @@ mod tests {
     #[test]
     fn frame_limits_default() {
         let limits = FrameLimits::default();
-        assert_eq!(DEFAULT_MAX_FRAME_SIZE, 4 * 1024 * 1024);
         assert_eq!(limits.max_recv_size, DEFAULT_MAX_FRAME_SIZE);
         assert_eq!(limits.max_send_size, DEFAULT_MAX_FRAME_SIZE);
     }

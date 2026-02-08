@@ -45,6 +45,7 @@
 //! - **Bulk transfer streams**: For large data transfers (low priority, routed by identifier)
 
 pub mod api;
+pub mod close_codes;
 pub mod config;
 pub mod svc;
 pub mod tls;
