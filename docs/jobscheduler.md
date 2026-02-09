@@ -2,6 +2,31 @@
 
 The job scheduler executes actions emitted by the Garbler and Evaluator state machines.
 
+## Crate Structure
+
+```
+crates/job/
+├── api/          # Submission and result types (thin)
+├── scheduler/    # Pools, coordinator, handlers (fat)
+```
+
+**job-api** contains types for submitting jobs and receiving results. SM Scheduler depends only on this crate.
+
+**job-scheduler** contains the implementation: thread pools, garbling coordinator, action handlers. Main binary depends on this. It re-exports job-api.
+
+```
+                    ┌───────────┐
+                    │ job-api   │
+                    └─────┬─────┘
+                          │
+          ┌───────────────┼───────────────┐
+          │               │               │
+          ▼               ▼               ▼
+   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+   │SM Scheduler │ │job-scheduler│ │ net-client  │
+   └─────────────┘ └─────────────┘ └─────────────┘
+```
+
 ## Architecture
 
 ```
@@ -32,20 +57,35 @@ Light actions are I/O-bound (network sends, acks). Heavy actions are CPU-bound. 
 ### Integration Points
 
 ```
-┌────────────────┐         Actions          ┌────────────────┐
-│                │ ───────────────────────► │                │
-│  SM Scheduler  │                          │  Job Scheduler │
-│                │ ◄─────────────────────── │                │
-└────────────────┘         Inputs           └───────┬────────┘
-                                                    │
-                                                    │ send/recv
-                                                    ▼
-                                            ┌────────────────┐
-                                            │   net-client   │
-                                            └────────────────┘
+┌────────────────┐                           ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+│                │         job-api                   job-scheduler
+│  SM Scheduler  │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶│┌───────────────────────┐  │
+│                │   JobSubmission            │     JobScheduler      │
+└────────────────┘                           ││                       │  │
+        ▲                                     │  ┌─────┬─────┬─────┐  │
+        │                                    ││  │Light│Heavy│Garbl│  │  │
+        │          job-api                    │  └─────┴─────┴─────┘  │
+        └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼│                       │  │
+                   JobResult                  │     handlers (mod)    │
+                                             │└───────────┬───────────┘  │
+                                              ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─
+                                                          │
+                                                          ▼
+                                                  ┌───────────────┐
+                                                  │  net-client   │
+                                                  └───────────────┘
 ```
 
-The SM Scheduler submits actions to the Job Scheduler. When a job completes, the result is converted to an Input and sent back to the SM Scheduler for the next state transition.
+SM Scheduler submits actions via job-api types. Job Scheduler executes them and returns results via job-api types. SM Scheduler never sees pool internals or handlers.
+
+### job-api Types
+
+| Type | Purpose |
+|------|---------|
+| `JobSubmission` | Action + StateMachineId + PeerId |
+| `JobResult` | Completed Input or error |
+| `JobSchedulerHandle` | Cloneable handle for submission |
+| `Priority` | Critical / High / Normal |
 
 ### Action → Input Mapping
 
@@ -90,7 +130,7 @@ Light actions that involve network I/O use net-client internally:
 - **Ack actions** call `InboundRequest::ack()` on a previously received message
 - **Receive actions** register expectations with net-svc and complete when data arrives
 
-The Job Scheduler owns the NetClient instance. Jobs borrow it for the duration of their execution.
+The Job Scheduler owns the NetClient instance. Handlers borrow it for the duration of their execution.
 
 ## Light Pool
 
