@@ -14,10 +14,11 @@ use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 use proptest::prelude::*;
 
 use crate::{
-    Adaptor, AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, ChallengeIndices, ChallengeMsg,
-    ChallengeResponseMsgChunk, CircuitInputShares, CommitMsgChunk, DepositId, Msg, PubKey,
-    SecretKey, Sighash, Signature, WideLabelWireAdaptors, WideLabelWirePolynomialCommitments,
-    WideLabelWireShares,
+    Adaptor, AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments,
+    ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
+    CircuitInputShares, CommitMsgChunk, CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds,
+    OpenedOutputShares, PubKey, ReservedSetupInputShares, SecretKey, Sighash, Signature,
+    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
 };
 
 /// Helper to perform a serialization roundtrip and verify equality.
@@ -197,11 +198,42 @@ fn arb_adaptor_msg_chunk() -> impl Strategy<Value = AdaptorMsgChunk> {
     })
 }
 
+/// Generate a CommitMsgHeader with random garbling table commitments.
+fn arb_commit_msg_header() -> impl Strategy<Value = CommitMsgHeader> {
+    any::<u64>().prop_map(|seed| {
+        let bytes: [u8; 32] = std::array::from_fn(|i| ((seed >> (i % 8)) & 0xff) as u8);
+        let commitment: Byte32 = bytes.into();
+
+        CommitMsgHeader {
+            garbling_table_commitments: AllGarblingTableCommitments::new(|_| commitment),
+        }
+    })
+}
+
+/// Generate a ChallengeResponseMsgHeader with random data.
+fn arb_challenge_response_msg_header() -> impl Strategy<Value = ChallengeResponseMsgHeader> {
+    any::<u64>().prop_map(|seed| {
+        let bytes: [u8; 32] = std::array::from_fn(|i| ((seed >> (i % 8)) & 0xff) as u8);
+        let single_scalar = Scalar::from_le_bytes_mod_order(&bytes);
+        let idx = Index::new(1).unwrap_or(Index::reserved());
+        let share = Share::new(idx, single_scalar);
+        let seed_bytes: Byte32 = bytes.into();
+
+        ChallengeResponseMsgHeader {
+            reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share.clone()),
+            opened_output_shares: OpenedOutputShares::new(|_| share.clone()),
+            opened_garbling_seeds: OpenedGarblingSeeds::new(|_| seed_bytes),
+        }
+    })
+}
+
 /// Generate a random Msg variant.
 fn arb_msg() -> impl Strategy<Value = Msg> {
     prop_oneof![
+        arb_commit_msg_header().prop_map(Msg::CommitHeader),
         arb_commit_msg_chunk().prop_map(Msg::CommitChunk),
         arb_challenge_msg().prop_map(Msg::Challenge),
+        arb_challenge_response_msg_header().prop_map(Msg::ChallengeResponseHeader),
         arb_challenge_response_msg_chunk().prop_map(Msg::ChallengeResponseChunk),
         arb_adaptor_msg_chunk().prop_map(Msg::AdaptorChunk),
     ]
@@ -350,8 +382,10 @@ proptest! {
 
         // Check variant matches
         match (&msg, &recovered) {
+            (Msg::CommitHeader(_), Msg::CommitHeader(_)) => {}
             (Msg::CommitChunk(_), Msg::CommitChunk(_)) => {}
             (Msg::Challenge(_), Msg::Challenge(_)) => {}
+            (Msg::ChallengeResponseHeader(_), Msg::ChallengeResponseHeader(_)) => {}
             (Msg::ChallengeResponseChunk(_), Msg::ChallengeResponseChunk(_)) => {}
             (Msg::AdaptorChunk(_), Msg::AdaptorChunk(_)) => {}
             _ => panic!("variant mismatch after roundtrip"),
@@ -586,6 +620,141 @@ fn test_invalid_scalar_deserialization_fails() {
             .is_err(),
         "scalar >= field order should fail deserialization with validation"
     );
+}
+
+// =============================================================================
+// Tests for frame size limits (4 MiB)
+// =============================================================================
+
+/// Maximum frame size for network transmission (4 MiB).
+const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
+
+/// Helper to check that a message fits within the frame limit.
+fn assert_fits_in_frame<T: CanonicalSerialize>(msg: &T, name: &str, compress: Compress) {
+    let size = msg.serialized_size(compress);
+    assert!(
+        size <= MAX_FRAME_SIZE,
+        "{} serialized size ({} bytes, {} mode) exceeds 4 MiB frame limit ({} bytes)",
+        name,
+        size,
+        if compress == Compress::Yes {
+            "compressed"
+        } else {
+            "uncompressed"
+        },
+        MAX_FRAME_SIZE
+    );
+}
+
+#[test]
+fn test_commit_msg_header_fits_in_frame() {
+    // CommitMsgHeader contains N_CIRCUITS (181) garbling table commitments (32 bytes each)
+    // Expected size: ~5.7 KB
+    let header = CommitMsgHeader {
+        garbling_table_commitments: AllGarblingTableCommitments::new(|_| [0u8; 32].into()),
+    };
+
+    assert_fits_in_frame(&header, "CommitMsgHeader", Compress::Yes);
+    assert_fits_in_frame(&header, "CommitMsgHeader", Compress::No);
+
+    // Verify actual size is what we expect (sanity check)
+    let size = header.serialized_size(Compress::No);
+    assert!(
+        size < 10 * 1024,
+        "CommitMsgHeader should be ~5.7 KB, got {} bytes",
+        size
+    );
+}
+
+#[test]
+fn test_challenge_response_msg_header_fits_in_frame() {
+    // ChallengeResponseMsgHeader contains:
+    // - N_SETUP_INPUT_WIRES (4) shares (~160 bytes)
+    // - N_OPEN_CIRCUITS (174) output shares (~6.8 KB)
+    // - N_OPEN_CIRCUITS (174) seeds (~5.4 KB)
+    // Expected total: ~12.4 KB
+    let scalar = Scalar::from_le_bytes_mod_order(&[1u8; 32]);
+    let idx = Index::new(1).expect("valid index");
+    let share = Share::new(idx, scalar);
+
+    let header = ChallengeResponseMsgHeader {
+        reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share.clone()),
+        opened_output_shares: OpenedOutputShares::new(|_| share.clone()),
+        opened_garbling_seeds: OpenedGarblingSeeds::new(|_| [0u8; 32].into()),
+    };
+
+    assert_fits_in_frame(&header, "ChallengeResponseMsgHeader", Compress::Yes);
+    assert_fits_in_frame(&header, "ChallengeResponseMsgHeader", Compress::No);
+
+    // Verify actual size is what we expect (sanity check)
+    let size = header.serialized_size(Compress::No);
+    assert!(
+        size < 20 * 1024,
+        "ChallengeResponseMsgHeader should be ~12.4 KB, got {} bytes",
+        size
+    );
+}
+
+#[test]
+fn test_challenge_msg_fits_in_frame() {
+    // ChallengeMsg contains N_OPEN_CIRCUITS (174) indices
+    // Expected size: ~1.4 KB
+    let msg = ChallengeMsg {
+        challenge_indices: ChallengeIndices::new(|i| Index::new(i + 1).expect("valid index")),
+    };
+
+    assert_fits_in_frame(&msg, "ChallengeMsg", Compress::Yes);
+    assert_fits_in_frame(&msg, "ChallengeMsg", Compress::No);
+
+    let size = msg.serialized_size(Compress::No);
+    assert!(
+        size < 5 * 1024,
+        "ChallengeMsg should be ~1.4 KB, got {} bytes",
+        size
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(3))]
+
+    #[test]
+    fn test_commit_msg_chunk_fits_in_frame(chunk in arb_commit_msg_chunk()) {
+        // CommitMsgChunk: ~1.4 MB compressed, ~2.76 MB uncompressed
+        assert_fits_in_frame(&chunk, "CommitMsgChunk", Compress::Yes);
+        assert_fits_in_frame(&chunk, "CommitMsgChunk", Compress::No);
+    }
+
+    #[test]
+    fn test_challenge_response_msg_chunk_fits_in_frame(chunk in arb_challenge_response_msg_chunk()) {
+        // ChallengeResponseMsgChunk: ~1.68 MB per chunk
+        assert_fits_in_frame(&chunk, "ChallengeResponseMsgChunk", Compress::Yes);
+        assert_fits_in_frame(&chunk, "ChallengeResponseMsgChunk", Compress::No);
+    }
+
+    #[test]
+    fn test_adaptor_msg_chunk_fits_in_frame(chunk in arb_adaptor_msg_chunk()) {
+        // AdaptorMsgChunk: ~1.6 MB uncompressed
+        assert_fits_in_frame(&chunk, "AdaptorMsgChunk", Compress::Yes);
+        assert_fits_in_frame(&chunk, "AdaptorMsgChunk", Compress::No);
+    }
+
+    #[test]
+    fn test_commit_msg_header_fits_in_frame_proptest(header in arb_commit_msg_header()) {
+        assert_fits_in_frame(&header, "CommitMsgHeader", Compress::Yes);
+        assert_fits_in_frame(&header, "CommitMsgHeader", Compress::No);
+    }
+
+    #[test]
+    fn test_challenge_response_msg_header_fits_in_frame_proptest(header in arb_challenge_response_msg_header()) {
+        assert_fits_in_frame(&header, "ChallengeResponseMsgHeader", Compress::Yes);
+        assert_fits_in_frame(&header, "ChallengeResponseMsgHeader", Compress::No);
+    }
+
+    #[test]
+    fn test_all_msg_variants_fit_in_frame(msg in arb_msg()) {
+        assert_fits_in_frame(&msg, "Msg", Compress::Yes);
+        assert_fits_in_frame(&msg, "Msg", Compress::No);
+    }
 }
 
 #[test]

@@ -1,7 +1,8 @@
 //! Protocol message types for communication between Garbler and Evaluator.
 //!
 //! All message types are designed to fit within the 4 MiB network frame limit.
-//! Large logical messages are split into chunks for transmission.
+//! Large logical messages are split into a header (containing metadata) and
+//! chunks (containing the bulk data) for transmission.
 
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
@@ -9,13 +10,26 @@ use ark_serialize::{
 };
 
 use crate::{
-    Adaptor, AdaptorMsgChunkWithdrawals, ChallengeIndices, CircuitInputShares,
+    Adaptor, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments, ChallengeIndices,
+    CircuitInputShares, OpenedGarblingSeeds, OpenedOutputShares, ReservedSetupInputShares,
     WideLabelWirePolynomialCommitments,
 };
 
 // ============================================================================
-// Message Types (all fit within 4 MiB frame limit)
+// Commit Message Types (Garbler -> Evaluator)
 // ============================================================================
+
+/// CommitMsgHeader: Garbler -> Evaluator
+///
+/// Header containing garbling table commitments for all circuits.
+/// Sent once before the commitment chunks.
+///
+/// Size: ~5.7 KB (fits in single frame)
+#[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct CommitMsgHeader {
+    /// Commitments to all N_CIRCUITS garbling tables.
+    pub garbling_table_commitments: AllGarblingTableCommitments,
+}
 
 /// CommitMsgChunk: Garbler -> Evaluator (chunked by wire)
 ///
@@ -34,9 +48,13 @@ pub struct CommitMsgChunk {
     pub commitments: WideLabelWirePolynomialCommitments,
 }
 
+// ============================================================================
+// Challenge Message Type (Evaluator -> Garbler)
+// ============================================================================
+
 /// ChallengeMsg: Evaluator -> Garbler
 ///
-/// Evaluator's challenge after receiving commitment chunks.
+/// Evaluator's challenge after receiving commitment header and chunks.
 /// Selects which circuits to open for verification.
 ///
 /// Size: ~1.4 KB (fits in single frame, no chunking needed)
@@ -45,6 +63,29 @@ pub struct ChallengeMsg {
     /// Indices of circuits to open for verification.
     /// Size: N_OPEN_CIRCUITS (174 of 181)
     pub challenge_indices: ChallengeIndices,
+}
+
+// ============================================================================
+// Challenge Response Message Types (Garbler -> Evaluator)
+// ============================================================================
+
+/// ChallengeResponseMsgHeader: Garbler -> Evaluator
+///
+/// Header containing per-protocol data for the challenge response.
+/// Sent once before the challenge response chunks.
+///
+/// Size: ~12.4 KB (fits in single frame)
+#[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct ChallengeResponseMsgHeader {
+    /// Reserved input shares for setup input wires.
+    /// Size: N_SETUP_INPUT_WIRES (4) shares
+    pub reserved_setup_input_shares: ReservedSetupInputShares,
+    /// Output shares for all opened circuits.
+    /// Size: N_OPEN_CIRCUITS (174) shares
+    pub opened_output_shares: OpenedOutputShares,
+    /// Garbling seeds for all opened circuits.
+    /// Size: N_OPEN_CIRCUITS (174) seeds
+    pub opened_garbling_seeds: OpenedGarblingSeeds,
 }
 
 /// ChallengeResponseMsgChunk: Garbler -> Evaluator (chunked by circuit)
@@ -61,6 +102,10 @@ pub struct ChallengeResponseMsgChunk {
     /// Shares for all wires × all wide label values for this circuit.
     pub shares: CircuitInputShares,
 }
+
+// ============================================================================
+// Adaptor Message Type (Evaluator -> Garbler)
+// ============================================================================
 
 /// AdaptorMsgChunk: Evaluator -> Garbler (chunked by deposit wire)
 ///
@@ -90,12 +135,16 @@ pub struct AdaptorMsgChunk {
 /// Note: Acknowledgments are handled at the network layer, not here.
 /// Note: Garbling tables are transferred via bulk streams, not protocol messages.
 #[derive(Debug)]
-#[expect(clippy::large_enum_variant, reason = "AdaptorMsg")]
+#[expect(clippy::large_enum_variant, reason = "AdaptorMsgChunk is large")]
 pub enum Msg {
+    /// Commitment header (Garbler -> Evaluator)
+    CommitHeader(CommitMsgHeader),
     /// Commitment chunk (Garbler -> Evaluator)
     CommitChunk(CommitMsgChunk),
     /// Challenge message (Evaluator -> Garbler)
     Challenge(ChallengeMsg),
+    /// Challenge response header (Garbler -> Evaluator)
+    ChallengeResponseHeader(ChallengeResponseMsgHeader),
     /// Challenge response chunk (Garbler -> Evaluator)
     ChallengeResponseChunk(ChallengeResponseMsgChunk),
     /// Adaptor signatures chunk (Evaluator -> Garbler)
@@ -105,10 +154,12 @@ pub enum Msg {
 /// Message variant discriminant for serialization.
 #[repr(u8)]
 enum MsgVariant {
-    CommitChunk = 0,
-    Challenge = 1,
-    ChallengeResponseChunk = 2,
-    AdaptorChunk = 3,
+    CommitHeader = 0,
+    CommitChunk = 1,
+    Challenge = 2,
+    ChallengeResponseHeader = 3,
+    ChallengeResponseChunk = 4,
+    AdaptorChunk = 5,
 }
 
 impl TryFrom<u8> for MsgVariant {
@@ -116,10 +167,12 @@ impl TryFrom<u8> for MsgVariant {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(MsgVariant::CommitChunk),
-            1 => Ok(MsgVariant::Challenge),
-            2 => Ok(MsgVariant::ChallengeResponseChunk),
-            3 => Ok(MsgVariant::AdaptorChunk),
+            0 => Ok(MsgVariant::CommitHeader),
+            1 => Ok(MsgVariant::CommitChunk),
+            2 => Ok(MsgVariant::Challenge),
+            3 => Ok(MsgVariant::ChallengeResponseHeader),
+            4 => Ok(MsgVariant::ChallengeResponseChunk),
+            5 => Ok(MsgVariant::AdaptorChunk),
             _ => Err(SerializationError::InvalidData),
         }
     }
@@ -132,12 +185,21 @@ impl CanonicalSerialize for Msg {
         compress: Compress,
     ) -> Result<(), SerializationError> {
         match self {
+            Msg::CommitHeader(msg) => {
+                (MsgVariant::CommitHeader as u8).serialize_with_mode(&mut writer, compress)?;
+                msg.serialize_with_mode(&mut writer, compress)
+            }
             Msg::CommitChunk(msg) => {
                 (MsgVariant::CommitChunk as u8).serialize_with_mode(&mut writer, compress)?;
                 msg.serialize_with_mode(&mut writer, compress)
             }
             Msg::Challenge(msg) => {
                 (MsgVariant::Challenge as u8).serialize_with_mode(&mut writer, compress)?;
+                msg.serialize_with_mode(&mut writer, compress)
+            }
+            Msg::ChallengeResponseHeader(msg) => {
+                (MsgVariant::ChallengeResponseHeader as u8)
+                    .serialize_with_mode(&mut writer, compress)?;
                 msg.serialize_with_mode(&mut writer, compress)
             }
             Msg::ChallengeResponseChunk(msg) => {
@@ -154,8 +216,10 @@ impl CanonicalSerialize for Msg {
 
     fn serialized_size(&self, compress: Compress) -> usize {
         1 + match self {
+            Msg::CommitHeader(msg) => msg.serialized_size(compress),
             Msg::CommitChunk(msg) => msg.serialized_size(compress),
             Msg::Challenge(msg) => msg.serialized_size(compress),
+            Msg::ChallengeResponseHeader(msg) => msg.serialized_size(compress),
             Msg::ChallengeResponseChunk(msg) => msg.serialized_size(compress),
             Msg::AdaptorChunk(msg) => msg.serialized_size(compress),
         }
@@ -172,6 +236,10 @@ impl CanonicalDeserialize for Msg {
         let variant = MsgVariant::try_from(variant_byte)?;
 
         match variant {
+            MsgVariant::CommitHeader => {
+                let msg = CommitMsgHeader::deserialize_with_mode(&mut reader, compress, validate)?;
+                Ok(Msg::CommitHeader(msg))
+            }
             MsgVariant::CommitChunk => {
                 let msg = CommitMsgChunk::deserialize_with_mode(&mut reader, compress, validate)?;
                 Ok(Msg::CommitChunk(msg))
@@ -179,6 +247,14 @@ impl CanonicalDeserialize for Msg {
             MsgVariant::Challenge => {
                 let msg = ChallengeMsg::deserialize_with_mode(&mut reader, compress, validate)?;
                 Ok(Msg::Challenge(msg))
+            }
+            MsgVariant::ChallengeResponseHeader => {
+                let msg = ChallengeResponseMsgHeader::deserialize_with_mode(
+                    &mut reader,
+                    compress,
+                    validate,
+                )?;
+                Ok(Msg::ChallengeResponseHeader(msg))
             }
             MsgVariant::ChallengeResponseChunk => {
                 let msg = ChallengeResponseMsgChunk::deserialize_with_mode(
@@ -199,8 +275,10 @@ impl CanonicalDeserialize for Msg {
 impl Valid for Msg {
     fn check(&self) -> Result<(), SerializationError> {
         match self {
+            Msg::CommitHeader(msg) => msg.check(),
             Msg::CommitChunk(msg) => msg.check(),
             Msg::Challenge(msg) => msg.check(),
+            Msg::ChallengeResponseHeader(msg) => msg.check(),
             Msg::ChallengeResponseChunk(msg) => msg.check(),
             Msg::AdaptorChunk(msg) => msg.check(),
         }

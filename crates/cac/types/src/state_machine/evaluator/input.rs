@@ -1,9 +1,10 @@
 use mosaic_vs3::Index;
 
 use crate::{
-    ChallengeResponseMsgChunk, CircuitOutputShare, CommitMsgChunk, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, GarblingTableCommitment, SecretKey, Seed,
-    SetupInputs, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitOutputShare, CommitMsgChunk,
+    CommitMsgHeader, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs,
+    GarblingTableCommitment, SecretKey, Seed, SetupInputs, Sighashes, WithdrawalAdaptors,
+    WithdrawalInputs,
 };
 
 /// Evaluator state machine inputs.
@@ -12,10 +13,14 @@ use crate::{
 pub enum Input {
     /// Initialize evaluator state machine.
     Init(EvaluatorInitData),
+    /// Commit message header received.
+    RecvCommitMsgHeader(CommitMsgHeader),
     /// Commit message chunk received.
     RecvCommitMsgChunk(CommitMsgChunk),
     /// Challenge message was acked by peer.
     ChallengeMsgAcked,
+    /// Challenge response message header received.
+    RecvChallengeResponseMsgHeader(ChallengeResponseMsgHeader),
     /// Challenge response message chunk received.
     RecvChallengeResponseMsgChunk(ChallengeResponseMsgChunk),
     /// Opened input shares verification failure message or None.
