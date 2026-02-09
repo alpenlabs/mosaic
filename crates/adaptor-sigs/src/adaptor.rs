@@ -119,6 +119,13 @@ impl Adaptor {
             ));
         }
 
+        // key consistency
+        if gen_mul(&evaluator_master_sk) != evaluator_master_pk {
+            return Err(Error::AdaptorGenerationFailed(
+                "evaluator master keys fail consistency check",
+            ));
+        }
+
         // r', R' = r'·G
         let mut r_dash = ark_secp256k1::Fr::rand(rng);
         if r_dash == ark_secp256k1::Fr::ZERO {
