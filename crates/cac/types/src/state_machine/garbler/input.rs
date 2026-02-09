@@ -18,11 +18,15 @@ pub enum Input {
     SharesGenerated(Index, Box<CircuitInputShares>, Box<CircuitOutputShare>),
     /// Garbling table commitment generated.
     TableCommitmentGenerated(Index, GarblingTableCommitment),
-    /// Commit message was acked by peer.
+    /// Commit message header was acked by peer.
+    CommitHeaderAcked,
+    /// Commit message (all chunks) was acked by peer.
     CommitMsgAcked,
     /// Challenge message received.
     RecvChallengeMsg(ChallengeMsg),
-    /// Challenge response message was acked by peer.
+    /// Challenge response message header was acked by peer.
+    ChallengeResponseHeaderAcked,
+    /// Challenge response message (all chunks) was acked by peer.
     ChallengeResponseAcked,
     /// Garbling table generated with specified seed was transferred to the other party.
     GarblingTableTransferred(GarblingSeed, GarblingTableCommitment),

@@ -39,7 +39,8 @@ pub type AllPolynomialCommitments = (
 );
 
 /// Commitments for all `N_CIRCUITS` garbling tables.
-pub type AllGarblingTableCommitments = [GarblingTableCommitment; N_CIRCUITS];
+/// Uses HeapArray for serialization derive macro support.
+pub type AllGarblingTableCommitments = HeapArray<GarblingTableCommitment, N_CIRCUITS>;
 /// Commitments for opened garbling tables.
 pub type OpenedGarblingTableCommitments = [GarblingTableCommitment; N_OPEN_CIRCUITS];
 /// Commitments for eval garbling tables.
@@ -75,21 +76,23 @@ pub type ReservedInputShares = CircuitInputShares;
 pub type OpenedInputShares = [CircuitInputShares; N_OPEN_CIRCUITS];
 
 /// Reserved input shares for wide labels corresponding to agreed setup inputs, for each setup input
-/// wire.
-pub type ReservedSetupInputShares = [Share; N_SETUP_INPUT_WIRES];
+/// wire. Uses HeapArray for serialization derive macro support.
+pub type ReservedSetupInputShares = HeapArray<Share, N_SETUP_INPUT_WIRES>;
 /// Reserved input shares for all wide label values corresponding to deposit input wires.
 pub type ReservedDepositInputShares = [WideLabelWireShares; N_DEPOSIT_INPUT_WIRES];
 /// Reserved input shares for all wide labels corresponding to withdrawal input wires.
 pub type ReservedWithdrawalInputShares = [WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES];
 /// Shares for value 0 output wire for for all opened indices.
-pub type OpenedOutputShares = [CircuitOutputShare; N_OPEN_CIRCUITS];
+/// Uses HeapArray for serialization derive macro support.
+pub type OpenedOutputShares = HeapArray<CircuitOutputShare, N_OPEN_CIRCUITS>;
 
 /// Seed for garbling table generation.
 pub type GarblingSeed = Seed;
 /// Seeds for garbling table generation for all indices.
 pub type AllGarblingSeeds = [GarblingSeed; N_CIRCUITS];
 /// Seeds for garbling table generation for all opened indices.
-pub type OpenedGarblingSeeds = [GarblingSeed; N_OPEN_CIRCUITS];
+/// Uses HeapArray for serialization derive macro support.
+pub type OpenedGarblingSeeds = HeapArray<GarblingSeed, N_OPEN_CIRCUITS>;
 /// Seeds for garbling table generation for evaluation indices.
 pub type EvalGarblingSeeds = [GarblingSeed; N_EVAL_CIRCUITS];
 
