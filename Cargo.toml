@@ -87,6 +87,7 @@ bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" 
 once_cell = "1.21.3"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
 jsonrpsee-types = "*"                                                     # constrained by jsonrpsee dep
+k256 = "0.13.4"
 proptest = "1.5"
 rand = "0.8"
 rand_chacha = "0.3.0"
