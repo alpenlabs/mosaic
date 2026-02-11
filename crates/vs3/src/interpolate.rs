@@ -204,7 +204,7 @@ mod tests {
 
         let known_shares: Vec<Share> = selected_indices
             .iter()
-            .map(|&idx| all_shares[idx].clone())
+            .map(|&idx| all_shares[idx])
             .collect();
 
         // Interpolate missing shares
@@ -266,7 +266,7 @@ mod tests {
 
         let result = interpolate(&shares_without_reserved);
         assert!(
-            !result.is_err(),
+            result.is_ok(),
             "shouldn't panic even if reserved index isn't present"
         );
     }

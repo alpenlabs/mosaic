@@ -171,7 +171,7 @@ fn arb_challenge_response_msg_chunk() -> impl Strategy<Value = ChallengeResponse
 
         ChallengeResponseMsgChunk {
             circuit_index: (seed % 174) as u16,
-            shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| share.clone())),
+            shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| share)),
         }
     })
 }
@@ -231,8 +231,8 @@ fn arb_challenge_response_msg_header() -> impl Strategy<Value = ChallengeRespons
         let seed_bytes: Byte32 = bytes.into();
 
         ChallengeResponseMsgHeader {
-            reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share.clone()),
-            opened_output_shares: OpenedOutputShares::new(|_| share.clone()),
+            reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share),
+            opened_output_shares: OpenedOutputShares::new(|_| share),
             opened_garbling_seeds: OpenedGarblingSeeds::new(|_| seed_bytes),
             unchallenged_output_label_cts: HeapArray::from_elem(seed_bytes),
         }
@@ -702,8 +702,8 @@ fn test_challenge_response_msg_header_fits_in_frame() {
 
     let _header_seed: Byte32 = [0u8; 32].into();
     let header = ChallengeResponseMsgHeader {
-        reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share.clone()),
-        opened_output_shares: OpenedOutputShares::new(|_| share.clone()),
+        reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share),
+        opened_output_shares: OpenedOutputShares::new(|_| share),
         opened_garbling_seeds: OpenedGarblingSeeds::new(|_| [0u8; 32].into()),
         unchallenged_output_label_cts: HeapArray::from_elem([0u8; 32].into()),
     };
