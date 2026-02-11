@@ -1,12 +1,13 @@
 //! Polynomial arithmetic over the secp256k1 curve for the VS3 protocol.
 
-use ark_ff::{UniformRand, Zero};
+use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
-use rand_core::{CryptoRng, RngCore};
+use ckt_gobble::Label;
+use mosaic_common::constants::{N_CIRCUITS, N_OPEN_CIRCUITS as N_COEFFICIENTS};
+use rand_chacha::rand_core::{CryptoRng, RngCore};
 
 use crate::{
-    constants::{N_CIRCUITS, N_COEFFICIENTS},
     error::Error,
     psm::{gen_batch_mul, gen_mul},
 };
@@ -84,7 +85,7 @@ impl Index {
 }
 
 /// A share of a polynomial, representing an index and an evaluation value at that index.
-#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Share(Index, Scalar);
 
 impl Share {
@@ -107,10 +108,22 @@ impl Share {
     pub fn commit(&self) -> ShareCommitment {
         ShareCommitment(self.0, gen_mul(&self.1))
     }
+
+    /// truncate: conversion from Share to ckt_gobble::Label
+    pub fn truncate(&self) -> Label {
+        let x: [u8; 32] = self
+            .1
+            .into_bigint()
+            .to_bytes_le()
+            .try_into()
+            .expect("encode 32 bytes");
+        let x: [u8; 16] = x[0..16].try_into().unwrap();
+        Label::from(x)
+    }
 }
 
 /// A commitment to a share of a polynomial.
-#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct ShareCommitment(Index, Point);
 
 impl ShareCommitment {

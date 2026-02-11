@@ -2,43 +2,35 @@
 
 use ark_ff::{Field, One, Zero};
 use ark_secp256k1::Fr as Scalar;
+use mosaic_common::constants::{N_CIRCUITS, N_OPEN_CIRCUITS};
 
 use crate::{
-    constants::{N_CIRCUITS, N_COEFFICIENTS},
     error::Error,
     polynomial::{Index, Share},
 };
 
 /// Interpolate missing shares from known shares using Lagrange interpolation.
 ///
-/// Given exactly `N_COEFFICIENTS` known shares (which must include the reserved index 0),
-/// this function computes all missing shares from the remaining indices in `[0, N_CIRCUITS)`.
+/// Given exactly `N_OPEN_CIRCUITS+1` known shares,
+/// this function computes all missing shares from the remaining indices in `[0, N_CIRCUITS]`.
 ///
 /// # Arguments
-/// * `known_shares` - Known shares, must be exactly `N_COEFFICIENTS` and include reserved index
+/// * `known_shares` - Known shares, must be exactly `N_OPEN_CIRCUITS+1`
 ///
 /// # Returns
 /// Vector of missing shares interpolated from the known shares
 ///
 /// # Errors
 /// Returns an error if:
-/// - The number of known shares is not exactly `N_COEFFICIENTS`
-/// - The reserved index (0) is not present in the known shares
+/// - The number of known shares is not exactly `N_OPEN_CIRCUITS+1`
 pub fn interpolate(known_shares: &[Share]) -> Result<Vec<Share>, Error> {
-    // Check that we have exactly N_COEFFICIENTS known shares
-    if known_shares.len() != N_COEFFICIENTS {
+    // Check that we have exactly N_OPEN_CIRCUITS+1 known shares
+    // N_OPEN_CIRCUITS from setup time and 1 from withdrawal time
+    if known_shares.len() != N_OPEN_CIRCUITS + 1 {
         return Err(Error::InvalidShareCount {
-            expected: N_COEFFICIENTS,
+            expected: N_OPEN_CIRCUITS + 1,
             actual: known_shares.len(),
         });
-    }
-
-    // Check that the reserved index (0) is present
-    let has_reserved = known_shares
-        .iter()
-        .any(|share| share.index() == Index::reserved());
-    if !has_reserved {
-        return Err(Error::MissingReservedIndex);
     }
 
     // Convert known shares to (usize, Scalar) format
@@ -53,7 +45,7 @@ pub fn interpolate(known_shares: &[Share]) -> Result<Vec<Share>, Error> {
         .map(|share| share.index().get())
         .collect();
 
-    let missing_indices: Vec<usize> = (0..N_CIRCUITS)
+    let missing_indices: Vec<usize> = (0..=N_CIRCUITS)
         .filter(|i| !known_indices.contains(i))
         .collect();
 
@@ -181,10 +173,7 @@ mod tests {
     use rand::rngs::OsRng;
 
     use super::*;
-    use crate::{
-        constants::{N_CIRCUITS, N_COEFFICIENTS},
-        polynomial::{Index, Polynomial, Share},
-    };
+    use crate::polynomial::{Index, Polynomial, Share};
 
     #[test]
     fn test_interpolate_missing_shares() {
@@ -195,7 +184,7 @@ mod tests {
         let poly = Polynomial::rand(&mut rng);
 
         // Generate all shares (including reserved index 0)
-        let all_shares: Vec<Share> = (0..N_CIRCUITS)
+        let all_shares: Vec<Share> = (0..=N_CIRCUITS)
             .map(|idx| {
                 let index = if idx == 0 {
                     Index::reserved()
@@ -206,12 +195,12 @@ mod tests {
             })
             .collect();
 
-        // Randomly sample N_COEFFICIENTS indices, ensuring reserved index (0) is included
-        let mut available_indices: Vec<usize> = (1..N_CIRCUITS).collect();
+        // Randomly sample N_OPEN_CIRCUITS indices, ensuring reserved index (0) is included
+        let mut available_indices: Vec<usize> = (1..=N_CIRCUITS).collect();
         available_indices.shuffle(&mut rng);
 
         let mut selected_indices = vec![0]; // Always include reserved index
-        selected_indices.extend(&available_indices[0..N_COEFFICIENTS - 1]);
+        selected_indices.extend(&available_indices[0..N_OPEN_CIRCUITS]);
 
         let known_shares: Vec<Share> = selected_indices
             .iter()
@@ -222,7 +211,8 @@ mod tests {
         let missing_shares = interpolate(&known_shares).expect("interpolation should succeed");
 
         // Verify we got the right number of missing shares
-        assert_eq!(missing_shares.len(), N_CIRCUITS - N_COEFFICIENTS);
+        // total: N_CIRCUITS+1, opened: N_OPEN_CIRCUITS + 1, remaining: (N_CIRCUITS-N_OPEN_CIRCUITS)
+        assert_eq!(missing_shares.len(), N_CIRCUITS - N_OPEN_CIRCUITS);
 
         // Verify all missing shares match the ground truth
         let known_indices: std::collections::HashSet<usize> =
@@ -248,7 +238,7 @@ mod tests {
         let poly = Polynomial::rand(&mut rng);
 
         // Test error: wrong number of shares
-        let too_few_shares: Vec<Share> = (0..N_COEFFICIENTS - 1)
+        let too_few_shares: Vec<Share> = (0..N_OPEN_CIRCUITS - 1)
             .map(|idx| {
                 let index = if idx == 0 {
                     Index::reserved()
@@ -266,8 +256,8 @@ mod tests {
             Error::InvalidShareCount { .. }
         ));
 
-        // Test error: missing reserved index
-        let shares_without_reserved: Vec<Share> = (1..=N_COEFFICIENTS)
+        // Test: missing reserved index
+        let shares_without_reserved: Vec<Share> = (1..=N_OPEN_CIRCUITS + 1)
             .map(|idx| {
                 let index = Index::new(idx).expect("index in bounds");
                 poly.eval(index)
@@ -275,7 +265,9 @@ mod tests {
             .collect();
 
         let result = interpolate(&shares_without_reserved);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::MissingReservedIndex));
+        assert!(
+            !result.is_err(),
+            "shouldn't panic even if reserved index isn't present"
+        );
     }
 }
