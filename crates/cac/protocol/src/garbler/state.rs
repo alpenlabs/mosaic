@@ -4,7 +4,9 @@ use bitvec::BitArr;
 use mosaic_cac_types::{
     AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, Seed, SetupInputs,
 };
-use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS};
+use mosaic_common::constants::{
+    N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS,
+};
 
 use super::deposit::DepositState;
 
@@ -61,13 +63,20 @@ pub enum Step {
         seeds: Box<AllGarblingSeeds>,
         generated: BitArr!(for N_CIRCUITS),
     },
-    /// Got table commitments, send commit msg.
-    /// Wait for commit msg ack.
-    SendingCommit,
-    /// Wait for challenge msg
+    /// Got table commitments, sending commit msg chunks.
+    /// Transitions to WaitingForChallenge when all chunks are acked.
+    SendingCommit {
+        /// Track which commit msg chunks have been acked.
+        acked: BitArr!(for N_COMMIT_MSG_CHUNKS),
+    },
+    /// All commit chunks acked, waiting for challenge msg from evaluator.
     WaitingForChallenge,
-    /// Send challenge response and wait for ack.
-    SendingChallengeResponse,
+    /// Sending challenge response chunks. Transitions to
+    /// TransferringGarblingTables when all chunks are acked.
+    SendingChallengeResponse {
+        /// Track which challenge response chunks have been acked.
+        acked: BitArr!(for N_CHALLENGE_RESPONSE_CHUNKS),
+    },
     /// Challenge response msg ack received, send garbling tables
     TransferringGarblingTables {
         /// Seeds for garbling table generation

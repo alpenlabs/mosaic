@@ -1,60 +1,68 @@
-use mosaic_vs3::Index;
+//! External event inputs for the garbler state machine.
+//!
+//! This enum contains only external events — messages received from peers,
+//! initialization data from the bridge, and deposit/withdrawal triggers.
+//!
+//! Action completion results (e.g. `PolynomialCommitmentsGenerated`,
+//! `SharesGenerated`, `CommitMsgAcked`) are delivered via FASM's
+//! [`TrackedActionCompleted`](fasm::Input::TrackedActionCompleted) mechanism
+//! using the [`ActionResult`](super::ActionResult) type. See issue #69.
 
 use crate::{
-    AdaptorMsgChunk, AllPolynomialCommitments, ChallengeMsg, CircuitInputShares,
-    CircuitOutputShare, CompletedSignatures, DepositId, DepositInputs, GarblingSeed,
-    GarblingTableCommitment, PubKey, Seed, SetupInputs, Sighashes, WithdrawalInputs,
+    AdaptorMsgChunk, ChallengeMsg, DepositId, DepositInputs, PubKey, Seed, SetupInputs, Sighashes,
+    WithdrawalInputs,
 };
 
-/// Garbler state machine inputs.
+/// Garbler state machine external event inputs.
+///
+/// These are events originating from outside the state machine — network
+/// messages, bridge triggers, and initialization. They are delivered to the STF
+/// via [`fasm::Input::Normal`].
+///
+/// Action results are **not** included here. When a tracked action completes
+/// (e.g. polynomial generation finishes, a message is acked), the result is
+/// delivered via [`fasm::Input::TrackedActionCompleted`] with an
+/// [`ActionId`](super::ActionId) and [`ActionResult`](super::ActionResult).
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Input {
-    /// Initialize garbler state machine.
+    /// Initialize the garbler state machine with seed and setup inputs.
     Init(GarblerInitData),
-    /// Polynomial commitments generated.
-    PolynomialCommitmentsGenerated(AllPolynomialCommitments),
-    /// Input and output wire shares generated.
-    SharesGenerated(Index, Box<CircuitInputShares>, Box<CircuitOutputShare>),
-    /// Garbling table commitment generated.
-    TableCommitmentGenerated(Index, GarblingTableCommitment),
-    /// Commit message header was acked by peer.
-    CommitHeaderAcked,
-    /// Commit message (all chunks) was acked by peer.
-    CommitMsgAcked,
-    /// Challenge message received.
-    RecvChallengeMsg(ChallengeMsg),
-    /// Challenge response message header was acked by peer.
-    ChallengeResponseHeaderAcked,
-    /// Challenge response message (all chunks) was acked by peer.
-    ChallengeResponseAcked,
-    /// Garbling table generated with specified seed was transferred to the other party.
-    GarblingTableTransferred(GarblingSeed, GarblingTableCommitment),
 
-    /// Initialize deposit for specified deposit id.
+    /// Challenge message received from the evaluator via network.
+    RecvChallengeMsg(ChallengeMsg),
+
+    /// Initialize a new deposit for the specified deposit ID.
+    ///
+    /// Triggered externally by the bridge when a transaction graph is generated.
     DepositInit(DepositId, GarblerDepositInitData),
-    /// Adaptor message chunk received for this deposit.
+
+    /// Adaptor message chunk received from the evaluator for this deposit.
     DepositRecvAdaptorMsgChunk(DepositId, AdaptorMsgChunk),
-    /// Deposit adaptor verification passed or failed.
-    DepositAdaptorVerificationResult(DepositId, bool),
-    /// Mark deposit as withdrawn without dispute.
+
+    /// Mark a deposit as withdrawn without dispute.
+    ///
+    /// The withdrawal completed cooperatively — no need for garbled circuit
+    /// evaluation.
     DepositUndisputedWithdrawal(DepositId),
-    /// Initiate disputed withdrawal for this deposit.
+
+    /// Initiate a disputed withdrawal for this deposit.
+    ///
+    /// The garbler provides withdrawal input bytes (the proof) which will be
+    /// used to complete adaptor signatures and post on-chain.
     DisputedWithdrawal(DepositId, Box<WithdrawalInputs>),
-    /// Adaptor signatures completed for this deposit.
-    AdaptorSignaturesCompleted(DepositId, Box<CompletedSignatures>),
 }
 
-/// Data required during garbler state machine setup.
+/// Data required during garbler state machine initialization.
 #[derive(Debug)]
 pub struct GarblerInitData {
-    /// Seed for deterministic rng.
+    /// Seed for deterministic RNG.
     pub seed: Seed,
     /// Setup input wire values.
     pub setup_inputs: SetupInputs,
 }
 
-/// Data required to create a deposit.
+/// Data required to initialize a deposit on the garbler side.
 #[derive(Debug)]
 pub struct GarblerDepositInitData {
     /// Public key used to verify adaptors created under evaluator's secret key.

@@ -77,6 +77,7 @@ pub enum Step {
     },
     SetupComplete,
     EvaluatingTables {
+        deposit_id: DepositId,
         eval_indices: EvaluationIndices,
         eval_commitments: EvalGarblingTableCommitments,
         evaluated: BitArr!(for N_EVAL_CIRCUITS),
