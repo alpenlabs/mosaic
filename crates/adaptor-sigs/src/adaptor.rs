@@ -2,12 +2,14 @@
 //! Adaptor for the VSSS
 //!
 //! This module implements an adaptor-based disclosure of per-wire VSSS shares (does not support
-//! wide labels yet):
+//! wide labels yet). Uses deterministic "sign variable" normalization (no rejection sampling):
+//! sign = (-1)^is_odd(y(R)) where R = R' + S; canonical nonce R* = sign·R has even y.
+//!
 //! - `Adaptor::generate` constructs (s', R', S) where R' = r'G, R = R' + S, e = H(tag, R.x, P.x,
-//!   sighash),  s' = r' + e·x.
-//! - `Adaptor::verify`   checks s'·G == R' + e·P.
-//! - `Adaptor::complete` produces a Schnorr-like (s, R) by s = s' + share, R = R' + S.
-//! - `Adaptor::extract_share` recovers `share` from (s, R) and the adaptor as s − s'.
+//!   sighash), s' = sign·r' + e·x.
+//! - `Adaptor::verify`   checks s'·G - e·P == sign·R'.
+//! - `Adaptor::complete` produces a Schnorr-like (s, R) by s = s' + sign·share, R = R' + S.
+//! - `Adaptor::extract_share` recovers `share` from (s, R) and the adaptor as sign·(s − s').
 //
 // Notes:
 // - We keep `challenge_e` as a private helper to mirror BIP340 tagging.
@@ -49,7 +51,7 @@ fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
 /// Signature for the VSSS
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signature {
-    /// s = s' ± share
+    /// s = s' + sign·share
     pub s: ark_secp256k1::Fr,
     /// r = (R' + S).x
     pub r: ark_secp256k1::Fq,
@@ -83,7 +85,7 @@ impl Signature {
 /// Adaptor for the VSSS
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adaptor {
-    /// s' = ±r' + e * x  (the evaluator’s partial Schnorr s)
+    /// s' = sign·r' + e·x  (the evaluator’s partial Schnorr s)
     pub tweaked_s: ark_secp256k1::Fr,
     /// R' = r'*G
     pub R_dash_commit: ark_secp256k1::Projective,
@@ -92,6 +94,27 @@ pub struct Adaptor {
 }
 
 impl Adaptor {
+    /// neg = (sign == -1); i.e. true iff y(R) is odd.
+    #[inline(always)]
+    fn neg_from_R_parity(R: &ark_secp256k1::Affine) -> bool {
+        R.y.into_bigint().is_odd()
+    }
+
+    /// Returns sign·x (abuse of notation: neg=true means sign=-1).
+    #[inline(always)]
+    fn apply_sign_scalar(mut x: ark_secp256k1::Fr, neg: bool) -> ark_secp256k1::Fr {
+        if neg {
+            x.neg_in_place();
+        }
+        x
+    }
+
+    /// Returns sign·P (abuse of notation: neg=true means sign=-1).
+    #[inline(always)]
+    fn apply_sign_point(p: ark_secp256k1::Projective, neg: bool) -> ark_secp256k1::Projective {
+        if neg { -p } else { p }
+    }
+
     /// Generates an adaptor from the evaluator’s master secret key `x`, a commitment
     /// to the garbler’s share (`S = share·G`), and the `sighash`
     pub fn generate<R: Rng + CryptoRng>(
@@ -106,7 +129,7 @@ impl Adaptor {
                 "input evaluator_master_sk can't be zero",
             ));
         }
-        // P = x·G
+        // P = x·G (require canonical even-y representative)
         let evaluator_master_pk = evaluator_master_pk.into_affine();
         if evaluator_master_pk.is_zero() {
             return Err(Error::AdaptorGenerationFailed(
@@ -127,7 +150,7 @@ impl Adaptor {
         }
 
         // r', R' = r'·G
-        let mut r_dash = ark_secp256k1::Fr::rand(rng);
+        let r_dash = ark_secp256k1::Fr::rand(rng);
         if r_dash == ark_secp256k1::Fr::ZERO {
             return Err(Error::AdaptorGenerationFailed(
                 "sampled partial nonce can't be zero",
@@ -143,14 +166,15 @@ impl Adaptor {
             ));
         }
 
+        // Challenge uses x-only encodings (BIP340-style)
         let e = Self::challenge_e(expected_R, evaluator_master_pk, sighash);
 
-        if expected_R.y.into_bigint().is_odd() {
-            // negate to make commitment of completed nonce (i.e. r_dash + share) even
-            r_dash.neg_in_place();
-        }
-        // s' = ±r' + e·x
-        let tweaked_s = r_dash + e * evaluator_master_sk;
+        // sign = (-1)^is_odd(y(R)); canonical nonce R* = sign·R has even y.
+        let neg = Self::neg_from_R_parity(&expected_R);
+
+        // s' = sign·r' + e·x
+        let r_signed = Self::apply_sign_scalar(r_dash, neg);
+        let tweaked_s = r_signed + e * evaluator_master_sk;
 
         Ok(Adaptor {
             tweaked_s,
@@ -165,7 +189,7 @@ impl Adaptor {
     }
 
     /// Verifies that this adaptor is well-formed for `(P, sighash)`:
-    /// checks `s'·G - e.P == R'`, where `e = H(tag, (R'+S).x, P.x, sighash)`.
+    /// checks `s'·G - e·P == sign·R'`, where `e = H(tag, (R'+S).x, P.x, sighash)`.
     pub fn verify(
         &self,
         evaluator_master_pk: ark_secp256k1::Projective,
@@ -177,6 +201,7 @@ impl Adaptor {
                 "evaluator can guess garbler's secret share",
             ));
         }
+
         let evaluator_master_pk_affine = evaluator_master_pk.into_affine();
         if evaluator_master_pk_affine.is_zero() {
             return Err(Error::AdaptorGenerationFailed(
@@ -191,20 +216,19 @@ impl Adaptor {
 
         let e = Self::challenge_e(expected_R, evaluator_master_pk_affine, sighash);
 
-        // LHS: s'·G - e.P
+        // sign = (-1)^is_odd(y(R)); same as in generate().
+        let neg = Self::neg_from_R_parity(&expected_R);
+
+        // LHS: s'·G - e·P
         let lhs = gen_mul(&self.tweaked_s) - evaluator_master_pk * e;
-        // RHS: R'
-        let rhs = if expected_R.y.into_bigint().is_odd() {
-            -self.R_dash_commit
-        } else {
-            self.R_dash_commit
-        };
+        // RHS: sign·R'
+        let rhs = Self::apply_sign_point(self.R_dash_commit, neg);
 
         if lhs == rhs {
             Ok(())
         } else {
             Err(Error::VerificationFailed {
-                what: "adaptor relation s'·G != R' + e·P",
+                what: "adaptor relation s'·G != sign·R' + e·P",
             })
         }
     }
@@ -217,11 +241,13 @@ impl Adaptor {
             !R.is_zero(),
             "a verified adaptor can not have expected R to be zero"
         );
-        let s = if R.y.into_bigint().is_odd() {
-            self.tweaked_s - share
-        } else {
-            self.tweaked_s + share
-        };
+
+        let neg = Self::neg_from_R_parity(&R);
+
+        // s = s' + sign·share
+        let share_signed = Self::apply_sign_scalar(share, neg);
+        let s = self.tweaked_s + share_signed;
+
         // Note: bip-0340 suggests the signing method to validate the computed Signature before
         // returning it. If so, we need to implement signature validation here.
         // Also Note: signature validation differs from adaptor verification `verify()` method above
@@ -231,7 +257,7 @@ impl Adaptor {
         Signature { s, r: R.x }
     }
 
-    /// Recovers the share from `(s, R)` and this adaptor as `s − s'`.
+    /// Recovers the share from `(s, R)` and this adaptor as sign·(s − s').
     /// Purely algebraic operation that can't fail.
     /// `signature` is obtained from a value committed on chain, so it is assumed to be valid
     pub fn extract_share(&self, signature: &Signature) -> ark_secp256k1::Fr {
@@ -240,9 +266,12 @@ impl Adaptor {
             !R.is_zero(),
             "a verified adaptor can not have expected R to be zero"
         );
-        let is_odd = R.y.into_bigint().is_odd();
+
+        let neg = Self::neg_from_R_parity(&R);
+
+        // share = sign·(s - s')
         let diff = signature.s - self.tweaked_s;
-        if is_odd { -diff } else { diff }
+        Self::apply_sign_scalar(diff, neg)
     }
 
     /// e = H(BIP0340/challenge, R.x, P.x, sighash)
@@ -453,7 +482,7 @@ mod tests {
 
     #[test]
     fn verify_equation_matches_definition() {
-        // Cross-check: s'·G == R' + e·P with e computed from (R'+S).x, P.x, sighash.
+        // Cross-check: s'·G == sign·R' + e·P with e computed from (R'+S).x, P.x, sighash.
         let mut rng = thread_rng();
         let fx = fixture(&mut rng);
 
@@ -463,12 +492,12 @@ mod tests {
         let e = Adaptor::challenge_e(R, P, &fx.sighash);
 
         let lhs = gen_mul(&fx.adaptor.tweaked_s); // s'·G
-        let tweaked_R = if R.y.into_bigint().is_odd() {
+        let sign_R_prime = if R.y.into_bigint().is_odd() {
             -fx.adaptor.R_dash_commit
         } else {
             fx.adaptor.R_dash_commit
         };
-        let rhs = tweaked_R + fx.P * e; // R' + e·P
+        let rhs = sign_R_prime + fx.P * e; // sign·R' + e·P
         assert_eq!(lhs, rhs);
     }
 
