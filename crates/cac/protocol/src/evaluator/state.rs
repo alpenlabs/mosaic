@@ -14,7 +14,6 @@ use crate::evaluator::deposit::DepositState;
 #[derive(Debug)]
 pub struct State<S> {
     pub(crate) config: Option<Config>,
-    pub(crate) context: Context,
     pub(crate) step: Step,
     pub(crate) deposits: HashMap<DepositId, DepositState>,
     pub(crate) artifact_store: S,
@@ -24,7 +23,6 @@ impl<S> State<S> {
     pub fn new_empty(artifact_store: S) -> Self {
         Self {
             config: None,
-            context: Context::default(),
             step: Step::Uninit,
             deposits: HashMap::default(),
             artifact_store,
@@ -37,18 +35,6 @@ impl<S> State<S> {
 pub struct Config {
     pub(crate) seed: Seed,
     pub(crate) setup_inputs: SetupInputs,
-}
-
-/// Mutable state that is relevant to multiple steps.
-/// This should only hold simple bookkeeping related states.
-#[derive(Debug, Default)]
-pub struct Context {
-    /// Commit message was accepted and ACK'd.
-    pub(crate) ackd_commit_msg: bool,
-    /// Challenge message was sent.
-    pub(crate) sent_challenge_msg: bool,
-    /// Challenge response message was accepted and ACK'd.
-    pub(crate) ackd_challenge_response_msg: bool,
 }
 
 /// Valid states.

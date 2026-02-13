@@ -24,12 +24,8 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ActionId {
-    /// Identifies an [`Action::AckCommitMsg`] action.
-    AckCommitMsg,
     /// Identifies a [`Action::SendChallengeMsg`] action.
     SendChallengeMsg,
-    /// Identifies an [`Action::AckChallengeResponseMsg`] action.
-    AckChallengeResponseMsg,
     /// Identifies a [`Action::VerifyOpenedInputShares`] action.
     VerifyOpenedInputShares,
     /// Identifies a [`Action::GenerateTableCommitment`] action by circuit index.
@@ -67,12 +63,8 @@ impl PartialOrd for ActionId {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ActionResult {
-    /// Commit message was acknowledged (ack-only, no data).
-    CommitMsgAcked,
     /// Challenge message was sent and acknowledged by the garbler.
     ChallengeMsgAcked,
-    /// Challenge response message was acknowledged (ack-only, no data).
-    ChallengeResponseMsgAcked,
     /// Opened input shares verification completed.
     /// `None` means success; `Some(reason)` means verification failure.
     VerifyOpenedInputSharesResult(Option<String>),
@@ -82,8 +74,8 @@ pub enum ActionResult {
     GarblingTableReceived(Index, GarblingTableCommitment),
     /// Adaptor signatures were generated for deposit and withdrawal wires.
     DepositAdaptorsGenerated(DepositId, DepositAdaptors, WithdrawalAdaptors),
-    /// Adaptor message chunk was sent and acknowledged by the garbler.
-    DepositAdaptorMsgAcked(DepositId),
+    /// Adaptor message chunk was sent to the garbler.
+    DepositAdaptorChunkSent(DepositId),
     /// Garbling table evaluation completed.
     /// `None` means no output was produced; `Some` contains the output share.
     TableEvaluationResult(GarblingTableCommitment, Option<CircuitOutputShare>),
@@ -97,12 +89,8 @@ pub enum ActionResult {
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Action {
-    /// Acknowledge receipt of commit message from garbler.
-    AckCommitMsg,
     /// Send challenge message with set of challenge indices.
     SendChallengeMsg(ChallengeMsg),
-    /// Acknowledge receipt of challenge response message from garbler.
-    AckChallengeResponseMsg,
     /// Verify opened input shares against polynomial commitments.
     VerifyOpenedInputShares(
         Box<ChallengeIndices>,
@@ -126,9 +114,7 @@ impl Action {
     /// its [`ActionResult`] when it completes.
     pub fn id(&self) -> ActionId {
         match self {
-            Self::AckCommitMsg => ActionId::AckCommitMsg,
             Self::SendChallengeMsg(_) => ActionId::SendChallengeMsg,
-            Self::AckChallengeResponseMsg => ActionId::AckChallengeResponseMsg,
             Self::VerifyOpenedInputShares(..) => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
             Self::ReceiveGarblingTables(_) => ActionId::ReceiveGarblingTables,

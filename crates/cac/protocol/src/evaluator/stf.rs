@@ -48,18 +48,10 @@ pub(crate) async fn handle_event<S: EvaluatorArtifactStore>(
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::RecvCommitMsgChunk(commit_msg) => {
-            if state.context.ackd_commit_msg {
-                emit(actions, Action::AckCommitMsg);
-            } else {
-                handle_commit_msg_chunk(state, commit_msg, actions).await?;
-            }
+            handle_commit_msg_chunk(state, commit_msg, actions).await?;
         }
         Input::RecvChallengeResponseMsgChunk(response_msg) => {
-            if state.context.ackd_challenge_response_msg {
-                emit(actions, Action::AckChallengeResponseMsg);
-            } else {
-                handle_recv_challenge_response_msg(state, response_msg, actions).await?;
-            }
+            handle_recv_challenge_response_msg(state, response_msg, actions).await?;
         }
         Input::DepositInit(
             deposit_id,
@@ -185,25 +177,10 @@ pub(crate) async fn handle_action_result<S: EvaluatorArtifactStore>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match result {
-        ActionResult::CommitMsgAcked => {
-            // Fire-and-forget ack. The commit message was already processed
-            // when RecvCommitMsgChunk arrived. No state change needed.
-        }
         ActionResult::ChallengeMsgAcked => {
-            // The challenge message was sent. State was already advanced to
-            // WaitingForChallengeResponse when we emitted the action.
-            match state.step {
-                Step::WaitingForChallengeResponse { .. } => {
-                    if !state.context.sent_challenge_msg {
-                        return Err(SMError::StateInconsistency("missing sent_challenge_msg"));
-                    }
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
-        }
-        ActionResult::ChallengeResponseMsgAcked => {
-            // Fire-and-forget ack. The challenge response was already processed
-            // when RecvChallengeResponseMsgChunk arrived. No state change needed.
+            // The challenge message was sent. No further state change needed —
+            // state was already advanced to WaitingForChallengeResponse when
+            // we emitted the SendChallengeMsg action.
         }
         ActionResult::VerifyOpenedInputSharesResult(failure) => match state.step {
             Step::VerifyingOpenedInputShares => {
@@ -283,7 +260,7 @@ pub(crate) async fn handle_action_result<S: EvaluatorArtifactStore>(
             }
             _ => return Err(SMError::UnexpectedInput),
         },
-        ActionResult::DepositAdaptorMsgAcked(deposit_id) => match state.step {
+        ActionResult::DepositAdaptorChunkSent(deposit_id) => match state.step {
             Step::SetupComplete => {
                 let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
                     return Err(SMError::UnknownDeposit(deposit_id));
@@ -395,14 +372,11 @@ async fn handle_commit_msg_chunk<S: EvaluatorArtifactStore>(
                 .save_challenge_indices(&challenge_indices)
                 .await?;
 
-            state.context.ackd_commit_msg = true;
-            state.context.sent_challenge_msg = true;
             state.step = Step::WaitingForChallengeResponse {
                 chunks: BitArray::ZERO,
             };
 
             let challenge_msg = ChallengeMsg { challenge_indices };
-            emit(actions, Action::AckCommitMsg);
             emit(actions, Action::SendChallengeMsg(challenge_msg));
             Ok(())
         }
@@ -484,9 +458,6 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
                 };
                 return Ok(());
             }
-
-            state.context.ackd_challenge_response_msg = true;
-            emit(actions, Action::AckChallengeResponseMsg);
 
             state.step = Step::VerifyingOpenedInputShares;
 
@@ -608,20 +579,9 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(
         Step::Uninit => {}
         Step::WaitingForCommit { .. } => {}
         Step::WaitingForChallengeResponse { .. } => {
-            if !state.context.ackd_commit_msg {
-                return Err(SMError::StateInconsistency(
-                    "WaitingForChallengeResponse: missing expected ackd_commit_msg",
-                ));
-            }
-            if !state.context.sent_challenge_msg {
-                return Err(SMError::StateInconsistency(
-                    "WaitingForChallengeResponse: missing expected sent_challenge_msg",
-                ));
-            }
             let challenge_indices = *state.artifact_store.load_challenge_indices().await?;
             let challenge_msg = ChallengeMsg { challenge_indices };
 
-            emit(actions, Action::AckCommitMsg);
             emit(actions, Action::SendChallengeMsg(challenge_msg));
         }
         Step::VerifyingOpenedInputShares => {

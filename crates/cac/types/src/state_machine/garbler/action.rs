@@ -33,15 +33,11 @@ pub enum ActionId {
     GenerateTableCommitment(Index),
     /// Identifies a [`Action::SendCommitMsgChunk`] action by wire index.
     SendCommitMsgChunk(u16),
-    /// Identifies a [`Action::AckChallengeMsg`] action.
-    AckChallengeMsg,
     /// Identifies a [`Action::SendChallengeResponseMsgChunk`] action by circuit
     /// index.
     SendChallengeResponseMsgChunk(u16),
     /// Identifies a [`Action::TransferGarblingTable`] action by garbling seed.
     TransferGarblingTable(GarblingSeed),
-    /// Identifies a [`Action::DepositAckAdaptorMsg`] action by deposit.
-    DepositAckAdaptorMsg(DepositId),
     /// Identifies a [`Action::DepositVerifyAdaptors`] action by deposit.
     DepositVerifyAdaptors(DepositId),
     /// Identifies a [`Action::CompleteAdaptorSignatures`] action by deposit.
@@ -79,14 +75,10 @@ pub enum ActionResult {
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Commit message chunk was sent and acknowledged by the evaluator.
     CommitMsgChunkAcked,
-    /// Challenge message was acknowledged (ack-only, no data).
-    ChallengeMsgAcked,
     /// Challenge response chunk was sent and acknowledged by the evaluator.
     ChallengeResponseChunkAcked,
     /// Garbling table was transferred to the evaluator.
     GarblingTableTransferred(GarblingSeed, GarblingTableCommitment),
-    /// Adaptor message was acknowledged (ack-only, no data).
-    DepositAdaptorMsgAcked(DepositId),
     /// Adaptor signature verification completed. `bool` indicates pass/fail.
     DepositAdaptorVerificationResult(DepositId, bool),
     /// Adaptor signatures were completed for a disputed withdrawal.
@@ -110,15 +102,11 @@ pub enum Action {
     /// Send commit message chunk with polynomial commitments for a single wire
     /// to evaluator.
     SendCommitMsgChunk(CommitMsgChunk),
-    /// Acknowledge receipt of challenge message from evaluator.
-    AckChallengeMsg,
     /// Send challenge response chunk with revealed shares for a single circuit.
     SendChallengeResponseMsgChunk(ChallengeResponseMsgChunk),
     /// Transfer a garbling table to the evaluator.
     TransferGarblingTable(GarblingSeed),
 
-    /// Acknowledge receipt of adaptor signatures for a deposit.
-    DepositAckAdaptorMsg(DepositId),
     /// Verify adaptor signatures received from evaluator.
     DepositVerifyAdaptors(DepositId, AdaptorVerificationData),
 
@@ -135,12 +123,10 @@ impl Action {
             Self::GenerateShares(idx) => ActionId::GenerateShares(*idx),
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
             Self::SendCommitMsgChunk(chunk) => ActionId::SendCommitMsgChunk(chunk.wire_index),
-            Self::AckChallengeMsg => ActionId::AckChallengeMsg,
             Self::SendChallengeResponseMsgChunk(chunk) => {
                 ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index)
             }
             Self::TransferGarblingTable(seed) => ActionId::TransferGarblingTable(*seed),
-            Self::DepositAckAdaptorMsg(id) => ActionId::DepositAckAdaptorMsg(*id),
             Self::DepositVerifyAdaptors(id, _) => ActionId::DepositVerifyAdaptors(*id),
             Self::CompleteAdaptorSignatures(id, _) => ActionId::CompleteAdaptorSignatures(*id),
         }

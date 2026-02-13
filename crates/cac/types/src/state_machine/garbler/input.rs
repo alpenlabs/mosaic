@@ -4,7 +4,7 @@
 //! initialization data from the bridge, and deposit/withdrawal triggers.
 //!
 //! Action completion results (e.g. `PolynomialCommitmentsGenerated`,
-//! `SharesGenerated`, `CommitMsgAcked`) are delivered via FASM's
+//! `SharesGenerated`, `CommitMsgChunkAcked`) are delivered via FASM's
 //! [`TrackedActionCompleted`](fasm::Input::TrackedActionCompleted) mechanism
 //! using the [`ActionResult`](super::ActionResult) type. See issue #69.
 

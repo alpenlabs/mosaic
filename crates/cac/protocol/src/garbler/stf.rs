@@ -55,47 +55,40 @@ pub(crate) async fn handle_event<S: GarblerArtifactStore>(
             }
         }
         Input::RecvChallengeMsg(challenge_msg) => {
-            if state.context.ackd_challenge_msg {
-                emit(actions, Action::AckChallengeMsg);
-            } else {
-                match state.step {
-                    Step::SendingCommit { .. } | Step::WaitingForChallenge => {
-                        if is_valid_challenge(&challenge_msg) {
-                            let (input_shares, output_shares) =
-                                state.artifact_store.load_shares().await?;
-                            let config = require_config(state)?;
-                            let seeds = generate_garbling_table_seeds(config.seed);
-                            let challenge_response_msg_chunks =
-                                create_challenge_response_msg_chunks(
-                                    &challenge_msg.challenge_indices,
-                                    *input_shares,
-                                    *output_shares,
-                                    seeds,
-                                    config.setup_inputs,
-                                );
-                            state
-                                .artifact_store
-                                .save_challenge_indices(&challenge_msg.challenge_indices)
-                                .await?;
-                            state.context.ackd_challenge_msg = true;
+            match state.step {
+                Step::SendingCommit { .. } | Step::WaitingForChallenge => {
+                    if is_valid_challenge(&challenge_msg) {
+                        let (input_shares, output_shares) =
+                            state.artifact_store.load_shares().await?;
+                        let config = require_config(state)?;
+                        let seeds = generate_garbling_table_seeds(config.seed);
+                        let challenge_response_msg_chunks = create_challenge_response_msg_chunks(
+                            &challenge_msg.challenge_indices,
+                            *input_shares,
+                            *output_shares,
+                            seeds,
+                            config.setup_inputs,
+                        );
+                        state
+                            .artifact_store
+                            .save_challenge_indices(&challenge_msg.challenge_indices)
+                            .await?;
 
-                            state.step = Step::SendingChallengeResponse {
-                                acked: BitArray::ZERO,
-                            };
+                        state.step = Step::SendingChallengeResponse {
+                            acked: BitArray::ZERO,
+                        };
 
-                            emit(actions, Action::AckChallengeMsg);
-                            for chunk in challenge_response_msg_chunks {
-                                emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
-                            }
-                        } else {
-                            // TODO: should this abort, or just ignore and stay at same state ?
-                            state.step = Step::Aborted {
-                                reason: "invalid challenge msg".into(),
-                            };
+                        for chunk in challenge_response_msg_chunks {
+                            emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                         }
+                    } else {
+                        // TODO: should this abort, or just ignore and stay at same state ?
+                        state.step = Step::Aborted {
+                            reason: "invalid challenge msg".into(),
+                        };
                     }
-                    _ => return Err(SMError::UnexpectedInput),
                 }
+                _ => return Err(SMError::UnexpectedInput),
             }
         }
         Input::DepositInit(
@@ -355,10 +348,7 @@ pub(crate) async fn handle_action_result<S: GarblerArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        ActionResult::ChallengeMsgAcked => {
-            // Fire-and-forget ack. No state change needed — the challenge
-            // was already processed when RecvChallengeMsg arrived.
-        }
+
         ActionResult::ChallengeResponseChunkAcked => {
             match &mut state.step {
                 Step::SendingChallengeResponse { acked } => {
@@ -437,10 +427,7 @@ pub(crate) async fn handle_action_result<S: GarblerArtifactStore>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        ActionResult::DepositAdaptorMsgAcked(_deposit_id) => {
-            // Fire-and-forget ack. No state change needed — the adaptor
-            // chunk processing already advanced state when all chunks arrived.
-        }
+
         ActionResult::DepositAdaptorVerificationResult(deposit_id, verification_success) => {
             match state.step {
                 Step::SetupComplete => {
@@ -506,57 +493,50 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: GarblerArtifactStore>(
                 return Err(SMError::UnknownDeposit(deposit_id));
             };
 
-            match deposit_state.step {
-                DepositStep::WaitingForAdaptors { chunks } => {
-                    let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
+            if let DepositStep::WaitingForAdaptors { chunks } = deposit_state.step {
+                let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
-                    if chunks[chunk_idx] {
-                        // message for this chunk already seen
-                        return Err(SMError::InvalidInputData);
-                    }
-
-                    state
-                        .artifact_store
-                        .save_adaptor_msg_chunk_for_deposit(deposit_id, &adaptor_msg_chunk)
-                        .await?;
-
-                    if !chunks.all() {
-                        // Not all chunks received, wait for more
-                        return Ok(());
-                    }
-
-                    // all chunks received
-
-                    let (input_shares, _) = state.artifact_store.load_shares().await?;
-                    let sighashes = state
-                        .artifact_store
-                        .load_sighashes_for_deposit(deposit_id)
-                        .await?;
-                    let (deposit_adaptors, withdrawal_adaptors) = state
-                        .artifact_store
-                        .load_adaptors_for_deposit(deposit_id)
-                        .await?;
-
-                    let adaptor_verif_data = AdaptorVerificationData {
-                        pk: deposit_state.pk,
-                        deposit_adaptors,
-                        withdrawal_adaptors,
-                        input_shares,
-                        sighashes,
-                    };
-
-                    deposit_state.step = DepositStep::VerifyingAdaptors;
-
-                    emit(actions, Action::DepositAckAdaptorMsg(deposit_id));
-                    emit(
-                        actions,
-                        Action::DepositVerifyAdaptors(deposit_id, adaptor_verif_data),
-                    );
+                if chunks[chunk_idx] {
+                    // message for this chunk already seen
+                    return Err(SMError::InvalidInputData);
                 }
-                _ => {
-                    // If we've already processed adaptors, re-ack for idempotency.
-                    emit(actions, Action::DepositAckAdaptorMsg(deposit_id));
+
+                state
+                    .artifact_store
+                    .save_adaptor_msg_chunk_for_deposit(deposit_id, &adaptor_msg_chunk)
+                    .await?;
+
+                if !chunks.all() {
+                    // Not all chunks received, wait for more
+                    return Ok(());
                 }
+
+                // all chunks received
+
+                let (input_shares, _) = state.artifact_store.load_shares().await?;
+                let sighashes = state
+                    .artifact_store
+                    .load_sighashes_for_deposit(deposit_id)
+                    .await?;
+                let (deposit_adaptors, withdrawal_adaptors) = state
+                    .artifact_store
+                    .load_adaptors_for_deposit(deposit_id)
+                    .await?;
+
+                let adaptor_verif_data = AdaptorVerificationData {
+                    pk: deposit_state.pk,
+                    deposit_adaptors,
+                    withdrawal_adaptors,
+                    input_shares,
+                    sighashes,
+                };
+
+                deposit_state.step = DepositStep::VerifyingAdaptors;
+
+                emit(
+                    actions,
+                    Action::DepositVerifyAdaptors(deposit_id, adaptor_verif_data),
+                );
             }
         }
         _ => return Err(SMError::UnexpectedInput),
@@ -614,11 +594,6 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
         }
         Step::WaitingForChallenge => {}
         Step::SendingChallengeResponse { acked } => {
-            if !state.context.ackd_challenge_msg {
-                return Err(SMError::StateInconsistency(
-                    "SendingChallengeResponse: challenge message not acknowledged",
-                ));
-            }
             let challenge_indices = state.artifact_store.load_challenge_indices().await?;
             let (input_shares, output_shares) = state.artifact_store.load_shares().await?;
             let config = require_config(state)?;
@@ -634,10 +609,6 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                 }
             }
-
-            // Always re-emit the ack — it is idempotent and may not have been
-            // sent before the crash.
-            emit(actions, Action::AckChallengeMsg);
         }
         Step::TransferringGarblingTables {
             eval_seeds,
@@ -674,7 +645,6 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
                             sighashes,
                         };
 
-                        emit(actions, Action::DepositAckAdaptorMsg(*deposit_id));
                         emit(
                             actions,
                             Action::DepositVerifyAdaptors(*deposit_id, adaptor_verif_data),
