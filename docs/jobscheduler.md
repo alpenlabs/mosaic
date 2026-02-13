@@ -10,47 +10,54 @@ crates/job/
 ├── scheduler/    # Pools, coordinator, handlers (fat)
 ```
 
-**job-api** contains types for submitting jobs and receiving results. SM Scheduler depends only on this crate.
+**job-api** contains types for submitting batches and receiving results. SM Scheduler depends only on this crate.
 
-**job-scheduler** contains the implementation: thread pools, garbling coordinator, action handlers. Main binary depends on this. It re-exports job-api.
+**job-scheduler** contains the implementation: monoio thread pools, garbling coordinator, action handlers. Main binary depends on this. It re-exports job-api.
 
 ```
-                    ┌───────────┐
-                    │ job-api   │
-                    └─────┬─────┘
-                          │
-          ┌───────────────┼───────────────┐
-          │               │               │
-          ▼               ▼               ▼
-   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-   │SM Scheduler │ │job-scheduler│ │ net-client  │
-   └─────────────┘ └─────────────┘ └─────────────┘
+   ┌─────────────┐
+   │SM Scheduler │
+   └──────┬──────┘
+          │
+          ▼
+   ┌───────────┐   ┌─────────────┐
+   │  job-api  │   │ net-client  │
+   └───────────┘   └─────────────┘
+          ▲               ▲
+          └───────┬───────┘
+                  │
+           ┌─────────────┐
+           │job-scheduler│
+           └─────────────┘
 ```
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                       JobScheduler                           │
+│                 JobScheduler (monoio thread)                  │
 ├────────────────┬─────────────────┬───────────────────────────┤
 │  Light Pool    │   Heavy Pool    │   Garbling Coordinator    │
 │                │                 │                           │
 │  Pull model    │  Pull model     │  Push model               │
 │  FIFO queue    │  Priority queue │  Barrier-synchronized     │
+│  monoio workers│  monoio workers │                           │
 └────────────────┴─────────────────┴───────────────────────────┘
 ```
 
-Each pool runs async tasks with configurable thread count and concurrency per thread.
+The scheduler thread runs its own monoio runtime. Each worker thread runs its own monoio runtime with bounded concurrency via a local semaphore. Workers pull jobs from the shared queue as `!Send` local tasks.
 
 ## Action Categories
 
 | Category | CPU Time | Examples |
 |----------|----------|----------|
-| Light | Milliseconds | SendCommitMsgChunk, AckChallengeMsg, ReceiveGarblingTables |
+| Light | Milliseconds | SendCommitMsgChunk, SendChallengeMsg, DepositSendAdaptorMsgChunk |
 | Heavy | Seconds–minutes | VerifyOpenedInputShares, DepositVerifyAdaptors, EvaluateGarblingTable |
 | Garbling | Minutes | GenerateTableCommitment, TransferGarblingTable |
 
-Light actions are I/O-bound (network sends, acks). Heavy actions are CPU-bound. Garbling actions are CPU-bound but also require coordinated disk I/O.
+Light actions are I/O-bound (outbound protocol sends via net-client). Heavy actions are CPU-bound. Garbling actions are CPU-bound but also require coordinated disk I/O.
+
+Message acking is not part of the job system. Incoming protocol messages are acked by the SM executor after the STF succeeds and state is persisted.
 
 ## API
 
@@ -60,13 +67,13 @@ Light actions are I/O-bound (network sends, acks). Heavy actions are CPU-bound. 
 ┌────────────────┐                           ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
 │                │         job-api                   job-scheduler
 │  SM Scheduler  │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶│┌───────────────────────┐  │
-│                │   JobSubmission            │     JobScheduler      │
+│                │     JobBatch               │     JobScheduler      │
 └────────────────┘                           ││                       │  │
         ▲                                     │  ┌─────┬─────┬─────┐  │
         │                                    ││  │Light│Heavy│Garbl│  │  │
         │          job-api                    │  └─────┴─────┴─────┘  │
         └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼│                       │  │
-                   JobResult                  │     handlers (mod)    │
+                 JobCompletion                │     handlers (mod)    │
                                              │└───────────┬───────────┘  │
                                               ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─
                                                           │
@@ -76,69 +83,64 @@ Light actions are I/O-bound (network sends, acks). Heavy actions are CPU-bound. 
                                                   └───────────────┘
 ```
 
-SM Scheduler submits actions via job-api types. Job Scheduler executes them and returns results via job-api types. SM Scheduler never sees pool internals or handlers.
+SM Scheduler submits batches via job-api types. Job Scheduler executes each action and returns individual completions. SM Scheduler never sees pool internals or handlers.
 
 ### job-api Types
 
 | Type | Purpose |
 |------|---------|
-| `JobSubmission` | Action + StateMachineId + PeerId |
-| `JobResult` | Completed Input or error |
-| `JobSchedulerHandle` | Cloneable handle for submission |
-| `Priority` | Critical / High / Normal |
+| `JobBatch` | PeerId + JobActions (one batch per STF call) |
+| `JobActions` | Garbler(ActionContainer) or Evaluator(ActionContainer) |
+| `JobCompletion` | PeerId + JobResult |
+| `ActionCompletion` | ActionId + ActionResult, typed by role |
+| `JobSchedulerHandle` | Cloneable handle for batch submission |
 
-### Action → Input Mapping
+The `JobActions` enum uses the FASM `ActionContainer` types directly — no transformation needed between the SM executor and the job scheduler.
 
-Each action produces a corresponding input when complete:
+Priority is not part of the API. The scheduler derives priority internally from the action variant.
 
-| Action (Garbler) | Result Input |
+### Action → ActionResult Mapping
+
+Each action produces a corresponding `ActionResult` delivered back to the SM via FASM's `TrackedActionCompleted`:
+
+| Action (Garbler) | ActionResult |
 |------------------|--------------|
 | GeneratePolynomialCommitments | PolynomialCommitmentsGenerated |
 | GenerateShares | SharesGenerated |
 | GenerateTableCommitment | TableCommitmentGenerated |
-| SendCommitMsgChunk | CommitMsgAcked |
-| AckChallengeMsg | (none, ack only) |
-| SendChallengeResponseMsgChunk | ChallengeResponseAcked |
+| SendCommitMsgChunk | CommitMsgChunkAcked |
+| SendChallengeResponseMsgChunk | ChallengeResponseChunkAcked |
 | TransferGarblingTable | GarblingTableTransferred |
-| DepositAckAdaptorMsg | (none, ack only) |
 | DepositVerifyAdaptors | DepositAdaptorVerificationResult |
 | CompleteAdaptorSignatures | AdaptorSignaturesCompleted |
 
-| Action (Evaluator) | Result Input |
+| Action (Evaluator) | ActionResult |
 |--------------------|--------------|
-| AckCommitMsg | (none, ack only) |
 | SendChallengeMsg | ChallengeMsgAcked |
-| AckChallengeResponseMsg | (none, ack only) |
 | VerifyOpenedInputShares | VerifyOpenedInputSharesResult |
 | GenerateTableCommitment | TableCommitmentGenerated |
 | ReceiveGarblingTables | GarblingTableReceived |
 | DepositGenerateAdaptors | DepositAdaptorsGenerated |
-| DepositSendAdaptorMsgChunk | DepositAdaptorMsgAcked |
+| DepositSendAdaptorMsgChunk | DepositAdaptorChunkSent |
 | EvaluateGarblingTable | TableEvaluationResult |
 
-### Submission Interface
+### Batch Submission
 
-Actions are submitted with the originating state machine ID. Results are returned with the same ID so the SM Scheduler can route them correctly.
+Actions are submitted as a `JobBatch` — one batch per STF call. All actions in a batch share the same peer ID. The `JobActions` variant (garbler or evaluator) identifies the SM role.
 
-Submission is asynchronous—the SM Scheduler does not block waiting for completion. Multiple actions from different SMs may execute concurrently.
+The scheduler unwraps the FASM `ActionContainer`, categorizes each action, assigns priority, and routes to the appropriate pool.
 
 ### Network Operations
 
-Light actions that involve network I/O use net-client internally:
-
-- **Send actions** call `NetClient::send()` and wait for peer acknowledgment
-- **Ack actions** call `InboundRequest::ack()` on a previously received message
-- **Receive actions** register expectations with net-svc and complete when data arrives
-
-The Job Scheduler owns the NetClient instance. Handlers borrow it for the duration of their execution.
+Light actions that involve outbound protocol sends use net-client internally. `NetClient::send()` waits for the peer's protocol acknowledgment and returns when the peer confirms receipt. This ack is part of the send action's lifecycle and produces the corresponding `ActionResult`.
 
 ## Light Pool
 
-Handles I/O-bound work. A single thread with high concurrency can efficiently multiplex many tasks waiting on network. Workers pull from a FIFO queue.
+Handles I/O-bound work. Workers pull from a FIFO queue. High concurrency per worker lets it multiplex many tasks waiting on network.
 
 ## Heavy Pool
 
-Handles CPU-intensive non-garbling work. Workers pull from a priority queue with three levels:
+Handles CPU-intensive non-garbling work. Workers pull from a priority queue with three levels derived from the action variant:
 
 | Priority | Phase | Rationale |
 |----------|-------|-----------|
@@ -171,7 +173,7 @@ Jobs arriving mid-read-through wait for the next full pass—partial garbling ta
 
 ## Distribution
 
-**Light/Heavy pools** use pull: workers grab from shared queue when ready. Simple, naturally load-balanced.
+**Light/Heavy pools** use pull: workers grab from shared queue when ready. Simple, naturally load-balanced. Each worker runs a monoio runtime with a local semaphore bounding concurrent tasks.
 
 **Garbling** uses push with round-robin: coordinator knows exact job count and must guarantee slots for barrier synchronization. Spread-first assignment maximizes parallelism—12 jobs across 4 workers means 3 each, not 8-4-0-0.
 
@@ -200,15 +202,4 @@ Multiple peers need garbling tables simultaneously. All jobs register, reader br
 
 ## Configuration
 
-```toml
-[job_scheduler]
-light_threads = 1
-light_concurrency = 32
-heavy_threads = 2
-heavy_concurrency = 8
-garbling_threads = 4
-garbling_concurrency = 8
-garbling_chunk_size = "64MB"
-```
-
-Defaults assume an 8-core machine, leaving headroom for net-svc and OS. Adjust based on core count and workload.
+See `JobSchedulerConfig`, `PoolConfig`, and `GarblingConfig` in `crates/job/scheduler/src/` for configurable parameters and their defaults.

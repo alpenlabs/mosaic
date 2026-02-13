@@ -1,8 +1,5 @@
 //! Storage interface for mosaic.
 
-mod job;
-
-pub use job::JobStateDb;
 use thiserror::Error;
 
 /// Storage Error.

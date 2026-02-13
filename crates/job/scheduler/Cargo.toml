@@ -1,0 +1,26 @@
+[package]
+name = "mosaic-job-scheduler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Job scheduler implementation for Mosaic"
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-job-api.workspace = true
+mosaic-cac-types.workspace = true
+mosaic-common.workspace = true
+mosaic-net-client.workspace = true
+
+fasm.workspace = true
+kanal = "0.1.1"
+monoio = { version = "0.2", features = ["sync"] }
+parking_lot = "0.12"
+tracing.workspace = true
+
+[lints]
+workspace = true

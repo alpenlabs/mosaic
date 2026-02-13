@@ -10,6 +10,8 @@ members = [
   "crates/compute-exec",
   "crates/compute-fw",
   # "crates/jobs",
+  "crates/job/api",
+  "crates/job/scheduler",
   "crates/net/client",
   "crates/net/svc",
   "crates/net/wire",
@@ -58,7 +60,9 @@ mosaic-cac-types = { path = "crates/cac/types" }
 mosaic-common = { path = "crates/common" }
 mosaic-compute-fw = { path = "crates/compute-fw" }
 mosaic-heap-array = { path = "crates/heap-array" }
-mosaic-job-types = { path = "crates/job/types" }
+mosaic-job-api = { path = "crates/job/api" }
+mosaic-job-scheduler = { path = "crates/job/scheduler" }
+mosaic-net-client = { path = "crates/net/client" }
 mosaic-net-svc = { path = "crates/net/svc" }
 mosaic-net-types = { path = "crates/net/types" }
 mosaic-net-wire = { path = "crates/net/wire" }
@@ -79,7 +83,7 @@ async-trait = "0.1"
 bitvec = "1.0.1"
 bytes = "1.10"
 criterion = "0.5"
-fasm = "0.3.0"
+fasm = "0.3.1"
 futures = "0.3.31"
 bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
 bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }

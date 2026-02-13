@@ -1,10 +1,7 @@
 #![allow(missing_docs)]
 use std::marker::PhantomData;
 
-use fasm::{
-    StateMachine,
-    actions::{Action as FasmAction, TrackedAction},
-};
+use fasm::{StateMachine, actions::Action as FasmAction};
 use mosaic_cac_types::state_machine::garbler::{
     Action, ActionContainer, GarblerTrackedActionTypes, Input, UntrackedAction,
 };
@@ -27,7 +24,7 @@ pub struct GarblerSM<S: GarblerArtifactStore> {
 /// Push a single action into the FASM actions container with proper tracking ID.
 pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
     let id = action.id();
-    actions.push(FasmAction::Tracked(TrackedAction::new(id, action)));
+    actions.push(FasmAction::new_tracked(id, action));
 }
 
 impl<S: GarblerArtifactStore> StateMachine for GarblerSM<S> {
