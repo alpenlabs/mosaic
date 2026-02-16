@@ -17,6 +17,13 @@ use std::sync::Once;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
+/// Generous upper-bound timeout for test operations.
+///
+/// Tests complete in milliseconds locally, but CI runners can be much slower
+/// (connection establishment, TLS handshake, scheduling delays). This timeout
+/// prevents false failures without slowing down the happy path.
+const CI_TIMEOUT: Duration = Duration::from_secs(120);
+
 use ed25519_dalek::SigningKey;
 use mosaic_cac_types::{
     ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, CircuitInputShares, CommitMsgChunk,
@@ -230,7 +237,7 @@ where
     let handle_clone = handle_ref.clone();
     let mut send_handle = tokio::spawn(async move {
         let started = Instant::now();
-        let deadline = Duration::from_secs(20);
+        let deadline = CI_TIMEOUT;
 
         // Infinite retries with deadline and micro-waits
         loop {
@@ -275,8 +282,7 @@ where
         }
     });
 
-    let request = match tokio::time::timeout(Duration::from_secs(20), receiver.client.recv()).await
-    {
+    let request = match tokio::time::timeout(CI_TIMEOUT, receiver.client.recv()).await {
         Ok(Ok(request)) => request,
         Ok(Err(err)) => panic!("recv failed: {:?}", err),
         Err(_) => {
@@ -290,7 +296,7 @@ where
 
     request.ack().await.expect("ack failed");
 
-    match tokio::time::timeout(Duration::from_secs(10), &mut send_handle).await {
+    match tokio::time::timeout(CI_TIMEOUT, &mut send_handle).await {
         Ok(Ok(Ok(result))) => result,
         Ok(Ok(Err(e))) => panic!("send task failed: {}", e),
         Ok(Err(err)) => panic!("send task panicked: {:?}", err),
@@ -550,7 +556,7 @@ fn test_ack_completes_send() {
         let msg_clone = msg.clone();
 
         let send_handle = tokio::spawn(async move {
-            retry_until_ok(Duration::from_secs(5), || {
+            retry_until_ok(CI_TIMEOUT, || {
                 let msg = msg_clone.clone();
                 async { client_a.send(peer_b_id, msg).await }
             })
@@ -558,13 +564,13 @@ fn test_ack_completes_send() {
         });
 
         // Receive and ack
-        let request = with_timeout(Duration::from_secs(3), peer_b.client.recv())
+        let request = with_timeout(CI_TIMEOUT, peer_b.client.recv())
             .await
             .expect("recv failed");
         request.ack().await.expect("ack failed");
 
         // Send should complete successfully
-        let result = with_timeout(Duration::from_secs(3), send_handle)
+        let result = with_timeout(CI_TIMEOUT, send_handle)
             .await
             .expect("send task panicked");
 
@@ -589,7 +595,7 @@ fn test_send_times_out_without_ack() {
         let send_handle = tokio::spawn(async move { client_a.send(peer_b_id, msg).await });
 
         // Receive raw stream but do not ack it.
-        let mut stream = with_timeout(Duration::from_secs(2), handle_b.protocol_streams().recv())
+        let mut stream = with_timeout(CI_TIMEOUT, handle_b.protocol_streams().recv())
             .await
             .expect("recv failed");
         let _bytes = stream.read().await.expect("read failed");
@@ -597,7 +603,7 @@ fn test_send_times_out_without_ack() {
         // Hold the stream open past the ack timeout to force a timeout on sender.
         tokio::time::sleep(Duration::from_millis(400)).await;
 
-        let result = with_timeout(Duration::from_secs(2), send_handle)
+        let result = with_timeout(CI_TIMEOUT, send_handle)
             .await
             .expect("send task panicked");
 
@@ -626,14 +632,14 @@ fn test_drop_request_without_ack_closes_stream() {
         let send_handle = tokio::spawn(async move { client_a.send(peer_b_id, msg).await });
 
         // Receive but drop without acking
-        let request = with_timeout(Duration::from_secs(5), peer_b.client.recv())
+        let request = with_timeout(CI_TIMEOUT, peer_b.client.recv())
             .await
             .expect("recv failed");
         drop(request); // No ack!
 
         // Send should fail or succeed (FIN may be interpreted as empty ack)
         // but it must not hang forever
-        let result = tokio::time::timeout(Duration::from_secs(5), send_handle).await;
+        let result = tokio::time::timeout(CI_TIMEOUT, send_handle).await;
 
         match result {
             Ok(Ok(Ok(_))) => {
@@ -666,7 +672,7 @@ fn test_concurrent_sends_from_same_peer() {
             let client = peer_a.client.clone();
             let msg = make_challenge_msg(i);
             handles.push(tokio::spawn(async move {
-                retry_until_ok(Duration::from_secs(5), || {
+                retry_until_ok(CI_TIMEOUT, || {
                     let msg = msg.clone();
                     async { client.send(peer_b_id, msg).await }
                 })
@@ -676,7 +682,7 @@ fn test_concurrent_sends_from_same_peer() {
 
         // Receive all messages
         for _ in 0..3 {
-            let request = with_timeout(Duration::from_secs(5), peer_b.client.recv())
+            let request = with_timeout(CI_TIMEOUT, peer_b.client.recv())
                 .await
                 .expect("recv failed");
             request.ack().await.expect("ack failed");
@@ -684,7 +690,7 @@ fn test_concurrent_sends_from_same_peer() {
 
         // All sends should complete
         for handle in handles {
-            let result = with_timeout(Duration::from_secs(3), handle)
+            let result = with_timeout(CI_TIMEOUT, handle)
                 .await
                 .expect("task panicked");
             assert!(matches!(result, mosaic_net_client::Ack));

@@ -16,6 +16,13 @@ use std::{
     time::Duration,
 };
 
+/// Generous upper-bound timeout for test operations.
+///
+/// Tests complete in milliseconds locally, but CI runners can be much slower
+/// (connection establishment, TLS handshake, scheduling delays). This timeout
+/// prevents false failures without slowing down the happy path.
+const CI_TIMEOUT: Duration = Duration::from_secs(120);
+
 use ed25519_dalek::SigningKey;
 use mosaic_net_svc::{
     PeerId,
@@ -239,7 +246,7 @@ fn test_outbound_peer_mismatch_rejected() {
     let (_handle_c, ctrl_c) = NetService::new(config_c).expect("create net service C");
 
     run_async(async {
-        retry_until_ok(Duration::from_secs(5), || {
+        retry_until_ok(CI_TIMEOUT, || {
             let handle_a = handle_a.clone();
             async move {
                 match handle_a.open_protocol_stream(peer_id_b, 0).await {
@@ -300,23 +307,19 @@ fn test_protocol_stream_open_and_receive() {
     run_async(async {
         // Open-with-retry: this is our readiness barrier without consuming any
         // protocol-stream assertions beyond what this test already expects.
-        let _stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let _stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
         // A opens stream to B
-        let stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
         // B should receive the stream
-        let stream_b = recv_with_timeout(
-            Duration::from_secs(3),
-            peer_b.handle.protocol_streams().recv(),
-        )
-        .await;
+        let stream_b = recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
 
         assert_eq!(stream_b.peer, peer_a.peer_id);
 
@@ -334,16 +337,13 @@ fn test_protocol_stream_send_receive_data() {
 
     run_async(async {
         // Make the open robust in CI (service startup + connect + handshake).
-        let mut stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let mut stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
-        let mut stream_b = recv_with_timeout(
-            Duration::from_secs(3),
-            peer_b.handle.protocol_streams().recv(),
-        )
-        .await;
+        let mut stream_b =
+            recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
 
         // Send data A -> B
         stream_a
@@ -351,7 +351,7 @@ fn test_protocol_stream_send_receive_data() {
             .await
             .expect("write failed");
 
-        let received = tokio::time::timeout(Duration::from_secs(5), stream_b.read())
+        let received = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
             .await
             .expect("timeout")
             .expect("read failed");
@@ -368,20 +368,17 @@ fn test_stream_bidirectional() {
     let (peer_a, peer_b) = create_peer_pair();
 
     run_async(async {
-        let mut stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let mut stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
-        let mut stream_b = recv_with_timeout(
-            Duration::from_secs(3),
-            peer_b.handle.protocol_streams().recv(),
-        )
-        .await;
+        let mut stream_b =
+            recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
 
         // A -> B
         stream_a.write(b"ping".to_vec()).await.expect("write");
-        let msg = tokio::time::timeout(Duration::from_secs(5), stream_b.read())
+        let msg = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
             .await
             .expect("timeout")
             .expect("read");
@@ -389,7 +386,7 @@ fn test_stream_bidirectional() {
 
         // B -> A
         stream_b.write(b"pong".to_vec()).await.expect("write");
-        let msg = tokio::time::timeout(Duration::from_secs(5), stream_a.read())
+        let msg = tokio::time::timeout(CI_TIMEOUT, stream_a.read())
             .await
             .expect("timeout")
             .expect("read");
@@ -405,22 +402,19 @@ fn test_stream_close_on_drop_sends_fin() {
     let (peer_a, peer_b) = create_peer_pair();
 
     run_async(async {
-        let stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
-        let mut stream_b = recv_with_timeout(
-            Duration::from_secs(3),
-            peer_b.handle.protocol_streams().recv(),
-        )
-        .await;
+        let mut stream_b =
+            recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
 
         // Drop A's stream
         drop(stream_a);
 
         // B should see PeerFinished
-        let result = tokio::time::timeout(Duration::from_secs(5), stream_b.read())
+        let result = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
             .await
             .expect("timeout");
 
@@ -440,22 +434,19 @@ fn test_stream_reset_with_code() {
     let (peer_a, peer_b) = create_peer_pair();
 
     run_async(async {
-        let stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
-        let mut stream_b = recv_with_timeout(
-            Duration::from_secs(3),
-            peer_b.handle.protocol_streams().recv(),
-        )
-        .await;
+        let mut stream_b =
+            recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
 
         // Reset with error code
         stream_a.reset(123).await;
 
         // B should see PeerReset
-        let result = tokio::time::timeout(Duration::from_secs(5), stream_b.read())
+        let result = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
             .await
             .expect("timeout");
 
@@ -474,23 +465,20 @@ fn test_buffer_returned_after_write() {
     let (peer_a, peer_b) = create_peer_pair();
 
     run_async(async {
-        let mut stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let mut stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
-        let _stream_b = recv_with_timeout(
-            Duration::from_secs(3),
-            peer_b.handle.protocol_streams().recv(),
-        )
-        .await;
+        let _stream_b =
+            recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
 
         // Write data
         let buf = vec![42u8; 1000];
         stream_a.write(buf).await.expect("write");
 
         // Get buffer back
-        let returned = tokio::time::timeout(Duration::from_secs(3), stream_a.recv_buffer())
+        let returned = tokio::time::timeout(CI_TIMEOUT, stream_a.recv_buffer())
             .await
             .expect("timeout")
             .expect("no buffer returned");
@@ -518,7 +506,7 @@ fn test_bulk_transfer_registered() {
         // This avoids borrowing issues (captured `stream_a`/`stream_b` in a retry closure)
         // and makes the test more robust in CI where there can be transient disconnects
         // around connection establishment or replacement.
-        let received = retry_until_ok(Duration::from_secs(8), || async {
+        let received = retry_until_ok(CI_TIMEOUT, || async {
             // B registers to expect bulk transfer from A
             let expectation = peer_b
                 .handle
@@ -534,7 +522,7 @@ fn test_bulk_transfer_registered() {
                 .map_err(|_| ())?;
 
             // B receives via registered channel
-            let mut stream_b = tokio::time::timeout(Duration::from_secs(3), expectation.recv())
+            let mut stream_b = tokio::time::timeout(CI_TIMEOUT, expectation.recv())
                 .await
                 .map_err(|_| ())?
                 .map_err(|_| ())?;
@@ -545,7 +533,7 @@ fn test_bulk_transfer_registered() {
                 .await
                 .map_err(|_| ())?;
 
-            let received = tokio::time::timeout(Duration::from_secs(5), stream_b.read())
+            let received = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
                 .await
                 .map_err(|_| ())?
                 .map_err(|_| ())?;
@@ -569,7 +557,7 @@ fn test_multiple_streams_concurrent() {
         // Open 3 streams with retry to avoid CI flakiness.
         let mut streams_a = Vec::new();
         for _ in 0..3 {
-            let s = retry_until_ok(Duration::from_secs(5), || async {
+            let s = retry_until_ok(CI_TIMEOUT, || async {
                 peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
             })
             .await;
@@ -579,11 +567,7 @@ fn test_multiple_streams_concurrent() {
         // Receive 3 streams
         let mut streams_b = Vec::new();
         for _ in 0..3 {
-            let s = recv_with_timeout(
-                Duration::from_secs(3),
-                peer_b.handle.protocol_streams().recv(),
-            )
-            .await;
+            let s = recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
             streams_b.push(s);
         }
 
@@ -597,7 +581,7 @@ fn test_multiple_streams_concurrent() {
         // Receive all (order may vary)
         let mut msgs = Vec::new();
         for s in streams_b.iter_mut() {
-            let data = tokio::time::timeout(Duration::from_secs(5), s.read())
+            let data = tokio::time::timeout(CI_TIMEOUT, s.read())
                 .await
                 .expect("timeout")
                 .expect("read");
@@ -617,22 +601,19 @@ fn test_large_payload() {
     let (peer_a, peer_b) = create_peer_pair();
 
     run_async(async {
-        let mut stream_a = retry_until_ok(Duration::from_secs(5), || async {
+        let mut stream_a = retry_until_ok(CI_TIMEOUT, || async {
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0).await
         })
         .await;
 
-        let mut stream_b = recv_with_timeout(
-            Duration::from_secs(3),
-            peer_b.handle.protocol_streams().recv(),
-        )
-        .await;
+        let mut stream_b =
+            recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
 
         // 64KB payload
         let payload: Vec<u8> = (0..65536).map(|i| (i % 256) as u8).collect();
         stream_a.write(payload.clone()).await.expect("write");
 
-        let received = tokio::time::timeout(Duration::from_secs(5), stream_b.read())
+        let received = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
             .await
             .expect("timeout")
             .expect("read");
