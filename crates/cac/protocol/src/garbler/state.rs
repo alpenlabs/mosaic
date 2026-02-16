@@ -4,14 +4,15 @@ use bitvec::BitArr;
 use mosaic_cac_types::{
     AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, Seed, SetupInputs,
 };
-use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS};
+use mosaic_common::constants::{
+    N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS,
+};
 
 use super::deposit::DepositState;
 
 #[derive(Debug)]
 pub struct State<S> {
     pub(crate) config: Option<Config>,
-    pub(crate) context: Context,
     pub(crate) step: Step,
     pub(crate) deposits: HashMap<DepositId, DepositState>,
     pub(crate) artifact_store: S,
@@ -21,7 +22,6 @@ impl<S> State<S> {
     pub fn new_empty(artifact_store: S) -> Self {
         Self {
             config: None,
-            context: Context::default(),
             step: Step::Uninit,
             deposits: HashMap::new(),
             artifact_store,
@@ -34,14 +34,6 @@ impl<S> State<S> {
 pub struct Config {
     pub(crate) seed: Seed,
     pub(crate) setup_inputs: SetupInputs,
-}
-
-/// Mutable state that is relevant to multiple steps.
-/// This should only hold simple bookkeeping related states.
-#[derive(Debug, Default)]
-pub struct Context {
-    /// Challenge message was accepted and ACK'd.
-    pub(crate) ackd_challenge_msg: bool,
 }
 
 /// Valid states.
@@ -61,13 +53,20 @@ pub enum Step {
         seeds: Box<AllGarblingSeeds>,
         generated: BitArr!(for N_CIRCUITS),
     },
-    /// Got table commitments, send commit msg.
-    /// Wait for commit msg ack.
-    SendingCommit,
-    /// Wait for challenge msg
+    /// Got table commitments, sending commit msg chunks.
+    /// Transitions to WaitingForChallenge when all chunks are acked.
+    SendingCommit {
+        /// Track which commit msg chunks have been acked.
+        acked: BitArr!(for N_COMMIT_MSG_CHUNKS),
+    },
+    /// All commit chunks acked, waiting for challenge msg from evaluator.
     WaitingForChallenge,
-    /// Send challenge response and wait for ack.
-    SendingChallengeResponse,
+    /// Sending challenge response chunks. Transitions to
+    /// TransferringGarblingTables when all chunks are acked.
+    SendingChallengeResponse {
+        /// Track which challenge response chunks have been acked.
+        acked: BitArr!(for N_CHALLENGE_RESPONSE_CHUNKS),
+    },
     /// Challenge response msg ack received, send garbling tables
     TransferringGarblingTables {
         /// Seeds for garbling table generation

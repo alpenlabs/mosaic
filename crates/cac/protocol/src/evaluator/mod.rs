@@ -6,7 +6,7 @@ use fasm::{
     actions::{Action as FasmAction, TrackedAction},
 };
 use mosaic_cac_types::state_machine::evaluator::{
-    ActionContainer, EvaluatorTrackedActionTypes, Input, UntrackedAction,
+    Action, ActionContainer, EvaluatorTrackedActionTypes, Input, UntrackedAction,
 };
 
 pub mod artifact;
@@ -22,6 +22,12 @@ use crate::{SMError, SMResult};
 #[derive(Debug)]
 pub struct EvaluatorSM<S: EvaluatorArtifactStore> {
     _s: PhantomData<S>,
+}
+
+/// Push a single action into the FASM actions container with proper tracking ID.
+pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
+    let id = action.id();
+    actions.push(FasmAction::Tracked(TrackedAction::new(id, action)));
 }
 
 impl<S: EvaluatorArtifactStore> StateMachine for EvaluatorSM<S> {
@@ -47,14 +53,11 @@ impl<S: EvaluatorArtifactStore> StateMachine for EvaluatorSM<S> {
         use fasm::Input::*;
         match input {
             Normal(input) => {
-                let emitted_actions = stf::stf(state, input).await?;
-                let mut tracked_actions = emitted_actions
-                    .into_iter()
-                    .map(|action| FasmAction::Tracked(TrackedAction::new((), action)))
-                    .collect();
-                actions.append(&mut tracked_actions);
+                stf::handle_event(state, input, actions).await?;
             }
-            TrackedActionCompleted { .. } => unreachable!(),
+            TrackedActionCompleted { id, result } => {
+                stf::handle_action_result(state, id, result, actions).await?;
+            }
         };
 
         Ok(())
@@ -64,12 +67,7 @@ impl<S: EvaluatorArtifactStore> StateMachine for EvaluatorSM<S> {
         state: &Self::State,
         actions: &mut Self::Actions,
     ) -> Result<(), Self::RestoreError> {
-        let emitted_actions = stf::restore(state).await?;
-        let mut tracked_actions = emitted_actions
-            .into_iter()
-            .map(|action| FasmAction::Tracked(TrackedAction::new((), action)))
-            .collect();
-        actions.append(&mut tracked_actions);
+        stf::restore(state, actions).await?;
 
         Ok(())
     }
