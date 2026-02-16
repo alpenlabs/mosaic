@@ -56,6 +56,38 @@ impl<T, const N: usize> HeapArray<T, N> {
         Self::from_vec(vec)
     }
 
+    /// Creates a new `HeapArray` by calling a fallible closure `f` for each index `0..N`.
+    ///
+    /// The closure receives the index and should return `Ok(element)` for that position,
+    /// or `Err(e)` to short-circuit and return the error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mosaic_heap_array::HeapArray;
+    ///
+    /// // Success case
+    /// let result: Result<HeapArray<i32, 5>, &str> = HeapArray::try_from_fn(|i| Ok(i as i32 * 2));
+    /// assert!(result.is_ok());
+    /// let arr = result.unwrap();
+    /// assert_eq!(arr[2], 4);
+    ///
+    /// // Error case
+    /// let result: Result<HeapArray<i32, 5>, &str> = HeapArray::try_from_fn(|i| {
+    ///     if i == 3 { Err("failed at index 3") } else { Ok(i as i32) }
+    /// });
+    /// assert_eq!(result, Err("failed at index 3"));
+    /// ```
+    pub fn try_from_fn<F, E>(f: F) -> Result<Self, E>
+    where
+        F: FnMut(usize) -> Result<T, E>,
+    {
+        let res_vec: Result<Vec<T>, E> = (0..N).map(f).collect();
+        let vec = res_vec?;
+
+        Ok(Self::from_vec(vec))
+    }
+
     /// Creates a new `HeapArray` from an existing `Vec<T>`.
     ///
     /// # Panics
@@ -401,5 +433,36 @@ mod tests {
         assert_eq!(arr[0], 0);
         assert_eq!(arr[255], 255);
         assert_eq!(arr[256], 0);
+    }
+
+    #[test]
+    fn test_try_from_fn_success() {
+        let result: Result<HeapArray<i32, 5>, &str> = HeapArray::try_from_fn(|i| Ok(i as i32 * 10));
+        assert!(result.is_ok());
+        let arr = result.unwrap();
+        assert_eq!(arr[0], 0);
+        assert_eq!(arr[1], 10);
+        assert_eq!(arr[4], 40);
+        assert_eq!(arr.len(), 5);
+    }
+
+    #[test]
+    fn test_try_from_fn_error() {
+        let result: Result<HeapArray<i32, 5>, &str> = HeapArray::try_from_fn(|i| {
+            if i == 3 {
+                Err("error at index 3")
+            } else {
+                Ok(i as i32)
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "error at index 3");
+    }
+
+    #[test]
+    fn test_try_from_fn_empty() {
+        let result: Result<HeapArray<i32, 0>, &str> = HeapArray::try_from_fn(|_| unreachable!());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }
