@@ -4,7 +4,7 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     DepositAdaptors, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment,
     Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
-    PolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors,
+    OutputPolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors,
     state_machine::evaluator::{
         Action, ActionContainer, ActionId, ActionResult, EvaluatorDepositInitData,
         EvaluatorDisputedWithdrawalData, Input,
@@ -825,7 +825,7 @@ fn is_valid_challenge_response_chunk(
 #[expect(unused_variables)]
 fn verify_opened_output_shares(
     opened_output_shares: &OpenedOutputShares,
-    output_polynomial_commitment: &PolynomialCommitment,
+    output_polynomial_commitment: &OutputPolynomialCommitment,
 ) -> Option<String> {
     todo!()
 }

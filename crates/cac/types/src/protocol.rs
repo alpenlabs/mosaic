@@ -22,21 +22,18 @@ pub type WideLabelWirePolynomialCommitments =
     HeapArray<PolynomialCommitment, WIDE_LABEL_VALUE_COUNT>;
 
 /// Input wire polynomials.
-pub type InputPolynomials = [WideLabelWirePolynomials; N_INPUT_WIRES];
+pub type InputPolynomials = HeapArray<WideLabelWirePolynomials, N_INPUT_WIRES>;
 /// Input wire polynomial commitments.
-pub type InputPolynomialCommitments = [WideLabelWirePolynomialCommitments; N_INPUT_WIRES];
+pub type InputPolynomialCommitments = HeapArray<WideLabelWirePolynomialCommitments, N_INPUT_WIRES>;
 /// Output wire polynomial.
 pub type OutputPolynomial = Polynomial;
 /// Output wire polynomial commitment.
-pub type OutputPolynomialCommitment = PolynomialCommitment;
+pub type OutputPolynomialCommitment = HeapArray<PolynomialCommitment, 1>;
 
 /// All Polynomials.
-pub type AllPolynomials = (Box<InputPolynomials>, Box<OutputPolynomial>);
+pub type AllPolynomials = (InputPolynomials, OutputPolynomial);
 /// All Polynomial commitments.
-pub type AllPolynomialCommitments = (
-    Box<InputPolynomialCommitments>,
-    Box<OutputPolynomialCommitment>,
-);
+pub type AllPolynomialCommitments = (InputPolynomialCommitments, OutputPolynomialCommitment);
 
 /// Commitments for all `N_CIRCUITS` garbling tables.
 /// Uses HeapArray for serialization derive macro support.

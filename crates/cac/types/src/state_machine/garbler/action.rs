@@ -2,10 +2,11 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    AllPolynomialCommitments, ChallengeResponseMsgChunk, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositId, GarblingSeed,
-    GarblingTableCommitment, InputShares, PubKey, ReservedDepositInputShares,
-    ReservedWithdrawalInputShares, Seed, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    AllPolynomialCommitments, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
+    CircuitInputShares, CircuitOutputShare, CommitMsgChunk, CommitMsgHeader, CompletedSignatures,
+    DepositAdaptors, DepositId, GarblingSeed, GarblingTableCommitment, InputShares, PubKey,
+    ReservedDepositInputShares, ReservedWithdrawalInputShares, Seed, Sighashes, WithdrawalAdaptors,
+    WithdrawalInputs,
 };
 
 // ============================================================================
@@ -31,8 +32,12 @@ pub enum ActionId {
     GenerateShares(Seed, Index),
     /// Identifies a [`Action::GenerateTableCommitment`] action by circuit index.
     GenerateTableCommitment(Index),
+    /// Identifies a [`Action::SendCommitMsgHeader`] action.
+    SendCommitMsgHeader,
     /// Identifies a [`Action::SendCommitMsgChunk`] action by wire index.
     SendCommitMsgChunk(u16),
+    /// Identifies a [`Action::SendChallengeResponseMsgHeader`] action.
+    SendChallengeResponseMsgHeader,
     /// Identifies a [`Action::SendChallengeResponseMsgChunk`] action by circuit
     /// index.
     SendChallengeResponseMsgChunk(u16),
@@ -101,9 +106,14 @@ pub enum Action {
     GenerateShares(Seed, Index),
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
+    /// Send commit message header with garbling table commitments and output polynomial commitment.
+    SendCommitMsgHeader(CommitMsgHeader),
     /// Send commit message chunk with polynomial commitments for a single wire
     /// to evaluator.
     SendCommitMsgChunk(CommitMsgChunk),
+    /// Send challenge response header with setup input shares, output shares and garbling seeds for
+    /// opened circuits.
+    SendChallengeResponseMsgHeader(ChallengeResponseMsgHeader),
     /// Send challenge response chunk with revealed shares for a single circuit.
     SendChallengeResponseMsgChunk(ChallengeResponseMsgChunk),
     /// Transfer a garbling table to the evaluator.
@@ -126,7 +136,9 @@ impl Action {
             }
             Self::GenerateShares(seed, idx) => ActionId::GenerateShares(*seed, *idx),
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
+            Self::SendCommitMsgHeader(_) => ActionId::SendCommitMsgHeader,
             Self::SendCommitMsgChunk(chunk) => ActionId::SendCommitMsgChunk(chunk.wire_index),
+            Self::SendChallengeResponseMsgHeader(_) => ActionId::SendChallengeResponseMsgHeader,
             Self::SendChallengeResponseMsgChunk(chunk) => {
                 ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index)
             }

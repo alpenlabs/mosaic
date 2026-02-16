@@ -132,9 +132,9 @@ mod tests {
     fn generate_test_polynomials(seed: Seed) -> AllPolynomials {
         let mut rng = ChaCha20Rng::from_seed(seed.into());
         let input_polys: InputPolynomials =
-            std::array::from_fn(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
+            HeapArray::new(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
         let output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
-        (Box::new(input_polys), Box::new(output_poly))
+        (input_polys, output_poly)
     }
 
     fn test_seed(v: u8) -> Seed {

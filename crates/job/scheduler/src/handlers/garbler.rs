@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use mosaic_cac_types::state_machine::garbler::{Action, ActionId, ActionResult};
 use mosaic_cac_types::{
     AllPolynomialCommitments, AllPolynomials, InputPolynomialCommitments, InputPolynomials,
     OutputPolynomial, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
     WideLabelWireShares,
+    state_machine::garbler::{Action, ActionId, ActionResult},
 };
 use mosaic_common::constants::{N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT};
 use mosaic_heap_array::HeapArray;
@@ -121,9 +121,9 @@ fn generate_polynomials_from_seed(seed: Seed) -> AllPolynomials {
     use rand::SeedableRng;
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
     let input_polys: InputPolynomials =
-        std::array::from_fn(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
+        HeapArray::new(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
     let output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
-    (Box::new(input_polys), Box::new(output_poly))
+    (input_polys, output_poly)
 }
 
 /// Compute commitments for all polynomials (EC scalar multiplications).
@@ -136,10 +136,9 @@ fn commit_polynomials(polys: &AllPolynomials) -> AllPolynomialCommitments {
             input_polys[wire].iter().map(|p| p.commit()).collect();
         input_commits.push(HeapArray::from_vec(commits));
     }
-    let input_commits: InputPolynomialCommitments =
-        input_commits.try_into().expect("N_INPUT_WIRES match");
-    let output_commit: OutputPolynomialCommitment = output_poly.commit();
-    (Box::new(input_commits), Box::new(output_commit))
+    let input_commits: InputPolynomialCommitments = HeapArray::from_vec(input_commits);
+    let output_commit: OutputPolynomialCommitment = HeapArray::from_elem(output_poly.commit());
+    (input_commits, output_commit)
 }
 
 /// Evaluate all polynomials at a single circuit index.

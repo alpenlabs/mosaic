@@ -1,9 +1,8 @@
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CommitMsgChunk,
-    CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments,
-    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors,
-    WithdrawalInputs,
+    AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
+    DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds,
+    OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
+    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
 };
 
 use crate::SMResult;

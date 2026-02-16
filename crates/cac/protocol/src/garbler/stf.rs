@@ -1,10 +1,10 @@
 use bitvec::array::BitArray;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, AllPolynomialCommitments,
-    ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, CommitMsgChunk, DepositId,
-    EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, Index, InputShares,
-    OutputShares, ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares,
-    Seed, SetupInputs,
+    AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
+    DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, Index,
+    InputPolynomialCommitments, InputShares, OutputShares, ReservedDepositInputShares,
+    ReservedInputShares, ReservedWithdrawalInputShares, Seed, SetupInputs,
     state_machine::garbler::{
         Action, ActionContainer, ActionId, ActionResult, AdaptorVerificationData,
         CompleteAdaptorSignaturesData, GarblerDepositInitData, Input,
@@ -61,7 +61,7 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                         let (input_shares, output_shares) = artifact_store.load_shares().await?;
                         let config = require_config(state)?;
                         let seeds = generate_garbling_table_seeds(config.seed);
-                        let challenge_response_msg_chunks = create_challenge_response_msg_chunks(
+                        let (header, chunks) = create_challenge_response_msgs(
                             &challenge_msg.challenge_indices,
                             *input_shares,
                             *output_shares,
@@ -76,7 +76,8 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                             acked: BitArray::ZERO,
                         };
 
-                        for chunk in challenge_response_msg_chunks {
+                        emit(actions, Action::SendChallengeResponseMsgHeader(header));
+                        for chunk in chunks {
                             emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                         }
                     } else {
@@ -306,14 +307,17 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                         };
 
                         // generate actions
-                        let polynomial_commitments =
+                        let (input_polynomial_commitments, output_polynomial_commitment) =
                             artifact_store.load_polynomial_commitments().await?;
                         let garbling_table_commitments =
                             artifact_store.load_all_garbling_table_commitments().await?;
-                        for chunk in create_commit_msg_chunks(
-                            polynomial_commitments,
+
+                        let commit_msg_header = CommitMsgHeader {
                             garbling_table_commitments,
-                        ) {
+                            output_polynomial_commitment,
+                        };
+                        emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
+                        for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
                             emit(actions, Action::SendCommitMsgChunk(chunk));
                         }
                     }
@@ -570,13 +574,18 @@ pub(crate) async fn restore<S: ArtifactStore>(
             }
         }
         Step::SendingCommit { acked } => {
-            let polynomial_commitments = artifact_store.load_polynomial_commitments().await?;
+            let (input_polynomial_commitments, output_polynomial_commitment) =
+                artifact_store.load_polynomial_commitments().await?;
             let garbling_table_commitments =
                 artifact_store.load_all_garbling_table_commitments().await?;
 
-            for chunk in
-                create_commit_msg_chunks(polynomial_commitments, garbling_table_commitments)
-            {
+            let commit_msg_header = CommitMsgHeader {
+                garbling_table_commitments,
+                output_polynomial_commitment,
+            };
+            emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
+
+            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
                 if !acked[chunk.wire_index as usize] {
                     emit(actions, Action::SendCommitMsgChunk(chunk));
                 }
@@ -588,13 +597,15 @@ pub(crate) async fn restore<S: ArtifactStore>(
             let (input_shares, output_shares) = artifact_store.load_shares().await?;
             let config = require_config(state)?;
             let seeds = generate_garbling_table_seeds(config.seed);
-            for chunk in create_challenge_response_msg_chunks(
+            let (header, chunks) = create_challenge_response_msgs(
                 challenge_indices.as_ref(),
                 *input_shares,
                 *output_shares,
                 seeds,
                 config.setup_inputs,
-            ) {
+            );
+            emit(actions, Action::SendChallengeResponseMsgHeader(header));
+            for chunk in chunks {
                 if !acked[chunk.circuit_index as usize] {
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                 }
@@ -713,20 +724,19 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
 
 #[expect(unused_variables)]
 fn create_commit_msg_chunks(
-    polynomial_commitments: AllPolynomialCommitments,
-    garbling_table_commitments: AllGarblingTableCommitments,
+    polynomial_commitments: InputPolynomialCommitments,
 ) -> Vec<CommitMsgChunk> {
     todo!()
 }
 
 #[expect(unused_variables)]
-fn create_challenge_response_msg_chunks(
+fn create_challenge_response_msgs(
     challenge_idxs: &ChallengeIndices,
     input_shares: InputShares,
     output_shares: OutputShares,
     garbling_seeds: AllGarblingSeeds,
     setup_inputs: SetupInputs,
-) -> Vec<ChallengeResponseMsgChunk> {
+) -> (ChallengeResponseMsgHeader, Vec<ChallengeResponseMsgChunk>) {
     todo!()
 }
 

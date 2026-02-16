@@ -10,6 +10,7 @@ use mosaic_common::{
     Byte32,
     constants::{N_CIRCUITS, N_OPEN_CIRCUITS},
 };
+use mosaic_heap_array::HeapArray;
 use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 use proptest::prelude::*;
 
@@ -206,7 +207,8 @@ fn arb_commit_msg_header() -> impl Strategy<Value = CommitMsgHeader> {
 
         use rand::SeedableRng;
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-        let output_polynomial_commitment = Polynomial::rand(&mut rng).commit();
+        let output_polynomial_commitment =
+            HeapArray::from_elem(Polynomial::rand(&mut rng).commit());
 
         CommitMsgHeader {
             garbling_table_commitments: AllGarblingTableCommitments::new(|_| commitment),
@@ -658,7 +660,7 @@ fn test_commit_msg_header_fits_in_frame() {
     // Expected size: ~17 KB
     use rand::SeedableRng;
     let mut rng = rand::rngs::StdRng::seed_from_u64(0);
-    let output_polynomial_commitment = Polynomial::rand(&mut rng).commit();
+    let output_polynomial_commitment = HeapArray::from_elem(Polynomial::rand(&mut rng).commit());
 
     let header = CommitMsgHeader {
         garbling_table_commitments: AllGarblingTableCommitments::new(|_| [0u8; 32].into()),
