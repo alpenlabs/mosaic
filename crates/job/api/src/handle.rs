@@ -36,9 +36,16 @@ pub struct JobSchedulerHandle {
 }
 
 /// Error returned when the job scheduler has shut down.
-#[derive(Debug, thiserror::Error)]
-#[error("job scheduler is shut down")]
+#[derive(Debug)]
 pub struct SchedulerStopped;
+
+impl std::fmt::Display for SchedulerStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("job scheduler is shut down")
+    }
+}
+
+impl std::error::Error for SchedulerStopped {}
 
 impl JobSchedulerHandle {
     /// Create a new handle from the submission and completion channels.

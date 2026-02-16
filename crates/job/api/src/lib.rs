@@ -17,4 +17,4 @@ mod handle;
 mod submission;
 
 pub use handle::{JobSchedulerHandle, SchedulerStopped};
-pub use submission::{ActionCompletion, JobActions, JobBatch, JobCompletion, JobError, JobResult};
+pub use submission::{ActionCompletion, JobActions, JobBatch, JobCompletion};

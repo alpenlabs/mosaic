@@ -1,16 +1,21 @@
 //! Handlers for garbler state machine actions.
 //!
-//! Each handler executes a single garbler action and returns a [`JobResult`]
-//! containing an [`ActionCompletion`] with the tracked action ID and result.
+//! Each handler executes a single garbler action and produces an
+//! [`ActionCompletion`]. Handlers retry internally until they succeed —
+//! the caller always receives a valid completion.
 
 use mosaic_cac_types::state_machine::garbler::Action;
 use mosaic_common::PeerId;
-use mosaic_job_api::{JobError, JobResult};
+use mosaic_job_api::ActionCompletion;
 
 use super::HandlerContext;
 
 /// Dispatch a garbler action to the appropriate handler.
-pub(crate) async fn execute(ctx: &HandlerContext, peer_id: &PeerId, action: Action) -> JobResult {
+pub(crate) async fn execute(
+    ctx: &HandlerContext,
+    peer_id: &PeerId,
+    action: Action,
+) -> ActionCompletion {
     match action {
         // ── Heavy (Setup) ───────────────────────────────────────────
         Action::GeneratePolynomialCommitments => generate_polynomial_commitments(ctx).await,
@@ -28,8 +33,6 @@ pub(crate) async fn execute(ctx: &HandlerContext, peer_id: &PeerId, action: Acti
             send_challenge_response_msg_chunk(ctx, peer_id, chunk).await
         }
 
-        // ── Light (Deposit Network I/O) ─────────────────────────────
-
         // ── Heavy (Deposit) ─────────────────────────────────────────
         Action::DepositVerifyAdaptors(deposit_id, data) => {
             verify_adaptors(ctx, deposit_id, data).await
@@ -41,9 +44,9 @@ pub(crate) async fn execute(ctx: &HandlerContext, peer_id: &PeerId, action: Acti
         }
 
         _ => {
-            // Non-exhaustive enum — future variants handled here until
+            // Non-exhaustive enum — future variants will panic until
             // explicit handlers are added.
-            JobResult::Failed(JobError::Crypto("unhandled garbler action variant".into()))
+            unimplemented!("unhandled garbler action variant")
         }
     }
 }
@@ -52,15 +55,16 @@ pub(crate) async fn execute(ctx: &HandlerContext, peer_id: &PeerId, action: Acti
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn generate_polynomial_commitments(_ctx: &HandlerContext) -> JobResult {
+async fn generate_polynomial_commitments(_ctx: &HandlerContext) -> ActionCompletion {
     // TODO: generate polynomials from base seed, compute commitments
-    // Returns: GarblerInput::PolynomialCommitmentsGenerated(commitments)
     unimplemented!()
 }
 
-async fn generate_shares(_ctx: &HandlerContext, _index: mosaic_cac_types::Index) -> JobResult {
+async fn generate_shares(
+    _ctx: &HandlerContext,
+    _index: mosaic_cac_types::Index,
+) -> ActionCompletion {
     // TODO: evaluate polynomials at index to produce input/output shares
-    // Returns: GarblerInput::SharesGenerated(index, input_shares, output_share)
     unimplemented!()
 }
 
@@ -72,11 +76,10 @@ async fn generate_table_commitment(
     _ctx: &HandlerContext,
     _index: mosaic_cac_types::Index,
     _seed: mosaic_cac_types::GarblingSeed,
-) -> JobResult {
+) -> ActionCompletion {
     // TODO: generate garbling table from seed and shares, compute commitment
     // NOTE: this action is routed through the GarblingCoordinator, not the
     //       heavy pool directly. The coordinator handles topology reading.
-    // Returns: GarblerInput::TableCommitmentGenerated(index, commitment)
     unimplemented!()
 }
 
@@ -84,11 +87,10 @@ async fn transfer_garbling_table(
     _ctx: &HandlerContext,
     _peer_id: &PeerId,
     _seed: mosaic_cac_types::GarblingSeed,
-) -> JobResult {
+) -> ActionCompletion {
     // TODO: generate garbling table from seed and stream 43GB to peer
     // NOTE: routed through GarblingCoordinator for coordinated topology reads.
     //       Output is streamed via net-client bulk transfer.
-    // Returns: GarblerInput::GarblingTableTransferred(seed, commitment)
     unimplemented!()
 }
 
@@ -100,9 +102,8 @@ async fn send_commit_msg_chunk(
     _ctx: &HandlerContext,
     _peer_id: &PeerId,
     _chunk: mosaic_cac_types::CommitMsgChunk,
-) -> JobResult {
-    // TODO: ctx.net_client.send(peer_id, chunk).await
-    // Returns: GarblerInput::CommitMsgAcked
+) -> ActionCompletion {
+    // TODO: ctx.net_client.send(peer_id, chunk).await in retry loop
     unimplemented!()
 }
 
@@ -110,9 +111,8 @@ async fn send_challenge_response_msg_chunk(
     _ctx: &HandlerContext,
     _peer_id: &PeerId,
     _chunk: mosaic_cac_types::ChallengeResponseMsgChunk,
-) -> JobResult {
-    // TODO: ctx.net_client.send(peer_id, chunk).await
-    // Returns: GarblerInput::ChallengeResponseAcked
+) -> ActionCompletion {
+    // TODO: ctx.net_client.send(peer_id, chunk).await in retry loop
     unimplemented!()
 }
 
@@ -124,9 +124,8 @@ async fn verify_adaptors(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
     _data: mosaic_cac_types::state_machine::garbler::AdaptorVerificationData,
-) -> JobResult {
+) -> ActionCompletion {
     // TODO: verify adaptor signatures against commitments and sighashes
-    // Returns: GarblerInput::DepositAdaptorVerificationResult(deposit_id, bool)
     unimplemented!()
 }
 
@@ -138,8 +137,7 @@ async fn complete_adaptor_signatures(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
     _data: mosaic_cac_types::state_machine::garbler::CompleteAdaptorSignaturesData,
-) -> JobResult {
+) -> ActionCompletion {
     // TODO: complete adaptor signatures for disputed withdrawal
-    // Returns: GarblerInput::AdaptorSignaturesCompleted(deposit_id, signatures)
     unimplemented!()
 }

@@ -1652,7 +1652,6 @@ dependencies = [
  "kanal",
  "mosaic-cac-types",
  "mosaic-common",
- "thiserror 2.0.18",
 ]
 
 [[package]]

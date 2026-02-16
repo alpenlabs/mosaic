@@ -9,8 +9,7 @@
 use mosaic_cac_types::state_machine::garbler::Action as GarblerAction;
 use mosaic_common::PeerId;
 use mosaic_job_api::{
-    ActionCompletion, JobActions, JobBatch, JobCompletion, JobError, JobResult, JobSchedulerHandle,
-    SchedulerStopped,
+    ActionCompletion, JobActions, JobBatch, JobCompletion, JobSchedulerHandle, SchedulerStopped,
 };
 
 // ============================================================================
@@ -107,50 +106,8 @@ fn garbler_batch_with_actions() {
 }
 
 // ============================================================================
-// JobResult and ActionCompletion ergonomics
+// ActionCompletion ergonomics
 // ============================================================================
-
-#[test]
-fn job_result_completed() {
-    let result = JobResult::Completed(ActionCompletion::Garbler {
-        id: mosaic_cac_types::state_machine::garbler::ActionId::SendCommitMsgChunk(0),
-        result: mosaic_cac_types::state_machine::garbler::ActionResult::CommitMsgChunkAcked,
-    });
-    assert!(result.is_completed());
-    assert!(!result.is_failed());
-    assert!(result.is_garbler());
-    assert!(!result.is_evaluator());
-    assert!(result.as_completed().is_some());
-    assert!(result.as_error().is_none());
-}
-
-#[test]
-fn job_result_failed() {
-    let result = JobResult::Failed(JobError::Network("timeout".into()));
-    assert!(!result.is_completed());
-    assert!(result.is_failed());
-    assert!(!result.is_garbler());
-    assert!(!result.is_evaluator());
-    assert!(result.as_completed().is_none());
-    assert!(result.as_error().is_some());
-}
-
-#[test]
-fn job_result_into_completed_ok() {
-    let result = JobResult::Completed(ActionCompletion::Evaluator {
-        id: mosaic_cac_types::state_machine::evaluator::ActionId::SendChallengeMsg,
-        result: mosaic_cac_types::state_machine::evaluator::ActionResult::ChallengeMsgAcked,
-    });
-    let completion = result.into_completed();
-    assert!(completion.is_ok());
-}
-
-#[test]
-fn job_result_into_completed_err() {
-    let result = JobResult::Failed(JobError::Cancelled);
-    let err = result.into_completed();
-    assert!(err.is_err());
-}
 
 #[test]
 fn action_completion_garbler_accessors() {
@@ -192,16 +149,14 @@ fn action_completion_evaluator_accessors() {
 // ============================================================================
 
 #[test]
-fn job_completion_delegates_to_result() {
+fn job_completion_delegates_to_completion() {
     let completion = JobCompletion {
         peer_id: test_peer_id(),
-        result: JobResult::Completed(ActionCompletion::Garbler {
+        completion: ActionCompletion::Garbler {
             id: mosaic_cac_types::state_machine::garbler::ActionId::SendCommitMsgChunk(0),
             result: mosaic_cac_types::state_machine::garbler::ActionResult::CommitMsgChunkAcked,
-        }),
+        },
     };
-    assert!(completion.is_completed());
-    assert!(!completion.is_failed());
     assert!(completion.is_garbler());
     assert!(!completion.is_evaluator());
     assert_eq!(completion.peer_id, test_peer_id());
@@ -256,14 +211,18 @@ fn handle_recv_delivers_completion_from_worker() {
         completion_tx
             .send(JobCompletion {
                 peer_id: test_peer_id(),
-                result: JobResult::Failed(JobError::Cancelled),
+                completion: ActionCompletion::Garbler {
+                    id: mosaic_cac_types::state_machine::garbler::ActionId::SendCommitMsgChunk(0),
+                    result:
+                        mosaic_cac_types::state_machine::garbler::ActionResult::CommitMsgChunkAcked,
+                },
             })
             .await
             .unwrap();
 
         let received = handle.recv().await.unwrap();
         assert_eq!(received.peer_id, test_peer_id());
-        assert!(received.is_failed());
+        assert!(received.is_garbler());
     });
 }
 
@@ -294,7 +253,11 @@ fn handle_try_recv_returns_completion_when_available() {
         completion_tx
             .send(JobCompletion {
                 peer_id: test_peer_id(),
-                result: JobResult::Failed(JobError::Cancelled),
+                completion: ActionCompletion::Evaluator {
+                    id: mosaic_cac_types::state_machine::evaluator::ActionId::SendChallengeMsg,
+                    result:
+                        mosaic_cac_types::state_machine::evaluator::ActionResult::ChallengeMsgAcked,
+                },
             })
             .await
             .unwrap();
@@ -377,23 +340,6 @@ fn garbler_batch_multiple_actions_roundtrip() {
 // ============================================================================
 // Error type tests
 // ============================================================================
-
-#[test]
-fn job_error_display() {
-    assert_eq!(
-        format!("{}", JobError::Network("conn refused".into())),
-        "network error: conn refused"
-    );
-    assert_eq!(
-        format!("{}", JobError::Crypto("bad sig".into())),
-        "crypto error: bad sig"
-    );
-    assert_eq!(
-        format!("{}", JobError::Storage("disk full".into())),
-        "storage error: disk full"
-    );
-    assert_eq!(format!("{}", JobError::Cancelled), "job cancelled");
-}
 
 #[test]
 fn scheduler_stopped_display() {

@@ -157,16 +157,25 @@ async fn worker_loop(
     tracing::info!(worker = id, "worker shutting down");
 }
 
-/// Execute a single job and produce a completion result.
+/// Execute a single job and produce a completion.
+///
+/// Handlers retry internally until they succeed — this function always
+/// returns a valid [`JobCompletion`] with an [`ActionCompletion`].
 async fn execute_job(ctx: &HandlerContext, job: WorkerJob) -> JobCompletion {
     match job {
         WorkerJob::Garbler { peer_id, action } => {
-            let result = crate::handlers::garbler::execute(ctx, &peer_id, action).await;
-            JobCompletion { peer_id, result }
+            let completion = crate::handlers::garbler::execute(ctx, &peer_id, action).await;
+            JobCompletion {
+                peer_id,
+                completion,
+            }
         }
         WorkerJob::Evaluator { peer_id, action } => {
-            let result = crate::handlers::evaluator::execute(ctx, &peer_id, action).await;
-            JobCompletion { peer_id, result }
+            let completion = crate::handlers::evaluator::execute(ctx, &peer_id, action).await;
+            JobCompletion {
+                peer_id,
+                completion,
+            }
         }
     }
 }

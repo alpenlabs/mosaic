@@ -1,4 +1,4 @@
-//! Job submission and result types.
+//! Job submission and completion types.
 //!
 //! These types define the interface between the SM Scheduler and the Job
 //! Scheduler. The SM Scheduler submits batches of actions (one batch per STF
@@ -6,6 +6,10 @@
 //!
 //! Action containers are passed through directly from the FASM state machines
 //! — no type transformation is needed at the submission boundary.
+//!
+//! Jobs always retry internally until they succeed — the SM Scheduler never
+//! sees failures. Every submitted action eventually produces exactly one
+//! [`ActionCompletion`].
 
 use mosaic_cac_types::state_machine::{
     evaluator::{
@@ -166,109 +170,30 @@ impl ActionCompletion {
     }
 }
 
-/// The outcome of a single completed job, routed back to the originating SM.
+/// The outcome of a single completed job, routed back to the originating SM
+/// as a `TrackedActionCompleted { id, result }` input via FASM.
+///
+/// The peer ID plus the [`ActionCompletion`] variant (garbler vs evaluator)
+/// identifies which SM to deliver to.
+///
+/// Jobs always retry internally until they succeed — every submitted action
+/// eventually produces exactly one completion. There is no failure variant.
 #[derive(Debug)]
 pub struct JobCompletion {
     /// The peer whose SM this result should be routed to.
     pub peer_id: PeerId,
-    /// The result of the job execution.
-    pub result: JobResult,
+    /// The completed action, ready to feed into the SM.
+    pub completion: ActionCompletion,
 }
 
 impl JobCompletion {
-    /// Returns `true` if the job completed successfully.
-    pub fn is_completed(&self) -> bool {
-        self.result.is_completed()
-    }
-
-    /// Returns `true` if the job failed.
-    pub fn is_failed(&self) -> bool {
-        self.result.is_failed()
-    }
-
     /// Returns `true` if this completion is for a garbler SM.
     pub fn is_garbler(&self) -> bool {
-        self.result.is_garbler()
+        self.completion.is_garbler()
     }
 
     /// Returns `true` if this completion is for an evaluator SM.
     pub fn is_evaluator(&self) -> bool {
-        self.result.is_evaluator()
+        self.completion.is_evaluator()
     }
-}
-
-/// Result of executing a single job.
-#[derive(Debug)]
-pub enum JobResult {
-    /// Job completed successfully, producing a tracked action result for the SM.
-    Completed(ActionCompletion),
-
-    /// Job failed with an error.
-    Failed(JobError),
-}
-
-impl JobResult {
-    /// Returns `true` if the job completed successfully.
-    pub fn is_completed(&self) -> bool {
-        matches!(self, Self::Completed(_))
-    }
-
-    /// Returns `true` if the job failed.
-    pub fn is_failed(&self) -> bool {
-        matches!(self, Self::Failed(_))
-    }
-
-    /// Returns `true` if the job completed with a garbler result.
-    pub fn is_garbler(&self) -> bool {
-        matches!(self, Self::Completed(c) if c.is_garbler())
-    }
-
-    /// Returns `true` if the job completed with an evaluator result.
-    pub fn is_evaluator(&self) -> bool {
-        matches!(self, Self::Completed(c) if c.is_evaluator())
-    }
-
-    /// Returns the completion, if successful.
-    pub fn as_completed(&self) -> Option<&ActionCompletion> {
-        match self {
-            Self::Completed(c) => Some(c),
-            Self::Failed(_) => None,
-        }
-    }
-
-    /// Returns the error, if failed.
-    pub fn as_error(&self) -> Option<&JobError> {
-        match self {
-            Self::Failed(e) => Some(e),
-            Self::Completed(_) => None,
-        }
-    }
-
-    /// Consume into the completion, if successful.
-    pub fn into_completed(self) -> Result<ActionCompletion, JobError> {
-        match self {
-            Self::Completed(c) => Ok(c),
-            Self::Failed(e) => Err(e),
-        }
-    }
-}
-
-/// Errors that can occur during job execution.
-#[derive(Debug, thiserror::Error)]
-pub enum JobError {
-    /// Network operation failed.
-    #[error("network error: {0}")]
-    Network(String),
-
-    /// Cryptographic operation failed.
-    #[error("crypto error: {0}")]
-    Crypto(String),
-
-    /// Storage operation failed.
-    #[error("storage error: {0}")]
-    Storage(String),
-
-    /// Job was cancelled.
-    #[error("job cancelled")]
-    Cancelled,
 }
