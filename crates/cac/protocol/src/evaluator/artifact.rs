@@ -1,24 +1,27 @@
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
-    ChallengeResponseMsgChunk, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
-    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WithdrawalAdaptors, WithdrawalInputs,
+    AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CommitMsgChunk,
+    CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments,
+    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
+    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors,
+    WithdrawalInputs,
 };
 
 use crate::SMResult;
 
 pub trait EvaluatorArtifactStore: Sized {
-    fn save_polynomial_commitments(
+    fn save_input_polynomial_commitments_chunk(
         &mut self,
-        commitments: &AllPolynomialCommitments,
+        wire_idx: u16,
+        commitments: &WideLabelWirePolynomialCommitments,
     ) -> impl Future<Output = SMResult<()>>;
-    fn load_polynomial_commitments(
-        &self,
-    ) -> impl Future<Output = SMResult<AllPolynomialCommitments>>;
     fn load_input_polynomial_commitments(
         &self,
     ) -> impl Future<Output = SMResult<Box<InputPolynomialCommitments>>>;
+
+    fn save_output_polynomial_commitment(
+        &mut self,
+        commitment: &OutputPolynomialCommitment,
+    ) -> impl Future<Output = SMResult<()>>;
     fn load_output_polynomial_commitment(
         &self,
     ) -> impl Future<Output = SMResult<Box<OutputPolynomialCommitment>>>;
@@ -31,25 +34,17 @@ pub trait EvaluatorArtifactStore: Sized {
         &self,
     ) -> impl Future<Output = SMResult<Box<AllGarblingTableCommitments>>>;
 
-    fn save_commit_msg_chunk(
-        &mut self,
-        chunk: CommitMsgChunk,
-    ) -> impl Future<Output = SMResult<()>>;
-
-    fn save_challenge_response_msg_chunk(
-        &mut self,
-        chunk: ChallengeResponseMsgChunk,
-    ) -> impl Future<Output = SMResult<()>>;
-
     fn save_challenge_indices(
         &mut self,
         challenge_idxs: &ChallengeIndices,
     ) -> impl Future<Output = SMResult<()>>;
     fn load_challenge_indices(&self) -> impl Future<Output = SMResult<Box<ChallengeIndices>>>;
 
-    fn save_openend_input_shares(
+    /// Save input shares for opened circuits, one chunk per circuit.
+    fn save_openend_input_shares_chunk(
         &mut self,
-        opened_input_shares: &OpenedInputShares,
+        opened_ckt_idx: u16,
+        input_shares: &CircuitInputShares,
     ) -> impl Future<Output = SMResult<()>>;
     fn load_openend_input_shares(&self) -> impl Future<Output = SMResult<Box<OpenedInputShares>>>;
 

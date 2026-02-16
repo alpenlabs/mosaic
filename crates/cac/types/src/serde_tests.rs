@@ -204,8 +204,13 @@ fn arb_commit_msg_header() -> impl Strategy<Value = CommitMsgHeader> {
         let bytes: [u8; 32] = std::array::from_fn(|i| ((seed >> (i % 8)) & 0xff) as u8);
         let commitment: Byte32 = bytes.into();
 
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let output_polynomial_commitment = Polynomial::rand(&mut rng).commit();
+
         CommitMsgHeader {
             garbling_table_commitments: AllGarblingTableCommitments::new(|_| commitment),
+            output_polynomial_commitment,
         }
     })
 }
@@ -649,9 +654,15 @@ fn assert_fits_in_frame<T: CanonicalSerialize>(msg: &T, name: &str, compress: Co
 #[test]
 fn test_commit_msg_header_fits_in_frame() {
     // CommitMsgHeader contains N_CIRCUITS (181) garbling table commitments (32 bytes each)
-    // Expected size: ~5.7 KB
+    // + 1 Polynomial Commitment (65 bytes * 174 uncompressed)
+    // Expected size: ~17 KB
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+    let output_polynomial_commitment = Polynomial::rand(&mut rng).commit();
+
     let header = CommitMsgHeader {
         garbling_table_commitments: AllGarblingTableCommitments::new(|_| [0u8; 32].into()),
+        output_polynomial_commitment,
     };
 
     assert_fits_in_frame(&header, "CommitMsgHeader", Compress::Yes);
@@ -660,8 +671,8 @@ fn test_commit_msg_header_fits_in_frame() {
     // Verify actual size is what we expect (sanity check)
     let size = header.serialized_size(Compress::No);
     assert!(
-        size < 10 * 1024,
-        "CommitMsgHeader should be ~5.7 KB, got {} bytes",
+        size < 20 * 1024,
+        "CommitMsgHeader should be ~17 KB, got {} bytes",
         size
     );
 }

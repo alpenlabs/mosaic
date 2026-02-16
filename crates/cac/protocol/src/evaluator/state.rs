@@ -6,7 +6,7 @@ use mosaic_cac_types::{
     OpenedGarblingSeeds, OpenedGarblingTableCommitments, Seed, SetupInputs,
 };
 use mosaic_common::constants::{
-    N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
+    N_CHALLENGE_RESPONSE_CHUNKS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
 };
 
 use crate::{StateContainer, evaluator::deposit::DepositState};
@@ -45,9 +45,11 @@ pub enum Step {
     #[default]
     Uninit,
     WaitingForCommit {
-        chunks: BitArr!(for N_CIRCUITS),
+        header: bool,
+        chunks: BitArr!(for N_COMMIT_MSG_CHUNKS),
     },
     WaitingForChallengeResponse {
+        header: bool,
         chunks: BitArr!(for N_CHALLENGE_RESPONSE_CHUNKS),
     },
     VerifyingOpenedInputShares,

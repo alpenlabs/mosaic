@@ -11,8 +11,8 @@ use ark_serialize::{
 
 use crate::{
     Adaptor, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments, ChallengeIndices,
-    CircuitInputShares, OpenedGarblingSeeds, OpenedOutputShares, ReservedSetupInputShares,
-    WideLabelWirePolynomialCommitments,
+    CircuitInputShares, OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment,
+    ReservedSetupInputShares, WideLabelWirePolynomialCommitments,
 };
 
 // ============================================================================
@@ -29,6 +29,8 @@ use crate::{
 pub struct CommitMsgHeader {
     /// Commitments to all N_CIRCUITS garbling tables.
     pub garbling_table_commitments: AllGarblingTableCommitments,
+    /// Commitment to output wire polynomial for value 0.
+    pub output_polynomial_commitment: OutputPolynomialCommitment,
 }
 
 /// CommitMsgChunk: Garbler -> Evaluator (chunked by wire)

@@ -32,7 +32,7 @@ pub enum Input {
     Init(EvaluatorInitData),
 
     /// Commit message header received from the garbler via network.
-    RecvCommitMsgHeader(CommitMsgHeader),
+    RecvCommitMsgHeader(Box<CommitMsgHeader>),
 
     /// Commit message chunk received from the garbler via network.
     RecvCommitMsgChunk(CommitMsgChunk),
