@@ -158,10 +158,7 @@ impl JobScheduler {
                             let (_id, action) = tracked.into_parts();
                             let category = action.category();
                             let priority = action.priority();
-                            let worker_job = WorkerJob::Garbler {
-                                peer_id: peer_id.clone(),
-                                action,
-                            };
+                            let worker_job = WorkerJob::Garbler { peer_id, action };
 
                             match category {
                                 ActionCategory::Light => {
@@ -190,10 +187,7 @@ impl JobScheduler {
                             let (_id, action) = tracked.into_parts();
                             let category = action.category();
                             let priority = action.priority();
-                            let worker_job = WorkerJob::Evaluator {
-                                peer_id: peer_id.clone(),
-                                action,
-                            };
+                            let worker_job = WorkerJob::Evaluator { peer_id, action };
 
                             match category {
                                 ActionCategory::Light => {

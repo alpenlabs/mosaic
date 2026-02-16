@@ -488,7 +488,7 @@ fn test_send_to_unknown_peer_fails() {
     let (peer_a, _peer_b) = create_client_pair();
 
     run_async(async {
-        let unknown_peer = [0xffu8; 32];
+        let unknown_peer = PeerId::from_bytes([0xffu8; 32]);
         let msg = make_challenge_msg(1);
 
         let result = peer_a.client.send(unknown_peer, msg).await;

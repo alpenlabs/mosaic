@@ -4,11 +4,16 @@
 //! [`ActionCompletion`]. Handlers retry internally until they succeed —
 //! the caller always receives a valid completion.
 
-use mosaic_cac_types::state_machine::garbler::Action;
+use mosaic_cac_types::state_machine::garbler::{Action, ActionId, ActionResult};
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
 
 use super::HandlerContext;
+
+/// Build a successful garbler completion from an action ID and result.
+fn completed(id: ActionId, result: ActionResult) -> ActionCompletion {
+    ActionCompletion::Garbler { id, result }
+}
 
 /// Dispatch a garbler action to the appropriate handler.
 pub(crate) async fn execute(
@@ -99,21 +104,35 @@ async fn transfer_garbling_table(
 // ============================================================================
 
 async fn send_commit_msg_chunk(
-    _ctx: &HandlerContext,
-    _peer_id: &PeerId,
-    _chunk: mosaic_cac_types::CommitMsgChunk,
+    ctx: &HandlerContext,
+    peer_id: &PeerId,
+    chunk: mosaic_cac_types::CommitMsgChunk,
 ) -> ActionCompletion {
-    // TODO: ctx.net_client.send(peer_id, chunk).await in retry loop
-    unimplemented!()
+    let id = ActionId::SendCommitMsgChunk(chunk.wire_index);
+    loop {
+        match ctx.net_client.send(*peer_id, chunk.clone()).await {
+            Ok(_ack) => return completed(id, ActionResult::CommitMsgChunkAcked),
+            Err(e) => {
+                tracing::warn!(wire = chunk.wire_index, %e, "send commit chunk failed, retrying")
+            }
+        }
+    }
 }
 
 async fn send_challenge_response_msg_chunk(
-    _ctx: &HandlerContext,
-    _peer_id: &PeerId,
-    _chunk: mosaic_cac_types::ChallengeResponseMsgChunk,
+    ctx: &HandlerContext,
+    peer_id: &PeerId,
+    chunk: mosaic_cac_types::ChallengeResponseMsgChunk,
 ) -> ActionCompletion {
-    // TODO: ctx.net_client.send(peer_id, chunk).await in retry loop
-    unimplemented!()
+    let id = ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index);
+    loop {
+        match ctx.net_client.send(*peer_id, chunk.clone()).await {
+            Ok(_ack) => return completed(id, ActionResult::ChallengeResponseChunkAcked),
+            Err(e) => {
+                tracing::warn!(circuit = chunk.circuit_index, %e, "send challenge response chunk failed, retrying")
+            }
+        }
+    }
 }
 
 // ============================================================================

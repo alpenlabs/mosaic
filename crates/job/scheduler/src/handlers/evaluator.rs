@@ -4,11 +4,16 @@
 //! [`ActionCompletion`]. Handlers retry internally until they succeed —
 //! the caller always receives a valid completion.
 
-use mosaic_cac_types::state_machine::evaluator::Action;
+use mosaic_cac_types::state_machine::evaluator::{Action, ActionId, ActionResult};
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
 
 use super::HandlerContext;
+
+/// Build a successful evaluator completion from an action ID and result.
+fn completed(id: ActionId, result: ActionResult) -> ActionCompletion {
+    ActionCompletion::Evaluator { id, result }
+}
 
 /// Dispatch an evaluator action to the appropriate handler.
 pub(crate) async fn execute(
@@ -59,22 +64,37 @@ pub(crate) async fn execute(
 // ============================================================================
 
 async fn send_challenge_msg(
-    _ctx: &HandlerContext,
-    _peer_id: &PeerId,
-    _msg: mosaic_cac_types::ChallengeMsg,
+    ctx: &HandlerContext,
+    peer_id: &PeerId,
+    msg: mosaic_cac_types::ChallengeMsg,
 ) -> ActionCompletion {
-    // TODO: ctx.net_client.send(peer_id, msg).await in retry loop
-    unimplemented!()
+    loop {
+        match ctx.net_client.send(*peer_id, msg.clone()).await {
+            Ok(_ack) => {
+                return completed(ActionId::SendChallengeMsg, ActionResult::ChallengeMsgAcked);
+            }
+            Err(e) => {
+                tracing::warn!(%e, "send challenge msg failed, retrying")
+            }
+        }
+    }
 }
 
 async fn send_adaptor_msg_chunk(
-    _ctx: &HandlerContext,
-    _peer_id: &PeerId,
-    _deposit_id: mosaic_cac_types::DepositId,
-    _chunk: mosaic_cac_types::AdaptorMsgChunk,
+    ctx: &HandlerContext,
+    peer_id: &PeerId,
+    deposit_id: mosaic_cac_types::DepositId,
+    chunk: mosaic_cac_types::AdaptorMsgChunk,
 ) -> ActionCompletion {
-    // TODO: ctx.net_client.send(peer_id, chunk).await in retry loop
-    unimplemented!()
+    let id = ActionId::DepositSendAdaptorMsgChunk(deposit_id, chunk.chunk_index);
+    loop {
+        match ctx.net_client.send(*peer_id, chunk.clone()).await {
+            Ok(_ack) => return completed(id, ActionResult::DepositAdaptorChunkSent(deposit_id)),
+            Err(e) => {
+                tracing::warn!(chunk_index = chunk.chunk_index, %e, "send adaptor chunk failed, retrying")
+            }
+        }
+    }
 }
 
 // ============================================================================
