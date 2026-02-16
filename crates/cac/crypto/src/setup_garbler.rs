@@ -15,12 +15,7 @@ use ckt_gobble::{
 };
 use ckt_runner_exec::{CircuitReader, GarbleTask, ReaderV5cWrapper, process_task};
 use mosaic_cac_types::{
-    AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
-    CircuitInputShares, GarblingTableCommitment, HeapArray, InputPolynomialCommitments,
-    InputPolynomials, InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
-    OutputPolynomial, OutputPolynomialCommitment, OutputShares, ReservedInputShares,
-    ReservedSetupInputShares, Seed, SetupInputs, WideLabelWirePolynomialCommitments,
-    WideLabelWireShares,
+    AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, CircuitInputShares, GarblingTableCommitment, HeapArray, InputPolynomialCommitments, InputPolynomials, InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomial, OutputPolynomialCommitment, OutputShares, ReservedInputShares, ReservedSetupInputShares, Seed, SetupInputs, WideLabelWirePolynomialCommitments, WideLabelWireShares
 };
 use mosaic_common::{
     Byte32,

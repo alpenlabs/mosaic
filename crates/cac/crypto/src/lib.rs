@@ -47,7 +47,7 @@ mod tests {
         // 6. move lvl/g16.v5c to mosaic/cac/crypto/
         // 7. move g16gen/inputs.txt to mosaic/cac/crypto/
         // 7. Run test with
-        // cargo test --release --package mosaic-cac-crypto --lib --
+        // RUST_MIN_STACK=2256388608 cargo test --release --package mosaic-cac-crypto --lib --
         // tests::test_e2e --exact --show-output --nocapture need for RUST_MIN_STACK will be
         // avoided in future after we box large contents
         let garbler_setup_data = SetupGarbData {
@@ -67,6 +67,7 @@ mod tests {
         let init_eval_state = InitEvalState::init(eval_setup_data);
 
         println!("exec_commit");
+
         let (wait_chal_garb_state, commit_msg) = init_garb_state.exec_commit().await;
         println!("exec_challenge");
         let (wait_resp_eval_state, challenge_msg) = init_eval_state.exec_challenge(commit_msg);
