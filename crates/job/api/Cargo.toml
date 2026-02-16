@@ -12,7 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 mosaic-cac-types.workspace = true
-mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
 
 kanal = "0.1.1"
 

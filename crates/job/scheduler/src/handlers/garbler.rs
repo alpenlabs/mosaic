@@ -5,8 +5,8 @@
 //! the caller always receives a valid completion.
 
 use mosaic_cac_types::state_machine::garbler::Action;
-use mosaic_common::PeerId;
 use mosaic_job_api::ActionCompletion;
+use mosaic_net_svc_api::PeerId;
 
 use super::HandlerContext;
 

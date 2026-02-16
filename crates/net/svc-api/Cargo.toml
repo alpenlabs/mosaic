@@ -14,6 +14,7 @@ keywords.workspace = true
 ed25519-dalek = "2"
 hex = "0.4"
 kanal = "0.1.1"
+serde = { version = "1.0", features = ["derive"] }
 
 # [lints]
 # workspace = true

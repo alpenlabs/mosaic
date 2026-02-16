@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
 
 serde.workspace = true
 

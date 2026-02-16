@@ -333,7 +333,7 @@ mod tests {
         let verifying_key = signing_key.verifying_key();
 
         assert_eq!(peer_id, peer_id_from_verifying_key(&verifying_key));
-        assert_eq!(peer_id, verifying_key.to_bytes());
+        assert_eq!(*peer_id.as_bytes(), verifying_key.to_bytes());
     }
 
     #[test]

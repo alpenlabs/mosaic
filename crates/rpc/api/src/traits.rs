@@ -1,5 +1,5 @@
 use jsonrpsee::proc_macros::rpc;
-use mosaic_common::PeerId;
+use mosaic_net_svc_api::PeerId;
 use mosaic_rpc_types::*;
 
 // TODO figure this out

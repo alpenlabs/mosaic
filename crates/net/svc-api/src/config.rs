@@ -122,7 +122,7 @@ mod tests {
     }
 
     fn test_peer_id(seed: u8) -> PeerId {
-        [seed; 32]
+        PeerId::from_bytes([seed; 32])
     }
 
     #[test]

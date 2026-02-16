@@ -166,7 +166,7 @@ mod tests {
         PoolJob {
             priority,
             job: WorkerJob::Garbler {
-                peer_id: mosaic_common::PeerId(vec![]),
+                peer_id: mosaic_net_svc_api::PeerId::from_bytes([0u8; 32]),
                 action: GarblerAction::GeneratePolynomialCommitments,
             },
         }

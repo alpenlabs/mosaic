@@ -13,7 +13,7 @@ use std::sync::Arc;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_common::PeerId;
+use mosaic_net_svc_api::PeerId;
 use mosaic_job_api::JobCompletion;
 
 use super::queue::JobQueue;

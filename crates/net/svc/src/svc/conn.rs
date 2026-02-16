@@ -27,9 +27,8 @@ pub fn extract_peer_id(conn: &Connection) -> Option<PeerId> {
         return None;
     }
 
-    let mut peer_id = [0u8; 32];
-    peer_id.copy_from_slice(pubkey_bytes);
-    Some(peer_id)
+    let peer_id: [u8; 32] = pubkey_bytes.try_into().ok()?;
+    Some(PeerId::from_bytes(peer_id))
 }
 
 #[cfg(test)]

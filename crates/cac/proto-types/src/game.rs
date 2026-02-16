@@ -1,4 +1,5 @@
-use mosaic_common::{PeerId, constants::N_SETUP_INPUT_WIRES};
+use mosaic_common::constants::N_SETUP_INPUT_WIRES;
+use mosaic_net_svc_api::PeerId;
 use serde::{Deserialize, Serialize};
 
 use crate::TablesetInstanceId;

@@ -7,17 +7,17 @@
 //! channel contract directly.
 
 use mosaic_cac_types::state_machine::garbler::Action as GarblerAction;
-use mosaic_common::PeerId;
 use mosaic_job_api::{
     ActionCompletion, JobActions, JobBatch, JobCompletion, JobSchedulerHandle, SchedulerStopped,
 };
+use mosaic_net_svc_api::PeerId;
 
 // ============================================================================
 // Helper constructors
 // ============================================================================
 
 fn test_peer_id() -> PeerId {
-    PeerId(vec![1, 2, 3])
+    PeerId::from_bytes([1u8; 32])
 }
 
 fn garbler_batch_with(

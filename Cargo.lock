@@ -1533,6 +1533,7 @@ name = "mosaic-cac-proto-types"
 version = "0.1.0"
 dependencies = [
  "mosaic-common",
+ "mosaic-net-svc-api",
  "serde",
 ]
 
@@ -1559,6 +1560,7 @@ dependencies = [
  "fasm",
  "mosaic-common",
  "mosaic-heap-array",
+ "mosaic-net-svc-api",
  "mosaic-vs3",
  "proptest",
  "rand 0.8.5",
@@ -1606,7 +1608,7 @@ version = "0.1.0"
 dependencies = [
  "kanal",
  "mosaic-cac-types",
- "mosaic-common",
+ "mosaic-net-svc-api",
 ]
 
 [[package]]
@@ -1617,9 +1619,9 @@ dependencies = [
  "kanal",
  "monoio",
  "mosaic-cac-types",
- "mosaic-common",
  "mosaic-job-api",
  "mosaic-net-client",
+ "mosaic-net-svc-api",
  "parking_lot",
  "tracing",
 ]
@@ -1669,6 +1671,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "kanal",
+ "serde",
 ]
 
 [[package]]
@@ -1680,7 +1683,7 @@ name = "mosaic-rpc-api"
 version = "0.1.0"
 dependencies = [
  "jsonrpsee",
- "mosaic-common",
+ "mosaic-net-svc-api",
  "mosaic-rpc-types",
 ]
 
@@ -1693,7 +1696,7 @@ name = "mosaic-rpc-server"
 version = "0.1.0"
 dependencies = [
  "jsonrpsee",
- "mosaic-common",
+ "mosaic-net-svc-api",
  "mosaic-rpc-api",
  "mosaic-rpc-provider",
  "mosaic-rpc-types",
@@ -1706,6 +1709,7 @@ dependencies = [
  "jsonrpsee-types",
  "mosaic-cac-proto-types",
  "mosaic-common",
+ "mosaic-net-svc-api",
  "mosaic-table-types",
  "serde",
  "thiserror 2.0.18",

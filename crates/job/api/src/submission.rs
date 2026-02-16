@@ -21,7 +21,7 @@ use mosaic_cac_types::state_machine::{
         ActionResult as GarblerActionResult,
     },
 };
-use mosaic_common::PeerId;
+use mosaic_net_svc_api::PeerId;
 
 /// A batch of actions submitted to the scheduler for execution.
 ///

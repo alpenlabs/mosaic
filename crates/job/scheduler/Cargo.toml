@@ -13,7 +13,7 @@ keywords.workspace = true
 [dependencies]
 mosaic-job-api.workspace = true
 mosaic-cac-types.workspace = true
-mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
 mosaic-net-client.workspace = true
 
 fasm.workspace = true
