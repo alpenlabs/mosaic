@@ -10,6 +10,7 @@ publish = false
 # Workspace crates
 mosaic-cac-types = { path = "../../cac/types" }
 mosaic-net-svc = { path = "../svc" }
+mosaic-net-svc-api = { path = "../svc-api" }
 
 # Serialization
 ark-serialize = { workspace = true }

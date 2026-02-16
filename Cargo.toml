@@ -14,8 +14,8 @@ members = [
   "crates/job/scheduler",
   "crates/net/client",
   "crates/net/svc",
+  "crates/net/svc-api",
   "crates/net/wire",
-  "crates/network/api",
   "crates/rpc/api",
   "crates/rpc/provider",
   "crates/rpc/server",
@@ -64,6 +64,7 @@ mosaic-job-api = { path = "crates/job/api" }
 mosaic-job-scheduler = { path = "crates/job/scheduler" }
 mosaic-net-client = { path = "crates/net/client" }
 mosaic-net-svc = { path = "crates/net/svc" }
+mosaic-net-svc-api = { path = "crates/net/svc-api" }
 mosaic-net-types = { path = "crates/net/types" }
 mosaic-net-wire = { path = "crates/net/wire" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
