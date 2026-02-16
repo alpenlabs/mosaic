@@ -11,13 +11,13 @@ pub mod deposit;
 pub mod state;
 mod stf;
 
-use artifact::GarblerArtifactStore;
-use state::State;
+use artifact::GarblerArtifactStore as ArtifactStore;
+use state::GarblerStateContainer as StateContainer;
 
 use crate::SMError;
 
 #[derive(Debug)]
-pub struct GarblerSM<S: GarblerArtifactStore> {
+pub struct GarblerSM<S: ArtifactStore> {
     _s: PhantomData<S>,
 }
 
@@ -27,8 +27,8 @@ pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
     actions.push(FasmAction::new_tracked(id, action));
 }
 
-impl<S: GarblerArtifactStore> StateMachine for GarblerSM<S> {
-    type State = State<S>;
+impl<S: ArtifactStore> StateMachine for GarblerSM<S> {
+    type State = StateContainer<S>;
 
     type Input = Input;
 

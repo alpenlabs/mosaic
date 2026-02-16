@@ -12,12 +12,17 @@ use mosaic_cac_types::{
 };
 use mosaic_common::constants::{N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
-use super::{SMResult, artifact::EvaluatorArtifactStore, emit, state::State};
+use super::{
+    SMResult,
+    artifact::EvaluatorArtifactStore as ArtifactStore,
+    emit,
+    state::{EvaluatorState as State, EvaluatorStateContainer as StateContainer},
+};
 use crate::{
     SMError,
     evaluator::{
         deposit::{DepositState, DepositStep},
-        state::{Config, Step},
+        state::{Config, EvaluatorState, Step},
     },
 };
 
@@ -29,11 +34,12 @@ use crate::{
 ///
 /// External events are messages from peers, bridge triggers, and initialization
 /// — anything that originates outside the state machine.
-pub(crate) async fn handle_event<S: EvaluatorArtifactStore>(
-    state: &mut State<S>,
+pub(crate) async fn handle_event<S: ArtifactStore>(
+    state_container: &mut StateContainer<S>,
     input: Input,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
+    let (state, artifact_store) = state_container.state_and_artifact_store_mut();
     match input {
         Input::Init(data) => match state.step {
             Step::Uninit => {
@@ -48,10 +54,11 @@ pub(crate) async fn handle_event<S: EvaluatorArtifactStore>(
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::RecvCommitMsgChunk(commit_msg) => {
-            handle_commit_msg_chunk(state, commit_msg, actions).await?;
+            handle_commit_msg_chunk(state, artifact_store, commit_msg, actions).await?;
         }
         Input::RecvChallengeResponseMsgChunk(response_msg) => {
-            handle_recv_challenge_response_msg(state, response_msg, actions).await?;
+            handle_recv_challenge_response_msg(state, artifact_store, response_msg, actions)
+                .await?;
         }
         Input::DepositInit(
             deposit_id,
@@ -66,12 +73,10 @@ pub(crate) async fn handle_event<S: EvaluatorArtifactStore>(
                     return Err(SMError::DepositAlreadyExists(deposit_id));
                 }
 
-                state
-                    .artifact_store
+                artifact_store
                     .save_sighashes_for_deposit(deposit_id, &sighashes)
                     .await?;
-                state
-                    .artifact_store
+                artifact_store
                     .save_inputs_for_deposit(deposit_id, &deposit_inputs)
                     .await?;
 
@@ -116,22 +121,17 @@ pub(crate) async fn handle_event<S: EvaluatorArtifactStore>(
 
                 match deposit_state.step {
                     DepositStep::DepositReady => {
-                        state
-                            .artifact_store
+                        artifact_store
                             .save_completed_signatures(deposit_id, &signatures)
                             .await?;
 
-                        state
-                            .artifact_store
+                        artifact_store
                             .save_withdrawal_inputs(deposit_id, &withdrawal_inputs)
                             .await?;
 
-                        let challenge_indices =
-                            state.artifact_store.load_challenge_indices().await?;
-                        let garbling_commitments = state
-                            .artifact_store
-                            .load_garbling_table_commitments()
-                            .await?;
+                        let challenge_indices = artifact_store.load_challenge_indices().await?;
+                        let garbling_commitments =
+                            artifact_store.load_garbling_table_commitments().await?;
 
                         let eval_indices = get_eval_indices(&challenge_indices);
                         let eval_commitments =
@@ -170,12 +170,13 @@ pub(crate) async fn handle_event<S: EvaluatorArtifactStore>(
 ///
 /// Each action emitted by the STF eventually completes and its result is
 /// routed back here with the [`ActionId`] used to correlate it.
-pub(crate) async fn handle_action_result<S: EvaluatorArtifactStore>(
-    state: &mut State<S>,
+pub(crate) async fn handle_action_result<S: ArtifactStore>(
+    state_container: &mut StateContainer<S>,
     id: ActionId,
     result: ActionResult,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
+    let (state, artifact_store) = state_container.state_and_artifact_store_mut();
     match result {
         ActionResult::ChallengeMsgAcked => {
             // The challenge message was sent. No further state change needed —
@@ -189,12 +190,10 @@ pub(crate) async fn handle_action_result<S: EvaluatorArtifactStore>(
                         reason: format!("invalid opened input shares: {}", failure_reason),
                     };
                 } else {
-                    let opened_indices = state.artifact_store.load_challenge_indices().await?;
-                    let opened_seeds = state.artifact_store.load_opened_garbling_seeds().await?;
-                    let all_table_commitments = state
-                        .artifact_store
-                        .load_garbling_table_commitments()
-                        .await?;
+                    let opened_indices = artifact_store.load_challenge_indices().await?;
+                    let opened_seeds = artifact_store.load_opened_garbling_seeds().await?;
+                    let all_table_commitments =
+                        artifact_store.load_garbling_table_commitments().await?;
                     let opened_commitments =
                         get_opened_commitments(&opened_indices, &all_table_commitments);
 
@@ -216,10 +215,17 @@ pub(crate) async fn handle_action_result<S: EvaluatorArtifactStore>(
             _ => return Err(SMError::UnexpectedInput),
         },
         ActionResult::TableCommitmentGenerated(index, table_commitment) => {
-            handle_table_commitment_generated(state, index, table_commitment, actions).await?;
+            handle_table_commitment_generated(
+                state,
+                artifact_store,
+                index,
+                table_commitment,
+                actions,
+            )
+            .await?;
         }
         ActionResult::GarblingTableReceived(index, table_commitment) => {
-            handle_table_received(state, index, table_commitment).await?;
+            handle_table_received(state, artifact_store, index, table_commitment).await?;
         }
         ActionResult::DepositAdaptorsGenerated(
             deposit_id,
@@ -233,8 +239,7 @@ pub(crate) async fn handle_action_result<S: EvaluatorArtifactStore>(
 
                 match deposit_state.step {
                     DepositStep::GeneratingAdaptors => {
-                        state
-                            .artifact_store
+                        artifact_store
                             .save_adaptors_for_deposit(
                                 deposit_id,
                                 &deposit_adaptors,
@@ -328,8 +333,9 @@ pub(crate) async fn handle_action_result<S: EvaluatorArtifactStore>(
 // Helpers for handle_event
 // ============================================================================
 
-async fn handle_commit_msg_chunk<S: EvaluatorArtifactStore>(
-    state: &mut State<S>,
+async fn handle_commit_msg_chunk<S: ArtifactStore>(
+    state: &mut EvaluatorState,
+    artifact_store: &mut S,
     commit_msg_chunk: CommitMsgChunk,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
@@ -347,8 +353,7 @@ async fn handle_commit_msg_chunk<S: EvaluatorArtifactStore>(
                 return Err(SMError::InvalidInputData);
             }
 
-            state
-                .artifact_store
+            artifact_store
                 .save_commit_msg_chunk(commit_msg_chunk)
                 .await?;
 
@@ -367,8 +372,7 @@ async fn handle_commit_msg_chunk<S: EvaluatorArtifactStore>(
             let challenge_indices = sample_challenge_indices(config.seed);
             debug_assert!(is_sorted(challenge_indices.as_slice()));
 
-            state
-                .artifact_store
+            artifact_store
                 .save_challenge_indices(&challenge_indices)
                 .await?;
 
@@ -384,14 +388,15 @@ async fn handle_commit_msg_chunk<S: EvaluatorArtifactStore>(
     }
 }
 
-async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
-    state: &mut State<S>,
+async fn handle_recv_challenge_response_msg<S: ArtifactStore>(
+    state: &mut EvaluatorState,
+    artifact_store: &mut S,
     response_msg_chunk: ChallengeResponseMsgChunk,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match state.step {
         Step::WaitingForChallengeResponse { chunks } => {
-            let challenge_idxs = state.artifact_store.load_challenge_indices().await?;
+            let challenge_idxs = artifact_store.load_challenge_indices().await?;
             if !is_valid_challenge_response_chunk(&response_msg_chunk, &challenge_idxs) {
                 state.step = Step::Aborted {
                     reason: "invalid challenge response message".into(),
@@ -406,8 +411,7 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
                 return Err(SMError::InvalidInputData);
             }
 
-            state
-                .artifact_store
+            artifact_store
                 .save_challenge_response_msg_chunk(response_msg_chunk)
                 .await?;
 
@@ -416,12 +420,10 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
             }
 
             // all chunks received
-            let opened_output_shares = state.artifact_store.load_opened_output_shares().await?;
+            let opened_output_shares = artifact_store.load_opened_output_shares().await?;
 
-            let output_polynomial_commitment = state
-                .artifact_store
-                .load_output_polynomial_commitment()
-                .await?;
+            let output_polynomial_commitment =
+                artifact_store.load_output_polynomial_commitment().await?;
 
             if let Some(failure_reason) =
                 verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
@@ -436,14 +438,10 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
             }
 
             let config = require_config(state)?;
-            let reserved_setup_input_shares = state
-                .artifact_store
-                .load_reserved_setup_input_shares()
-                .await?;
-            let input_polynomial_commitments = state
-                .artifact_store
-                .load_input_polynomial_commitments()
-                .await?;
+            let reserved_setup_input_shares =
+                artifact_store.load_reserved_setup_input_shares().await?;
+            let input_polynomial_commitments =
+                artifact_store.load_input_polynomial_commitments().await?;
 
             if let Some(failure_reason) = verify_reserved_setup_input_shares(
                 &reserved_setup_input_shares,
@@ -461,7 +459,7 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
 
             state.step = Step::VerifyingOpenedInputShares;
 
-            let opened_input_shares = state.artifact_store.load_openend_input_shares().await?;
+            let opened_input_shares = artifact_store.load_openend_input_shares().await?;
             emit(
                 actions,
                 Action::VerifyOpenedInputShares(
@@ -481,8 +479,9 @@ async fn handle_recv_challenge_response_msg<S: EvaluatorArtifactStore>(
 // Helpers for handle_action_result
 // ============================================================================
 
-async fn handle_table_commitment_generated<S: EvaluatorArtifactStore>(
-    state: &mut State<S>,
+async fn handle_table_commitment_generated<S: ArtifactStore>(
+    state: &mut EvaluatorState,
+    artifact_store: &mut S,
     index: Index,
     table_commitment: GarblingTableCommitment,
     actions: &mut ActionContainer,
@@ -512,10 +511,7 @@ async fn handle_table_commitment_generated<S: EvaluatorArtifactStore>(
                 let eval_idxs = get_eval_indices(opened_indices);
                 debug_assert!(is_sorted(&eval_idxs));
 
-                let garbling_commitments = state
-                    .artifact_store
-                    .load_garbling_table_commitments()
-                    .await?;
+                let garbling_commitments = artifact_store.load_garbling_table_commitments().await?;
                 let eval_commitments = get_eval_commitments(&eval_idxs, &garbling_commitments);
                 state.step = Step::ReceivingGarblingTables {
                     eval_indices: eval_idxs,
@@ -532,8 +528,9 @@ async fn handle_table_commitment_generated<S: EvaluatorArtifactStore>(
     }
 }
 
-async fn handle_table_received<S: EvaluatorArtifactStore>(
-    state: &mut State<S>,
+async fn handle_table_received<S: ArtifactStore>(
+    state: &mut EvaluatorState,
+    _artifact_store: &mut S,
     index: Index,
     table_commitment: GarblingTableCommitment,
 ) -> SMResult<()> {
@@ -571,27 +568,27 @@ async fn handle_table_received<S: EvaluatorArtifactStore>(
 // Restore
 // ============================================================================
 
-pub(crate) async fn restore<S: EvaluatorArtifactStore>(
-    state: &State<S>,
+pub(crate) async fn restore<S: ArtifactStore>(
+    state_container: &StateContainer<S>,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
+    let state = state_container.state();
+    let artifact_store = state_container.artifact_store();
     match &state.step {
         Step::Uninit => {}
         Step::WaitingForCommit { .. } => {}
         Step::WaitingForChallengeResponse { .. } => {
-            let challenge_indices = *state.artifact_store.load_challenge_indices().await?;
+            let challenge_indices = *artifact_store.load_challenge_indices().await?;
             let challenge_msg = ChallengeMsg { challenge_indices };
 
             emit(actions, Action::SendChallengeMsg(challenge_msg));
         }
         Step::VerifyingOpenedInputShares => {
-            let challenge_idxs = state.artifact_store.load_challenge_indices().await?;
-            let input_polynomial_commitments = state
-                .artifact_store
-                .load_input_polynomial_commitments()
-                .await?;
+            let challenge_idxs = artifact_store.load_challenge_indices().await?;
+            let input_polynomial_commitments =
+                artifact_store.load_input_polynomial_commitments().await?;
 
-            let opened_input_shares = state.artifact_store.load_openend_input_shares().await?;
+            let opened_input_shares = artifact_store.load_openend_input_shares().await?;
 
             emit(
                 actions,
@@ -630,8 +627,7 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(
                         emit(actions, Action::DepositGenerateAdaptors(*deposit_id));
                     }
                     DepositStep::SendingAdaptors { acked } => {
-                        let (deposit_adaptors, withdrawal_adaptors) = state
-                            .artifact_store
+                        let (deposit_adaptors, withdrawal_adaptors) = artifact_store
                             .load_adaptors_for_deposit(*deposit_id)
                             .await?;
 
@@ -662,7 +658,7 @@ pub(crate) async fn restore<S: EvaluatorArtifactStore>(
 // Pure helper functions
 // ============================================================================
 
-fn require_config<S>(state: &State<S>) -> SMResult<&Config> {
+fn require_config(state: &State) -> SMResult<&Config> {
     state
         .config
         .as_ref()

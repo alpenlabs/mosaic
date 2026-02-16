@@ -3,7 +3,7 @@ use std::sync::Arc;
 use fasm::{Input as FasmInput, StateMachine};
 use mosaic_cac_protocol::{
     SMResult,
-    garbler::{GarblerSM, artifact::GarblerArtifactStore, state::State},
+    garbler::{GarblerSM, artifact::GarblerArtifactStore, state::GarblerStateContainer},
 };
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
@@ -69,30 +69,26 @@ pub(crate) async fn handle_garbler_init<D: Db>(
     Ok(actions)
 }
 
+#[expect(unused_variables)]
 fn init_garbler_state<D: Db>(
     sm_id: StateMachineId,
     db: Arc<D>,
-) -> State<GarblerArtifactStoreImpl<D>> {
-    let artifact_store = GarblerArtifactStoreImpl {
-        sm_id,
-        saved: Default::default(),
-        db,
-    };
-    State::new_empty(artifact_store)
+) -> GarblerStateContainer<GarblerArtifactStoreImpl<D>> {
+    todo!()
 }
 
 #[expect(unused_variables)]
 async fn load_garbler_state<D: Db>(
     sm_id: StateMachineId,
     db: Arc<D>,
-) -> ExecutorResult<State<GarblerArtifactStoreImpl<D>>> {
+) -> ExecutorResult<GarblerStateContainer<GarblerArtifactStoreImpl<D>>> {
     todo!()
 }
 
 #[expect(unused_variables)]
 async fn save_garbler_state<D: Db>(
     sm_id: StateMachineId,
-    state: &State<GarblerArtifactStoreImpl<D>>,
+    state: &GarblerStateContainer<GarblerArtifactStoreImpl<D>>,
     db: Arc<D>,
 ) -> ExecutorResult<()> {
     todo!()

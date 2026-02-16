@@ -9,23 +9,29 @@ use mosaic_common::constants::{
 };
 
 use super::deposit::DepositState;
+use crate::StateContainer;
 
-#[derive(Debug)]
-pub struct State<S> {
+pub type GarblerStateContainer<S> = StateContainer<GarblerState, S>;
+
+#[derive(Debug, Clone, Default)]
+pub struct GarblerState {
     pub(crate) config: Option<Config>,
     pub(crate) step: Step,
     pub(crate) deposits: HashMap<DepositId, DepositState>,
-    pub(crate) artifact_store: S,
 }
 
-impl<S> State<S> {
-    pub fn new_empty(artifact_store: S) -> Self {
+impl GarblerState {
+    /// Initialize to an empty state.
+    pub fn init_empty() -> Self {
         Self {
             config: None,
             step: Step::Uninit,
             deposits: HashMap::new(),
-            artifact_store,
         }
+    }
+
+    pub fn step_mut(&mut self) -> &mut Step {
+        &mut self.step
     }
 }
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use fasm::{Input as FasmInput, StateMachine};
 use mosaic_cac_protocol::{
     SMResult,
-    evaluator::{EvaluatorSM, artifact::EvaluatorArtifactStore, state::State as EvaluatorState},
+    evaluator::{EvaluatorSM, artifact::EvaluatorArtifactStore, state::EvaluatorStateContainer},
 };
 use mosaic_cac_types::{
     AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
@@ -236,7 +236,7 @@ impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
 async fn load_evaluator_state<D: Db>(
     sm_id: StateMachineId,
     db: Arc<D>,
-) -> ExecutorResult<EvaluatorState<EvaluatorArtifactStoreImpl<D>>> {
+) -> ExecutorResult<EvaluatorStateContainer<EvaluatorArtifactStoreImpl<D>>> {
     let artifact_store = EvaluatorArtifactStoreImpl {
         sm_id,
         saved: SaveCache::default(),
@@ -249,7 +249,7 @@ async fn load_evaluator_state<D: Db>(
 #[expect(unused_variables)]
 async fn save_evaluator_state<D: Db, S: EvaluatorArtifactStore>(
     db: &D,
-    state: &EvaluatorState<S>,
+    state: &EvaluatorStateContainer<S>,
 ) -> ExecutorResult<()> {
     unimplemented!()
 }

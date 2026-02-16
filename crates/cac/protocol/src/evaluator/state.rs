@@ -9,23 +9,24 @@ use mosaic_common::constants::{
     N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
 };
 
-use crate::evaluator::deposit::DepositState;
+use crate::{StateContainer, evaluator::deposit::DepositState};
 
-#[derive(Debug)]
-pub struct State<S> {
+pub type EvaluatorStateContainer<S> = StateContainer<EvaluatorState, S>;
+
+#[derive(Debug, Default)]
+pub struct EvaluatorState {
     pub(crate) config: Option<Config>,
     pub(crate) step: Step,
     pub(crate) deposits: HashMap<DepositId, DepositState>,
-    pub(crate) artifact_store: S,
 }
 
-impl<S> State<S> {
-    pub fn new_empty(artifact_store: S) -> Self {
+impl EvaluatorState {
+    /// Initialize to an empty state.
+    pub fn init_empty() -> Self {
         Self {
             config: None,
             step: Step::Uninit,
-            deposits: HashMap::default(),
-            artifact_store,
+            deposits: HashMap::new(),
         }
     }
 }

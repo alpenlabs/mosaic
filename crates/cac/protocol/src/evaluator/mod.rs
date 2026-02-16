@@ -11,13 +11,13 @@ pub mod deposit;
 pub mod state;
 mod stf;
 
-use artifact::EvaluatorArtifactStore;
-use state::State;
+use artifact::EvaluatorArtifactStore as ArtifactStore;
+use state::EvaluatorStateContainer as StateContainer;
 
 use crate::{SMError, SMResult};
 
 #[derive(Debug)]
-pub struct EvaluatorSM<S: EvaluatorArtifactStore> {
+pub struct EvaluatorSM<S: ArtifactStore> {
     _s: PhantomData<S>,
 }
 
@@ -27,8 +27,8 @@ pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
     actions.push(FasmAction::new_tracked(id, action));
 }
 
-impl<S: EvaluatorArtifactStore> StateMachine for EvaluatorSM<S> {
-    type State = State<S>;
+impl<S: ArtifactStore> StateMachine for EvaluatorSM<S> {
+    type State = StateContainer<S>;
 
     type Input = Input;
 
