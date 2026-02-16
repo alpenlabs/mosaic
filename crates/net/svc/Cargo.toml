@@ -11,6 +11,8 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-net-svc-api = { path = "../svc-api" }
+
 hashbrown = "0.16.1"
 kanal = "0.1.1"
 tokio = { version = "1.49.0", default-features = false, features = [

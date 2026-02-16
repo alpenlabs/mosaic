@@ -6,6 +6,7 @@
 // Silence unused crate warnings for transitive dependencies
 use ark_serialize as _;
 use ed25519_dalek as _;
+use mosaic_net_svc_api as _;
 use mosaic_vs3 as _;
 use rand as _;
 use thiserror as _;

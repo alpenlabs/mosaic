@@ -12,8 +12,8 @@ members = [
   # "crates/jobs",
   "crates/net/client",
   "crates/net/svc",
+  "crates/net/svc-api",
   "crates/net/wire",
-  "crates/network/api",
   "crates/rpc/api",
   "crates/rpc/provider",
   "crates/rpc/server",
@@ -60,6 +60,7 @@ mosaic-compute-fw = { path = "crates/compute-fw" }
 mosaic-heap-array = { path = "crates/heap-array" }
 mosaic-job-types = { path = "crates/job/types" }
 mosaic-net-svc = { path = "crates/net/svc" }
+mosaic-net-svc-api = { path = "crates/net/svc-api" }
 mosaic-net-types = { path = "crates/net/types" }
 mosaic-net-wire = { path = "crates/net/wire" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
