@@ -200,7 +200,8 @@ impl WaitRespEvalState {
         let reserved_input_share_commitments: ReservedNonSetupInputShareCommits =
             std::array::from_fn(|i| {
                 let wire = N_SETUP_INPUT_WIRES + i;
-                std::array::from_fn(|val| input_poly_commits[wire][val].eval(zero_idx))
+                let share_commits: Vec<ShareCommitment> = (0..WIDE_LABEL_VALUE_COUNT).into_iter().map(|val| input_poly_commits[wire][val].eval(zero_idx)).collect();
+                HeapArray::from_vec(share_commits)
             });
 
         let output_commitment = output_poly_commit.get_zeroth_coefficient();
@@ -221,5 +222,6 @@ impl WaitRespEvalState {
     }
 }
 
+
 pub type ReservedNonSetupInputShareCommits =
-    [[ShareCommitment; WIDE_LABEL_VALUE_COUNT]; N_INPUT_WIRES - N_SETUP_INPUT_WIRES];
+    [HeapArray<ShareCommitment, WIDE_LABEL_VALUE_COUNT>; N_INPUT_WIRES - N_SETUP_INPUT_WIRES];

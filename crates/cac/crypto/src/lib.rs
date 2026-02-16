@@ -47,7 +47,7 @@ mod tests {
         // 6. move lvl/g16.v5c to mosaic/cac/crypto/
         // 7. move g16gen/inputs.txt to mosaic/cac/crypto/
         // 7. Run test with
-        // RUST_MIN_STACK=2256388608 cargo test --release --package mosaic-cac-crypto --lib --
+        // cargo test --release --package mosaic-cac-crypto --lib --
         // tests::test_e2e --exact --show-output --nocapture need for RUST_MIN_STACK will be
         // avoided in future after we box large contents
         let garbler_setup_data = SetupGarbData {
