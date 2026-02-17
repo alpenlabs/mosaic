@@ -1,10 +1,10 @@
 use bitvec::array::BitArray;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, AllPolynomialCommitments,
-    AllPolynomials, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, CommitMsgChunk,
-    DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, Index,
-    InputShares, OutputShares, ReservedDepositInputShares, ReservedInputShares,
-    ReservedWithdrawalInputShares, Seed, SetupInputs,
+    ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, CommitMsgChunk, DepositId,
+    EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, Index, InputShares,
+    OutputShares, ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares,
+    Seed, SetupInputs,
     state_machine::garbler::{
         Action, ActionContainer, ActionId, ActionResult, AdaptorVerificationData,
         CompleteAdaptorSignaturesData, GarblerDepositInitData, Input,
@@ -43,13 +43,12 @@ pub(crate) async fn handle_event<S: GarblerArtifactStore>(
                         setup_inputs: data.setup_inputs,
                     });
 
-                    let polynomials = generate_polynomials(data.seed);
-
-                    state.artifact_store.save_polynomials(&polynomials).await?;
                     state.step = Step::GeneratingPolynomialCommitments;
 
-                    // Get polynomials directly from db
-                    emit(actions, Action::GeneratePolynomialCommitments);
+                    // Polynomial generation + commitment is handled entirely
+                    // by the job handler. Polynomials are cached job-side for
+                    // the subsequent GenerateShares calls.
+                    emit(actions, Action::GeneratePolynomialCommitments(data.seed));
                 }
                 _ => return Err(SMError::UnexpectedInput),
             }
@@ -237,9 +236,10 @@ pub(crate) async fn handle_action_result<S: GarblerArtifactStore>(
                     };
 
                     // generate actions
+                    let config = require_config(state)?;
                     for idx in 0..N_CIRCUITS {
                         let index = Index::new(idx + 1).expect("valid index");
-                        emit(actions, Action::GenerateShares(index));
+                        emit(actions, Action::GenerateShares(config.seed, index));
                     }
                 }
                 _ => return Err(SMError::UnexpectedInput),
@@ -556,15 +556,17 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
     match &state.step {
         Step::Uninit => {}
         Step::GeneratingPolynomialCommitments => {
-            emit(actions, Action::GeneratePolynomialCommitments);
+            let config = require_config(state)?;
+            emit(actions, Action::GeneratePolynomialCommitments(config.seed));
         }
         Step::GeneratingShares { generated } => {
+            let config = require_config(state)?;
             for idx in 0..N_CIRCUITS {
                 if generated[idx] {
                     continue;
                 }
                 let index = Index::new(idx + 1).expect("valid index");
-                emit(actions, Action::GenerateShares(index));
+                emit(actions, Action::GenerateShares(config.seed, index));
             }
         }
         Step::GeneratingTableCommitments { seeds, generated } => {
@@ -715,11 +717,6 @@ fn require_config<S>(state: &State<S>) -> SMResult<&Config> {
         .config
         .as_ref()
         .ok_or_else(|| SMError::StateInconsistency("expected config to not be None"))
-}
-
-#[expect(unused_variables)]
-fn generate_polynomials(seed: Seed) -> AllPolynomials {
-    todo!()
 }
 
 #[expect(unused_variables)]

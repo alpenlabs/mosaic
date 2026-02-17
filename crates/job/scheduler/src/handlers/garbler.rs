@@ -4,9 +4,19 @@
 //! [`ActionCompletion`]. Handlers retry internally until they succeed —
 //! the caller always receives a valid completion.
 
+use std::sync::Arc;
+
 use mosaic_cac_types::state_machine::garbler::{Action, ActionId, ActionResult};
+use mosaic_cac_types::{
+    AllPolynomialCommitments, AllPolynomials, InputPolynomialCommitments, InputPolynomials,
+    OutputPolynomial, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
+    WideLabelWireShares,
+};
+use mosaic_common::constants::{N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT};
+use mosaic_heap_array::HeapArray;
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
+use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
 use super::HandlerContext;
 
@@ -23,8 +33,10 @@ pub(crate) async fn execute(
 ) -> ActionCompletion {
     match action {
         // ── Heavy (Setup) ───────────────────────────────────────────
-        Action::GeneratePolynomialCommitments => generate_polynomial_commitments(ctx).await,
-        Action::GenerateShares(index) => generate_shares(ctx, index).await,
+        Action::GeneratePolynomialCommitments(seed) => {
+            generate_polynomial_commitments(ctx, seed).await
+        }
+        Action::GenerateShares(seed, index) => generate_shares(ctx, seed, index).await,
 
         // ── Garbling (Coordinator) ──────────────────────────────────
         Action::GenerateTableCommitment(index, seed) => {
@@ -60,17 +72,96 @@ pub(crate) async fn execute(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn generate_polynomial_commitments(_ctx: &HandlerContext) -> ActionCompletion {
-    // TODO: generate polynomials from base seed, compute commitments
-    unimplemented!()
+async fn generate_polynomial_commitments(ctx: &HandlerContext, seed: Seed) -> ActionCompletion {
+    let polys = generate_polynomials_from_seed(seed);
+
+    // Cache for the subsequent GenerateShares calls.
+    let arc = match ctx.polynomial_cache.insert(seed, polys) {
+        Ok(arc) => arc,
+        Err(_full) => {
+            // Cache is at capacity — generate without caching.
+            // This path is unlikely with max_entries = 4.
+            tracing::warn!("polynomial cache full, generating without caching");
+            Arc::new(generate_polynomials_from_seed(seed))
+        }
+    };
+
+    let commitments = commit_polynomials(&arc);
+    let id = ActionId::GeneratePolynomialCommitments(seed);
+    completed(
+        id,
+        ActionResult::PolynomialCommitmentsGenerated(commitments),
+    )
 }
 
-async fn generate_shares(
-    _ctx: &HandlerContext,
-    _index: mosaic_cac_types::Index,
-) -> ActionCompletion {
-    // TODO: evaluate polynomials at index to produce input/output shares
-    unimplemented!()
+async fn generate_shares(ctx: &HandlerContext, seed: Seed, index: Index) -> ActionCompletion {
+    // Try cache first, fall back to regenerating from seed.
+    let polys = match ctx.polynomial_cache.get(&seed) {
+        Some(arc) => arc,
+        None => {
+            tracing::warn!("polynomial cache miss, regenerating from seed");
+            Arc::new(generate_polynomials_from_seed(seed))
+        }
+    };
+
+    let (input_shares, output_share) = evaluate_polynomials_at_index(&polys, index);
+    let id = ActionId::GenerateShares(seed, index);
+    completed(
+        id,
+        ActionResult::SharesGenerated(index, Box::new(input_shares), Box::new(output_share)),
+    )
+}
+
+// ============================================================================
+// Polynomial helpers
+// ============================================================================
+
+/// Generate all polynomials deterministically from a seed.
+fn generate_polynomials_from_seed(seed: Seed) -> AllPolynomials {
+    use rand::SeedableRng;
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
+    let input_polys: InputPolynomials =
+        std::array::from_fn(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
+    let output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
+    (Box::new(input_polys), Box::new(output_poly))
+}
+
+/// Compute commitments for all polynomials (EC scalar multiplications).
+fn commit_polynomials(polys: &AllPolynomials) -> AllPolynomialCommitments {
+    let (input_polys, output_poly) = polys;
+    let mut input_commits: Vec<WideLabelWirePolynomialCommitments> =
+        Vec::with_capacity(N_INPUT_WIRES);
+    for wire in 0..N_INPUT_WIRES {
+        let commits: Vec<PolynomialCommitment> =
+            input_polys[wire].iter().map(|p| p.commit()).collect();
+        input_commits.push(HeapArray::from_vec(commits));
+    }
+    let input_commits: InputPolynomialCommitments =
+        input_commits.try_into().expect("N_INPUT_WIRES match");
+    let output_commit: OutputPolynomialCommitment = output_poly.commit();
+    (Box::new(input_commits), Box::new(output_commit))
+}
+
+/// Evaluate all polynomials at a single circuit index.
+fn evaluate_polynomials_at_index(
+    polys: &AllPolynomials,
+    index: Index,
+) -> (
+    mosaic_cac_types::CircuitInputShares,
+    mosaic_cac_types::CircuitOutputShare,
+) {
+    let (input_polys, output_poly) = polys;
+    let mut circuit_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
+    for wire in 0..N_INPUT_WIRES {
+        let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+        for label in 0..WIDE_LABEL_VALUE_COUNT {
+            wide_shares.push(input_polys[wire][label].eval(index));
+        }
+        circuit_shares.push(HeapArray::from_vec(wide_shares));
+    }
+    let input_shares = HeapArray::from_vec(circuit_shares);
+    let output_share = output_poly.eval(index);
+    (input_shares, output_share)
 }
 
 // ============================================================================

@@ -1,19 +1,13 @@
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials,
-    ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors,
-    DepositId, DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares,
-    ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares, ReservedInputShares,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
 };
 
 use crate::SMResult;
 
 pub trait GarblerArtifactStore: Sized {
-    fn save_polynomials(
-        &mut self,
-        polynomials: &AllPolynomials,
-    ) -> impl Future<Output = SMResult<()>>;
-    fn load_polynomials(&self) -> impl Future<Output = SMResult<AllPolynomials>>;
-
     fn save_polynomial_commitments(
         &mut self,
         commitments: &AllPolynomialCommitments,

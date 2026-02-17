@@ -162,12 +162,13 @@ mod tests {
     fn dummy_job(priority: Priority) -> PoolJob {
         use crate::pool::worker::WorkerJob;
         use mosaic_cac_types::state_machine::garbler::Action as GarblerAction;
+        use mosaic_common::Byte32;
 
         PoolJob {
             priority,
             job: WorkerJob::Garbler {
                 peer_id: mosaic_net_svc_api::PeerId::from_bytes([0u8; 32]),
-                action: GarblerAction::GeneratePolynomialCommitments,
+                action: GarblerAction::GeneratePolynomialCommitments(Byte32::from([0u8; 32])),
             },
         }
     }

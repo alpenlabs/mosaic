@@ -270,8 +270,8 @@ impl Classify for GarblerAction {
             }
 
             // Heavy (everything else)
-            Self::GeneratePolynomialCommitments
-            | Self::GenerateShares(_)
+            Self::GeneratePolynomialCommitments(_)
+            | Self::GenerateShares(..)
             | Self::DepositVerifyAdaptors(..)
             | Self::CompleteAdaptorSignatures(..) => ActionCategory::Heavy,
 

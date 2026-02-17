@@ -26,6 +26,7 @@ pub(crate) mod pool;
 pub mod scheduler;
 
 pub(crate) mod handlers;
+pub(crate) mod polynomial_cache;
 pub(crate) mod priority;
 
 pub use scheduler::{JobScheduler, JobSchedulerConfig};

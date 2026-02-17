@@ -4,9 +4,9 @@
 //! the state machines. Handlers are internal to the scheduler — workers invoke
 //! them as opaque one-shot async tasks.
 //!
-//! Each handler takes an action and produces a [`JobResult`] containing an
-//! [`ActionCompletion`] with the tracked action ID and result, ready to be
-//! routed back to the originating SM as `TrackedActionCompleted { id, result }`.
+//! Each handler takes an action and produces an [`ActionCompletion`] with the
+//! tracked action ID and result, ready to be routed back to the originating SM
+//! as `TrackedActionCompleted { id, result }`.
 //!
 //! # Responsibilities
 //!
@@ -14,6 +14,8 @@
 //! - **Heavy handlers**: Cryptographic operations (verification, adaptor
 //!   signatures, polynomial generation)
 //! - **Garbling handlers**: Processing gate chunks with a given seed
+
+use crate::polynomial_cache::PolynomialCache;
 
 pub(crate) mod evaluator;
 pub(crate) mod garbler;
@@ -24,10 +26,30 @@ pub(crate) mod garbler;
 /// All fields are cheaply cloneable or behind `Arc`.
 pub struct HandlerContext {
     /// Typed network client for protocol message sends and acks.
-    #[allow(dead_code)]
     pub net_client: mosaic_net_client::NetClient,
-    // TODO: storage / artifact store handle
-    // TODO: crypto primitives / precomputed tables
+    /// Polynomial cache for garbler setup (generate-once, read-181-times).
+    pub polynomial_cache: PolynomialCache,
+}
+
+impl HandlerContext {
+    /// Create a new handler context with default polynomial cache size.
+    pub fn new(net_client: mosaic_net_client::NetClient) -> Self {
+        Self {
+            net_client,
+            polynomial_cache: PolynomialCache::new(4),
+        }
+    }
+
+    /// Create a new handler context with a custom polynomial cache size.
+    pub fn with_cache_size(
+        net_client: mosaic_net_client::NetClient,
+        max_cache_entries: usize,
+    ) -> Self {
+        Self {
+            net_client,
+            polynomial_cache: PolynomialCache::new(max_cache_entries),
+        }
+    }
 }
 
 impl std::fmt::Debug for HandlerContext {

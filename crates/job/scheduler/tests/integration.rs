@@ -20,6 +20,10 @@ fn test_peer_id() -> PeerId {
     PeerId::from_bytes([1u8; 32])
 }
 
+fn test_seed() -> mosaic_common::Byte32 {
+    mosaic_common::Byte32::from([42u8; 32])
+}
+
 fn garbler_batch_with(
     actions: Vec<
         fasm::actions::Action<
@@ -98,7 +102,7 @@ fn empty_evaluator_batch_properties() {
 #[test]
 fn garbler_batch_with_actions() {
     let batch = garbler_batch_with(vec![make_garbler_action(
-        GarblerAction::GeneratePolynomialCommitments,
+        GarblerAction::GeneratePolynomialCommitments(test_seed()),
     )]);
     assert!(batch.is_garbler());
     assert!(!batch.is_empty());
@@ -300,7 +304,7 @@ fn garbler_batch_roundtrip_through_channel() {
     block_on(async {
         let (tx, rx) = kanal::bounded_async::<JobBatch>(4);
 
-        let action = GarblerAction::GeneratePolynomialCommitments;
+        let action = GarblerAction::GeneratePolynomialCommitments(test_seed());
         let batch = garbler_batch_with(vec![make_garbler_action(action)]);
 
         assert_eq!(batch.len(), 1);
@@ -323,8 +327,8 @@ fn garbler_batch_multiple_actions_roundtrip() {
         let index1 = mosaic_cac_types::Index::new(1).unwrap();
         let index2 = mosaic_cac_types::Index::new(2).unwrap();
         let batch = garbler_batch_with(vec![
-            make_garbler_action(GarblerAction::GenerateShares(index1)),
-            make_garbler_action(GarblerAction::GenerateShares(index2)),
+            make_garbler_action(GarblerAction::GenerateShares(test_seed(), index1)),
+            make_garbler_action(GarblerAction::GenerateShares(test_seed(), index2)),
         ]);
 
         assert_eq!(batch.len(), 2);

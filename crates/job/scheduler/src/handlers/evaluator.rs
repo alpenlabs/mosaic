@@ -5,6 +5,7 @@
 //! the caller always receives a valid completion.
 
 use mosaic_cac_types::state_machine::evaluator::{Action, ActionId, ActionResult};
+use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS, WIDE_LABEL_VALUE_COUNT};
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
 
@@ -103,13 +104,35 @@ async fn send_adaptor_msg_chunk(
 
 async fn verify_opened_input_shares(
     _ctx: &HandlerContext,
-    _challenge_indices: Box<mosaic_cac_types::ChallengeIndices>,
-    _shares: Box<mosaic_cac_types::OpenedInputShares>,
-    _commitments: Box<mosaic_cac_types::InputPolynomialCommitments>,
+    challenge_indices: Box<mosaic_cac_types::ChallengeIndices>,
+    shares: Box<mosaic_cac_types::OpenedInputShares>,
+    commitments: Box<mosaic_cac_types::InputPolynomialCommitments>,
 ) -> ActionCompletion {
-    // TODO: verify opened shares against polynomial commitments for each
-    //       challenged circuit
-    unimplemented!()
+    // Verify each opened share against its polynomial commitment.
+    // Any failure aborts with a reason; success returns None.
+    let failure_reason = (|| {
+        for idx in 0..N_OPEN_CIRCUITS {
+            for wire in 0..N_INPUT_WIRES {
+                for val in 0..WIDE_LABEL_VALUE_COUNT {
+                    let share = shares[idx][wire][val].clone();
+                    if commitments[wire][val].verify_share(share).is_err() {
+                        return Some(format!(
+                            "verify failed for circuit {}, wire {}, value {}",
+                            challenge_indices[idx].get(),
+                            wire,
+                            val
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    })();
+
+    completed(
+        ActionId::VerifyOpenedInputShares,
+        ActionResult::VerifyOpenedInputSharesResult(failure_reason),
+    )
 }
 
 // ============================================================================

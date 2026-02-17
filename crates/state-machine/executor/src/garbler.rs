@@ -6,10 +6,10 @@ use mosaic_cac_protocol::{
     garbler::{GarblerSM, artifact::GarblerArtifactStore, state::State},
 };
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials,
-    ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors,
-    DepositId, DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares,
-    ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, GarblingTableCommitment, Index, InputShares, OutputShares, ReservedInputShares,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{ActionContainer, GarblerInitData, Input},
 };
 
@@ -101,7 +101,6 @@ async fn save_garbler_state<D: Db>(
 #[derive(Debug, Default)]
 #[expect(dead_code)]
 struct SaveCache {
-    polynomials: Option<Box<AllPolynomials>>,
     polynomial_commitments: Option<Box<AllPolynomialCommitments>>,
     input_shares: Option<Box<InputShares>>,
     output_shares: Option<Box<OutputShares>>,
@@ -118,14 +117,6 @@ pub(crate) struct GarblerArtifactStoreImpl<D: Db> {
 
 #[expect(unused_variables)]
 impl<D: Db> GarblerArtifactStore for GarblerArtifactStoreImpl<D> {
-    async fn save_polynomials(&mut self, polynomials: &AllPolynomials) -> SMResult<()> {
-        todo!()
-    }
-
-    async fn load_polynomials(&self) -> SMResult<AllPolynomials> {
-        todo!()
-    }
-
     async fn save_polynomial_commitments(
         &mut self,
         commitments: &AllPolynomialCommitments,

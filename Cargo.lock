@@ -1619,10 +1619,15 @@ dependencies = [
  "kanal",
  "monoio",
  "mosaic-cac-types",
+ "mosaic-common",
+ "mosaic-heap-array",
  "mosaic-job-api",
  "mosaic-net-client",
  "mosaic-net-svc-api",
+ "mosaic-vs3",
  "parking_lot",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "tracing",
 ]
 
