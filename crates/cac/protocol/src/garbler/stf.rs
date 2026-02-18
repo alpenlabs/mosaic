@@ -1,9 +1,8 @@
-use bitvec::array::BitArray;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
-    DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, Index,
-    InputPolynomialCommitments, InputShares, OutputShares, ReservedDepositInputShares,
+    DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, HeapArray,
+    Index, InputPolynomialCommitments, InputShares, OutputShares, ReservedDepositInputShares,
     ReservedInputShares, ReservedWithdrawalInputShares, Seed, SetupInputs,
     state_machine::garbler::{
         Action, ActionContainer, ActionId, ActionResult, AdaptorVerificationData,
@@ -73,7 +72,7 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                             .await?;
 
                         state.step = Step::SendingChallengeResponse {
-                            acked: BitArray::ZERO,
+                            acked: HeapArray::from_elem(false),
                         };
 
                         emit(actions, Action::SendChallengeResponseMsgHeader(header));
@@ -115,7 +114,7 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                     deposit_id,
                     DepositState {
                         step: DepositStep::WaitingForAdaptors {
-                            chunks: BitArray::ZERO,
+                            chunks: HeapArray::from_elem(false),
                         },
                         pk,
                     },
@@ -232,7 +231,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                         .save_polynomial_commitments(&commitments)
                         .await?;
                     state.step = Step::GeneratingShares {
-                        generated: BitArray::ZERO,
+                        generated: HeapArray::from_elem(false),
                     };
 
                     // generate actions
@@ -258,7 +257,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                     }
 
                     // state update
-                    generated.set(idx, true);
+                    generated[idx] = true;
                     artifact_store
                         .save_shares_for_index(index, input_shares.as_ref(), output_shares.as_ref())
                         .await?;
@@ -276,7 +275,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
 
                         state.step = Step::GeneratingTableCommitments {
                             seeds,
-                            generated: BitArray::ZERO,
+                            generated: HeapArray::from_elem(false),
                         };
                     }
                 }
@@ -296,14 +295,14 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                     }
 
                     // state update
-                    generated.set(idx, true);
+                    generated[idx] = true;
                     artifact_store
                         .save_garbling_table_commitment(index, &commitment)
                         .await?;
 
                     if generated.all() {
                         state.step = Step::SendingCommit {
-                            acked: BitArray::ZERO,
+                            acked: HeapArray::from_elem(false),
                         };
 
                         // generate actions
@@ -338,7 +337,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                         return Err(SMError::InvalidInputData);
                     }
 
-                    acked.set(idx, true);
+                    acked[idx] = true;
 
                     if acked.all() {
                         state.step = Step::WaitingForChallenge;
@@ -360,7 +359,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                         return Err(SMError::InvalidInputData);
                     }
 
-                    acked.set(idx, true);
+                    acked[idx] = true;
 
                     if acked.all() {
                         let challenge_indices = artifact_store.load_challenge_indices().await?;
@@ -384,7 +383,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                         state.step = Step::TransferringGarblingTables {
                             eval_seeds,
                             eval_commitments,
-                            transferred: BitArray::ZERO,
+                            transferred: HeapArray::from_elem(false),
                         };
                     }
                 }
@@ -412,7 +411,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                         return Err(SMError::InvalidInputData);
                     }
 
-                    transferred.set(index, true);
+                    transferred[index] = true;
 
                     if transferred.all() {
                         // all tables are transferred
@@ -489,7 +488,7 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: ArtifactStore>(
                 return Err(SMError::UnknownDeposit(deposit_id));
             };
 
-            if let DepositStep::WaitingForAdaptors { chunks } = deposit_state.step {
+            if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
                 let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
                 if chunks[chunk_idx] {
@@ -500,6 +499,8 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: ArtifactStore>(
                 artifact_store
                     .save_adaptor_msg_chunk_for_deposit(deposit_id, &adaptor_msg_chunk)
                     .await?;
+
+                chunks[chunk_idx] = true;
 
                 if !chunks.all() {
                     // Not all chunks received, wait for more

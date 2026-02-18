@@ -1,13 +1,10 @@
 use std::collections::HashMap;
 
-use bitvec::BitArr;
 use mosaic_cac_types::{
-    ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
+    ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices, HeapArray,
     OpenedGarblingSeeds, OpenedGarblingTableCommitments, Seed, SetupInputs,
 };
-use mosaic_common::constants::{
-    N_CHALLENGE_RESPONSE_CHUNKS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
-};
+use mosaic_common::constants::{N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
 use crate::{StateContainer, evaluator::deposit::DepositState};
 
@@ -46,30 +43,30 @@ pub enum Step {
     Uninit,
     WaitingForCommit {
         header: bool,
-        chunks: BitArr!(for N_COMMIT_MSG_CHUNKS),
+        chunks: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
     },
     WaitingForChallengeResponse {
         header: bool,
-        chunks: BitArr!(for N_CHALLENGE_RESPONSE_CHUNKS),
+        chunks: HeapArray<bool, N_CIRCUITS>,
     },
     VerifyingOpenedInputShares,
     VerifyingTableCommitments {
         opened_indices: Box<ChallengeIndices>,
         opened_seeds: Box<OpenedGarblingSeeds>,
         opened_commitments: Box<OpenedGarblingTableCommitments>,
-        verified: BitArr!(for N_OPEN_CIRCUITS),
+        verified: HeapArray<bool, N_OPEN_CIRCUITS>,
     },
     ReceivingGarblingTables {
         eval_indices: EvaluationIndices,
         eval_commitments: EvalGarblingTableCommitments,
-        received: BitArr!(for N_EVAL_CIRCUITS),
+        received: HeapArray<bool, N_EVAL_CIRCUITS>,
     },
     SetupComplete,
     EvaluatingTables {
         deposit_id: DepositId,
         eval_indices: EvaluationIndices,
         eval_commitments: EvalGarblingTableCommitments,
-        evaluated: BitArr!(for N_EVAL_CIRCUITS),
+        evaluated: HeapArray<bool, N_EVAL_CIRCUITS>,
     },
     /// Setup is consumed by a withdrawal dispute. Cannot be reused.
     SetupConsumed {

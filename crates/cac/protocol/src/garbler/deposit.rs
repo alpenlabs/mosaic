@@ -1,11 +1,10 @@
-use bitvec::BitArr;
-use mosaic_cac_types::PubKey;
+use mosaic_cac_types::{HeapArray, PubKey};
 use mosaic_common::constants::N_ADAPTOR_MSG_CHUNKS;
 
 #[derive(Debug, Clone)]
 pub enum DepositStep {
     WaitingForAdaptors {
-        chunks: BitArr!(for N_ADAPTOR_MSG_CHUNKS),
+        chunks: HeapArray<bool, N_ADAPTOR_MSG_CHUNKS>,
     },
     VerifyingAdaptors,
     DepositReady,

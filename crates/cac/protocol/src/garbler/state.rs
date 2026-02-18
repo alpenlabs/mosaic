@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use bitvec::BitArr;
 use mosaic_cac_types::{
-    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, Seed, SetupInputs,
+    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, HeapArray, Seed,
+    SetupInputs,
 };
 use mosaic_common::constants::{
     N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS,
@@ -52,18 +52,20 @@ pub enum Step {
     /// Polynomials generated.
     GeneratingPolynomialCommitments,
     /// Generate shares for all tables.
-    GeneratingShares { generated: BitArr!(for N_CIRCUITS) },
+    GeneratingShares {
+        generated: HeapArray<bool, N_CIRCUITS>,
+    },
     /// Dispatch actions to generate commitments.
     /// Wait for all table commitments to be provided.
     GeneratingTableCommitments {
         seeds: Box<AllGarblingSeeds>,
-        generated: BitArr!(for N_CIRCUITS),
+        generated: HeapArray<bool, N_CIRCUITS>,
     },
     /// Got table commitments, sending commit msg chunks.
     /// Transitions to WaitingForChallenge when all chunks are acked.
     SendingCommit {
         /// Track which commit msg chunks have been acked.
-        acked: BitArr!(for N_COMMIT_MSG_CHUNKS),
+        acked: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
     },
     /// All commit chunks acked, waiting for challenge msg from evaluator.
     WaitingForChallenge,
@@ -71,7 +73,7 @@ pub enum Step {
     /// TransferringGarblingTables when all chunks are acked.
     SendingChallengeResponse {
         /// Track which challenge response chunks have been acked.
-        acked: BitArr!(for N_CHALLENGE_RESPONSE_CHUNKS),
+        acked: HeapArray<bool, N_CHALLENGE_RESPONSE_CHUNKS>,
     },
     /// Challenge response msg ack received, send garbling tables
     TransferringGarblingTables {
@@ -80,7 +82,7 @@ pub enum Step {
         /// Expected commitments of garbling tables, for sanity
         eval_commitments: Box<EvalGarblingTableCommitments>,
         /// Track transferred garbling tables
-        transferred: BitArr!(for N_EVAL_CIRCUITS),
+        transferred: HeapArray<bool, N_EVAL_CIRCUITS>,
     },
     /// Setup is completed, ready to be used for deposits.
     /// Accepts deposit inputs

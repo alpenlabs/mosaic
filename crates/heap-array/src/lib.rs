@@ -74,7 +74,11 @@ impl<T, const N: usize> HeapArray<T, N> {
     ///
     /// // Error case
     /// let result: Result<HeapArray<i32, 5>, &str> = HeapArray::try_from_fn(|i| {
-    ///     if i == 3 { Err("failed at index 3") } else { Ok(i as i32) }
+    ///     if i == 3 {
+    ///         Err("failed at index 3")
+    ///     } else {
+    ///         Ok(i as i32)
+    ///     }
     /// });
     /// assert_eq!(result, Err("failed at index 3"));
     /// ```
@@ -304,6 +308,19 @@ impl<'a, T, const N: usize> IntoIterator for &'a mut HeapArray<T, N> {
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
+    }
+}
+
+// Boolean array helpers
+impl<const N: usize> HeapArray<bool, N> {
+    /// Returns `true` if all elements are `true`.
+    pub fn all(&self) -> bool {
+        self.iter().all(|&b| b)
+    }
+
+    /// Returns the number of `true` elements.
+    pub fn count_ones(&self) -> usize {
+        self.iter().filter(|&&b| b).count()
     }
 }
 
