@@ -23,7 +23,7 @@ use super::{
     root_state::{Config, EvaluatorState, EvaluatorState as State, Step},
     state::StateMut,
 };
-use crate::{SMError, SMResult, evaluator::state::StateRead};
+use crate::{ResultOptionExt, SMError, SMResult, evaluator::state::StateRead};
 
 // ============================================================================
 // External event handler
@@ -174,17 +174,11 @@ pub(crate) async fn handle_event<S: StateMut>(
                         let challenge_indices = state
                             .get_challenge_indices()
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| {
-                                SMError::state_inconsistency("expected challenge indices")
-                            })?;
+                            .require("expected challenge indices")?;
                         let garbling_commitments = state
                             .get_garbling_table_commitments()
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| {
-                                SMError::state_inconsistency("expected garbling table commitments")
-                            })?;
+                            .require("expected garbling table commitments")?;
 
                         let eval_indices = get_eval_indices(&challenge_indices);
                         let eval_commitments =
@@ -261,26 +255,17 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     let opened_indices = state
                         .get_challenge_indices()
                         .await
-                        .map_err(SMError::storage)?
-                        .ok_or_else(|| {
-                            SMError::state_inconsistency("expected challenge indices")
-                        })?;
+                        .require("expected challenge indices")?;
 
                     let opened_seeds = state
                         .get_opened_garbling_seeds()
                         .await
-                        .map_err(SMError::storage)?
-                        .ok_or_else(|| {
-                            SMError::state_inconsistency("expected opened garbling seeds")
-                        })?;
+                        .require("expected opened garbling seeds")?;
 
                     let all_table_commitments = state
                         .get_garbling_table_commitments()
                         .await
-                        .map_err(SMError::storage)?
-                        .ok_or_else(|| {
-                            SMError::state_inconsistency("expected garbling tables commitments")
-                        })?;
+                        .require("expected garbling tables commitments")?;
 
                     let opened_commitments =
                         get_opened_commitments(&opened_indices, &all_table_commitments);
@@ -405,18 +390,12 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                             let deposit_adaptors = state
                                 .get_deposit_adaptors(&deposit_id)
                                 .await
-                                .map_err(SMError::storage)?
-                                .ok_or_else(|| {
-                                    SMError::state_inconsistency("expected deposit adaptors")
-                                })?;
+                                .require("expected deposit adaptors")?;
 
                             let withdrawal_adaptors = state
                                 .get_withdrawal_adaptors(&deposit_id)
                                 .await
-                                .map_err(SMError::storage)?
-                                .ok_or_else(|| {
-                                    SMError::state_inconsistency("expected withdrawal adaptors")
-                                })?;
+                                .require("expected withdrawal adaptors")?;
 
                             for chunk in
                                 create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)
@@ -685,8 +664,7 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
             let challenge_idxs = state
                 .get_challenge_indices()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| SMError::state_inconsistency("expected challenge indices"))?;
+                .require("expected challenge indices")?;
 
             if !is_valid_challenge_response_chunk(&response_msg_chunk, &challenge_idxs) {
                 root_state.step = Step::Aborted {
@@ -730,14 +708,12 @@ async fn post_handle_challenge_response<S: StateMut>(
     let opened_output_shares = state
         .get_opened_output_shares()
         .await
-        .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::state_inconsistency("expected opened output shares"))?;
+        .require("expected opened output shares")?;
 
     let output_polynomial_commitment = state
         .get_output_polynomial_commitment()
         .await
-        .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::state_inconsistency("expected ouptut polynomial commitment"))?;
+        .require("expected ouptut polynomial commitment")?;
 
     if let Some(failure_reason) =
         verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
@@ -755,14 +731,12 @@ async fn post_handle_challenge_response<S: StateMut>(
     let reserved_setup_input_shares = state
         .get_reserved_setup_input_shares()
         .await
-        .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::state_inconsistency("expected reserved setup input shares"))?;
+        .require("expected reserved setup input shares")?;
 
     let input_polynomial_commitments = state
         .get_input_polynomial_commitments()
         .await
-        .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::state_inconsistency("expected input polynomial commitments"))?;
+        .require("expected input polynomial commitments")?;
 
     if let Some(failure_reason) = verify_reserved_setup_input_shares(
         &reserved_setup_input_shares,
@@ -824,10 +798,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
                 let garbling_commitments = state
                     .get_garbling_table_commitments()
                     .await
-                    .map_err(SMError::storage)?
-                    .ok_or_else(|| {
-                        SMError::state_inconsistency("expected garbling table commitments")
-                    })?;
+                    .require("expected garbling table commitments")?;
 
                 let eval_commitments = get_eval_commitments(&eval_indices, &garbling_commitments);
 
@@ -904,8 +875,7 @@ pub(crate) async fn restore<S: StateRead>(
             let challenge_indices = state
                 .get_challenge_indices()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| SMError::state_inconsistency("expected challenge indices"))?;
+                .require("expected challenge indices")?;
 
             let challenge_msg = ChallengeMsg { challenge_indices };
 
@@ -972,18 +942,12 @@ pub(crate) async fn restore<S: StateRead>(
                         let deposit_adaptors = state
                             .get_deposit_adaptors(&deposit_id)
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| {
-                                SMError::state_inconsistency("expected deposit adaptors")
-                            })?;
+                            .require("expected deposit adaptors")?;
 
                         let withdrawal_adaptors = state
                             .get_withdrawal_adaptors(&deposit_id)
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| {
-                                SMError::state_inconsistency("expected withdrawal adaptors")
-                            })?;
+                            .require("expected withdrawal adaptors")?;
 
                         for chunk in
                             create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)

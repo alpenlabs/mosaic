@@ -19,7 +19,7 @@ use super::{
     root_state::{Config, GarblerState as State, Step},
     state::{StateMut, StateRead},
 };
-use crate::{SMError, SMResult};
+use crate::{ResultOptionExt, SMError, SMResult};
 
 // ============================================================================
 // External event handler
@@ -70,15 +70,11 @@ pub(crate) async fn handle_event<S: StateMut>(
                         let input_shares = state
                             .get_input_shares()
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| SMError::state_inconsistency("expected input shares"))?;
+                            .require("expected input shares")?;
                         let output_shares = state
                             .get_output_shares()
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| {
-                                SMError::state_inconsistency("expected output shares")
-                            })?;
+                            .require("expected output shares")?;
                         let config = require_config(&root_state)?;
                         let seeds = generate_garbling_table_seeds(config.seed);
                         let (header, chunks) = create_challenge_response_msgs(
@@ -307,19 +303,13 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         let challenge_indices = state
                             .get_challenge_indices()
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| {
-                                SMError::state_inconsistency("expected challenge indices")
-                            })?;
+                            .require("expected challenge indices")?;
                         let eval_indices = get_eval_indices(&challenge_indices);
 
                         let garbling_table_commitments = state
                             .get_all_garbling_table_commitments()
                             .await
-                            .map_err(SMError::storage)?
-                            .ok_or_else(|| {
-                                SMError::state_inconsistency("expected garbling table commitments")
-                            })?;
+                            .require("expected garbling table commitments")?;
 
                         let eval_commitments =
                             get_eval_commitments(&eval_indices, &garbling_table_commitments);
@@ -582,24 +572,15 @@ async fn handle_table_commitment_generated<S: StateMut>(
             let input_polynomial_commitments = state
                 .get_input_polynomial_commitments()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| {
-                    SMError::state_inconsistency("expected input polynomial commitments")
-                })?;
+                .require("expected input polynomial commitments")?;
             let output_polynomial_commitment = state
                 .get_output_polynomial_commitment()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| {
-                    SMError::state_inconsistency("expected output polynomial commitment")
-                })?;
+                .require("expected output polynomial commitment")?;
             let garbling_table_commitments = state
                 .get_all_garbling_table_commitments()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| {
-                    SMError::state_inconsistency("expected garbling table commitments")
-                })?;
+                .require("expected garbling table commitments")?;
 
             let commit_msg_header = CommitMsgHeader {
                 garbling_table_commitments,
@@ -709,24 +690,15 @@ pub(crate) async fn restore<S: StateRead>(
             let input_polynomial_commitments = state
                 .get_input_polynomial_commitments()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| {
-                    SMError::state_inconsistency("expected input polynomial commitments")
-                })?;
+                .require("expected input polynomial commitments")?;
             let output_polynomial_commitment = state
                 .get_output_polynomial_commitment()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| {
-                    SMError::state_inconsistency("expected output polynomial commitment")
-                })?;
+                .require("expected output polynomial commitment")?;
             let garbling_table_commitments = state
                 .get_all_garbling_table_commitments()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| {
-                    SMError::state_inconsistency("expected garbling table commitments")
-                })?;
+                .require("expected garbling table commitments")?;
 
             let commit_msg_header = CommitMsgHeader {
                 garbling_table_commitments,
@@ -745,18 +717,15 @@ pub(crate) async fn restore<S: StateRead>(
             let challenge_indices = state
                 .get_challenge_indices()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| SMError::state_inconsistency("expected challenge indices"))?;
+                .require("expected challenge indices")?;
             let input_shares = state
                 .get_input_shares()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| SMError::state_inconsistency("expected input shares"))?;
+                .require("expected input shares")?;
             let output_shares = state
                 .get_output_shares()
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| SMError::state_inconsistency("expected output shares"))?;
+                .require("expected output shares")?;
             let config = require_config(&root_state)?;
             let seeds = generate_garbling_table_seeds(config.seed);
             let (header, chunks) = create_challenge_response_msgs(
@@ -804,10 +773,7 @@ pub(crate) async fn restore<S: StateRead>(
             let deposit_state = state
                 .get_deposit(deposit_id)
                 .await
-                .map_err(SMError::storage)?
-                .ok_or_else(|| {
-                    SMError::state_inconsistency("CompletingAdaptors: missing expected deposit")
-                })?;
+                .require("CompletingAdaptors: missing expected deposit")?;
 
             if !matches!(&deposit_state.step, DepositStep::DepositReady) {
                 return Err(SMError::state_inconsistency(

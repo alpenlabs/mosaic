@@ -75,3 +75,24 @@ impl SMError {
 
 /// State machine result
 pub type SMResult<T> = Result<T, SMError>;
+
+/// Extension trait for `Result<Option<T>, E>` to simplify common error handling patterns.
+pub trait ResultOptionExt<T, E> {
+    /// Converts `Result<Option<T>, E>` to `Result<T, SMError>`.
+    ///
+    /// This combines `map_err` for storage errors and `ok_or_else` for missing state
+    /// into a single method call.
+    fn require(self, message: &str) -> Result<T, SMError>
+    where
+        E: std::error::Error + 'static;
+}
+
+impl<T, E> ResultOptionExt<T, E> for Result<Option<T>, E> {
+    fn require(self, message: &str) -> Result<T, SMError>
+    where
+        E: std::error::Error + 'static,
+    {
+        self.map_err(SMError::storage)?
+            .ok_or_else(|| SMError::state_inconsistency(message))
+    }
+}
