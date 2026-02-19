@@ -124,7 +124,7 @@ pub type CompletedSignatures =
     HeapArray<Signature, { N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES }>;
 
 /// A public key.
-#[derive(Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct SecretKey(pub Scalar);
 
 /// A secret Key.

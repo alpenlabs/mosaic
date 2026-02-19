@@ -22,6 +22,7 @@ members = [
   "crates/rpc/types",
   # "crates/state-machine/executor",
   "crates/storage/api",
+  "crates/storage/inmemory",
   "crates/table-types",
   "crates/vs3",
 ]

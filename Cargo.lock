@@ -1754,6 +1754,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mosaic-storage-inmemory"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "mosaic-cac-protocol",
+ "mosaic-cac-types",
+ "mosaic-common",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "mosaic-table-types"
 version = "0.1.0"
 

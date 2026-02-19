@@ -2,9 +2,9 @@ use std::{error::Error, fmt::Debug};
 
 use futures::Stream;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomials, ChallengeIndices,
-    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
+    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
+    CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs,
+    GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
     OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
 };
@@ -101,11 +101,6 @@ pub trait StateMut: StateRead {
         &mut self,
         deposit_id: DepositId,
         deposit_state: &DepositState,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
-    fn put_polynomials(
-        &mut self,
-        polynomials: &AllPolynomials,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Save polynomial commitments for one input wire (~ 5KB * 256 = 4.2MB approx)

@@ -59,15 +59,20 @@ pub trait StateRead {
         &self,
     ) -> impl Future<Output = Result<Option<OpenedGarblingSeeds>, Self::Error>> + Send;
 
-    fn get_sighashes_for_deposit(
+    fn get_deposit_sighashes(
         &self,
         deposit_id: &DepositId,
     ) -> impl Future<Output = Result<Option<Sighashes>, Self::Error>> + Send;
 
-    fn get_inputs_for_deposit(
+    fn get_deposit_inputs(
         &self,
         deposit_id: &DepositId,
     ) -> impl Future<Output = Result<Option<DepositInputs>, Self::Error>> + Send;
+
+    fn get_withdrawal_inputs(
+        &self,
+        deposit_id: &DepositId,
+    ) -> impl Future<Output = Result<Option<WithdrawalInputs>, Self::Error>> + Send;
 
     fn get_deposit_adaptors(
         &self,
@@ -78,11 +83,6 @@ pub trait StateRead {
         &self,
         deposit_id: &DepositId,
     ) -> impl Future<Output = Result<Option<WithdrawalAdaptors>, Self::Error>> + Send;
-
-    fn get_withdrawal_inputs(
-        &self,
-        deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<Option<WithdrawalInputs>, Self::Error>> + Send;
 
     fn get_completed_signatures(
         &self,
@@ -167,7 +167,7 @@ pub trait StateMut: StateRead {
         &mut self,
         deposit_id: &DepositId,
         chunk_idx: u8,
-        withdrawal_adaptros: &WithdrawalAdaptorsChunk,
+        withdrawal_adaptors: &WithdrawalAdaptorsChunk,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     fn put_withdrawal_inputs(

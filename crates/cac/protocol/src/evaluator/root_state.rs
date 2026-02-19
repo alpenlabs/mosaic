@@ -4,7 +4,7 @@ use mosaic_cac_types::{
 };
 use mosaic_common::constants::{N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EvaluatorState {
     pub(crate) config: Option<Config>,
     pub(crate) step: Step,
@@ -21,7 +21,7 @@ impl EvaluatorState {
 }
 
 /// Immutable state that is set during init and never updated
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub(crate) seed: Seed,
     pub(crate) setup_inputs: SetupInputs,
