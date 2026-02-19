@@ -14,7 +14,7 @@ pub struct Adaptor {
 
 /// A completed signature
 // TODO: replace this type after adaptor related changes are merged.
-#[derive(Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Signature {
     /// S
     pub s: Scalar,

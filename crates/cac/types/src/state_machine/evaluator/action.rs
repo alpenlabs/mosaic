@@ -87,6 +87,7 @@ pub enum ActionResult {
 
 /// Actions emitted by the evaluator state machine for external execution.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(clippy::large_enum_variant, reason = "AdaptorMsgChunk is large")]
 #[non_exhaustive]
 pub enum Action {
     /// Send challenge message with set of challenge indices.

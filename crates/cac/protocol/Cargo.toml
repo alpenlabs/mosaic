@@ -15,6 +15,7 @@ mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 
 fasm.workspace = true
+futures.workspace = true
 thiserror.workspace = true
 
 [lints]

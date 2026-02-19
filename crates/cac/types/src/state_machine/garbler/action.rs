@@ -2,11 +2,9 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    AllPolynomialCommitments, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
-    CircuitInputShares, CircuitOutputShare, CommitMsgChunk, CommitMsgHeader, CompletedSignatures,
-    DepositAdaptors, DepositId, GarblingSeed, GarblingTableCommitment, InputShares, PubKey,
-    ReservedDepositInputShares, ReservedWithdrawalInputShares, Seed, Sighashes, WithdrawalAdaptors,
-    WithdrawalInputs,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
+    CommitMsgChunk, CommitMsgHeader, CompletedSignatures, DepositId, GarblingSeed,
+    GarblingTableCommitment, Seed, WideLabelWirePolynomialCommitments,
 };
 
 // ============================================================================
@@ -73,9 +71,9 @@ impl PartialOrd for ActionId {
 #[non_exhaustive]
 pub enum ActionResult {
     /// Polynomial commitments were generated from the base seed.
-    PolynomialCommitmentsGenerated(AllPolynomialCommitments),
+    PolynomialCommitmentsGenerated(Wire, WideLabelWirePolynomialCommitments),
     /// Input and output shares were generated for a circuit.
-    SharesGenerated(Index, Box<CircuitInputShares>, Box<CircuitOutputShare>),
+    SharesGenerated(Index, CircuitInputShares, CircuitOutputShare),
     /// Garbling table commitment was generated for a circuit.
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Commit message chunk was sent and acknowledged by the evaluator.
@@ -87,7 +85,7 @@ pub enum ActionResult {
     /// Adaptor signature verification completed. `bool` indicates pass/fail.
     DepositAdaptorVerificationResult(DepositId, bool),
     /// Adaptor signatures were completed for a disputed withdrawal.
-    AdaptorSignaturesCompleted(DepositId, Box<CompletedSignatures>),
+    AdaptorSignaturesCompleted(DepositId, CompletedSignatures),
 }
 
 // ============================================================================
@@ -120,10 +118,10 @@ pub enum Action {
     TransferGarblingTable(GarblingSeed),
 
     /// Verify adaptor signatures received from evaluator.
-    DepositVerifyAdaptors(DepositId, AdaptorVerificationData),
+    DepositVerifyAdaptors(DepositId),
 
     /// Complete adaptor signatures for a disputed withdrawal.
-    CompleteAdaptorSignatures(DepositId, CompleteAdaptorSignaturesData),
+    CompleteAdaptorSignatures(DepositId),
 }
 
 impl Action {
@@ -143,8 +141,8 @@ impl Action {
                 ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index)
             }
             Self::TransferGarblingTable(seed) => ActionId::TransferGarblingTable(*seed),
-            Self::DepositVerifyAdaptors(id, _) => ActionId::DepositVerifyAdaptors(*id),
-            Self::CompleteAdaptorSignatures(id, _) => ActionId::CompleteAdaptorSignatures(*id),
+            Self::DepositVerifyAdaptors(id) => ActionId::DepositVerifyAdaptors(*id),
+            Self::CompleteAdaptorSignatures(id) => ActionId::CompleteAdaptorSignatures(*id),
         }
     }
 }
@@ -153,38 +151,13 @@ impl Action {
 // Action data types
 // ============================================================================
 
-/// Data required to verify adaptor signatures from the evaluator.
+/// Identifies an input or output wire.
 #[derive(Debug, PartialEq, Eq)]
-pub struct AdaptorVerificationData {
-    /// Public key used to verify adaptors created under evaluator's secret key.
-    pub pk: PubKey,
-    /// Adaptor signatures for deposits.
-    pub deposit_adaptors: Box<DepositAdaptors>,
-    /// Adaptor signatures for withdrawals.
-    pub withdrawal_adaptors: Box<WithdrawalAdaptors>,
-    /// Input shares for verification.
-    pub input_shares: Box<InputShares>,
-    /// Sighashes to verify against.
-    pub sighashes: Box<Sighashes>,
-}
-
-/// Data required to complete adaptor signatures during a disputed withdrawal.
-#[derive(Debug, PartialEq, Eq)]
-pub struct CompleteAdaptorSignaturesData {
-    /// Public key used to verify adaptors created under evaluator's secret key.
-    pub pk: PubKey,
-    /// Sighashes to sign.
-    pub sighashes: Box<Sighashes>,
-    /// Adaptor signatures for deposits.
-    pub deposit_adaptors: Box<DepositAdaptors>,
-    /// Adaptor signatures for withdrawals.
-    pub withdrawal_adaptors: Box<WithdrawalAdaptors>,
-    /// Reserved input shares for deposits.
-    pub reserved_deposit_input_shares: Box<ReservedDepositInputShares>,
-    /// Reserved input shares for withdrawals.
-    pub reserved_withdrawal_input_shares: Box<ReservedWithdrawalInputShares>,
-    /// Withdrawal input data.
-    pub withdrawal_input: Box<WithdrawalInputs>,
+pub enum Wire {
+    /// Input wire at index
+    Input(u16),
+    /// Output wire
+    Output,
 }
 
 // ============================================================================

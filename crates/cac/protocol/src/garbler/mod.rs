@@ -6,18 +6,15 @@ use mosaic_cac_types::state_machine::garbler::{
     Action, ActionContainer, GarblerTrackedActionTypes, Input, UntrackedAction,
 };
 
-pub mod artifact;
 pub mod deposit;
+pub mod root_state;
 pub mod state;
 mod stf;
 
-use artifact::GarblerArtifactStore as ArtifactStore;
-use state::GarblerStateContainer as StateContainer;
-
-use crate::SMError;
+use crate::{SMError, garbler::state::StateMut};
 
 #[derive(Debug)]
-pub struct GarblerSM<S: ArtifactStore> {
+pub struct GarblerSM<S: StateMut> {
     _s: PhantomData<S>,
 }
 
@@ -27,8 +24,8 @@ pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
     actions.push(FasmAction::new_tracked(id, action));
 }
 
-impl<S: ArtifactStore> StateMachine for GarblerSM<S> {
-    type State = StateContainer<S>;
+impl<S: StateMut> StateMachine for GarblerSM<S> {
+    type State = S;
 
     type Input = Input;
 

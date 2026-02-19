@@ -27,6 +27,7 @@ use crate::handlers::HandlerContext;
 /// This type is [`Send`] — it is shared across threads via the queue. The
 /// resulting handler future is `!Send` and runs locally on monoio.
 #[derive(Debug)]
+#[expect(clippy::large_enum_variant)]
 pub(crate) enum WorkerJob {
     /// Execute a garbler action.
     Garbler {

@@ -153,7 +153,7 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                         state.step = Step::EvaluatingTables {
                             deposit_id,
                             eval_indices,
-                            eval_commitments,
+                            eval_commitments: eval_commitments.clone(),
                             evaluated: HeapArray::from_elem(false),
                         };
 
@@ -637,7 +637,7 @@ async fn handle_table_commitment_generated<S: ArtifactStore>(
                 let eval_commitments = get_eval_commitments(&eval_idxs, &garbling_commitments);
                 state.step = Step::ReceivingGarblingTables {
                     eval_indices: eval_idxs,
-                    eval_commitments,
+                    eval_commitments: eval_commitments.clone(),
                     received: HeapArray::from_elem(false),
                 };
 
@@ -740,7 +740,10 @@ pub(crate) async fn restore<S: ArtifactStore>(
         Step::ReceivingGarblingTables {
             eval_commitments, ..
         } => {
-            emit(actions, Action::ReceiveGarblingTables(*eval_commitments));
+            emit(
+                actions,
+                Action::ReceiveGarblingTables(eval_commitments.clone()),
+            );
         }
         Step::SetupComplete => {
             for (deposit_id, deposit_state) in state.deposits.iter() {
@@ -784,7 +787,7 @@ fn require_config(state: &State) -> SMResult<&Config> {
     state
         .config
         .as_ref()
-        .ok_or_else(|| SMError::StateInconsistency("expected config to not be None"))
+        .ok_or_else(|| SMError::state_inconsistency("expected config to not be None"))
 }
 
 #[expect(unused_variables)]
@@ -857,7 +860,7 @@ fn get_eval_commitments(
     eval_indices: &EvaluationIndices,
     garbling_commitments: &AllGarblingTableCommitments,
 ) -> EvalGarblingTableCommitments {
-    std::array::from_fn(|i| {
+    HeapArray::new(|i| {
         let seed_idx = eval_indices[i].get() - 1;
         garbling_commitments[seed_idx]
     })
