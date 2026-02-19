@@ -1,10 +1,13 @@
+use std::pin::pin;
+
+use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
-    DepositAdaptors, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment,
-    HeapArray, Index, InputPolynomialCommitments, OpenedGarblingTableCommitments,
-    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Seed, SetupInputs,
-    WithdrawalAdaptors,
+    DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
+    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
+    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment,
+    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors,
     state_machine::evaluator::{
         Action, ActionContainer, ActionId, ActionResult, EvaluatorDepositInitData,
         EvaluatorDisputedWithdrawalData, Input,
@@ -13,18 +16,12 @@ use mosaic_cac_types::{
 use mosaic_common::constants::{N_CHALLENGE_RESPONSE_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
 use super::{
-    SMResult,
-    artifact::EvaluatorArtifactStore as ArtifactStore,
+    deposit::{DepositState, DepositStep},
     emit,
-    state::{EvaluatorState as State, EvaluatorStateContainer as StateContainer},
+    root_state::{Config, EvaluatorState, EvaluatorState as State, Step},
+    state::StateMut,
 };
-use crate::{
-    SMError,
-    evaluator::{
-        deposit::{DepositState, DepositStep},
-        state::{Config, EvaluatorState, Step},
-    },
-};
+use crate::{SMError, SMResult, evaluator::state::StateRead};
 
 // ============================================================================
 // External event handler
@@ -34,20 +31,25 @@ use crate::{
 ///
 /// External events are messages from peers, bridge triggers, and initialization
 /// — anything that originates outside the state machine.
-pub(crate) async fn handle_event<S: ArtifactStore>(
-    state_container: &mut StateContainer<S>,
+pub(crate) async fn handle_event<S: StateMut>(
+    state: &mut S,
     input: Input,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    let (state, artifact_store) = state_container.state_and_artifact_store_mut();
+    let mut root_state = state
+        .get_root_state()
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::MissingRootState)?;
+
     match input {
-        Input::Init(data) => match state.step {
+        Input::Init(data) => match root_state.step {
             Step::Uninit => {
-                state.config = Some(Config {
+                root_state.config = Some(Config {
                     seed: data.seed,
                     setup_inputs: data.setup_inputs,
                 });
-                state.step = Step::WaitingForCommit {
+                root_state.step = Step::WaitingForCommit {
                     header: false,
                     chunks: HeapArray::from_elem(false),
                 };
@@ -55,22 +57,22 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::RecvCommitMsgHeader(commit_msg_header) => {
-            handle_commit_msg_header(state, artifact_store, *commit_msg_header, actions).await?;
+            handle_commit_msg_header(&mut root_state, state, *commit_msg_header, actions).await?;
         }
         Input::RecvCommitMsgChunk(commit_msg) => {
-            handle_commit_msg_chunk(state, artifact_store, commit_msg, actions).await?;
+            handle_commit_msg_chunk(&mut root_state, state, commit_msg, actions).await?;
         }
         Input::RecvChallengeResponseMsgHeader(response_msg_header) => {
             handle_recv_challenge_response_header(
+                &mut root_state,
                 state,
-                artifact_store,
                 response_msg_header,
                 actions,
             )
             .await?;
         }
         Input::RecvChallengeResponseMsgChunk(response_msg) => {
-            handle_recv_challenge_response_msg(state, artifact_store, response_msg, actions)
+            handle_recv_challenge_response_msg(&mut root_state, state, response_msg, actions)
                 .await?;
         }
         Input::DepositInit(
@@ -80,36 +82,44 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                 sighashes,
                 deposit_inputs,
             },
-        ) => match state.step {
+        ) => match root_state.step {
             Step::SetupComplete => {
-                if state.deposits.contains_key(&deposit_id) {
-                    return Err(SMError::DepositAlreadyExists(deposit_id));
+                if state
+                    .get_deposit(&deposit_id)
+                    .await
+                    .map_err(SMError::storage)?
+                    .is_some()
+                {
+                    // deposit already exists
+                    return Err(SMError::deposit_already_exists(deposit_id));
                 }
 
-                artifact_store
-                    .save_sighashes_for_deposit(deposit_id, &sighashes)
-                    .await?;
-                artifact_store
-                    .save_inputs_for_deposit(deposit_id, &deposit_inputs)
-                    .await?;
+                let deposit_state = DepositState {
+                    step: DepositStep::GeneratingAdaptors,
+                    sk,
+                };
 
-                state.deposits.insert(
-                    deposit_id,
-                    DepositState {
-                        step: DepositStep::GeneratingAdaptors,
-                        sk,
-                    },
-                );
+                state
+                    .put_sighashes_for_deposit(&deposit_id, &sighashes)
+                    .await
+                    .map_err(SMError::storage)?;
+                state
+                    .put_inputs_for_deposit(&deposit_id, &deposit_inputs)
+                    .await
+                    .map_err(SMError::storage)?;
+
+                state
+                    .put_deposit(&deposit_id, &deposit_state)
+                    .await
+                    .map_err(SMError::storage)?;
 
                 emit(actions, Action::DepositGenerateAdaptors(deposit_id));
             }
             _ => return Err(SMError::UnexpectedInput),
         },
-        Input::DepositUndisputedWithdrawal(deposit_id) => match state.step {
+        Input::DepositUndisputedWithdrawal(deposit_id) => match root_state.step {
             Step::SetupComplete => {
-                let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                    return Err(SMError::UnknownDeposit(deposit_id));
-                };
+                let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match deposit_state.step {
                     DepositStep::DepositReady => {
@@ -117,6 +127,11 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                     }
                     _ => return Err(SMError::UnexpectedInput),
                 }
+
+                state
+                    .put_deposit(&deposit_id, &deposit_state)
+                    .await
+                    .map_err(SMError::storage)?;
             }
             _ => return Err(SMError::UnexpectedInput),
         },
@@ -126,45 +141,55 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
                 signatures,
                 withdrawal_inputs,
             },
-        ) => match state.step {
+        ) => match root_state.step {
             Step::SetupComplete => {
-                let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                    return Err(SMError::UnknownDeposit(deposit_id));
-                };
+                let deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match deposit_state.step {
                     DepositStep::DepositReady => {
-                        artifact_store
-                            .save_completed_signatures(deposit_id, &signatures)
-                            .await?;
+                        state
+                            .put_completed_signatures(&deposit_id, &signatures)
+                            .await
+                            .map_err(SMError::storage)?;
 
-                        artifact_store
-                            .save_withdrawal_inputs(deposit_id, &withdrawal_inputs)
-                            .await?;
+                        state
+                            .put_withdrawal_inputs(&deposit_id, &withdrawal_inputs)
+                            .await
+                            .map_err(SMError::storage)?;
 
-                        let challenge_indices = artifact_store.load_challenge_indices().await?;
-                        let garbling_commitments =
-                            artifact_store.load_garbling_table_commitments().await?;
+                        let challenge_indices = state
+                            .get_challenge_indices()
+                            .await
+                            .map_err(SMError::storage)?;
+                        let garbling_commitments = state
+                            .get_garbling_table_commitments()
+                            .await
+                            .map_err(SMError::storage)?;
 
                         let eval_indices = get_eval_indices(&challenge_indices);
                         let eval_commitments =
                             get_eval_commitments(&eval_indices, &garbling_commitments);
-
-                        state.step = Step::EvaluatingTables {
-                            deposit_id,
-                            eval_indices,
-                            eval_commitments: eval_commitments.clone(),
-                            evaluated: HeapArray::from_elem(false),
-                        };
 
                         for idx in 0..N_EVAL_CIRCUITS {
                             let index = eval_indices[idx];
                             let commitment = eval_commitments[idx];
                             emit(actions, Action::EvaluateGarblingTable(index, commitment));
                         }
+
+                        root_state.step = Step::EvaluatingTables {
+                            deposit_id,
+                            eval_indices,
+                            eval_commitments,
+                            evaluated: HeapArray::from_elem(false),
+                        };
                     }
                     _ => return Err(SMError::UnexpectedInput),
                 }
+
+                state
+                    .put_deposit(&deposit_id, &deposit_state)
+                    .await
+                    .map_err(SMError::storage)?;
             }
             _ => return Err(SMError::UnexpectedInput),
         },
@@ -183,30 +208,43 @@ pub(crate) async fn handle_event<S: ArtifactStore>(
 ///
 /// Each action emitted by the STF eventually completes and its result is
 /// routed back here with the [`ActionId`] used to correlate it.
-pub(crate) async fn handle_action_result<S: ArtifactStore>(
-    state_container: &mut StateContainer<S>,
+pub(crate) async fn handle_action_result<S: StateMut>(
+    state: &mut S,
     id: ActionId,
     result: ActionResult,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    let (state, artifact_store) = state_container.state_and_artifact_store_mut();
+    let mut root_state = state
+        .get_root_state()
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::MissingRootState)?;
+
     match result {
         ActionResult::ChallengeMsgAcked => {
             // The challenge message was sent. No further state change needed —
             // state was already advanced to WaitingForChallengeResponse when
             // we emitted the SendChallengeMsg action.
         }
-        ActionResult::VerifyOpenedInputSharesResult(failure) => match state.step {
+        ActionResult::VerifyOpenedInputSharesResult(failure) => match root_state.step {
             Step::VerifyingOpenedInputShares => {
                 if let Some(failure_reason) = failure {
-                    state.step = Step::Aborted {
+                    root_state.step = Step::Aborted {
                         reason: format!("invalid opened input shares: {}", failure_reason),
                     };
                 } else {
-                    let opened_indices = artifact_store.load_challenge_indices().await?;
-                    let opened_seeds = artifact_store.load_opened_garbling_seeds().await?;
-                    let all_table_commitments =
-                        artifact_store.load_garbling_table_commitments().await?;
+                    let opened_indices = state
+                        .get_challenge_indices()
+                        .await
+                        .map_err(SMError::storage)?;
+                    let opened_seeds = state
+                        .get_opened_garbling_seeds()
+                        .await
+                        .map_err(SMError::storage)?;
+                    let all_table_commitments = state
+                        .get_garbling_table_commitments()
+                        .await
+                        .map_err(SMError::storage)?;
                     let opened_commitments =
                         get_opened_commitments(&opened_indices, &all_table_commitments);
 
@@ -217,7 +255,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                         emit(actions, Action::GenerateTableCommitment(index, seed));
                     }
 
-                    state.step = Step::VerifyingTableCommitments {
+                    root_state.step = Step::VerifyingTableCommitments {
                         opened_indices,
                         opened_seeds,
                         opened_commitments,
@@ -229,8 +267,8 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
         },
         ActionResult::TableCommitmentGenerated(index, table_commitment) => {
             handle_table_commitment_generated(
+                &mut root_state,
                 state,
-                artifact_store,
                 index,
                 table_commitment,
                 actions,
@@ -238,27 +276,26 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
             .await?;
         }
         ActionResult::GarblingTableReceived(index, table_commitment) => {
-            handle_table_received(state, artifact_store, index, table_commitment).await?;
+            handle_table_received(&mut root_state, state, index, table_commitment).await?;
         }
         ActionResult::DepositAdaptorsGenerated(
             deposit_id,
             deposit_adaptors,
             withdrawal_adaptors,
-        ) => match state.step {
+        ) => match root_state.step {
             Step::SetupComplete => {
-                let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                    return Err(SMError::UnknownDeposit(deposit_id));
-                };
+                let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
-                match deposit_state.step {
+                match &mut deposit_state.step {
                     DepositStep::GeneratingAdaptors => {
-                        artifact_store
-                            .save_adaptors_for_deposit(
-                                deposit_id,
+                        state
+                            .put_adaptors_for_deposit(
+                                &deposit_id,
                                 &deposit_adaptors,
                                 &withdrawal_adaptors,
                             )
-                            .await?;
+                            .await
+                            .map_err(SMError::storage)?;
 
                         deposit_state.step = DepositStep::SendingAdaptors {
                             acked: HeapArray::from_elem(false),
@@ -275,14 +312,17 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                     }
                     _ => return Err(SMError::UnexpectedInput),
                 }
+
+                state
+                    .put_deposit(&deposit_id, &deposit_state)
+                    .await
+                    .map_err(SMError::storage)?;
             }
             _ => return Err(SMError::UnexpectedInput),
         },
-        ActionResult::DepositAdaptorChunkSent(deposit_id) => match state.step {
+        ActionResult::DepositAdaptorChunkSent(deposit_id) => match root_state.step {
             Step::SetupComplete => {
-                let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                    return Err(SMError::UnknownDeposit(deposit_id));
-                };
+                let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
                     DepositStep::SendingAdaptors { acked } => {
@@ -302,11 +342,16 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                     }
                     _ => return Err(SMError::UnexpectedInput),
                 }
+
+                state
+                    .put_deposit(&deposit_id, &deposit_state)
+                    .await
+                    .map_err(SMError::storage)?;
             }
             _ => return Err(SMError::UnexpectedInput),
         },
         ActionResult::TableEvaluationResult(commitment, output_share) => {
-            match &mut state.step {
+            match &mut root_state.step {
                 Step::EvaluatingTables {
                     deposit_id,
                     eval_indices: _,
@@ -322,12 +367,12 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
                     if output_share.is_some() {
                         // Found the fault secret — evaluation complete.
                         // TODO: store output_share, interpolate to recover secret
-                        state.step = Step::SetupConsumed {
+                        root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
                         };
                     } else if evaluated.all() {
                         // All tables evaluated, no fault found.
-                        state.step = Step::SetupConsumed {
+                        root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
                         };
                     }
@@ -346,7 +391,7 @@ pub(crate) async fn handle_action_result<S: ArtifactStore>(
 // Helpers for handle_event
 // ============================================================================
 
-async fn handle_commit_msg_header<S: ArtifactStore>(
+async fn handle_commit_msg_header<S: StateMut>(
     state: &mut EvaluatorState,
     artifact_store: &mut S,
     commit_msg_header: CommitMsgHeader,
@@ -366,11 +411,13 @@ async fn handle_commit_msg_header<S: ArtifactStore>(
             } = commit_msg_header;
 
             artifact_store
-                .save_garbling_table_commitments(&garbling_table_commitments)
-                .await?;
+                .put_garbling_table_commitments(&garbling_table_commitments)
+                .await
+                .map_err(SMError::storage)?;
             artifact_store
-                .save_output_polynomial_commitment(&output_polynomial_commitment)
-                .await?;
+                .put_output_polynomial_commitment(&output_polynomial_commitment)
+                .await
+                .map_err(SMError::storage)?;
 
             *header = true;
 
@@ -384,16 +431,16 @@ async fn handle_commit_msg_header<S: ArtifactStore>(
     }
 }
 
-async fn handle_commit_msg_chunk<S: ArtifactStore>(
-    state: &mut EvaluatorState,
-    artifact_store: &mut S,
+async fn handle_commit_msg_chunk<S: StateMut>(
+    root_state: &mut EvaluatorState,
+    state: &mut S,
     commit_msg_chunk: CommitMsgChunk,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match &mut state.step {
+    match &mut root_state.step {
         Step::WaitingForCommit { header, chunks } => {
             if !is_valid_commit_chunk(&commit_msg_chunk) {
-                state.step = Step::Aborted {
+                root_state.step = Step::Aborted {
                     reason: "invalid commit msg chunk".into(),
                 };
                 return Ok(());
@@ -416,38 +463,40 @@ async fn handle_commit_msg_chunk<S: ArtifactStore>(
 
             chunks[chunk_idx] = true;
 
-            artifact_store
-                .save_input_polynomial_commitments_chunk(
+            state
+                .put_input_polynomial_commitments_chunk(
                     commit_msg_chunk.wire_index,
                     &commit_msg_chunk.commitments,
                 )
-                .await?;
+                .await
+                .map_err(SMError::storage)?;
 
             if !*header || !chunks.all() {
                 return Ok(());
             }
 
-            post_handle_commit_msg(state, artifact_store, actions).await
+            post_handle_commit_msg(root_state, state, actions).await
         }
         _ => Err(SMError::UnexpectedInput),
     }
 }
 
-async fn post_handle_commit_msg<S: ArtifactStore>(
-    state: &mut EvaluatorState,
-    artifact_store: &mut S,
+async fn post_handle_commit_msg<S: StateMut>(
+    root_state: &mut EvaluatorState,
+    state: &mut S,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     // header and all chunks received
-    let config = require_config(state)?;
+    let config = require_config(root_state)?;
     let challenge_indices = sample_challenge_indices(config.seed);
     debug_assert!(is_sorted(challenge_indices.as_slice()));
 
-    artifact_store
-        .save_challenge_indices(&challenge_indices)
-        .await?;
+    state
+        .put_challenge_indices(&challenge_indices)
+        .await
+        .map_err(SMError::storage)?;
 
-    state.step = Step::WaitingForChallengeResponse {
+    root_state.step = Step::WaitingForChallengeResponse {
         header: false,
         chunks: HeapArray::from_elem(false),
     };
@@ -457,16 +506,16 @@ async fn post_handle_commit_msg<S: ArtifactStore>(
     Ok(())
 }
 
-async fn handle_recv_challenge_response_header<S: ArtifactStore>(
-    state: &mut EvaluatorState,
-    artifact_store: &mut S,
+async fn handle_recv_challenge_response_header<S: StateMut>(
+    root_state: &mut EvaluatorState,
+    state: &mut S,
     response_msg_header: ChallengeResponseMsgHeader,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match &mut state.step {
+    match &mut root_state.step {
         Step::WaitingForChallengeResponse { header, chunks } => {
             if !is_valid_challenge_response_header(&response_msg_header) {
-                state.step = Step::Aborted {
+                root_state.step = Step::Aborted {
                     reason: "invalid challenge response message header".into(),
                 };
                 return Ok(());
@@ -478,39 +527,44 @@ async fn handle_recv_challenge_response_header<S: ArtifactStore>(
                 opened_garbling_seeds,
             } = response_msg_header;
 
-            artifact_store
-                .save_reserved_setup_input_shares(&reserved_setup_input_shares)
-                .await?;
-            artifact_store
-                .save_opened_output_shares(&opened_output_shares)
-                .await?;
-            artifact_store
-                .save_opened_garbling_seeds(&opened_garbling_seeds)
-                .await?;
+            state
+                .put_reserved_setup_input_shares(&reserved_setup_input_shares)
+                .await
+                .map_err(SMError::storage)?;
+            state
+                .put_opened_output_shares(&opened_output_shares)
+                .await
+                .map_err(SMError::storage)?;
+            state
+                .put_opened_garbling_seeds(&opened_garbling_seeds)
+                .await
+                .map_err(SMError::storage)?;
 
             *header = true;
             if chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
                 return Ok(());
             }
 
-            let challenge_idxs = artifact_store.load_challenge_indices().await?;
-            post_handle_challenge_response(challenge_idxs, state, artifact_store, actions).await
+            post_handle_challenge_response(root_state, state, actions).await
         }
         _ => Err(SMError::UnexpectedInput),
     }
 }
 
-async fn handle_recv_challenge_response_msg<S: ArtifactStore>(
-    state: &mut EvaluatorState,
-    artifact_store: &mut S,
+async fn handle_recv_challenge_response_msg<S: StateMut>(
+    root_state: &mut EvaluatorState,
+    state: &mut S,
     response_msg_chunk: ChallengeResponseMsgChunk,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match &mut state.step {
+    match &mut root_state.step {
         Step::WaitingForChallengeResponse { header, chunks } => {
-            let challenge_idxs = artifact_store.load_challenge_indices().await?;
+            let challenge_idxs = state
+                .get_challenge_indices()
+                .await
+                .map_err(SMError::storage)?;
             if !is_valid_challenge_response_chunk(&response_msg_chunk, &challenge_idxs) {
-                state.step = Step::Aborted {
+                root_state.step = Step::Aborted {
                     reason: "invalid challenge response message".into(),
                 };
                 return Ok(());
@@ -524,38 +578,44 @@ async fn handle_recv_challenge_response_msg<S: ArtifactStore>(
             }
             chunks[chunk_idx] = true;
 
-            artifact_store
-                .save_openend_input_shares_chunk(
+            state
+                .put_opened_input_shares_chunk(
                     response_msg_chunk.circuit_index,
                     &response_msg_chunk.shares,
                 )
-                .await?;
+                .await
+                .map_err(SMError::storage)?;
 
             if !*header || chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
                 return Ok(());
             }
 
-            post_handle_challenge_response(challenge_idxs, state, artifact_store, actions).await
+            post_handle_challenge_response(root_state, state, actions).await
         }
         _ => Err(SMError::UnexpectedInput),
     }
 }
 
-async fn post_handle_challenge_response<S: ArtifactStore>(
-    challenge_idxs: Box<ChallengeIndices>,
-    state: &mut EvaluatorState,
-    artifact_store: &mut S,
+async fn post_handle_challenge_response<S: StateMut>(
+    root_state: &mut EvaluatorState,
+    state: &mut S,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     // all chunks received
-    let opened_output_shares = artifact_store.load_opened_output_shares().await?;
+    let opened_output_shares = state
+        .get_opened_output_shares()
+        .await
+        .map_err(SMError::storage)?;
 
-    let output_polynomial_commitment = artifact_store.load_output_polynomial_commitment().await?;
+    let output_polynomial_commitment = state
+        .get_output_polynomial_commitment()
+        .await
+        .map_err(SMError::storage)?;
 
     if let Some(failure_reason) =
         verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
     {
-        state.step = Step::Aborted {
+        root_state.step = Step::Aborted {
             reason: format!(
                 "opened output share verification failed: {}",
                 failure_reason
@@ -564,16 +624,22 @@ async fn post_handle_challenge_response<S: ArtifactStore>(
         return Ok(());
     }
 
-    let config = require_config(state)?;
-    let reserved_setup_input_shares = artifact_store.load_reserved_setup_input_shares().await?;
-    let input_polynomial_commitments = artifact_store.load_input_polynomial_commitments().await?;
+    let config = require_config(root_state)?;
+    let reserved_setup_input_shares = state
+        .get_reserved_setup_input_shares()
+        .await
+        .map_err(SMError::storage)?;
+    let input_polynomial_commitments = state
+        .get_input_polynomial_commitments()
+        .await
+        .map_err(SMError::storage)?;
 
     if let Some(failure_reason) = verify_reserved_setup_input_shares(
         &reserved_setup_input_shares,
         &config.setup_inputs,
         &input_polynomial_commitments,
     ) {
-        state.step = Step::Aborted {
+        root_state.step = Step::Aborted {
             reason: format!(
                 "reserved input share verification failed: {}",
                 failure_reason
@@ -582,17 +648,9 @@ async fn post_handle_challenge_response<S: ArtifactStore>(
         return Ok(());
     }
 
-    state.step = Step::VerifyingOpenedInputShares;
+    root_state.step = Step::VerifyingOpenedInputShares;
 
-    let opened_input_shares = artifact_store.load_openend_input_shares().await?;
-    emit(
-        actions,
-        Action::VerifyOpenedInputShares(
-            challenge_idxs,
-            opened_input_shares,
-            input_polynomial_commitments,
-        ),
-    );
+    emit(actions, Action::VerifyOpenedInputShares);
 
     Ok(())
 }
@@ -601,14 +659,14 @@ async fn post_handle_challenge_response<S: ArtifactStore>(
 // Helpers for handle_action_result
 // ============================================================================
 
-async fn handle_table_commitment_generated<S: ArtifactStore>(
-    state: &mut EvaluatorState,
-    artifact_store: &mut S,
+async fn handle_table_commitment_generated<S: StateMut>(
+    root_state: &mut EvaluatorState,
+    state: &mut S,
     index: Index,
     table_commitment: GarblingTableCommitment,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match &mut state.step {
+    match &mut root_state.step {
         Step::VerifyingTableCommitments {
             opened_indices,
             opened_commitments,
@@ -621,7 +679,7 @@ async fn handle_table_commitment_generated<S: ArtifactStore>(
 
             let expected_commitment = opened_commitments[idx];
             if table_commitment != expected_commitment {
-                state.step = Step::Aborted {
+                root_state.step = Step::Aborted {
                     reason: format!("invalid table seed for index {}", index),
                 };
                 return Ok(());
@@ -630,18 +688,23 @@ async fn handle_table_commitment_generated<S: ArtifactStore>(
             verified[idx] = true;
 
             if verified.all() {
-                let eval_idxs = get_eval_indices(opened_indices);
-                debug_assert!(is_sorted(&eval_idxs));
+                let eval_indices = get_eval_indices(opened_indices);
+                debug_assert!(is_sorted(&eval_indices));
 
-                let garbling_commitments = artifact_store.load_garbling_table_commitments().await?;
-                let eval_commitments = get_eval_commitments(&eval_idxs, &garbling_commitments);
-                state.step = Step::ReceivingGarblingTables {
-                    eval_indices: eval_idxs,
-                    eval_commitments: eval_commitments.clone(),
+                let garbling_commitments = state
+                    .get_garbling_table_commitments()
+                    .await
+                    .map_err(SMError::storage)?;
+                let eval_commitments = get_eval_commitments(&eval_indices, &garbling_commitments);
+
+                for commitment in &eval_commitments {
+                    emit(actions, Action::ReceiveGarblingTable(*commitment));
+                }
+                root_state.step = Step::ReceivingGarblingTables {
+                    eval_indices,
+                    eval_commitments,
                     received: HeapArray::from_elem(false),
                 };
-
-                emit(actions, Action::ReceiveGarblingTables(eval_commitments));
             }
 
             Ok(())
@@ -650,13 +713,13 @@ async fn handle_table_commitment_generated<S: ArtifactStore>(
     }
 }
 
-async fn handle_table_received<S: ArtifactStore>(
-    state: &mut EvaluatorState,
-    _artifact_store: &mut S,
+async fn handle_table_received<S: StateMut>(
+    root_state: &mut EvaluatorState,
+    state: &mut S,
     index: Index,
     table_commitment: GarblingTableCommitment,
 ) -> SMResult<()> {
-    match &mut state.step {
+    match &mut root_state.step {
         Step::ReceivingGarblingTables {
             eval_indices: eval_idxs,
             eval_commitments,
@@ -668,7 +731,7 @@ async fn handle_table_received<S: ArtifactStore>(
 
             let expected_commitment = eval_commitments[idx];
             if table_commitment != expected_commitment {
-                state.step = Step::Aborted {
+                root_state.step = Step::Aborted {
                     reason: format!("invalid table for index {}", index),
                 };
                 return Ok(());
@@ -677,7 +740,7 @@ async fn handle_table_received<S: ArtifactStore>(
             received[idx] = true;
 
             if received.all() {
-                state.step = Step::SetupComplete;
+                root_state.step = Step::SetupComplete;
             }
 
             Ok(())
@@ -690,36 +753,30 @@ async fn handle_table_received<S: ArtifactStore>(
 // Restore
 // ============================================================================
 
-pub(crate) async fn restore<S: ArtifactStore>(
-    state_container: &StateContainer<S>,
+pub(crate) async fn restore<S: StateRead>(
+    state: &S,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    let state = state_container.state();
-    let artifact_store = state_container.artifact_store();
-    match &state.step {
+    let mut root_state = state
+        .get_root_state()
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::MissingRootState)?;
+
+    match &root_state.step {
         Step::Uninit => {}
         Step::WaitingForCommit { .. } => {}
         Step::WaitingForChallengeResponse { .. } => {
-            let challenge_indices = *artifact_store.load_challenge_indices().await?;
+            let challenge_indices = state
+                .get_challenge_indices()
+                .await
+                .map_err(SMError::storage)?;
             let challenge_msg = ChallengeMsg { challenge_indices };
 
             emit(actions, Action::SendChallengeMsg(challenge_msg));
         }
         Step::VerifyingOpenedInputShares => {
-            let challenge_idxs = artifact_store.load_challenge_indices().await?;
-            let input_polynomial_commitments =
-                artifact_store.load_input_polynomial_commitments().await?;
-
-            let opened_input_shares = artifact_store.load_openend_input_shares().await?;
-
-            emit(
-                actions,
-                Action::VerifyOpenedInputShares(
-                    challenge_idxs,
-                    opened_input_shares,
-                    input_polynomial_commitments,
-                ),
-            );
+            emit(actions, Action::VerifyOpenedInputShares);
         }
         Step::VerifyingTableCommitments {
             opened_indices,
@@ -738,31 +795,40 @@ pub(crate) async fn restore<S: ArtifactStore>(
             }
         }
         Step::ReceivingGarblingTables {
-            eval_commitments, ..
+            eval_commitments,
+            received,
+            ..
         } => {
-            emit(
-                actions,
-                Action::ReceiveGarblingTables(eval_commitments.clone()),
-            );
+            for (commitment, received) in eval_commitments.iter().zip(received.iter()) {
+                if *received {
+                    continue;
+                }
+                emit(actions, Action::ReceiveGarblingTable(*commitment));
+            }
         }
         Step::SetupComplete => {
-            for (deposit_id, deposit_state) in state.deposits.iter() {
+            let mut all_deposits = pin!(state.stream_all_deposits());
+
+            while let Some(res) = all_deposits.next().await {
+                let (deposit_id, deposit_state) = res.map_err(SMError::storage)?;
+
                 match &deposit_state.step {
                     DepositStep::GeneratingAdaptors => {
-                        emit(actions, Action::DepositGenerateAdaptors(*deposit_id));
+                        emit(actions, Action::DepositGenerateAdaptors(deposit_id));
                     }
                     DepositStep::SendingAdaptors { acked } => {
-                        let (deposit_adaptors, withdrawal_adaptors) = artifact_store
-                            .load_adaptors_for_deposit(*deposit_id)
-                            .await?;
+                        let (deposit_adaptors, withdrawal_adaptors) = state
+                            .get_adaptors_for_deposit(&deposit_id)
+                            .await
+                            .map_err(SMError::storage)?;
 
                         for chunk in
-                            create_adaptor_message_chunks(*deposit_adaptors, *withdrawal_adaptors)
+                            create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)
                         {
                             if !acked[chunk.chunk_index as usize] {
                                 emit(
                                     actions,
-                                    Action::DepositSendAdaptorMsgChunk(*deposit_id, chunk),
+                                    Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
                                 );
                             }
                         }
@@ -788,6 +854,17 @@ fn require_config(state: &State) -> SMResult<&Config> {
         .config
         .as_ref()
         .ok_or_else(|| SMError::state_inconsistency("expected config to not be None"))
+}
+
+async fn require_deposit<S: StateRead>(
+    state: &S,
+    deposit_id: &DepositId,
+) -> SMResult<DepositState> {
+    state
+        .get_deposit(deposit_id)
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::unknown_deposit(*deposit_id))
 }
 
 #[expect(unused_variables)]

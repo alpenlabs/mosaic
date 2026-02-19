@@ -2,9 +2,8 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    AdaptorMsgChunk, ChallengeIndices, ChallengeMsg, CircuitOutputShare, DepositAdaptors,
-    DepositId, EvalGarblingTableCommitments, GarblingSeed, GarblingTableCommitment,
-    InputPolynomialCommitments, OpenedInputShares, WithdrawalAdaptors,
+    AdaptorMsgChunk, ChallengeMsg, CircuitOutputShare, DepositAdaptors, DepositId, GarblingSeed,
+    GarblingTableCommitment, WithdrawalAdaptors,
 };
 
 // ============================================================================
@@ -31,7 +30,7 @@ pub enum ActionId {
     /// Identifies a [`Action::GenerateTableCommitment`] action by circuit index.
     GenerateTableCommitment(Index),
     /// Identifies a [`Action::ReceiveGarblingTables`] action.
-    ReceiveGarblingTables,
+    ReceiveGarblingTable(GarblingTableCommitment),
     /// Identifies a [`Action::DepositGenerateAdaptors`] action by deposit.
     DepositGenerateAdaptors(DepositId),
     /// Identifies a [`Action::DepositSendAdaptorMsgChunk`] action by deposit
@@ -93,15 +92,11 @@ pub enum Action {
     /// Send challenge message with set of challenge indices.
     SendChallengeMsg(ChallengeMsg),
     /// Verify opened input shares against polynomial commitments.
-    VerifyOpenedInputShares(
-        Box<ChallengeIndices>,
-        Box<OpenedInputShares>,
-        Box<InputPolynomialCommitments>,
-    ),
+    VerifyOpenedInputShares,
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
-    ReceiveGarblingTables(EvalGarblingTableCommitments),
+    ReceiveGarblingTable(GarblingTableCommitment),
     /// Generate adaptors for a deposit.
     DepositGenerateAdaptors(DepositId),
     /// Send adaptor chunk for a deposit to garbler.
@@ -116,9 +111,9 @@ impl Action {
     pub fn id(&self) -> ActionId {
         match self {
             Self::SendChallengeMsg(_) => ActionId::SendChallengeMsg,
-            Self::VerifyOpenedInputShares(..) => ActionId::VerifyOpenedInputShares,
+            Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
-            Self::ReceiveGarblingTables(_) => ActionId::ReceiveGarblingTables,
+            Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
             Self::DepositGenerateAdaptors(id) => ActionId::DepositGenerateAdaptors(*id),
             Self::DepositSendAdaptorMsgChunk(id, chunk) => {
                 ActionId::DepositSendAdaptorMsgChunk(*id, chunk.chunk_index)
