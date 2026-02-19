@@ -1702,15 +1702,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mosaic-state-machine-executor"
-version = "0.1.0"
-dependencies = [
- "fasm",
- "mosaic-cac-protocol",
- "mosaic-cac-types",
-]
-
-[[package]]
 name = "mosaic-storage-api"
 version = "0.1.0"
 dependencies = [

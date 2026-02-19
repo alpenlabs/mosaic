@@ -20,7 +20,7 @@ members = [
   "crates/rpc/provider",
   "crates/rpc/server",
   "crates/rpc/types",
-  "crates/state-machine/executor",
+  # "crates/state-machine/executor",
   "crates/storage/api",
   "crates/table-types",
   "crates/vs3",
@@ -70,7 +70,7 @@ mosaic-net-wire = { path = "crates/net/wire" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
-mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
+# mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
 mosaic-storage-api = { path = "crates/storage/api" }
 mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
