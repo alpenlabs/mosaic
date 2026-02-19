@@ -29,65 +29,65 @@ pub trait StateRead {
 
     fn get_input_polynomial_commitments(
         &self,
-    ) -> impl Future<Output = Result<InputPolynomialCommitments, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<InputPolynomialCommitments>, Self::Error>> + Send;
 
     fn get_output_polynomial_commitment(
         &self,
-    ) -> impl Future<Output = Result<OutputPolynomialCommitment, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<OutputPolynomialCommitment>, Self::Error>> + Send;
 
     fn get_garbling_table_commitments(
         &self,
-    ) -> impl Future<Output = Result<AllGarblingTableCommitments, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<AllGarblingTableCommitments>, Self::Error>> + Send;
 
     fn get_challenge_indices(
         &self,
-    ) -> impl Future<Output = Result<ChallengeIndices, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<ChallengeIndices>, Self::Error>> + Send;
 
     fn get_opened_input_shares(
         &self,
-    ) -> impl Future<Output = Result<OpenedInputShares, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<OpenedInputShares>, Self::Error>> + Send;
 
     fn get_reserved_setup_input_shares(
         &self,
-    ) -> impl Future<Output = Result<ReservedSetupInputShares, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<ReservedSetupInputShares>, Self::Error>> + Send;
 
     fn get_opened_output_shares(
         &self,
-    ) -> impl Future<Output = Result<OpenedOutputShares, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<OpenedOutputShares>, Self::Error>> + Send;
 
     fn get_opened_garbling_seeds(
         &self,
-    ) -> impl Future<Output = Result<OpenedGarblingSeeds, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<OpenedGarblingSeeds>, Self::Error>> + Send;
 
     fn get_sighashes_for_deposit(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<Sighashes, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<Sighashes>, Self::Error>> + Send;
 
     fn get_inputs_for_deposit(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<DepositInputs, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<DepositInputs>, Self::Error>> + Send;
 
     fn get_deposit_adaptors(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<DepositAdaptors, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<DepositAdaptors>, Self::Error>> + Send;
 
     fn get_withdrawal_adaptors(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<WithdrawalAdaptors, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<WithdrawalAdaptors>, Self::Error>> + Send;
 
     fn get_withdrawal_inputs(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<WithdrawalInputs, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<WithdrawalInputs>, Self::Error>> + Send;
 
     fn get_completed_signatures(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<CompletedSignatures, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<CompletedSignatures>, Self::Error>> + Send;
 }
 
 pub trait StateMut: StateRead {

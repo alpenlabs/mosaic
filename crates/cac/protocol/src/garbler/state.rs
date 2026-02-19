@@ -2,9 +2,9 @@ use std::{error::Error, fmt::Debug};
 
 use futures::Stream;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomialCommitments, AllPolynomials,
-    ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors,
-    DepositId, DepositInputs, GarblingTableCommitment, Index, InputShares,
+    AdaptorMsgChunk, AllGarblingTableCommitments, AllPolynomials, ChallengeIndices,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
     OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
 };
@@ -27,19 +27,25 @@ pub trait StateRead {
         &self,
     ) -> impl Stream<Item = Result<(DepositId, DepositState), Self::Error>> + Send;
 
-    fn get_polynomials(&self) -> impl Future<Output = Result<AllPolynomials, Self::Error>> + Send;
-
-    fn get_polynomial_commitments(
+    fn get_input_polynomial_commitments(
         &self,
-    ) -> impl Future<Output = Result<AllPolynomialCommitments, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<InputPolynomialCommitments>, Self::Error>> + Send;
 
-    fn get_shares(
+    fn get_output_polynomial_commitment(
         &self,
-    ) -> impl Future<Output = Result<(InputShares, OutputShares), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<OutputPolynomialCommitment>, Self::Error>> + Send;
+
+    fn get_input_shares(
+        &self,
+    ) -> impl Future<Output = Result<Option<InputShares>, Self::Error>> + Send;
+
+    fn get_output_shares(
+        &self,
+    ) -> impl Future<Output = Result<Option<OutputShares>, Self::Error>> + Send;
 
     fn get_reserved_input_shares(
         &self,
-    ) -> impl Future<Output = Result<ReservedInputShares, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<ReservedInputShares>, Self::Error>> + Send;
 
     fn get_garbling_table_commitment(
         &self,
@@ -48,31 +54,36 @@ pub trait StateRead {
 
     fn get_all_garbling_table_commitments(
         &self,
-    ) -> impl Future<Output = Result<AllGarblingTableCommitments, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<AllGarblingTableCommitments>, Self::Error>> + Send;
 
     fn get_challenge_indices(
         &self,
-    ) -> impl Future<Output = Result<ChallengeIndices, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<ChallengeIndices>, Self::Error>> + Send;
 
-    fn get_sighashes_for_deposit(
+    fn get_deposit_sighashes(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<Sighashes, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<Sighashes>, Self::Error>> + Send;
 
-    fn get_inputs_for_deposit(
+    fn get_deposit_inputs(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<DepositInputs, Self::Error>> + Send;
-
-    fn get_adaptors_for_deposit(
-        &self,
-        deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<(DepositAdaptors, WithdrawalAdaptors), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<DepositInputs>, Self::Error>> + Send;
 
     fn get_withdrawal_input(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<WithdrawalInputs, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<WithdrawalInputs>, Self::Error>> + Send;
+
+    fn get_deposit_adaptors(
+        &self,
+        deposit_id: &DepositId,
+    ) -> impl Future<Output = Result<Option<DepositAdaptors>, Self::Error>> + Send;
+
+    fn get_withdrawal_adaptors(
+        &self,
+        deposit_id: &DepositId,
+    ) -> impl Future<Output = Result<Option<WithdrawalAdaptors>, Self::Error>> + Send;
 
     fn get_completed_signatures(
         &self,
