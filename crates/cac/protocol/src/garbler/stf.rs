@@ -190,6 +190,11 @@ pub(crate) async fn handle_event<S: StateMut>(
                         }
                         _ => return Err(SMError::unexpected_input()),
                     }
+
+                    state
+                        .put_deposit(deposit_id, &deposit_state)
+                        .await
+                        .map_err(SMError::storage)?;
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -369,6 +374,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         }
                         _ => return Err(SMError::unexpected_input()),
                     }
+                    state
+                        .put_deposit(deposit_id, &deposit_state)
+                        .await
+                        .map_err(SMError::storage)?;
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -613,6 +622,11 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
 
                 emit(actions, Action::DepositVerifyAdaptors(deposit_id));
             }
+
+            state
+                .put_deposit(deposit_id, &deposit_state)
+                .await
+                .map_err(SMError::storage)?;
         }
         _ => return Err(SMError::unexpected_input()),
     };
