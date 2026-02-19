@@ -9,11 +9,13 @@ use mosaic_cac_types::{
     OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment,
     ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors,
     state_machine::evaluator::{
-        Action, ActionContainer, ActionId, ActionResult, EvaluatorDepositInitData,
+        Action, ActionContainer, ActionId, ActionResult, ChunkIndex, EvaluatorDepositInitData,
         EvaluatorDisputedWithdrawalData, Input,
     },
 };
-use mosaic_common::constants::{N_CHALLENGE_RESPONSE_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
+use mosaic_common::constants::{
+    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
+};
 
 use super::{
     deposit::{DepositState, DepositStep},
@@ -95,7 +97,10 @@ pub(crate) async fn handle_event<S: StateMut>(
                 }
 
                 let deposit_state = DepositState {
-                    step: DepositStep::GeneratingAdaptors,
+                    step: DepositStep::GeneratingAdaptors {
+                        deposit: false,
+                        withdrawal_chunks: HeapArray::from_elem(false),
+                    },
                     sk,
                 };
 
@@ -113,7 +118,16 @@ pub(crate) async fn handle_event<S: StateMut>(
                     .await
                     .map_err(SMError::storage)?;
 
-                emit(actions, Action::DepositGenerateAdaptors(deposit_id));
+                emit(actions, Action::GenerateDepositAdaptors(deposit_id));
+                for chunk_idx in 0..N_ADAPTOR_MSG_CHUNKS {
+                    emit(
+                        actions,
+                        Action::GenerateWithdrawalAdaptorsChunk(
+                            deposit_id,
+                            ChunkIndex(chunk_idx as u8),
+                        ),
+                    );
+                }
             }
             _ => return Err(SMError::UnexpectedInput),
         },
@@ -278,36 +292,107 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         ActionResult::GarblingTableReceived(index, table_commitment) => {
             handle_table_received(&mut root_state, state, index, table_commitment).await?;
         }
-        ActionResult::DepositAdaptorsGenerated(
+        ActionResult::DepositAdaptorsGenerated(deposit_id, deposit_adaptors) => {
+            match root_state.step {
+                Step::SetupComplete => {
+                    let mut deposit_state = require_deposit(state, &deposit_id).await?;
+
+                    match &mut deposit_state.step {
+                        DepositStep::GeneratingAdaptors {
+                            deposit,
+                            withdrawal_chunks,
+                        } => {
+                            state
+                                .put_deposit_adaptors(&deposit_id, &deposit_adaptors)
+                                .await
+                                .map_err(SMError::storage)?;
+
+                            *deposit = true;
+
+                            if withdrawal_chunks.all() {
+                                deposit_state.step = DepositStep::SendingAdaptors {
+                                    acked: HeapArray::from_elem(false),
+                                };
+
+                                let withdrawal_adaptors = state
+                                    .get_withdrawal_adaptors(&deposit_id)
+                                    .await
+                                    .map_err(SMError::storage)?;
+
+                                for chunk in create_adaptor_message_chunks(
+                                    deposit_adaptors,
+                                    withdrawal_adaptors,
+                                ) {
+                                    emit(
+                                        actions,
+                                        Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
+                                    );
+                                }
+                            }
+                        }
+                        _ => return Err(SMError::UnexpectedInput),
+                    }
+
+                    state
+                        .put_deposit(&deposit_id, &deposit_state)
+                        .await
+                        .map_err(SMError::storage)?;
+                }
+                _ => return Err(SMError::UnexpectedInput),
+            }
+        }
+        ActionResult::WithdrawalAdaptorsChunkGenerated(
             deposit_id,
-            deposit_adaptors,
-            withdrawal_adaptors,
+            chunk_idx,
+            withdrawal_adaptor_chunk,
         ) => match root_state.step {
             Step::SetupComplete => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
-                    DepositStep::GeneratingAdaptors => {
+                    DepositStep::GeneratingAdaptors {
+                        deposit,
+                        withdrawal_chunks,
+                    } => {
+                        match withdrawal_chunks.get(chunk_idx.get() as usize) {
+                            None => return Err(SMError::invalid_input_data()),
+                            Some(true) => return Err(SMError::duplicate_action()),
+                            Some(false) => {}
+                        }
+
                         state
-                            .put_adaptors_for_deposit(
+                            .put_withdrawal_adaptors_chunk(
                                 &deposit_id,
-                                &deposit_adaptors,
-                                &withdrawal_adaptors,
+                                chunk_idx.get(),
+                                &withdrawal_adaptor_chunk,
                             )
                             .await
                             .map_err(SMError::storage)?;
 
-                        deposit_state.step = DepositStep::SendingAdaptors {
-                            acked: HeapArray::from_elem(false),
-                        };
+                        withdrawal_chunks[chunk_idx.get() as usize] = true;
 
-                        for chunk in
-                            create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)
-                        {
-                            emit(
-                                actions,
-                                Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
-                            );
+                        if *deposit && withdrawal_chunks.all() {
+                            deposit_state.step = DepositStep::SendingAdaptors {
+                                acked: HeapArray::from_elem(false),
+                            };
+
+                            let deposit_adaptors = state
+                                .get_deposit_adaptors(&deposit_id)
+                                .await
+                                .map_err(SMError::storage)?;
+                            let withdrawal_adaptors = state
+                                .get_withdrawal_adaptors(&deposit_id)
+                                .await
+                                .map_err(SMError::storage)?;
+
+                            for chunk in
+                                create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)
+                            {
+                                emit(
+                                    actions,
+                                    Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
+                                );
+                            }
                         }
                     }
                     _ => return Err(SMError::UnexpectedInput),
@@ -813,12 +898,32 @@ pub(crate) async fn restore<S: StateRead>(
                 let (deposit_id, deposit_state) = res.map_err(SMError::storage)?;
 
                 match &deposit_state.step {
-                    DepositStep::GeneratingAdaptors => {
-                        emit(actions, Action::DepositGenerateAdaptors(deposit_id));
+                    DepositStep::GeneratingAdaptors {
+                        deposit,
+                        withdrawal_chunks,
+                    } => {
+                        if !deposit {
+                            emit(actions, Action::GenerateDepositAdaptors(deposit_id));
+                        }
+                        for (idx, generated) in withdrawal_chunks.iter().enumerate() {
+                            if !*generated {
+                                emit(
+                                    actions,
+                                    Action::GenerateWithdrawalAdaptorsChunk(
+                                        deposit_id,
+                                        ChunkIndex(idx as u8),
+                                    ),
+                                );
+                            }
+                        }
                     }
                     DepositStep::SendingAdaptors { acked } => {
-                        let (deposit_adaptors, withdrawal_adaptors) = state
-                            .get_adaptors_for_deposit(&deposit_id)
+                        let deposit_adaptors = state
+                            .get_deposit_adaptors(&deposit_id)
+                            .await
+                            .map_err(SMError::storage)?;
+                        let withdrawal_adaptors = state
+                            .get_withdrawal_adaptors(&deposit_id)
                             .await
                             .map_err(SMError::storage)?;
 

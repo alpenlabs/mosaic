@@ -15,7 +15,7 @@ use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 use proptest::prelude::*;
 
 use crate::{
-    Adaptor, AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments,
+    Adaptor, AdaptorMsgChunk, WithdrawalAdaptorsChunk, AllGarblingTableCommitments,
     ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
     CircuitInputShares, CommitMsgChunk, CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds,
     OpenedOutputShares, PubKey, ReservedSetupInputShares, SecretKey, Sighash, Signature,
@@ -192,7 +192,7 @@ fn arb_adaptor_msg_chunk() -> impl Strategy<Value = AdaptorMsgChunk> {
         AdaptorMsgChunk {
             chunk_index: (seed % 4) as u8,
             deposit_adaptor: single_adaptor,
-            withdrawal_adaptors: AdaptorMsgChunkWithdrawals::new(|_| {
+            withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {
                 WideLabelWireAdaptors::new(|_| single_adaptor)
             }),
         }

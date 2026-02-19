@@ -10,7 +10,10 @@ pub struct DepositState {
 
 #[derive(Debug)]
 pub enum DepositStep {
-    GeneratingAdaptors,
+    GeneratingAdaptors {
+        deposit: bool,
+        withdrawal_chunks: HeapArray<bool, N_ADAPTOR_MSG_CHUNKS>,
+    },
     /// Sending adaptor message chunks to the garbler.
     /// Transitions to `DepositReady` when all chunks are acked.
     SendingAdaptors {

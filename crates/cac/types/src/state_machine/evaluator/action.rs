@@ -3,7 +3,7 @@ use mosaic_vs3::Index;
 
 use crate::{
     AdaptorMsgChunk, ChallengeMsg, CircuitOutputShare, DepositAdaptors, DepositId, GarblingSeed,
-    GarblingTableCommitment, WithdrawalAdaptors,
+    GarblingTableCommitment, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -29,10 +29,12 @@ pub enum ActionId {
     VerifyOpenedInputShares,
     /// Identifies a [`Action::GenerateTableCommitment`] action by circuit index.
     GenerateTableCommitment(Index),
-    /// Identifies a [`Action::ReceiveGarblingTables`] action.
+    /// Identifies a [`Action::ReceiveGarblingTable`] action by garbling table commitment.
     ReceiveGarblingTable(GarblingTableCommitment),
-    /// Identifies a [`Action::DepositGenerateAdaptors`] action by deposit.
-    DepositGenerateAdaptors(DepositId),
+    /// Identifies a [`Action::GenerateDepositAdaptors`] action by deposit.
+    GenerateDepositAdaptors(DepositId),
+    /// Identifies a [`Action::GenerateWithdrawalAdaptorsChunk`] action by deposit and chunk index.
+    GenerateWithdrawalAdaptorsChunk(DepositId, u8),
     /// Identifies a [`Action::DepositSendAdaptorMsgChunk`] action by deposit
     /// and chunk index.
     DepositSendAdaptorMsgChunk(DepositId, u8),
@@ -71,8 +73,10 @@ pub enum ActionResult {
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Garbling table received from garbler and verified.
     GarblingTableReceived(Index, GarblingTableCommitment),
-    /// Adaptor signatures were generated for deposit and withdrawal wires.
-    DepositAdaptorsGenerated(DepositId, DepositAdaptors, WithdrawalAdaptors),
+    /// Adaptor signatures were generated for deposit wires.
+    DepositAdaptorsGenerated(DepositId, DepositAdaptors),
+    /// Adaptor signatures were generated for a chunk of withdrawal wires.
+    WithdrawalAdaptorsChunkGenerated(DepositId, ChunkIndex, WithdrawalAdaptorsChunk),
     /// Adaptor message chunk was sent to the garbler.
     DepositAdaptorChunkSent(DepositId),
     /// Garbling table evaluation completed.
@@ -97,8 +101,10 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
     ReceiveGarblingTable(GarblingTableCommitment),
-    /// Generate adaptors for a deposit.
-    DepositGenerateAdaptors(DepositId),
+    /// Generate adaptors of deposit wires for a deposit.
+    GenerateDepositAdaptors(DepositId),
+    /// Generate adaptors of a portion of withdrawal wires for a deposit.
+    GenerateWithdrawalAdaptorsChunk(DepositId, ChunkIndex),
     /// Send adaptor chunk for a deposit to garbler.
     DepositSendAdaptorMsgChunk(DepositId, AdaptorMsgChunk),
     /// Evaluate a single garbling table with provided inputs.
@@ -114,12 +120,29 @@ impl Action {
             Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
             Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
-            Self::DepositGenerateAdaptors(id) => ActionId::DepositGenerateAdaptors(*id),
+            Self::GenerateDepositAdaptors(id) => ActionId::GenerateDepositAdaptors(*id),
+            Self::GenerateWithdrawalAdaptorsChunk(id, chunk_index) => {
+                ActionId::GenerateWithdrawalAdaptorsChunk(*id, chunk_index.0)
+            }
             Self::DepositSendAdaptorMsgChunk(id, chunk) => {
                 ActionId::DepositSendAdaptorMsgChunk(*id, chunk.chunk_index)
             }
             Self::EvaluateGarblingTable(idx, _) => ActionId::EvaluateGarblingTable(*idx),
         }
+    }
+}
+
+// ============================================================================
+// Action data types
+// ============================================================================
+
+/// Index a chunk.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChunkIndex(pub u8);
+impl ChunkIndex {
+    /// Get inner chunk index.
+    pub fn get(&self) -> u8 {
+        self.0
     }
 }
 

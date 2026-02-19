@@ -10,9 +10,9 @@ use ark_serialize::{
 };
 
 use crate::{
-    Adaptor, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments, ChallengeIndices,
-    CircuitInputShares, OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, WideLabelWirePolynomialCommitments,
+    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
+    OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
+    WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -123,7 +123,7 @@ pub struct AdaptorMsgChunk {
     /// Single deposit adaptor for this chunk's deposit wire
     pub deposit_adaptor: Adaptor,
     /// Adaptor signatures for 41 withdrawal wires × 256 values each.
-    pub withdrawal_adaptors: AdaptorMsgChunkWithdrawals,
+    pub withdrawal_adaptors: WithdrawalAdaptorsChunk,
 }
 
 // ============================================================================

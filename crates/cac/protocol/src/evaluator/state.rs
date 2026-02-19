@@ -5,7 +5,8 @@ use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds,
     OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
-    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
+    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs,
 };
 
 use crate::evaluator::{deposit::DepositState, root_state::EvaluatorState};
@@ -68,10 +69,15 @@ pub trait StateRead {
         deposit_id: &DepositId,
     ) -> impl Future<Output = Result<DepositInputs, Self::Error>> + Send;
 
-    fn get_adaptors_for_deposit(
+    fn get_deposit_adaptors(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<(DepositAdaptors, WithdrawalAdaptors), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<DepositAdaptors, Self::Error>> + Send;
+
+    fn get_withdrawal_adaptors(
+        &self,
+        deposit_id: &DepositId,
+    ) -> impl Future<Output = Result<WithdrawalAdaptors, Self::Error>> + Send;
 
     fn get_withdrawal_inputs(
         &self,
@@ -151,11 +157,17 @@ pub trait StateMut: StateRead {
         inputs: &DepositInputs,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    fn put_adaptors_for_deposit(
+    fn put_deposit_adaptors(
         &mut self,
         deposit_id: &DepositId,
         deposit_adaptors: &DepositAdaptors,
-        withdrawal_adaptors: &WithdrawalAdaptors,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    fn put_withdrawal_adaptors_chunk(
+        &mut self,
+        deposit_id: &DepositId,
+        chunk_idx: u8,
+        withdrawal_adaptros: &WithdrawalAdaptorsChunk,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     fn put_withdrawal_inputs(

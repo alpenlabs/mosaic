@@ -103,7 +103,7 @@ pub type DepositAdaptors = HeapArray<Adaptor, N_DEPOSIT_INPUT_WIRES>;
 pub type WithdrawalAdaptors = HeapArray<WideLabelWireAdaptors, N_WITHDRAWAL_INPUT_WIRES>;
 /// Adaptor pre-signatures for withdrawal wires in a single chunk (41 wires × 256 values).
 /// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
-pub type AdaptorMsgChunkWithdrawals =
+pub type WithdrawalAdaptorsChunk =
     HeapArray<WideLabelWireAdaptors, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK>;
 
 /// Sighash used in transaction signing;
