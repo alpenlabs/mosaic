@@ -29,7 +29,7 @@ use ark_serialize::{
 /// assert_eq!(arr[50], 100);
 /// assert_eq!(arr.len(), 100);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HeapArray<T, const N: usize> {
     inner: Box<[T; N]>,
 }
@@ -183,6 +183,14 @@ impl<T: Default, const N: usize> Default for HeapArray<T, N> {
     #[inline]
     fn default() -> Self {
         Self::new(|_| T::default())
+    }
+}
+
+// Workaround for stack overflow on large sized arrays in derived [`Clone`] implementation.
+impl<T: Clone, const N: usize> Clone for HeapArray<T, N> {
+    #[inline]
+    fn clone(&self) -> Self {
+        HeapArray::from_vec(self.to_vec())
     }
 }
 
