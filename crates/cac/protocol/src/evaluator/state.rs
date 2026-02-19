@@ -44,7 +44,7 @@ pub trait StateRead {
 
     fn get_opened_input_shares(
         &self,
-    ) -> impl Future<Output = Result<Box<OpenedInputShares>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<OpenedInputShares, Self::Error>> + Send;
 
     fn get_reserved_setup_input_shares(
         &self,
@@ -61,7 +61,7 @@ pub trait StateRead {
     fn get_sighashes_for_deposit(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<Box<Sighashes>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Sighashes, Self::Error>> + Send;
 
     fn get_inputs_for_deposit(
         &self,
@@ -76,12 +76,12 @@ pub trait StateRead {
     fn get_withdrawal_inputs(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<Box<WithdrawalInputs>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<WithdrawalInputs, Self::Error>> + Send;
 
     fn get_completed_signatures(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<Box<CompletedSignatures>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<CompletedSignatures, Self::Error>> + Send;
 }
 
 pub trait StateMut: StateRead {

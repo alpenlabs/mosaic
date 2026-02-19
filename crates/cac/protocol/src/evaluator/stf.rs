@@ -57,7 +57,7 @@ pub(crate) async fn handle_event<S: StateMut>(
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::RecvCommitMsgHeader(commit_msg_header) => {
-            handle_commit_msg_header(&mut root_state, state, *commit_msg_header, actions).await?;
+            handle_commit_msg_header(&mut root_state, state, commit_msg_header, actions).await?;
         }
         Input::RecvCommitMsgChunk(commit_msg) => {
             handle_commit_msg_chunk(&mut root_state, state, commit_msg, actions).await?;
@@ -715,7 +715,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
 
 async fn handle_table_received<S: StateMut>(
     root_state: &mut EvaluatorState,
-    state: &mut S,
+    _state: &mut S,
     index: Index,
     table_commitment: GarblingTableCommitment,
 ) -> SMResult<()> {
@@ -757,7 +757,7 @@ pub(crate) async fn restore<S: StateRead>(
     state: &S,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    let mut root_state = state
+    let root_state = state
         .get_root_state()
         .await
         .map_err(SMError::storage)?
@@ -917,11 +917,11 @@ fn verify_reserved_setup_input_shares(
 fn get_opened_commitments(
     challenge_indices: &ChallengeIndices,
     garbling_commitments: &AllGarblingTableCommitments,
-) -> Box<OpenedGarblingTableCommitments> {
-    Box::new(std::array::from_fn(|i| {
+) -> OpenedGarblingTableCommitments {
+    HeapArray::new(|i| {
         let seed_idx = challenge_indices[i].get() - 1;
         garbling_commitments[seed_idx]
-    }))
+    })
 }
 
 fn is_sorted<T: Ord>(slice: &[T]) -> bool {

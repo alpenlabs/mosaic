@@ -39,7 +39,7 @@ pub type AllPolynomialCommitments = (InputPolynomialCommitments, OutputPolynomia
 /// Uses HeapArray for serialization derive macro support.
 pub type AllGarblingTableCommitments = HeapArray<GarblingTableCommitment, N_CIRCUITS>;
 /// Commitments for opened garbling tables.
-pub type OpenedGarblingTableCommitments = [GarblingTableCommitment; N_OPEN_CIRCUITS];
+pub type OpenedGarblingTableCommitments = HeapArray<GarblingTableCommitment, N_OPEN_CIRCUITS>;
 /// Commitments for eval garbling tables.
 pub type EvalGarblingTableCommitments = HeapArray<GarblingTableCommitment, N_EVAL_CIRCUITS>;
 

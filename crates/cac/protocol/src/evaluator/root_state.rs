@@ -4,10 +4,6 @@ use mosaic_cac_types::{
 };
 use mosaic_common::constants::{N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 
-use crate::StateContainer;
-
-pub type EvaluatorStateContainer<S> = StateContainer<EvaluatorState, S>;
-
 #[derive(Debug, Default)]
 pub struct EvaluatorState {
     pub(crate) config: Option<Config>,
@@ -49,7 +45,7 @@ pub enum Step {
     VerifyingTableCommitments {
         opened_indices: ChallengeIndices,
         opened_seeds: OpenedGarblingSeeds,
-        opened_commitments: Box<OpenedGarblingTableCommitments>,
+        opened_commitments: OpenedGarblingTableCommitments,
         verified: HeapArray<bool, N_OPEN_CIRCUITS>,
     },
     ReceivingGarblingTables {

@@ -32,7 +32,7 @@ pub enum Input {
     Init(EvaluatorInitData),
 
     /// Commit message header received from the garbler via network.
-    RecvCommitMsgHeader(Box<CommitMsgHeader>),
+    RecvCommitMsgHeader(CommitMsgHeader),
 
     /// Commit message chunk received from the garbler via network.
     RecvCommitMsgChunk(CommitMsgChunk),
@@ -77,9 +77,9 @@ pub struct EvaluatorDepositInitData {
     /// Secret key used to generate adaptors.
     pub sk: SecretKey,
     /// Sighashes to be signed using the adaptors.
-    pub sighashes: Box<Sighashes>,
+    pub sighashes: Sighashes,
     /// Deposit input wire values.
-    pub deposit_inputs: Box<DepositInputs>,
+    pub deposit_inputs: DepositInputs,
 }
 
 /// Data required to initiate a disputed withdrawal process.
@@ -87,7 +87,7 @@ pub struct EvaluatorDepositInitData {
 pub struct EvaluatorDisputedWithdrawalData {
     /// Withdrawal input wire values.
     // NOTE: this might not be required
-    pub withdrawal_inputs: Box<WithdrawalInputs>,
+    pub withdrawal_inputs: WithdrawalInputs,
     /// Completed adaptor signatures extracted from on-chain transaction.
-    pub signatures: Box<CompletedSignatures>,
+    pub signatures: CompletedSignatures,
 }
