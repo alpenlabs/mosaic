@@ -210,6 +210,11 @@ pub(crate) async fn handle_event<S: StateMut>(
         _ => return Err(SMError::UnexpectedInput),
     };
 
+    state
+        .put_root_state(&root_state)
+        .await
+        .map_err(SMError::storage)?;
+
     Ok(())
 }
 
@@ -468,6 +473,11 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         }
         _ => return Err(SMError::UnexpectedInput),
     };
+
+    state
+        .put_root_state(&root_state)
+        .await
+        .map_err(SMError::storage)?;
 
     Ok(())
 }
