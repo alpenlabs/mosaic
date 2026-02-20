@@ -8,7 +8,13 @@
 
 use std::{collections::HashSet, fmt, sync::Arc};
 
-use ed25519_dalek::{SigningKey, VerifyingKey, pkcs8::EncodePrivateKey};
+use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
+
+// Re-export peer identity types from svc-api so existing `crate::tls::PeerId` paths
+// and `use super::*` in tests continue to work.
+pub use mosaic_net_svc_api::peer_id::{
+    PeerId, peer_id_from_signing_key, peer_id_from_verifying_key,
+};
 use quinn::{ClientConfig, ServerConfig};
 use rustls::{
     DigitallySignedStruct, DistinguishedName, Error as TlsError, SignatureScheme,
@@ -17,19 +23,6 @@ use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime},
     server::danger::{ClientCertVerified, ClientCertVerifier},
 };
-
-/// Peer identity - 32-byte Ed25519 public key.
-pub type PeerId = [u8; 32];
-
-/// Extract PeerId from a verifying key.
-pub fn peer_id_from_verifying_key(key: &VerifyingKey) -> PeerId {
-    key.to_bytes()
-}
-
-/// Extract PeerId from a signing key.
-pub fn peer_id_from_signing_key(key: &SigningKey) -> PeerId {
-    peer_id_from_verifying_key(&key.verifying_key())
-}
 
 /// Generate a self-signed certificate from an Ed25519 signing key.
 ///
@@ -340,7 +333,7 @@ mod tests {
         let verifying_key = signing_key.verifying_key();
 
         assert_eq!(peer_id, peer_id_from_verifying_key(&verifying_key));
-        assert_eq!(peer_id, verifying_key.to_bytes());
+        assert_eq!(*peer_id.as_bytes(), verifying_key.to_bytes());
     }
 
     #[test]

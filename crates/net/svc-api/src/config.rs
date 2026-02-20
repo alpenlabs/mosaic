@@ -1,14 +1,14 @@
 //! Network service configuration.
 //!
 //! This module contains the configuration types for the network service.
-//! The configuration is static - peers are known at startup and cannot be
+//! The configuration is static — peers are known at startup and cannot be
 //! added or removed at runtime.
 
 use std::net::SocketAddr;
 
 use ed25519_dalek::SigningKey;
 
-use crate::tls::PeerId;
+use crate::peer_id::{PeerId, peer_id_from_signing_key};
 
 /// Configuration for a known peer.
 #[derive(Debug, Clone)]
@@ -96,7 +96,7 @@ impl NetServiceConfig {
 
     /// Get our peer ID (derived from signing key).
     pub fn our_peer_id(&self) -> PeerId {
-        crate::tls::peer_id_from_signing_key(&self.signing_key)
+        peer_id_from_signing_key(&self.signing_key)
     }
 }
 
@@ -122,7 +122,7 @@ mod tests {
     }
 
     fn test_peer_id(seed: u8) -> PeerId {
-        [seed; 32]
+        PeerId::from_bytes([seed; 32])
     }
 
     #[test]
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn our_peer_id_works() {
         let signing_key = test_signing_key();
-        let expected = crate::tls::peer_id_from_signing_key(&signing_key);
+        let expected = peer_id_from_signing_key(&signing_key);
 
         let config = NetServiceConfig::new(signing_key, "127.0.0.1:9000".parse().unwrap(), vec![]);
 

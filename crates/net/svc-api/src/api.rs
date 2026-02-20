@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use kanal::{AsyncReceiver, AsyncSender};
 
-use crate::{config::NetServiceConfig, tls::PeerId};
+use crate::{config::NetServiceConfig, peer_id::PeerId};
 
 /// A buffer for payload data.
 ///
@@ -21,7 +21,11 @@ pub type PayloadBuf = Vec<u8>;
 // ============================================================================
 
 /// Request sent to net-svc for stream operations.
-pub(crate) enum StreamRequest {
+///
+/// This type is an implementation detail shared between the API and
+/// the service backend. It is not intended for external use.
+#[doc(hidden)]
+pub enum StreamRequest {
     /// Write a buffer to the stream.
     Write { buf: PayloadBuf },
     /// Set the stream's send priority.
@@ -109,8 +113,9 @@ impl Stream {
     /// Create a new stream handle.
     ///
     /// This is called internally by the network service when a stream is
-    /// opened or accepted.
-    pub(crate) fn new(
+    /// opened or accepted. **Not intended for external use.**
+    #[doc(hidden)]
+    pub fn new(
         peer: PeerId,
         payload_rx: AsyncReceiver<PayloadBuf>,
         request_tx: AsyncSender<StreamRequest>,
@@ -281,7 +286,10 @@ pub struct NetServiceHandle {
 
 impl NetServiceHandle {
     /// Create a new handle.
-    pub(crate) fn new(
+    ///
+    /// This is called internally by `NetService`. **Not intended for external use.**
+    #[doc(hidden)]
+    pub fn new(
         config: Arc<NetServiceConfig>,
         command_tx: AsyncSender<NetCommand>,
         protocol_stream_rx: AsyncReceiver<Stream>,
@@ -464,25 +472,45 @@ impl Drop for BulkTransferExpectation {
 // ============================================================================
 
 /// Commands sent to the network service.
-pub(crate) enum NetCommand {
+///
+/// This type is an implementation detail shared between the API and
+/// the service backend. It is not intended for external use.
+#[doc(hidden)]
+pub enum NetCommand {
+    /// Open a protocol stream to a peer.
     OpenProtocolStream {
+        /// Target peer.
         peer: PeerId,
+        /// Stream priority.
         priority: i32,
+        /// Channel to send the result back on.
         respond_to: AsyncSender<Result<Stream, OpenStreamError>>,
     },
+    /// Open a bulk transfer stream to a peer.
     OpenBulkStream {
+        /// Target peer.
         peer: PeerId,
+        /// 32-byte routing identifier.
         identifier: [u8; 32],
+        /// Stream priority.
         priority: i32,
+        /// Channel to send the result back on.
         respond_to: AsyncSender<Result<Stream, OpenStreamError>>,
     },
+    /// Register to receive a bulk transfer.
     ExpectBulkTransfer {
+        /// Source peer.
         peer: PeerId,
+        /// 32-byte routing identifier.
         identifier: [u8; 32],
+        /// Channel to send the result back on.
         respond_to: AsyncSender<Result<AsyncReceiver<Stream>, ExpectError>>,
     },
+    /// Cancel a previously registered bulk transfer expectation.
     CancelBulkTransfer {
+        /// Source peer.
         peer: PeerId,
+        /// 32-byte routing identifier.
         identifier: [u8; 32],
     },
 }

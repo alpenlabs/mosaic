@@ -36,7 +36,8 @@ Key insight: Jobs handle all outgoing traffic. Incoming protocol messages go to 
 
 - `crates/cac/protocol/` — GarblerSM and EvaluatorSM implementations
 - `crates/cac/types/` — Protocol message types, SM inputs/actions
-- `crates/net-svc/` — QUIC networking service
-- `crates/net-wire/` — Wire format (framing, stream headers)
-- `crates/net-types/` — Typed message layer (WIP)
+- `crates/net/svc-api/` — Public API types for the network service (PeerId, Stream, config, handles)
+- `crates/net/svc/` — QUIC networking service implementation (depends on svc-api)
+- `crates/net/client/` — High-level typed client for protocol messages (depends on svc-api)
+- `crates/net/wire/` — Wire format (framing, stream headers)
 - `crates/state-machine/` — FASM framework, executor

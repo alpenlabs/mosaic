@@ -1,9 +1,9 @@
 [package]
-name = "mosaic-job-types"
+name = "mosaic-job-api"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description.workspace = true
+description = "API types for the Mosaic job scheduler"
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
@@ -11,8 +11,10 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-serde.workspace = true
-tokio-util.workspace = true
+mosaic-cac-types.workspace = true
+mosaic-net-svc-api.workspace = true
+
+kanal = "0.1.1"
 
 [lints]
 workspace = true

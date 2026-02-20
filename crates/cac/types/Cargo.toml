@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
 mosaic-heap-array.workspace = true
 mosaic-vs3.workspace = true
 

@@ -28,7 +28,7 @@ toml-check-fmt:
 
 # Rust unit tests with `cargo-nextest`
 unit-test:
-  cargo --locked nextest run --all-features --workspace
+  cargo --locked nextest run --all-features --workspace --release
 
 # Rust documentation tests
 doctest:

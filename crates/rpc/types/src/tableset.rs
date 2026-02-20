@@ -1,5 +1,5 @@
 use mosaic_cac_proto_types::{CacRole, SetupWireInputs, TablesetInstanceId};
-use mosaic_common::PeerId;
+use mosaic_net_svc_api::PeerId;
 use serde::{Deserialize, Serialize};
 
 use crate::CacParams;

@@ -45,7 +45,7 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo --locked nextest run --all-features --workspace
+          cargo --locked nextest run --all-features --workspace --release
 
   doc:
     name: Run doc tests

@@ -44,18 +44,25 @@
 //! - **Protocol streams**: For control messages (normal priority)
 //! - **Bulk transfer streams**: For large data transfers (low priority, routed by identifier)
 
-pub mod api;
+// Re-export API modules from svc-api so existing `mosaic_net_svc::api::*`
+// and `mosaic_net_svc::config::*` paths continue to work.
+pub use mosaic_net_svc_api::api;
+pub use mosaic_net_svc_api::config;
+pub use mosaic_net_svc_api::peer_id;
+
+// Local modules that remain in this crate.
 pub mod close_codes;
-pub mod config;
 pub mod svc;
 pub mod tls;
 
-// Re-export main types for convenience
-pub use api::{NetServiceHandle, Stream, StreamClosed};
-pub use config::{NetServiceConfig, PeerConfig};
+// Re-export main API types for convenience.
+pub use mosaic_net_svc_api::{
+    BulkTransferExpectation, ExpectError, NetServiceConfig, NetServiceHandle, OpenStreamError,
+    PayloadBuf, PeerConfig, PeerId, Stream, StreamClosed, peer_id_from_signing_key,
+    peer_id_from_verifying_key,
+};
 pub use mosaic_net_wire::FrameLimits;
 pub use svc::{NetService, NetServiceController, ServiceError};
-pub use tls::PeerId;
 
 #[cfg(test)]
 mod tests {

@@ -1,9 +1,9 @@
 [package]
-name = "jobs"
+name = "mosaic-net-svc-api"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description.workspace = true
+description = "Public API types for the Mosaic network service"
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
@@ -11,8 +11,10 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+ed25519-dalek = "2"
+hex = "0.4"
 kanal = "0.1.1"
-monoio = "0.2.4"
+serde = { version = "1.0", features = ["derive"] }
 
 # [lints]
 # workspace = true
