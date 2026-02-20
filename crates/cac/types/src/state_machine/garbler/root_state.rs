@@ -10,7 +10,7 @@ use crate::{
 /// Root state for the garbler in the setup protocol.
 ///
 /// Contains the configuration and current step in the protocol state machine.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GarblerState {
     /// Immutable garbler config set at init.
     pub config: Option<Config>,
@@ -18,23 +18,8 @@ pub struct GarblerState {
     pub step: Step,
 }
 
-impl GarblerState {
-    /// Initialize to an empty state.
-    pub fn init_empty() -> Self {
-        Self {
-            config: None,
-            step: Step::Uninit,
-        }
-    }
-
-    /// Returns a mutable reference to the current step.
-    pub fn step_mut(&mut self) -> &mut Step {
-        &mut self.step
-    }
-}
-
 /// Immutable state that is set during init and never updated
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
     /// Seed for deterministic rng.
     pub seed: Seed,

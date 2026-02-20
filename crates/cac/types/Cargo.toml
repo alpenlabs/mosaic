@@ -22,12 +22,12 @@ ark-ff.workspace = true
 ark-serialize.workspace = true
 fasm.workspace = true
 futures.workspace = true
+rand.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
-rand.workspace = true
 
 [[bench]]
 name = "serde"

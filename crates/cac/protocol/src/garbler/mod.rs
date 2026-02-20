@@ -7,6 +7,8 @@ use mosaic_cac_types::state_machine::garbler::{
 };
 
 mod stf;
+#[cfg(test)]
+mod tests;
 
 use crate::SMError;
 

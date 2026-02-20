@@ -73,6 +73,7 @@ mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
 # mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
 mosaic-storage-api = { path = "crates/storage/api" }
+mosaic-storage-inmemory = { path = "crates/storage/inmemory" }
 mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
 
