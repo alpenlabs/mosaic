@@ -15,11 +15,11 @@ use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 use proptest::prelude::*;
 
 use crate::{
-    Adaptor, AdaptorMsgChunk, WithdrawalAdaptorsChunk, AllGarblingTableCommitments,
-    ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
-    CircuitInputShares, CommitMsgChunk, CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds,
-    OpenedOutputShares, PubKey, ReservedSetupInputShares, SecretKey, Sighash, Signature,
-    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+    Adaptor, AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CommitMsgChunk,
+    CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds, OpenedOutputShares, PubKey,
+    ReservedSetupInputShares, SecretKey, Sighash, Signature, WideLabelWireAdaptors,
+    WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptorsChunk,
 };
 
 /// Helper to perform a serialization roundtrip and verify equality.
@@ -94,13 +94,13 @@ fn arb_share() -> impl Strategy<Value = Share> {
 
 /// Generate a random Adaptor.
 fn arb_adaptor() -> impl Strategy<Value = Adaptor> {
-    (arb_scalar(), arb_point(), arb_point()).prop_map(|(tweaked_s, tweaked_r, share_commitment)| {
-        Adaptor {
+    (arb_scalar(), arb_point(), arb_point()).prop_map(
+        |(tweaked_s, r_dash_commit, share_commitment)| Adaptor {
             tweaked_s,
-            tweaked_r,
+            R_dash_commit: r_dash_commit,
             share_commitment,
-        }
-    })
+        },
+    )
 }
 
 /// Generate a random Polynomial.
@@ -119,7 +119,7 @@ fn arb_polynomial_commitment() -> impl Strategy<Value = PolynomialCommitment> {
 
 /// Generate a random Signature.
 fn arb_signature() -> impl Strategy<Value = Signature> {
-    (arb_scalar(), arb_point()).prop_map(|(s, r)| Signature { s, r })
+    (arb_scalar(), arb_point()).prop_map(|(s, r)| Signature { s, r: r.x })
 }
 
 // =============================================================================
@@ -185,7 +185,7 @@ fn arb_adaptor_msg_chunk() -> impl Strategy<Value = AdaptorMsgChunk> {
 
         let single_adaptor = Adaptor {
             tweaked_s: scalar,
-            tweaked_r: point,
+            R_dash_commit: point,
             share_commitment: point,
         };
 
