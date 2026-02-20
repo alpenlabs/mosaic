@@ -452,7 +452,10 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
             let config = require_config(root_state)?;
 
             // NOTE: 0 is reserved index
-            emit(actions, Action::GenerateShares(Index::reserved()));
+            emit(
+                actions,
+                Action::GenerateShares(config.seed, Index::reserved()),
+            );
             for idx in 1..N_CIRCUITS + 1 {
                 let index = Index::new(idx).expect("valid ckt index");
                 emit(actions, Action::GenerateShares(config.seed, index));

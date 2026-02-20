@@ -310,7 +310,8 @@ impl Classify for EvaluatorAction {
 
             // Heavy (everything else)
             Self::VerifyOpenedInputShares
-            | Self::DepositGenerateAdaptors(_)
+            | Self::GenerateDepositAdaptors(_)
+            | Self::GenerateWithdrawalAdaptorsChunk(..)
             | Self::EvaluateGarblingTable(..) => ActionCategory::Heavy,
 
             // Non-exhaustive fallback
@@ -324,9 +325,9 @@ impl Classify for EvaluatorAction {
             Self::EvaluateGarblingTable(..) => Priority::Critical,
 
             // Deposit — High
-            Self::DepositGenerateAdaptors(_) | Self::DepositSendAdaptorMsgChunk(..) => {
-                Priority::High
-            }
+            Self::GenerateDepositAdaptors(_)
+            | Self::GenerateWithdrawalAdaptorsChunk(..)
+            | Self::DepositSendAdaptorMsgChunk(..) => Priority::High,
 
             // Setup / everything else — Normal
             _ => Priority::Normal,

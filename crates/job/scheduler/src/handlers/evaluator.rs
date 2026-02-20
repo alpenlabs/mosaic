@@ -6,7 +6,7 @@
 
 use mosaic_cac_types::{
     GarblingTableCommitment,
-    state_machine::evaluator::{Action, ActionId, ActionResult},
+    state_machine::evaluator::{Action, ActionId, ActionResult, ChunkIndex},
 };
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
@@ -40,7 +40,12 @@ pub(crate) async fn execute(
         }
 
         // ── Heavy (Deposit) ─────────────────────────────────────────
-        Action::DepositGenerateAdaptors(deposit_id) => generate_adaptors(ctx, deposit_id).await,
+        Action::GenerateDepositAdaptors(deposit_id) => {
+            generate_deposit_adaptors(ctx, deposit_id).await
+        }
+        Action::GenerateWithdrawalAdaptorsChunk(deposit_id, chunk_idx) => {
+            generate_withdrawal_adaptors(ctx, deposit_id, chunk_idx).await
+        }
 
         // ── Light (Deposit Network I/O) ─────────────────────────────
         Action::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
@@ -167,11 +172,21 @@ async fn receive_garbling_table(
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn generate_adaptors(
+async fn generate_deposit_adaptors(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
 ) -> ActionCompletion {
     // TODO: generate adaptor signatures for deposit and withdrawal input wires
+    //       using evaluator's secret key and input share commitments
+    unimplemented!()
+}
+
+async fn generate_withdrawal_adaptors(
+    _ctx: &HandlerContext,
+    _deposit_id: mosaic_cac_types::DepositId,
+    _chunk_idx: ChunkIndex,
+) -> ActionCompletion {
+    // TODO: generate adaptor signatures for withdrawal input wires
     //       using evaluator's secret key and input share commitments
     unimplemented!()
 }
