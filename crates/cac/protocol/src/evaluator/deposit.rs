@@ -1,14 +1,14 @@
 use mosaic_cac_types::{HeapArray, SecretKey};
 use mosaic_common::constants::N_ADAPTOR_MSG_CHUNKS;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(dead_code)]
 pub struct DepositState {
     pub(crate) step: DepositStep,
     pub(crate) sk: SecretKey,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepositStep {
     GeneratingAdaptors {
         deposit: bool,
@@ -25,4 +25,13 @@ pub enum DepositStep {
     Aborted {
         reason: String,
     },
+}
+
+impl Default for DepositStep {
+    fn default() -> Self {
+        DepositStep::GeneratingAdaptors {
+            deposit: false,
+            withdrawal_chunks: HeapArray::from_elem(false),
+        }
+    }
 }
