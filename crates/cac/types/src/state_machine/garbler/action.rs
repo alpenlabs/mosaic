@@ -4,7 +4,7 @@ use mosaic_vs3::Index;
 use crate::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
     CommitMsgChunk, CommitMsgHeader, CompletedSignatures, DepositId, GarblingSeed,
-    GarblingTableCommitment, Seed, WideLabelWirePolynomialCommitments,
+    GarblingTableCommitment, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
 };
 
 // ============================================================================
@@ -71,7 +71,7 @@ impl PartialOrd for ActionId {
 #[non_exhaustive]
 pub enum ActionResult {
     /// Polynomial commitments were generated from the base seed.
-    PolynomialCommitmentsGenerated(Wire, WideLabelWirePolynomialCommitments),
+    PolynomialCommitmentsGenerated(GeneratedPolynomialCommitments),
     /// Input and output shares were generated for a circuit.
     SharesGenerated(Index, CircuitInputShares, CircuitOutputShare),
     /// Garbling table commitment was generated for a circuit.
@@ -153,11 +153,16 @@ impl Action {
 
 /// Identifies an input or output wire.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Wire {
-    /// Input wire at index
-    Input(u16),
-    /// Output wire
-    Output,
+pub enum GeneratedPolynomialCommitments {
+    /// Polynomial commitments for all wide label values for an input wire.
+    Input {
+        /// Input wire index (0..N_INPUT_WIRES).
+        wire: u16,
+        /// Polynomial commitments for all wide label values for this wire.
+        commitments: WideLabelWirePolynomialCommitments,
+    },
+    /// Polynomial commitment for false value (0) of output wire.
+    Output(OutputPolynomialCommitment),
 }
 
 // ============================================================================

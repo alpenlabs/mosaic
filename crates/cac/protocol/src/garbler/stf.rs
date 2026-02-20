@@ -6,8 +6,7 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
     CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
     EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    InputShares, OutputShares, Seed, SetupInputs, WideLabelWirePolynomialCommitments,
-    state_machine::garbler::*,
+    InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
 };
 use mosaic_common::constants::N_CIRCUITS;
 
@@ -231,15 +230,9 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         .ok_or_else(|| SMError::MissingRootState)?;
 
     match result {
-        ActionResult::PolynomialCommitmentsGenerated(wire, commitments) => {
-            handle_polynomial_commitments_generated(
-                &mut root_state,
-                state,
-                wire,
-                commitments,
-                actions,
-            )
-            .await?;
+        ActionResult::PolynomialCommitmentsGenerated(generated) => {
+            handle_polynomial_commitments_generated(&mut root_state, state, generated, actions)
+                .await?;
         }
         ActionResult::SharesGenerated(index, input_shares, output_share) => {
             handle_shares_generated(
@@ -419,34 +412,31 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 async fn handle_polynomial_commitments_generated<S: StateMut>(
     root_state: &mut GarblerState,
     state: &mut S,
-    wire: Wire,
-    commitments: WideLabelWirePolynomialCommitments,
+    generated: GeneratedPolynomialCommitments,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::GeneratingPolynomialCommitments { inputs, output } => {
-            match wire {
-                Wire::Input(input_idx) => {
-                    let Some(&seen) = inputs.get(input_idx as usize) else {
+            match generated {
+                GeneratedPolynomialCommitments::Input { wire, commitments } => {
+                    let Some(&seen) = inputs.get(wire as usize) else {
                         return Err(SMError::invalid_input_data());
                     };
                     if seen {
                         // already seen
                         return Err(SMError::duplicate_action());
                     }
-                    inputs[input_idx as usize] = true;
+                    inputs[wire as usize] = true;
                     state
-                        .put_input_polynomial_commitments_chunk(input_idx, &commitments)
+                        .put_input_polynomial_commitments_chunk(wire, &commitments)
                         .await
                         .map_err(SMError::storage)?;
                 }
-                Wire::Output => {
+                GeneratedPolynomialCommitments::Output(output_commitment) => {
                     if *output {
                         // already seen
                         return Err(SMError::duplicate_action());
                     }
-                    // TODO: maybe use a separate input to send this one
-                    let output_commitment = HeapArray::from_elem(commitments[0].clone());
                     state
                         .put_output_polynomial_commitment(&output_commitment)
                         .await
