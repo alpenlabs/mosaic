@@ -13,6 +13,7 @@ use crate::{
 
 /// Read-only access to evaluator state storage.
 pub trait StateRead {
+    /// Error type used by state operations.
     type Error: Error + Debug + 'static;
 
     /// Retrieves the root evaluator state.

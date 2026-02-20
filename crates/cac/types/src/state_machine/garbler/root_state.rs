@@ -7,9 +7,14 @@ use crate::{
     SetupInputs,
 };
 
+/// Root state for the garbler in the setup protocol.
+///
+/// Contains the configuration and current step in the protocol state machine.
 #[derive(Debug, Clone, Default)]
 pub struct GarblerState {
+    /// Immutable garbler config set at init.
     pub config: Option<Config>,
+    /// Current step in the state machine.
     pub step: Step,
 }
 
@@ -22,6 +27,7 @@ impl GarblerState {
         }
     }
 
+    /// Returns a mutable reference to the current step.
     pub fn step_mut(&mut self) -> &mut Step {
         &mut self.step
     }
@@ -30,7 +36,9 @@ impl GarblerState {
 /// Immutable state that is set during init and never updated
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
+    /// Seed for deterministic rng.
     pub seed: Seed,
+    /// Values for setup input wires.
     pub setup_inputs: SetupInputs,
 }
 
@@ -45,16 +53,20 @@ pub enum Step {
     GeneratingPolynomialCommitments {
         /// Track generated input polynomial commitments.
         inputs: HeapArray<bool, N_INPUT_WIRES>,
+        /// Track whether output polynomial commitment has been generated.
         output: bool,
     },
     /// Generate shares for all tables.
     GeneratingShares {
+        /// Track which shares have been generated.
         generated: HeapArray<bool, { N_CIRCUITS + 1 }>,
     },
     /// Dispatch actions to generate commitments.
     /// Wait for all table commitments to be provided.
     GeneratingTableCommitments {
+        /// Seeds for all garbling operations.
         seeds: AllGarblingSeeds,
+        /// Track which table commitments have been generated.
         generated: HeapArray<bool, N_CIRCUITS>,
     },
     /// Got table commitments, sending commit msg chunks.
