@@ -21,6 +21,7 @@ ark-ec.workspace = true
 ark-ff.workspace = true
 ark-serialize.workspace = true
 fasm.workspace = true
+futures.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]

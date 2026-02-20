@@ -1,15 +1,15 @@
 use std::{error::Error, fmt::Debug};
 
 use futures::Stream;
-use mosaic_cac_types::{
+
+use super::{DepositState, GarblerState};
+use crate::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
     CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs,
     GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
     OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
 };
-
-use crate::garbler::{deposit::DepositState, root_state::GarblerState};
 
 pub trait StateRead {
     type Error: Error + Debug + 'static;

@@ -5,12 +5,12 @@ mod state_read;
 
 use std::collections::{BTreeMap, HashMap};
 
-use mosaic_cac_protocol::evaluator::{deposit::DepositState, root_state::EvaluatorState};
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, OpenedGarblingSeeds, OpenedOutputShares,
     OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    state_machine::evaluator::{DepositState, EvaluatorState},
 };
 
 use crate::error::DbError;

@@ -1,15 +1,16 @@
-use mosaic_cac_types::{
-    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, HeapArray, Seed,
-    SetupInputs,
-};
 use mosaic_common::constants::{
     N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_INPUT_WIRES,
 };
 
+use crate::{
+    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, HeapArray, Seed,
+    SetupInputs,
+};
+
 #[derive(Debug, Clone, Default)]
 pub struct GarblerState {
-    pub(crate) config: Option<Config>,
-    pub(crate) step: Step,
+    pub config: Option<Config>,
+    pub step: Step,
 }
 
 impl GarblerState {
@@ -29,8 +30,8 @@ impl GarblerState {
 /// Immutable state that is set during init and never updated
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
-    pub(crate) seed: Seed,
-    pub(crate) setup_inputs: SetupInputs,
+    pub seed: Seed,
+    pub setup_inputs: SetupInputs,
 }
 
 /// Valid states.

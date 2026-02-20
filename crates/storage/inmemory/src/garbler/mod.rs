@@ -2,16 +2,14 @@
 
 mod state_mut;
 mod state_read;
-#[cfg(test)]
-mod test;
 
 use std::collections::{BTreeMap, HashMap};
 
-use mosaic_cac_protocol::garbler::{deposit::DepositState, root_state::GarblerState};
 use mosaic_cac_types::{
     Adaptor, ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures,
     DepositId, DepositInputs, GarblingTableCommitment, OutputPolynomialCommitment, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    state_machine::garbler::{DepositState, GarblerState},
 };
 
 use crate::error::DbError;

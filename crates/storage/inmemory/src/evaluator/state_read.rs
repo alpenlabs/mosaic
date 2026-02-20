@@ -2,14 +2,12 @@ use futures::{
     Stream,
     stream::{self, StreamExt},
 };
-use mosaic_cac_protocol::evaluator::{
-    deposit::DepositState, root_state::EvaluatorState, state::StateRead,
-};
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors, DepositId,
     DepositInputs, HeapArray, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
     OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
     WithdrawalAdaptors, WithdrawalInputs,
+    state_machine::evaluator::{DepositState, EvaluatorState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_INPUT_WIRES};
 

@@ -1,5 +1,6 @@
-use mosaic_cac_types::{HeapArray, PubKey};
 use mosaic_common::constants::N_ADAPTOR_MSG_CHUNKS;
+
+use crate::{HeapArray, PubKey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepositStep {

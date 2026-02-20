@@ -1,11 +1,9 @@
-use mosaic_cac_protocol::evaluator::{
-    deposit::DepositState, root_state::EvaluatorState, state::StateMut,
-};
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, OpenedGarblingSeeds, OpenedOutputShares,
     OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    state_machine::evaluator::{DepositState, EvaluatorState, StateMut},
 };
 
 use super::StoredEvaluatorState;

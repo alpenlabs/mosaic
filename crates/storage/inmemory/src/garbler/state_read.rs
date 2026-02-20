@@ -2,14 +2,12 @@ use futures::{
     Stream,
     stream::{self, StreamExt},
 };
-use mosaic_cac_protocol::garbler::{
-    deposit::DepositState, root_state::GarblerState, state::StateRead,
-};
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors, DepositId,
     DepositInputs, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
     InputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WithdrawalAdaptors, WithdrawalInputs,
+    state_machine::garbler::{DepositState, GarblerState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
 

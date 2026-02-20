@@ -6,6 +6,10 @@ use thiserror::Error;
 /// Errors that can occur during database operations.
 #[derive(Debug, Error)]
 pub enum DbError {
+    /// Received unexpected reserved index 0.
+    #[error("Received unexpected Index(0)")]
+    UnexpectedZeroIndex,
+
     /// Received input for unknown deposit id.
     #[error("Received input for unknown deposit id: {0}")]
     UnknownDeposit(DepositId),

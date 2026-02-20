@@ -1,13 +1,12 @@
-use mosaic_cac_protocol::garbler::{
-    deposit::DepositState, root_state::GarblerState, state::StateMut,
-};
 use mosaic_cac_types::{
     AdaptorMsgChunk, ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures,
     DepositId, DepositInputs, GarblingTableCommitment, Index, OutputPolynomialCommitment,
     Sighashes, WideLabelWirePolynomialCommitments, WithdrawalInputs,
+    state_machine::garbler::{DepositState, GarblerState, StateMut},
 };
 
 use super::StoredGarblerState;
+use crate::error::DbError;
 
 impl StateMut for StoredGarblerState {
     async fn put_root_state(&mut self, state: &GarblerState) -> Result<(), Self::Error> {
@@ -59,7 +58,11 @@ impl StateMut for StoredGarblerState {
         index: Index,
         commitments: &GarblingTableCommitment,
     ) -> Result<(), Self::Error> {
-        self.gt_commitments.insert(index.get(), *commitments);
+        let zero_offset_index = index
+            .get()
+            .checked_sub(1)
+            .ok_or(DbError::UnexpectedZeroIndex)?;
+        self.gt_commitments.insert(zero_offset_index, *commitments);
         Ok(())
     }
 

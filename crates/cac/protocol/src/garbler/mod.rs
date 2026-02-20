@@ -3,15 +3,12 @@ use std::marker::PhantomData;
 
 use fasm::{StateMachine, actions::Action as FasmAction};
 use mosaic_cac_types::state_machine::garbler::{
-    Action, ActionContainer, GarblerTrackedActionTypes, Input, UntrackedAction,
+    Action, ActionContainer, GarblerTrackedActionTypes, Input, StateMut, UntrackedAction,
 };
 
-pub mod deposit;
-pub mod root_state;
-pub mod state;
 mod stf;
 
-use crate::{SMError, garbler::state::StateMut};
+use crate::SMError;
 
 #[derive(Debug)]
 pub struct GarblerSM<S: StateMut> {

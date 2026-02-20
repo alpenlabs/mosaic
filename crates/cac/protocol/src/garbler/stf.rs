@@ -7,18 +7,11 @@ use mosaic_cac_types::{
     CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
     EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
     InputShares, OutputShares, Seed, SetupInputs, WideLabelWirePolynomialCommitments,
-    state_machine::garbler::{
-        Action, ActionContainer, ActionId, ActionResult, GarblerDepositInitData, Input, Wire,
-    },
+    state_machine::garbler::*,
 };
 use mosaic_common::constants::N_CIRCUITS;
 
-use super::{
-    deposit::{DepositState, DepositStep},
-    emit,
-    root_state::{Config, GarblerState as State, Step},
-    state::{StateMut, StateRead},
-};
+use super::emit;
 use crate::{ResultOptionExt, SMError, SMResult};
 
 // ============================================================================
@@ -424,7 +417,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 // ============================================================================
 
 async fn handle_polynomial_commitments_generated<S: StateMut>(
-    root_state: &mut State,
+    root_state: &mut GarblerState,
     state: &mut S,
     wire: Wire,
     commitments: WideLabelWirePolynomialCommitments,
@@ -484,7 +477,7 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
 }
 
 async fn handle_shares_generated<S: StateMut>(
-    root_state: &mut State,
+    root_state: &mut GarblerState,
     state: &mut S,
     index: Index,
     input_shares: CircuitInputShares,
@@ -532,7 +525,7 @@ async fn handle_shares_generated<S: StateMut>(
 }
 
 async fn handle_table_commitment_generated<S: StateMut>(
-    root_state: &mut State,
+    root_state: &mut GarblerState,
     state: &mut S,
     index: Index,
     commitment: GarblingTableCommitment,
@@ -594,7 +587,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
 }
 
 async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
-    root_state: &mut State,
+    root_state: &mut GarblerState,
     state: &mut S,
     deposit_id: DepositId,
     adaptor_msg_chunk: AdaptorMsgChunk,
@@ -781,6 +774,7 @@ pub(crate) async fn restore<S: StateRead>(
         }
         Step::SetupConsumed { .. } => {}
         Step::Aborted { .. } => {}
+        _ => unimplemented!(),
     };
 
     Ok(())
@@ -790,7 +784,7 @@ pub(crate) async fn restore<S: StateRead>(
 // Helper functions
 // ============================================================================
 
-fn require_config(state: &State) -> SMResult<&Config> {
+fn require_config(state: &GarblerState) -> SMResult<&Config> {
     state
         .config
         .as_ref()

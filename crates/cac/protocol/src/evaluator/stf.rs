@@ -7,23 +7,14 @@ use mosaic_cac_types::{
     DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
     GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
     OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors,
-    state_machine::evaluator::{
-        Action, ActionContainer, ActionId, ActionResult, ChunkIndex, EvaluatorDepositInitData,
-        EvaluatorDisputedWithdrawalData, Input,
-    },
+    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
 };
 
-use super::{
-    deposit::{DepositState, DepositStep},
-    emit,
-    root_state::{Config, EvaluatorState, EvaluatorState as State, Step},
-    state::StateMut,
-};
-use crate::{ResultOptionExt, SMError, SMResult, evaluator::state::StateRead};
+use super::emit;
+use crate::{ResultOptionExt, SMError, SMResult};
 
 // ============================================================================
 // External event handler
@@ -976,7 +967,7 @@ pub(crate) async fn restore<S: StateRead>(
 // Pure helper functions
 // ============================================================================
 
-fn require_config(state: &State) -> SMResult<&Config> {
+fn require_config(state: &EvaluatorState) -> SMResult<&Config> {
     state
         .config
         .as_ref()
