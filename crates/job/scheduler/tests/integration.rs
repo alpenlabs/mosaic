@@ -6,7 +6,7 @@
 //! tests. These tests exercise the API types and the `JobSchedulerHandle`
 //! channel contract directly.
 
-use mosaic_cac_types::state_machine::garbler::Action as GarblerAction;
+use mosaic_cac_types::state_machine::garbler::{Action as GarblerAction, Wire};
 use mosaic_job_api::{
     ActionCompletion, JobActions, JobBatch, JobCompletion, JobSchedulerHandle, SchedulerStopped,
 };
@@ -102,7 +102,7 @@ fn empty_evaluator_batch_properties() {
 #[test]
 fn garbler_batch_with_actions() {
     let batch = garbler_batch_with(vec![make_garbler_action(
-        GarblerAction::GeneratePolynomialCommitments(test_seed()),
+        GarblerAction::GeneratePolynomialCommitments(test_seed(), Wire::Output), // FIXME
     )]);
     assert!(batch.is_garbler());
     assert!(!batch.is_empty());
@@ -304,7 +304,7 @@ fn garbler_batch_roundtrip_through_channel() {
     block_on(async {
         let (tx, rx) = kanal::bounded_async::<JobBatch>(4);
 
-        let action = GarblerAction::GeneratePolynomialCommitments(test_seed());
+        let action = GarblerAction::GeneratePolynomialCommitments(test_seed(), Wire::Output); // FIXME
         let batch = garbler_batch_with(vec![make_garbler_action(action)]);
 
         assert_eq!(batch.len(), 1);

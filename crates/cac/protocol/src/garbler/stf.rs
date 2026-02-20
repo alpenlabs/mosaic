@@ -8,7 +8,7 @@ use mosaic_cac_types::{
     EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
     InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
 };
-use mosaic_common::constants::N_CIRCUITS;
+use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES};
 
 use super::emit;
 use crate::{ResultOptionExt, SMError, SMResult};
@@ -50,7 +50,19 @@ pub(crate) async fn handle_event<S: StateMut>(
                         output: false,
                     };
 
-                    emit(actions, Action::GeneratePolynomialCommitments(data.seed));
+                    emit(
+                        actions,
+                        Action::GeneratePolynomialCommitments(data.seed, Wire::Output),
+                    );
+                    for wire_idx in 0..N_INPUT_WIRES {
+                        emit(
+                            actions,
+                            Action::GeneratePolynomialCommitments(
+                                data.seed,
+                                Wire::Input(wire_idx as u16),
+                            ),
+                        );
+                    }
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -643,10 +655,27 @@ pub(crate) async fn restore<S: StateRead>(
 
     match &root_state.step {
         Step::Uninit => {}
-        Step::GeneratingPolynomialCommitments { .. } => {
+        Step::GeneratingPolynomialCommitments { inputs, output } => {
             let config = require_config(&root_state)?;
 
-            emit(actions, Action::GeneratePolynomialCommitments(config.seed));
+            if !output {
+                emit(
+                    actions,
+                    Action::GeneratePolynomialCommitments(config.seed, Wire::Output),
+                );
+            }
+            for (wire_idx, generated) in inputs.iter().enumerate() {
+                if *generated {
+                    continue;
+                }
+                emit(
+                    actions,
+                    Action::GeneratePolynomialCommitments(
+                        config.seed,
+                        Wire::Input(wire_idx as u16),
+                    ),
+                );
+            }
         }
         Step::GeneratingShares { generated } => {
             let config = require_config(&root_state)?;

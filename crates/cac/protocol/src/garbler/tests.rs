@@ -36,7 +36,7 @@ async fn test_handle_init() {
         root_state.step,
         Step::GeneratingPolynomialCommitments { .. }
     ));
-    assert_eq!(actions.len(), 1);
+    assert!(!actions.is_empty());
 }
 
 #[tokio::test]

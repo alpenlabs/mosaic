@@ -10,7 +10,7 @@ use mosaic_cac_types::{
     AllPolynomialCommitments, AllPolynomials, InputPolynomialCommitments, InputPolynomials,
     OutputPolynomial, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
     WideLabelWireShares,
-    state_machine::garbler::{Action, ActionId, ActionResult},
+    state_machine::garbler::{Action, ActionId, ActionResult, Wire},
 };
 use mosaic_common::constants::{N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT};
 use mosaic_heap_array::HeapArray;
@@ -33,8 +33,8 @@ pub(crate) async fn execute(
 ) -> ActionCompletion {
     match action {
         // ── Heavy (Setup) ───────────────────────────────────────────
-        Action::GeneratePolynomialCommitments(seed) => {
-            generate_polynomial_commitments(ctx, seed).await
+        Action::GeneratePolynomialCommitments(seed, wire) => {
+            generate_polynomial_commitments(ctx, seed, wire).await
         }
         Action::GenerateShares(seed, index) => generate_shares(ctx, seed, index).await,
 
@@ -70,7 +70,11 @@ pub(crate) async fn execute(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn generate_polynomial_commitments(_ctx: &HandlerContext, _seed: Seed) -> ActionCompletion {
+async fn generate_polynomial_commitments(
+    _ctx: &HandlerContext,
+    _seed: Seed,
+    _wire: Wire,
+) -> ActionCompletion {
     unimplemented!()
     // FIXME(@sapinb): update with new action, action result types
     // let polys = generate_polynomials_from_seed(seed);

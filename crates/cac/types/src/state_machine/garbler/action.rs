@@ -25,7 +25,7 @@ use crate::{
 #[non_exhaustive]
 pub enum ActionId {
     /// Identifies a [`Action::GeneratePolynomialCommitments`] action.
-    GeneratePolynomialCommitments(Seed),
+    GeneratePolynomialCommitments(Seed, Wire),
     /// Identifies a [`Action::GenerateShares`] action by circuit index.
     GenerateShares(Seed, Index),
     /// Identifies a [`Action::GenerateTableCommitment`] action by circuit index.
@@ -98,7 +98,7 @@ pub enum ActionResult {
 pub enum Action {
     /// Generate polynomials from the base seed, compute and return commitments.
     /// Polynomials are cached job-side for subsequent [`Self::GenerateShares`] calls.
-    GeneratePolynomialCommitments(Seed),
+    GeneratePolynomialCommitments(Seed, Wire),
     /// Generate input/output shares by evaluating polynomials at a circuit index.
     /// Reads polynomials from the job-side cache (falls back to regenerating from seed).
     GenerateShares(Seed, Index),
@@ -129,8 +129,8 @@ impl Action {
     /// its [`ActionResult`] when it completes.
     pub fn id(&self) -> ActionId {
         match self {
-            Self::GeneratePolynomialCommitments(seed) => {
-                ActionId::GeneratePolynomialCommitments(*seed)
+            Self::GeneratePolynomialCommitments(seed, wire) => {
+                ActionId::GeneratePolynomialCommitments(*seed, *wire)
             }
             Self::GenerateShares(seed, idx) => ActionId::GenerateShares(*seed, *idx),
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
@@ -150,6 +150,15 @@ impl Action {
 // ============================================================================
 // Action data types
 // ============================================================================
+
+/// Identifies an input or output wire
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wire {
+    /// Input wire index
+    Input(u16),
+    /// Output wire
+    Output,
+}
 
 /// Identifies an input or output wire.
 #[derive(Debug, PartialEq, Eq)]
