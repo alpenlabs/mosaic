@@ -5,8 +5,10 @@ use std::sync::LazyLock;
 use ark_ec::{PrimeGroup, scalar_mul::BatchMulPreprocessing};
 use ark_secp256k1::{Fr as Scalar, Projective as Point};
 
+use crate::N_COEFFICIENTS;
+
 /// Number of scalars that will be multiplied in parallel.
-const NUM_SCALARS: usize = 174;
+const NUM_SCALARS: usize = N_COEFFICIENTS - 1;
 
 /// Point scalar multiplication precomputation for G.
 static PRECOMP_G: LazyLock<BatchMulPreprocessing<Point>> =

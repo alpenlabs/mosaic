@@ -2,10 +2,10 @@
 
 use ark_ec::{PrimeGroup, scalar_mul::BatchMulPreprocessing};
 use ark_secp256k1::{Fr as Scalar, Projective as Point};
-use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS as N_COEFFICIENTS};
+use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS};
 use once_cell::sync::Lazy;
 
-/// TODO: @nakkstar123, @AaronFeickert: add comments on how this heuristic was designed
+const N_COEFFICIENTS: usize = N_OPEN_CIRCUITS+1;
 const APPROX_MULS: usize = N_INPUT_WIRES * N_COEFFICIENTS * 256;
 
 /// Single global precomputation for G.

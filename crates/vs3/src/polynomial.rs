@@ -4,10 +4,11 @@ use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
 use ckt_gobble::Label;
-use mosaic_common::constants::{N_CIRCUITS, N_OPEN_CIRCUITS as N_COEFFICIENTS};
+use mosaic_common::constants::N_CIRCUITS;
 use rand_chacha::rand_core::{CryptoRng, RngCore};
 
 use crate::{
+    N_COEFFICIENTS,
     error::Error,
     psm::{gen_batch_mul, gen_mul},
 };
