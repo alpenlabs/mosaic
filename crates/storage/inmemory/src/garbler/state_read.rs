@@ -78,7 +78,7 @@ impl StateRead for StoredGarblerState {
         }
 
         let mut input_shares_vec = Vec::new();
-        for ckt_idx in 1..N_CIRCUITS + 1 {
+        for ckt_idx in 0..N_CIRCUITS + 1 {
             let input_shares = self
                 .input_shares
                 .get(&ckt_idx)
@@ -96,7 +96,7 @@ impl StateRead for StoredGarblerState {
         }
 
         let mut output_shares_vec = Vec::new();
-        for ckt_idx in 1..N_CIRCUITS + 1 {
+        for ckt_idx in 0..N_CIRCUITS + 1 {
             let output_shares = self
                 .output_shares
                 .get(&ckt_idx)

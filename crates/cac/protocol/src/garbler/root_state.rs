@@ -48,7 +48,7 @@ pub enum Step {
     },
     /// Generate shares for all tables.
     GeneratingShares {
-        generated: HeapArray<bool, N_CIRCUITS>,
+        generated: HeapArray<bool, { N_CIRCUITS + 1 }>,
     },
     /// Dispatch actions to generate commitments.
     /// Wait for all table commitments to be provided.

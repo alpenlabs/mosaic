@@ -469,6 +469,7 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
             let config = require_config(root_state)?;
 
             // NOTE: 0 is reserved index
+            emit(actions, Action::GenerateShares(Index::reserved()));
             for idx in 1..N_CIRCUITS + 1 {
                 let index = Index::new(idx).expect("valid ckt index");
                 emit(actions, Action::GenerateShares(config.seed, index));
@@ -492,18 +493,13 @@ async fn handle_shares_generated<S: StateMut>(
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::GeneratingShares { generated } => {
-            // NOTE: ckt index and tracker index offset by 1
-            let tracker_idx = index.get().checked_sub(1).ok_or_else(|| {
-                // not expecting reserved (0) index
-                SMError::invalid_input_data()
-            })?;
-            if generated[tracker_idx] {
+            if generated[index.get()] {
                 // already have this data
                 return Err(SMError::duplicate_action());
             }
 
             // state update
-            generated[tracker_idx] = true;
+            generated[index.get()] = true;
             state
                 .put_shares_for_index(index, &input_shares, &output_share)
                 .await
