@@ -19,6 +19,7 @@ pub mod state_machine;
 
 pub use adaptor::*;
 use mosaic_common::Byte32;
+use mosaic_vs3::{Point, Scalar};
 pub use msgs::*;
 pub use protocol::*;
 
@@ -37,6 +38,30 @@ impl std::fmt::Display for DepositId {
         self.0.fmt(f)
     }
 }
+
+impl<T: Into<Byte32>> From<T> for DepositId {
+    fn from(value: T) -> Self {
+        DepositId(value.into())
+    }
+}
+
+/// Sighash used in transaction signing;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct Sighash(pub Byte32);
+
+impl<T: Into<Byte32>> From<T> for Sighash {
+    fn from(value: T) -> Self {
+        Sighash(value.into())
+    }
+}
+
+/// A public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct SecretKey(pub Scalar);
+
+/// A secret Key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct PubKey(pub Point);
 
 #[cfg(test)]
 mod serde_tests;

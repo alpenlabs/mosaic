@@ -1,17 +1,12 @@
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use mosaic_common::{
-    Byte32,
-    constants::{
-        N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS,
-        N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
-        WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK, WideLabelValue,
-    },
+use mosaic_common::constants::{
+    N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS,
+    N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
+    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK, WideLabelValue,
 };
 pub use mosaic_heap_array::HeapArray;
 pub use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
-use mosaic_vs3::{Point, Scalar};
 
-use crate::{Adaptor, GarblingTableCommitment, Seed, Signature};
+use crate::{Adaptor, GarblingTableCommitment, Seed, Sighash, Signature};
 
 /// Polynomials for all wide label values for a single wire.
 /// Uses HeapArray to avoid LLVM optimization issues with large fixed-size arrays.
@@ -106,9 +101,6 @@ pub type WithdrawalAdaptors = HeapArray<WideLabelWireAdaptors, N_WITHDRAWAL_INPU
 pub type WithdrawalAdaptorsChunk =
     HeapArray<WideLabelWireAdaptors, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK>;
 
-/// Sighash used in transaction signing;
-#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct Sighash(pub Byte32);
 /// List of sighashes corresponding to deposit and withdrawal input wires.
 pub type Sighashes = HeapArray<Sighash, { N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES }>;
 
@@ -122,11 +114,3 @@ pub type WithdrawalInputs = [WideLabelValue; N_WITHDRAWAL_INPUT_WIRES];
 /// Completed adaptor signatures.
 pub type CompletedSignatures =
     HeapArray<Signature, { N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES }>;
-
-/// A public key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct SecretKey(pub Scalar);
-
-/// A secret Key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct PubKey(pub Point);
