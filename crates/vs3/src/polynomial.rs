@@ -7,7 +7,9 @@ use ckt_gobble::Label;
 use rand_chacha::rand_core::{CryptoRng, RngCore};
 
 use crate::{
-    error::Error, psm::{gen_batch_mul, gen_mul}, N_COEFFICIENTS, N_DOMAIN_UPPER_BOUND
+    N_COEFFICIENTS, N_DOMAIN_UPPER_BOUND,
+    error::Error,
+    psm::{gen_batch_mul, gen_mul},
 };
 
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
