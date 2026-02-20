@@ -4,13 +4,10 @@ use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
 use ckt_gobble::Label;
-use mosaic_common::constants::N_CIRCUITS;
 use rand_chacha::rand_core::{CryptoRng, RngCore};
 
 use crate::{
-    N_COEFFICIENTS,
-    error::Error,
-    psm::{gen_batch_mul, gen_mul},
+    error::Error, psm::{gen_batch_mul, gen_mul}, N_COEFFICIENTS, N_DOMAIN_UPPER_BOUND
 };
 
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
@@ -58,7 +55,7 @@ impl Index {
     /// Minimum index, we reserve index 0.
     pub const MIN: usize = 1;
     /// Maximum index.
-    pub const MAX: usize = N_CIRCUITS;
+    pub const MAX: usize = N_DOMAIN_UPPER_BOUND;
 
     /// Check the index is within bounds.
     pub const fn new(value: usize) -> Option<Self> {
