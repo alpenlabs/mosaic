@@ -57,6 +57,7 @@ use rand_chacha::{
 
 /// Returned by [`GarblingSession::begin`]. Contains the session and the
 /// serialised translation material produced during setup.
+#[derive(Debug)]
 pub struct GarblingSetup {
     /// The garbling session, ready to process blocks.
     pub session: GarblingSession,
@@ -66,6 +67,7 @@ pub struct GarblingSetup {
 }
 
 /// Returned by [`GarblingSession::finish`] after all blocks are processed.
+#[derive(Debug)]
 pub struct GarblingFinish {
     /// Output label ciphertext (32 bytes). Encrypts the output share under
     /// the garbler's output label so the evaluator can recover the share.
@@ -97,6 +99,15 @@ pub struct GarblingSession {
     aes128_key: [u8; 16],
     /// Public S, kept for [`finish`].
     public_s: [u8; 16],
+}
+
+impl std::fmt::Debug for GarblingSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GarblingSession")
+            .field("block_idx", &self.block_idx)
+            .field("total_gates", &self.total_gates)
+            .finish_non_exhaustive()
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -80,7 +80,7 @@ pub enum CacheResult {
     /// generating (seed is in the `pending` set) or the cache is full with no
     /// evictable entries. The caller should return [`HandlerOutcome::Retry`].
     ///
-    /// [`HandlerOutcome::Retry`]: crate::handlers::HandlerOutcome::Retry
+    /// [`HandlerOutcome::Retry`]: mosaic_job_api::HandlerOutcome::Retry
     Unavailable,
 
     /// Cache miss and no one is generating this seed. The caller has been
@@ -261,8 +261,8 @@ impl PolynomialCache {
     /// **Never** called on [`HandlerOutcome::Retry`] — this is what prevents
     /// double-decrement on retried jobs.
     ///
-    /// [`HandlerOutcome::Done`]: crate::handlers::HandlerOutcome::Done
-    /// [`HandlerOutcome::Retry`]: crate::handlers::HandlerOutcome::Retry
+    /// [`HandlerOutcome::Done`]: mosaic_job_api::HandlerOutcome::Done
+    /// [`HandlerOutcome::Retry`]: mosaic_job_api::HandlerOutcome::Retry
     pub fn mark_completed(&self, seed: &Seed) {
         let mut state = self.state.lock();
         if let Some(entry) = state.entries.get_mut(seed) {

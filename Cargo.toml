@@ -11,6 +11,7 @@ members = [
   "crates/compute-fw",
   # "crates/jobs",
   "crates/job/api",
+  "crates/job/executors",
   "crates/job/scheduler",
   "crates/net/client",
   "crates/net/svc",
@@ -62,6 +63,7 @@ mosaic-common = { path = "crates/common" }
 mosaic-compute-fw = { path = "crates/compute-fw" }
 mosaic-heap-array = { path = "crates/heap-array" }
 mosaic-job-api = { path = "crates/job/api" }
+mosaic-job-executors = { path = "crates/job/executors" }
 mosaic-job-scheduler = { path = "crates/job/scheduler" }
 mosaic-net-client = { path = "crates/net/client" }
 mosaic-net-svc = { path = "crates/net/svc" }

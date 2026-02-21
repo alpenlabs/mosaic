@@ -11,10 +11,9 @@ pub(crate) mod worker;
 
 use std::sync::Arc;
 
+use mosaic_job_api::JobExecutor;
 use mosaic_job_api::JobCompletion;
-use mosaic_storage_api::StorageProvider;
 
-use crate::handlers::HandlerContext;
 use crate::priority::Priority;
 
 use self::queue::JobQueue;
@@ -69,12 +68,12 @@ impl Default for PoolConfig {
 /// the next highest-priority job (or next FIFO job for light pools).
 ///
 /// This naturally load-balances: busy workers don't pull, idle workers do.
-pub(crate) struct JobThreadPool<SP: StorageProvider> {
+pub(crate) struct JobThreadPool<D: JobExecutor> {
     queue: Arc<JobQueue>,
-    workers: Vec<Worker<SP>>,
+    workers: Vec<Worker<D>>,
 }
 
-impl<SP: StorageProvider> std::fmt::Debug for JobThreadPool<SP> {
+impl<D: JobExecutor> std::fmt::Debug for JobThreadPool<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobThreadPool")
             .field("workers", &self.workers.len())
@@ -83,23 +82,23 @@ impl<SP: StorageProvider> std::fmt::Debug for JobThreadPool<SP> {
     }
 }
 
-impl<SP: StorageProvider> JobThreadPool<SP> {
+impl<D: JobExecutor> JobThreadPool<D> {
     /// Create a new pool with the given configuration.
     ///
     /// Spawns worker threads immediately. Each worker runs its own monoio
     /// runtime and pulls jobs from the shared queue.
     pub(crate) fn new(
         config: PoolConfig,
-        ctx: Arc<HandlerContext<SP>>,
+        dispatcher: Arc<D>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
     ) -> Self {
         let queue = Arc::new(JobQueue::new(config.priority_queue));
 
-        let workers: Vec<Worker<SP>> = (0..config.threads)
+        let workers: Vec<Worker<D>> = (0..config.threads)
             .map(|id| {
                 Worker::spawn(
                     id,
-                    Arc::clone(&ctx),
+                    Arc::clone(&dispatcher),
                     Arc::clone(&queue),
                     completion_tx.clone(),
                     config.concurrency_per_worker,

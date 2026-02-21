@@ -1,11 +1,6 @@
-//! Handlers for garbler state machine actions.
-//!
-//! Each handler executes a single garbler action and returns a
-//! [`HandlerOutcome`]. On success, [`HandlerOutcome::Done`] carries the
-//! [`ActionCompletion`] back to the SM. On transient failure (network
-//! timeout, cache full, storage unavailable), [`HandlerOutcome::Retry`]
-//! causes the worker to requeue the job so other peers can progress.
+//! Executors for garbler state machine actions.
 
+use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::{
     AllPolynomials, CompletedSignatures, InputPolynomials, OutputPolynomial, Seed,
     WideLabelWireShares,
@@ -18,12 +13,13 @@ use mosaic_common::constants::{
     WIDE_LABEL_VALUE_COUNT,
 };
 use mosaic_heap_array::HeapArray;
-use mosaic_job_api::ActionCompletion;
+use mosaic_job_api::{ActionCompletion, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::StorageProvider;
 use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
-use super::{HandlerContext, HandlerOutcome};
+use super::MosaicExecutor;
+use crate::garbling::{GarblingSession, compute_commitment};
 
 /// Build a successful garbler completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
@@ -32,7 +28,7 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 
 /// Dispatch a garbler action to the appropriate handler.
 pub(crate) async fn execute<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     peer_id: &PeerId,
     action: &Action,
 ) -> HandlerOutcome {
@@ -45,7 +41,7 @@ pub(crate) async fn execute<SP: StorageProvider>(
 
         // ── Garbling (Coordinator) ──────────────────────────────────
         Action::GenerateTableCommitment(index, seed) => {
-            generate_table_commitment(ctx, *index, *seed).await
+            generate_table_commitment(ctx, peer_id, *index, *seed).await
         }
         Action::TransferGarblingTable(seed) => transfer_garbling_table(ctx, peer_id, *seed).await,
 
@@ -82,7 +78,7 @@ pub(crate) async fn execute<SP: StorageProvider>(
 // ============================================================================
 
 async fn generate_polynomial_commitments<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     seed: Seed,
     wire: Wire,
 ) -> HandlerOutcome {
@@ -104,7 +100,7 @@ async fn generate_polynomial_commitments<SP: StorageProvider>(
 }
 
 async fn generate_shares<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     seed: Seed,
     index: Index,
 ) -> HandlerOutcome {
@@ -195,25 +191,62 @@ fn evaluate_polynomials_at_index(
 // ============================================================================
 
 async fn generate_table_commitment<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
-    _index: mosaic_cac_types::Index,
-    _seed: mosaic_cac_types::GarblingSeed,
+    ctx: &MosaicExecutor<SP>,
+    peer_id: &PeerId,
+    index: mosaic_cac_types::Index,
+    seed: mosaic_cac_types::GarblingSeed,
 ) -> HandlerOutcome {
-    // TODO(phase5): Factor out garble_commit() from PR #68 setup_garbler.rs.
-    //
-    // Flow:
-    //   1. Load withdrawal wire shares + output share for circuit index from storage
-    //   2. Truncate shares to 16-byte labels
-    //   3. Derive delta + bit labels from garbling seed via ChaCha20
-    //   4. Generate input/output translation material
-    //   5. Run ckt-runner-exec::GarbleTask → writes gc_{index}.bin
-    //   6. Hash: blake3(hash(ciphertext) || hash(translation) || output_label_ct)
-    //   7. Return TableCommitmentGenerated(index, commitment)
-    unimplemented!("generate_table_commitment: blocked on ckt integration")
+    let garb_state = ctx.storage.garbler_state(peer_id);
+
+    let Some(input_shares) = garb_state.get_input_shares().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(output_shares) = garb_state.get_output_shares().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+
+    let idx = index.get();
+    let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] = input_shares[idx]
+        [N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
+        .try_into()
+        .expect("withdrawal shares slice length mismatch");
+    let output_share = &output_shares[idx];
+
+    let Ok(mut reader) = ReaderV5c::open(&ctx.circuit_path) else {
+        return HandlerOutcome::Retry;
+    };
+    let header = *reader.header();
+    let outputs = reader.outputs().to_vec();
+
+    let setup = GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
+    let mut session = setup.session;
+
+    let translate_hash = blake3::hash(&setup.translation_bytes);
+
+    let mut ct_hasher = blake3::Hasher::new();
+    while let Some(chunk) = reader
+        .next_blocks_chunk()
+        .await
+        .expect("circuit read error")
+    {
+        for block in chunk.blocks_iter() {
+            let ct_bytes = session.process_block(block);
+            ct_hasher.update(ct_bytes);
+        }
+    }
+    let ct_hash = ct_hasher.finalize();
+
+    let finish = session.finish(&outputs);
+    let commitment = compute_commitment(&ct_hash, &translate_hash, &finish.output_label_ct);
+
+    completed(
+        ActionId::GenerateTableCommitment(index),
+        ActionResult::TableCommitmentGenerated(index, commitment),
+    )
 }
 
 async fn transfer_garbling_table<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
+    _ctx: &MosaicExecutor<SP>,
     _peer_id: &PeerId,
     _seed: mosaic_cac_types::GarblingSeed,
 ) -> HandlerOutcome {
@@ -227,7 +260,7 @@ async fn transfer_garbling_table<SP: StorageProvider>(
 // ============================================================================
 
 async fn send_commit_msg_header<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::CommitMsgHeader,
 ) -> HandlerOutcome {
@@ -245,7 +278,7 @@ async fn send_commit_msg_header<SP: StorageProvider>(
 }
 
 async fn send_commit_msg_chunk<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::CommitMsgChunk,
 ) -> HandlerOutcome {
@@ -260,7 +293,7 @@ async fn send_commit_msg_chunk<SP: StorageProvider>(
 }
 
 async fn send_challenge_response_msg_header<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::ChallengeResponseMsgHeader,
 ) -> HandlerOutcome {
@@ -276,7 +309,7 @@ async fn send_challenge_response_msg_header<SP: StorageProvider>(
 }
 
 async fn send_challenge_response_msg_chunk<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
 ) -> HandlerOutcome {
@@ -295,7 +328,7 @@ async fn send_challenge_response_msg_chunk<SP: StorageProvider>(
 // ============================================================================
 
 async fn verify_adaptors<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
@@ -373,7 +406,7 @@ async fn verify_adaptors<SP: StorageProvider>(
 // ============================================================================
 
 async fn complete_adaptor_signatures<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
+    ctx: &MosaicExecutor<SP>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {

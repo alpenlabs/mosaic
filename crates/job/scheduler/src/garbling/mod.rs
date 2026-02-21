@@ -9,9 +9,7 @@
 //! maintains its own ~1 GB working space and produces different output from the
 //! same gate stream (only the garbling seed differs).
 //!
-//! [`ReaderV5c`]: ckt_fmtv5_types::v5::c::ReaderV5c
-
-pub(crate) mod core;
+//! [`ReaderV5c`]: https://docs.rs/ckt-fmtv5-types
 
 use kanal::AsyncSender;
 use mosaic_job_api::JobCompletion;

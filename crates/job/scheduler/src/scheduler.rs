@@ -11,12 +11,10 @@ use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::{JobActions, JobBatch, JobSchedulerHandle};
-use mosaic_storage_api::StorageProvider;
+use mosaic_job_api::{JobExecutor, JobActions, JobBatch, JobSchedulerHandle};
 
 use crate::{
     garbling::{GarblingConfig, GarblingCoordinator},
-    handlers::HandlerContext,
     pool::{JobThreadPool, PoolConfig, worker::WorkerJob},
     priority::Priority,
 };
@@ -65,15 +63,15 @@ impl Default for JobSchedulerConfig {
 ///
 /// Constructed by the main binary. The SM Scheduler interacts with it
 /// exclusively through the [`JobSchedulerHandle`] returned by [`new`](Self::new).
-pub struct JobScheduler<SP: StorageProvider> {
-    light: JobThreadPool<SP>,
-    heavy: JobThreadPool<SP>,
+pub struct JobScheduler<D: JobExecutor> {
+    light: JobThreadPool<D>,
+    heavy: JobThreadPool<D>,
     garbling: GarblingCoordinator,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
 }
 
-impl<SP: StorageProvider> std::fmt::Debug for JobScheduler<SP> {
+impl<D: JobExecutor> std::fmt::Debug for JobScheduler<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobScheduler")
             .field("light", &self.light)
@@ -83,23 +81,25 @@ impl<SP: StorageProvider> std::fmt::Debug for JobScheduler<SP> {
     }
 }
 
-impl<SP: StorageProvider> JobScheduler<SP> {
+impl<D: JobExecutor> JobScheduler<D> {
     /// Create a new job scheduler and return a handle for the SM Scheduler.
     ///
     /// The returned [`JobSchedulerHandle`] is the SM Scheduler's only interface
     /// to the job system. It is cheaply cloneable.
     ///
     /// After construction, call [`run`](Self::run) to start the dispatch loop.
-    pub fn new(config: JobSchedulerConfig, ctx: HandlerContext<SP>) -> (Self, JobSchedulerHandle) {
+    pub fn new(config: JobSchedulerConfig, dispatcher: D) -> (Self, JobSchedulerHandle) {
         // Channel for SM Scheduler → Job Scheduler (batch submissions).
         let (submit_tx, submission_rx) = kanal::bounded_async(config.submission_queue_size);
 
         // Channel for Job Scheduler → SM Scheduler (completed results).
         let (completion_tx, completion_rx) = kanal::bounded_async(config.completion_queue_size);
 
-        let ctx = Arc::new(ctx);
-        let light = JobThreadPool::new(config.light, Arc::clone(&ctx), completion_tx.clone());
-        let heavy = JobThreadPool::new(config.heavy, Arc::clone(&ctx), completion_tx.clone());
+        let dispatcher = Arc::new(dispatcher);
+        let light =
+            JobThreadPool::new(config.light, Arc::clone(&dispatcher), completion_tx.clone());
+        let heavy =
+            JobThreadPool::new(config.heavy, Arc::clone(&dispatcher), completion_tx.clone());
         let garbling = GarblingCoordinator::new(config.garbling, completion_tx);
 
         let handle = JobSchedulerHandle::new(submit_tx, completion_rx);

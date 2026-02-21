@@ -9,9 +9,6 @@
 //! worker sleeps briefly and requeues the job to the back of the queue. This
 //! ensures one unresponsive peer cannot monopolise worker slots — other peers'
 //! jobs get a chance to run between retries.
-//!
-//! The handler context (net-client, storage, crypto) lives on the worker thread
-//! and is shared across all local tasks via [`Arc`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,14 +16,11 @@ use std::time::Duration;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::JobCompletion;
+use mosaic_job_api::{JobExecutor, HandlerOutcome, JobCompletion};
 use mosaic_net_svc_api::PeerId;
-
-use mosaic_storage_api::StorageProvider;
 
 use super::PoolJob;
 use super::queue::JobQueue;
-use crate::handlers::{HandlerContext, HandlerOutcome};
 
 /// Delay before requeuing a job that returned [`ExecuteResult::Retry`].
 ///
@@ -65,20 +59,20 @@ pub(crate) enum WorkerJob {
 /// The worker runs on a dedicated thread with its own monoio runtime. It
 /// pulls jobs from the shared [`JobQueue`], spawns them as local tasks (up
 /// to `concurrency` at a time), and sends completions through `completion_tx`.
-pub(crate) struct Worker<SP: StorageProvider> {
+pub(crate) struct Worker<D: JobExecutor> {
     id: usize,
     /// Thread join handle.
     handle: Option<std::thread::JoinHandle<()>>,
-    _sp: std::marker::PhantomData<SP>,
+    _d: std::marker::PhantomData<D>,
 }
 
-impl<SP: StorageProvider> std::fmt::Debug for Worker<SP> {
+impl<D: JobExecutor> std::fmt::Debug for Worker<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Worker").field("id", &self.id).finish()
     }
 }
 
-impl<SP: StorageProvider> Worker<SP> {
+impl<D: JobExecutor> Worker<D> {
     /// Spawn a new worker thread with a monoio runtime.
     ///
     /// The worker immediately begins pulling jobs from `queue`.
@@ -86,7 +80,7 @@ impl<SP: StorageProvider> Worker<SP> {
     /// `concurrency`.
     pub(crate) fn spawn(
         id: usize,
-        ctx: Arc<HandlerContext<SP>>,
+        dispatcher: Arc<D>,
         queue: Arc<JobQueue>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
         concurrency: usize,
@@ -97,14 +91,20 @@ impl<SP: StorageProvider> Worker<SP> {
                 monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
                     .build()
                     .expect("failed to build monoio runtime")
-                    .block_on(worker_loop(id, ctx, queue, completion_tx, concurrency));
+                    .block_on(worker_loop(
+                        id,
+                        dispatcher,
+                        queue,
+                        completion_tx,
+                        concurrency,
+                    ));
             })
             .expect("failed to spawn worker thread");
 
         Self {
             id,
             handle: Some(handle),
-            _sp: std::marker::PhantomData,
+            _d: std::marker::PhantomData,
         }
     }
 
@@ -131,9 +131,9 @@ impl<SP: StorageProvider> Worker<SP> {
 ///
 /// This ensures the worker only pulls from the shared queue when it has
 /// capacity to run the job — other workers can grab jobs in the meantime.
-async fn worker_loop<SP: StorageProvider>(
+async fn worker_loop<D: JobExecutor>(
     id: usize,
-    ctx: Arc<HandlerContext<SP>>,
+    dispatcher: Arc<D>,
     queue: Arc<JobQueue>,
     completion_tx: kanal::AsyncSender<JobCompletion>,
     concurrency: usize,
@@ -159,7 +159,7 @@ async fn worker_loop<SP: StorageProvider>(
             break;
         };
 
-        let ctx = Arc::clone(&ctx);
+        let dispatcher = Arc::clone(&dispatcher);
         let queue = Arc::clone(&queue);
         let completion_tx = completion_tx.clone();
         let permit_tx = permit_tx.clone();
@@ -167,7 +167,7 @@ async fn worker_loop<SP: StorageProvider>(
         // 3. Spawn local task. The permit is returned when the task completes,
         //    regardless of whether it succeeded or was requeued for retry.
         monoio::spawn(async move {
-            let result = execute_job(&ctx, &pool_job).await;
+            let result = execute_job(dispatcher.as_ref(), &pool_job).await;
             match result {
                 ExecuteResult::Complete(completion) => {
                     let _ = completion_tx.send(completion).await;
@@ -205,17 +205,14 @@ enum ExecuteResult {
 /// Borrows the [`PoolJob`] so that on [`HandlerOutcome::Retry`] the caller
 /// retains ownership and can requeue it. Handlers receive `&Action` and
 /// clone any data they need to send over the network.
-async fn execute_job<SP: StorageProvider>(
-    ctx: &HandlerContext<SP>,
-    pool_job: &PoolJob,
-) -> ExecuteResult {
+async fn execute_job<D: JobExecutor>(dispatcher: &D, pool_job: &PoolJob) -> ExecuteResult {
     let (peer_id, outcome) = match &pool_job.job {
         WorkerJob::Garbler { peer_id, action } => {
-            let o = crate::handlers::garbler::execute(ctx, peer_id, action).await;
+            let o = dispatcher.execute_garbler(peer_id, action).await;
             (*peer_id, o)
         }
         WorkerJob::Evaluator { peer_id, action } => {
-            let o = crate::handlers::evaluator::execute(ctx, peer_id, action).await;
+            let o = dispatcher.execute_evaluator(peer_id, action).await;
             (*peer_id, o)
         }
     };

@@ -1,0 +1,34 @@
+[package]
+name = "mosaic-job-executors"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Action executor implementations for the Mosaic job scheduler"
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-job-api.workspace = true
+mosaic-cac-types.workspace = true
+mosaic-common.workspace = true
+mosaic-heap-array.workspace = true
+mosaic-net-svc-api.workspace = true
+mosaic-net-client.workspace = true
+mosaic-storage-api.workspace = true
+mosaic-vs3.workspace = true
+
+ark-ff.workspace = true
+bitvec = "1.0"
+blake3.workspace = true
+ckt-fmtv5-types.workspace = true
+ckt-gobble.workspace = true
+parking_lot = "0.12"
+rand.workspace = true
+rand_chacha.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
