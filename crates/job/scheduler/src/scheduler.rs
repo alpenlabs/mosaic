@@ -11,7 +11,7 @@ use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::{JobActions, JobBatch, JobExecutor, JobSchedulerHandle};
+use mosaic_job_api::{ExecuteGarblerJob, ExecuteEvaluatorJob, JobActions, JobBatch, JobSchedulerHandle};
 
 use crate::{
     garbling::{GarblingConfig, GarblingCoordinator},
@@ -63,7 +63,7 @@ impl Default for JobSchedulerConfig {
 ///
 /// Constructed by the main binary. The SM Scheduler interacts with it
 /// exclusively through the [`JobSchedulerHandle`] returned by [`new`](Self::new).
-pub struct JobScheduler<D: JobExecutor> {
+pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     light: JobThreadPool<D>,
     heavy: JobThreadPool<D>,
     garbling: GarblingCoordinator,
@@ -71,7 +71,7 @@ pub struct JobScheduler<D: JobExecutor> {
     submission_rx: kanal::AsyncReceiver<JobBatch>,
 }
 
-impl<D: JobExecutor> std::fmt::Debug for JobScheduler<D> {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> std::fmt::Debug for JobScheduler<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobScheduler")
             .field("light", &self.light)
@@ -81,7 +81,7 @@ impl<D: JobExecutor> std::fmt::Debug for JobScheduler<D> {
     }
 }
 
-impl<D: JobExecutor> JobScheduler<D> {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// Create a new job scheduler and return a handle for the SM Scheduler.
     ///
     /// The returned [`JobSchedulerHandle`] is the SM Scheduler's only interface

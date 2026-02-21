@@ -2008,6 +2008,7 @@ dependencies = [
  "kanal",
  "mosaic-cac-types",
  "mosaic-net-svc-api",
+ "mosaic-vs3",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@ pub(crate) mod worker;
 use std::sync::Arc;
 
 use mosaic_job_api::JobCompletion;
-use mosaic_job_api::JobExecutor;
+use mosaic_job_api::{ExecuteGarblerJob, ExecuteEvaluatorJob};
 
 use crate::priority::Priority;
 
@@ -68,12 +68,12 @@ impl Default for PoolConfig {
 /// the next highest-priority job (or next FIFO job for light pools).
 ///
 /// This naturally load-balances: busy workers don't pull, idle workers do.
-pub(crate) struct JobThreadPool<D: JobExecutor> {
+pub(crate) struct JobThreadPool<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     queue: Arc<JobQueue>,
     workers: Vec<Worker<D>>,
 }
 
-impl<D: JobExecutor> std::fmt::Debug for JobThreadPool<D> {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> std::fmt::Debug for JobThreadPool<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobThreadPool")
             .field("workers", &self.workers.len())
@@ -82,7 +82,7 @@ impl<D: JobExecutor> std::fmt::Debug for JobThreadPool<D> {
     }
 }
 
-impl<D: JobExecutor> JobThreadPool<D> {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
     /// Create a new pool with the given configuration.
     ///
     /// Spawns worker threads immediately. Each worker runs its own monoio

@@ -16,7 +16,7 @@ use std::time::Duration;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::{HandlerOutcome, JobCompletion, JobExecutor};
+use mosaic_job_api::{ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome, JobCompletion};
 use mosaic_net_svc_api::PeerId;
 
 use super::PoolJob;
@@ -59,20 +59,20 @@ pub(crate) enum WorkerJob {
 /// The worker runs on a dedicated thread with its own monoio runtime. It
 /// pulls jobs from the shared [`JobQueue`], spawns them as local tasks (up
 /// to `concurrency` at a time), and sends completions through `completion_tx`.
-pub(crate) struct Worker<D: JobExecutor> {
+pub(crate) struct Worker<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     id: usize,
     /// Thread join handle.
     handle: Option<std::thread::JoinHandle<()>>,
     _d: std::marker::PhantomData<D>,
 }
 
-impl<D: JobExecutor> std::fmt::Debug for Worker<D> {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> std::fmt::Debug for Worker<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Worker").field("id", &self.id).finish()
     }
 }
 
-impl<D: JobExecutor> Worker<D> {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
     /// Spawn a new worker thread with a monoio runtime.
     ///
     /// The worker immediately begins pulling jobs from `queue`.
@@ -131,7 +131,7 @@ impl<D: JobExecutor> Worker<D> {
 ///
 /// This ensures the worker only pulls from the shared queue when it has
 /// capacity to run the job — other workers can grab jobs in the meantime.
-async fn worker_loop<D: JobExecutor>(
+async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
     id: usize,
     dispatcher: Arc<D>,
     queue: Arc<JobQueue>,
@@ -205,14 +205,17 @@ enum ExecuteResult {
 /// Borrows the [`PoolJob`] so that on [`HandlerOutcome::Retry`] the caller
 /// retains ownership and can requeue it. Handlers receive `&Action` and
 /// clone any data they need to send over the network.
-async fn execute_job<D: JobExecutor>(dispatcher: &D, pool_job: &PoolJob) -> ExecuteResult {
+async fn execute_job<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
+    dispatcher: &D,
+    pool_job: &PoolJob,
+) -> ExecuteResult {
     let (peer_id, outcome) = match &pool_job.job {
         WorkerJob::Garbler { peer_id, action } => {
-            let o = dispatcher.execute_garbler(peer_id, action).await;
+            let o = dispatch_garbler(dispatcher, peer_id, action).await;
             (*peer_id, o)
         }
         WorkerJob::Evaluator { peer_id, action } => {
-            let o = dispatcher.execute_evaluator(peer_id, action).await;
+            let o = dispatch_evaluator(dispatcher, peer_id, action).await;
             (*peer_id, o)
         }
     };
@@ -223,5 +226,96 @@ async fn execute_job<D: JobExecutor>(dispatcher: &D, pool_job: &PoolJob) -> Exec
             completion,
         }),
         HandlerOutcome::Retry => ExecuteResult::Retry,
+    }
+}
+
+/// Dispatch a garbler action to the correct per-action method on the executor.
+///
+/// Pool actions are dispatched directly. Circuit actions (GenerateTableCommitment,
+/// TransferGarblingTable) should never reach here — they are routed to the
+/// garbling coordinator by the scheduler before reaching the worker pool.
+async fn dispatch_garbler<D: ExecuteGarblerJob>(
+    exec: &D,
+    peer_id: &PeerId,
+    action: &GarblerAction,
+) -> HandlerOutcome {
+    match action {
+        GarblerAction::GeneratePolynomialCommitments(seed, wire) => {
+            exec.generate_polynomial_commitments(peer_id, *seed, *wire)
+                .await
+        }
+        GarblerAction::GenerateShares(seed, index) => {
+            exec.generate_shares(peer_id, *seed, *index).await
+        }
+        GarblerAction::SendCommitMsgHeader(header) => {
+            exec.send_commit_msg_header(peer_id, header).await
+        }
+        GarblerAction::SendCommitMsgChunk(chunk) => {
+            exec.send_commit_msg_chunk(peer_id, chunk).await
+        }
+        GarblerAction::SendChallengeResponseMsgHeader(header) => {
+            exec.send_challenge_response_header(peer_id, header).await
+        }
+        GarblerAction::SendChallengeResponseMsgChunk(chunk) => {
+            exec.send_challenge_response_chunk(peer_id, chunk).await
+        }
+        GarblerAction::DepositVerifyAdaptors(deposit_id) => {
+            exec.deposit_verify_adaptors(peer_id, *deposit_id).await
+        }
+        GarblerAction::CompleteAdaptorSignatures(deposit_id) => {
+            exec.complete_adaptor_signatures(peer_id, *deposit_id).await
+        }
+        // Circuit actions should be routed to the garbling coordinator,
+        // not to worker pool threads. If they arrive here, something is
+        // wrong with the scheduler's routing logic.
+        GarblerAction::GenerateTableCommitment(..) | GarblerAction::TransferGarblingTable(..) => {
+            tracing::error!(
+                "circuit action reached worker pool — should go to garbling coordinator"
+            );
+            HandlerOutcome::Retry
+        }
+        _ => {
+            tracing::error!("unhandled garbler action variant");
+            HandlerOutcome::Retry
+        }
+    }
+}
+
+/// Dispatch an evaluator action to the correct per-action method on the executor.
+///
+/// Pool actions are dispatched directly. Circuit actions (GenerateTableCommitment,
+/// ReceiveGarblingTable, EvaluateGarblingTable) should never reach here.
+async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
+    exec: &D,
+    peer_id: &PeerId,
+    action: &EvaluatorAction,
+) -> HandlerOutcome {
+    match action {
+        EvaluatorAction::SendChallengeMsg(msg) => exec.send_challenge_msg(peer_id, msg).await,
+        EvaluatorAction::VerifyOpenedInputShares => exec.verify_opened_input_shares(peer_id).await,
+        EvaluatorAction::GenerateDepositAdaptors(deposit_id) => {
+            exec.generate_deposit_adaptors(peer_id, *deposit_id).await
+        }
+        EvaluatorAction::GenerateWithdrawalAdaptorsChunk(deposit_id, chunk_idx) => {
+            exec.generate_withdrawal_adaptors_chunk(peer_id, *deposit_id, chunk_idx)
+                .await
+        }
+        EvaluatorAction::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
+            exec.deposit_send_adaptor_msg_chunk(peer_id, *deposit_id, chunk)
+                .await
+        }
+        // Circuit actions should be routed to the garbling coordinator.
+        EvaluatorAction::GenerateTableCommitment(..)
+        | EvaluatorAction::ReceiveGarblingTable(..)
+        | EvaluatorAction::EvaluateGarblingTable(..) => {
+            tracing::error!(
+                "circuit action reached worker pool — should go to garbling coordinator"
+            );
+            HandlerOutcome::Retry
+        }
+        _ => {
+            tracing::error!("unhandled evaluator action variant");
+            HandlerOutcome::Retry
+        }
     }
 }

@@ -37,57 +37,10 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 }
 
 /// Dispatch an evaluator action to the appropriate handler.
-pub(crate) async fn execute<SP: StorageProvider, TS: TableStore>(
-    ctx: &MosaicExecutor<SP, TS>,
-    peer_id: &PeerId,
-    action: &Action,
-) -> HandlerOutcome {
-    match action {
-        // ── Light (Network I/O) ─────────────────────────────────────
-        Action::SendChallengeMsg(msg) => send_challenge_msg(ctx, peer_id, msg).await,
-
-        // ── Heavy (Setup) ───────────────────────────────────────────
-        Action::VerifyOpenedInputShares => verify_opened_input_shares(ctx, peer_id).await,
-
-        // ── Garbling (Coordinator) ──────────────────────────────────
-        Action::GenerateTableCommitment(index, seed) => {
-            generate_table_commitment(ctx, peer_id, *index, *seed).await
-        }
-        Action::ReceiveGarblingTable(commitment) => {
-            receive_garbling_table(ctx, peer_id, *commitment).await
-        }
-
-        // ── Heavy (Deposit) ─────────────────────────────────────────
-        Action::GenerateDepositAdaptors(deposit_id) => {
-            generate_deposit_adaptors(ctx, peer_id, *deposit_id).await
-        }
-        Action::GenerateWithdrawalAdaptorsChunk(deposit_id, chunk_idx) => {
-            generate_withdrawal_adaptors_chunk(ctx, peer_id, *deposit_id, chunk_idx).await
-        }
-
-        // ── Light (Deposit Network I/O) ─────────────────────────────
-        Action::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
-            send_adaptor_msg_chunk(ctx, peer_id, *deposit_id, chunk).await
-        }
-
-        // ── Heavy (Withdrawal — Critical) ───────────────────────────
-        Action::EvaluateGarblingTable(index, commitment) => {
-            evaluate_garbling_table(ctx, peer_id, *index, *commitment).await
-        }
-
-        _ => {
-            // Non-exhaustive enum — future variants will panic until
-            // explicit handlers are added.
-            unimplemented!("unhandled evaluator action variant")
-        }
-    }
-}
-
-// ============================================================================
 // Light handlers (Network I/O)
 // ============================================================================
 
-async fn send_challenge_msg<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     msg: &mosaic_cac_types::ChallengeMsg,
@@ -101,7 +54,7 @@ async fn send_challenge_msg<SP: StorageProvider, TS: TableStore>(
     }
 }
 
-async fn send_adaptor_msg_chunk<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_send_adaptor_msg_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
@@ -121,7 +74,7 @@ async fn send_adaptor_msg_chunk<SP: StorageProvider, TS: TableStore>(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn verify_opened_input_shares<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
 ) -> HandlerOutcome {
@@ -406,7 +359,7 @@ async fn receive_garbling_table<SP: StorageProvider, TS: TableStore>(
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn generate_deposit_adaptors<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
@@ -467,7 +420,7 @@ async fn generate_deposit_adaptors<SP: StorageProvider, TS: TableStore>(
     )
 }
 
-async fn generate_withdrawal_adaptors_chunk<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,

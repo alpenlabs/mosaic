@@ -28,57 +28,9 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 }
 
 /// Dispatch a garbler action to the appropriate handler.
-pub(crate) async fn execute<SP: StorageProvider, TS: TableStore>(
-    ctx: &MosaicExecutor<SP, TS>,
-    peer_id: &PeerId,
-    action: &Action,
-) -> HandlerOutcome {
-    match action {
-        // ── Heavy (Setup) ───────────────────────────────────────────
-        Action::GeneratePolynomialCommitments(seed, wire) => {
-            generate_polynomial_commitments(ctx, *seed, *wire).await
-        }
-        Action::GenerateShares(seed, index) => generate_shares(ctx, *seed, *index).await,
-
-        // ── Garbling (Coordinator) ──────────────────────────────────
-        Action::GenerateTableCommitment(index, seed) => {
-            generate_table_commitment(ctx, peer_id, *index, *seed).await
-        }
-        Action::TransferGarblingTable(seed) => transfer_garbling_table(ctx, peer_id, *seed).await,
-
-        // ── Light (Network I/O) ─────────────────────────────────────
-        Action::SendCommitMsgHeader(header) => send_commit_msg_header(ctx, peer_id, header).await,
-        Action::SendCommitMsgChunk(chunk) => send_commit_msg_chunk(ctx, peer_id, chunk).await,
-        Action::SendChallengeResponseMsgHeader(header) => {
-            send_challenge_response_msg_header(ctx, peer_id, header).await
-        }
-        Action::SendChallengeResponseMsgChunk(chunk) => {
-            send_challenge_response_msg_chunk(ctx, peer_id, chunk).await
-        }
-
-        // ── Heavy (Deposit) ─────────────────────────────────────────
-        Action::DepositVerifyAdaptors(deposit_id) => {
-            verify_adaptors(ctx, peer_id, *deposit_id).await
-        }
-
-        // ── Heavy (Withdrawal — Critical) ───────────────────────────
-        Action::CompleteAdaptorSignatures(deposit_id) => {
-            complete_adaptor_signatures(ctx, peer_id, *deposit_id).await
-        }
-
-        _ => {
-            // Non-exhaustive enum — future variants will panic until
-            // explicit handlers are added.
-            unimplemented!("unhandled garbler action variant")
-        }
-    }
-}
-
-// ============================================================================
-// Heavy handlers (Setup)
 // ============================================================================
 
-async fn generate_polynomial_commitments<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_generate_polynomial_commitments<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     seed: Seed,
     wire: Wire,
@@ -100,7 +52,7 @@ async fn generate_polynomial_commitments<SP: StorageProvider, TS: TableStore>(
     completed(id, ActionResult::PolynomialCommitmentsGenerated(result))
 }
 
-async fn generate_shares<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_generate_shares<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     seed: Seed,
     index: Index,
@@ -359,7 +311,7 @@ async fn transfer_garbling_table<SP: StorageProvider, TS: TableStore>(
 // Light handlers (Network I/O)
 // ============================================================================
 
-async fn send_commit_msg_header<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_send_commit_msg_header<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::CommitMsgHeader,
@@ -377,7 +329,7 @@ async fn send_commit_msg_header<SP: StorageProvider, TS: TableStore>(
     }
 }
 
-async fn send_commit_msg_chunk<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_send_commit_msg_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::CommitMsgChunk,
@@ -392,7 +344,7 @@ async fn send_commit_msg_chunk<SP: StorageProvider, TS: TableStore>(
     }
 }
 
-async fn send_challenge_response_msg_header<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_send_challenge_response_header<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::ChallengeResponseMsgHeader,
@@ -408,7 +360,7 @@ async fn send_challenge_response_msg_header<SP: StorageProvider, TS: TableStore>
     }
 }
 
-async fn send_challenge_response_msg_chunk<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_send_challenge_response_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
@@ -427,7 +379,7 @@ async fn send_challenge_response_msg_chunk<SP: StorageProvider, TS: TableStore>(
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn verify_adaptors<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
@@ -505,7 +457,7 @@ async fn verify_adaptors<SP: StorageProvider, TS: TableStore>(
 // Heavy handlers (Withdrawal — Critical priority)
 // ============================================================================
 
-async fn complete_adaptor_signatures<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_complete_adaptor_signatures<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,

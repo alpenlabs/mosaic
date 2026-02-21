@@ -21,7 +21,10 @@ pub mod garbler;
 pub mod garbling;
 pub mod polynomial_cache;
 
-use mosaic_job_api::{HandlerOutcome, JobExecutor};
+use mosaic_job_api::{
+    CircuitError, CircuitSession, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome,
+    OwnedChunk,
+};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
 
@@ -88,20 +91,202 @@ impl<SP: StorageProvider, TS: TableStore> std::fmt::Debug for MosaicExecutor<SP,
     }
 }
 
-impl<SP: StorageProvider, TS: TableStore> JobExecutor for MosaicExecutor<SP, TS> {
-    fn execute_garbler(
-        &self,
-        peer_id: &PeerId,
-        action: &mosaic_cac_types::state_machine::garbler::Action,
-    ) -> impl Future<Output = HandlerOutcome> + Send {
-        garbler::execute(self, peer_id, action)
+/// Placeholder circuit session — will be replaced with concrete garbling/evaluation sessions.
+pub struct MosaicCircuitSession;
+
+impl std::fmt::Debug for MosaicCircuitSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MosaicCircuitSession").finish()
+    }
+}
+
+impl CircuitSession for MosaicCircuitSession {
+    fn process_chunk(
+        &mut self,
+        _chunk: &std::sync::Arc<OwnedChunk>,
+    ) -> impl Future<Output = Result<(), CircuitError>> + Send {
+        async { Ok(()) }
     }
 
-    fn execute_evaluator(
+    fn finish(self) -> impl Future<Output = HandlerOutcome> + Send {
+        async { HandlerOutcome::Retry }
+    }
+}
+
+impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<SP, TS> {
+    type Session = MosaicCircuitSession;
+
+    fn generate_polynomial_commitments(
         &self,
         peer_id: &PeerId,
-        action: &mosaic_cac_types::state_machine::evaluator::Action,
+        seed: mosaic_cac_types::Seed,
+        wire: mosaic_cac_types::state_machine::garbler::Wire,
     ) -> impl Future<Output = HandlerOutcome> + Send {
-        evaluator::execute(self, peer_id, action)
+        garbler::handle_generate_polynomial_commitments(self, seed, wire)
+    }
+
+    fn generate_shares(
+        &self,
+        peer_id: &PeerId,
+        seed: mosaic_cac_types::Seed,
+        index: mosaic_vs3::Index,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        garbler::handle_generate_shares(self, seed, index)
+    }
+
+    fn send_commit_msg_header(
+        &self,
+        peer_id: &PeerId,
+        header: &mosaic_cac_types::CommitMsgHeader,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        garbler::handle_send_commit_msg_header(self, peer_id, header)
+    }
+
+    fn send_commit_msg_chunk(
+        &self,
+        peer_id: &PeerId,
+        chunk: &mosaic_cac_types::CommitMsgChunk,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        garbler::handle_send_commit_msg_chunk(self, peer_id, chunk)
+    }
+
+    fn send_challenge_response_header(
+        &self,
+        peer_id: &PeerId,
+        header: &mosaic_cac_types::ChallengeResponseMsgHeader,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        garbler::handle_send_challenge_response_header(self, peer_id, header)
+    }
+
+    fn send_challenge_response_chunk(
+        &self,
+        peer_id: &PeerId,
+        chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        garbler::handle_send_challenge_response_chunk(self, peer_id, chunk)
+    }
+
+    fn deposit_verify_adaptors(
+        &self,
+        peer_id: &PeerId,
+        deposit_id: mosaic_cac_types::DepositId,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        garbler::handle_verify_adaptors(self, peer_id, deposit_id)
+    }
+
+    fn complete_adaptor_signatures(
+        &self,
+        peer_id: &PeerId,
+        deposit_id: mosaic_cac_types::DepositId,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        garbler::handle_complete_adaptor_signatures(self, peer_id, deposit_id)
+    }
+
+    fn begin_table_commitment(
+        &self,
+        _peer_id: &PeerId,
+        _index: mosaic_vs3::Index,
+        _seed: mosaic_cac_types::GarblingSeed,
+    ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+        async {
+            Err(CircuitError::SetupFailed(
+                "not yet wired to coordinator".into(),
+            ))
+        }
+    }
+
+    fn begin_table_transfer(
+        &self,
+        _peer_id: &PeerId,
+        _seed: mosaic_cac_types::GarblingSeed,
+    ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+        async {
+            Err(CircuitError::SetupFailed(
+                "not yet wired to coordinator".into(),
+            ))
+        }
+    }
+}
+
+impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor<SP, TS> {
+    type Session = MosaicCircuitSession;
+
+    fn send_challenge_msg(
+        &self,
+        peer_id: &PeerId,
+        msg: &mosaic_cac_types::ChallengeMsg,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_send_challenge_msg(self, peer_id, msg)
+    }
+
+    fn verify_opened_input_shares(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_verify_opened_input_shares(self, peer_id)
+    }
+
+    fn generate_deposit_adaptors(
+        &self,
+        peer_id: &PeerId,
+        deposit_id: mosaic_cac_types::DepositId,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_generate_deposit_adaptors(self, peer_id, deposit_id)
+    }
+
+    fn generate_withdrawal_adaptors_chunk(
+        &self,
+        peer_id: &PeerId,
+        deposit_id: mosaic_cac_types::DepositId,
+        chunk_idx: &mosaic_cac_types::state_machine::evaluator::ChunkIndex,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_generate_withdrawal_adaptors_chunk(self, peer_id, deposit_id, chunk_idx)
+    }
+
+    fn deposit_send_adaptor_msg_chunk(
+        &self,
+        peer_id: &PeerId,
+        deposit_id: mosaic_cac_types::DepositId,
+        chunk: &mosaic_cac_types::AdaptorMsgChunk,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_send_adaptor_msg_chunk(self, peer_id, deposit_id, chunk)
+    }
+
+    fn begin_table_commitment(
+        &self,
+        _peer_id: &PeerId,
+        _index: mosaic_vs3::Index,
+        _seed: mosaic_cac_types::GarblingSeed,
+    ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+        async {
+            Err(CircuitError::SetupFailed(
+                "not yet wired to coordinator".into(),
+            ))
+        }
+    }
+
+    fn begin_table_receive(
+        &self,
+        _peer_id: &PeerId,
+        _commitment: mosaic_cac_types::GarblingTableCommitment,
+    ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+        async {
+            Err(CircuitError::SetupFailed(
+                "not yet wired to coordinator".into(),
+            ))
+        }
+    }
+
+    fn begin_evaluation(
+        &self,
+        _peer_id: &PeerId,
+        _index: mosaic_vs3::Index,
+        _commitment: mosaic_cac_types::GarblingTableCommitment,
+    ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+        async {
+            Err(CircuitError::SetupFailed(
+                "not yet wired to coordinator".into(),
+            ))
+        }
     }
 }
