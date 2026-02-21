@@ -29,7 +29,7 @@ use mosaic_vs3::{Index, Scalar, Share, interpolate};
 
 use super::MosaicExecutor;
 use crate::garbling::{GarblingSession, compute_commitment};
-use crate::table_store::{TableId, TableReader as _, TableStore, TableWriter as _};
+use mosaic_storage_api::table_store::{TableId, TableReader as _, TableStore, TableWriter as _};
 
 /// Build a successful evaluator completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
@@ -249,7 +249,7 @@ async fn receive_garbling_table<SP: StorageProvider, TS: TableStore>(
     peer_id: &PeerId,
     expected_commitment: mosaic_cac_types::GarblingTableCommitment,
 ) -> HandlerOutcome {
-    use crate::table_store::{TableId, TableMetadata};
+    use mosaic_storage_api::table_store::{TableId, TableMetadata};
 
     let eval_state = ctx.storage.evaluator_state(peer_id);
 
@@ -657,7 +657,7 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
         .filter(|i| !challenged.contains(i))
         .collect();
 
-    let Some(eval_pos) = eval_indices.iter().position(|&i| i == index.get()) else {
+    let Some(_eval_pos) = eval_indices.iter().position(|&i| i == index.get()) else {
         return HandlerOutcome::Retry;
     };
 
@@ -666,8 +666,8 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
     for wire in 0..N_INPUT_WIRES {
         // Combine opened + committed shares for this wire.
         let mut shares_for_wire: Vec<Share> = Vec::with_capacity(N_OPEN_CIRCUITS + 1);
-        for i in 0..N_OPEN_CIRCUITS {
-            shares_for_wire.push(selected_opened[i][wire].clone());
+        for opened_circuit in selected_opened.iter().take(N_OPEN_CIRCUITS) {
+            shares_for_wire.push(opened_circuit[wire].clone());
         }
         shares_for_wire.push(committed[wire].clone());
 
@@ -748,12 +748,12 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
     for wire in 0..N_WITHDRAWAL_INPUT_WIRES {
         let wire_offset = wire * bytes_per_wire;
         let mut material = [[Ciphertext::from([0u8; 16]); 8]; 256];
-        for row in 0..rows_per_wire {
-            for ct in 0..cts_per_row {
-                let offset = wire_offset + (row * cts_per_row + ct) * bytes_per_ct;
+        for (row_idx, material_row) in material.iter_mut().enumerate() {
+            for (ct_idx, ciphertext) in material_row.iter_mut().enumerate() {
+                let offset = wire_offset + (row_idx * cts_per_row + ct_idx) * bytes_per_ct;
                 let mut ct_bytes = [0u8; 16];
                 ct_bytes.copy_from_slice(&translation_bytes[offset..offset + 16]);
-                material[row][ct] = Ciphertext::from(ct_bytes);
+                *ciphertext = Ciphertext::from(ct_bytes);
             }
         }
         translation_material.push(material);
@@ -824,10 +824,7 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
         let block_gate_counts: Vec<usize> = blocks
             .iter()
             .enumerate()
-            .map(|(i, _)| {
-                let count = get_block_num_gates(total_gates, block_idx + i);
-                count
-            })
+            .map(|(i, _)| get_block_num_gates(total_gates, block_idx + i))
             .collect();
 
         // Count AND gates across all blocks in this chunk.
@@ -893,8 +890,8 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
 
     // Construct output translation material from the stored output_label_ct.
     // OutputTranslationCiphertext is [u8; 32] — the full encrypted share.
-    let ct_bytes: [u8; 32] = output_label_ct.into();
-    let output_translation_material: OutputTranslationMaterial = vec![ct_bytes.into()];
+    let output_label_bytes: [u8; 32] = output_label_ct.into();
+    let output_translation_material: OutputTranslationMaterial = vec![output_label_bytes];
     let output_label_vec: Vec<Label> = output_labels.iter().map(|l| Label::from(*l)).collect();
     let output_result = translate_output(
         &output_label_vec,

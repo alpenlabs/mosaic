@@ -20,14 +20,12 @@ pub mod evaluator;
 pub mod garbler;
 pub mod garbling;
 pub mod polynomial_cache;
-pub mod table_store;
 
 use mosaic_job_api::{HandlerOutcome, JobExecutor};
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::StorageProvider;
+use mosaic_storage_api::{StorageProvider, TableStore};
 
 use crate::polynomial_cache::PolynomialCache;
-use crate::table_store::TableStore;
 
 /// Concrete executor for Mosaic job actions.
 ///

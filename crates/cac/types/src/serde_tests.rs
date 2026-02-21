@@ -700,7 +700,7 @@ fn test_challenge_response_msg_header_fits_in_frame() {
     let idx = Index::new(1).expect("valid index");
     let share = Share::new(idx, scalar);
 
-    let header_seed: Byte32 = [0u8; 32].into();
+    let _header_seed: Byte32 = [0u8; 32].into();
     let header = ChallengeResponseMsgHeader {
         reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share.clone()),
         opened_output_shares: OpenedOutputShares::new(|_| share.clone()),

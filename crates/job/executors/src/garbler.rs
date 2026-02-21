@@ -20,7 +20,7 @@ use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
 use super::MosaicExecutor;
 use crate::garbling::{GarblingSession, compute_commitment};
-use crate::table_store::TableStore;
+use mosaic_storage_api::table_store::TableStore;
 
 /// Build a successful garbler completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
