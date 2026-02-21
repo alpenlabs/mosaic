@@ -2038,6 +2038,7 @@ dependencies = [
 name = "mosaic-job-scheduler"
 version = "0.1.0"
 dependencies = [
+ "ckt-fmtv5-types",
  "fasm",
  "kanal",
  "monoio",

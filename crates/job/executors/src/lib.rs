@@ -104,12 +104,12 @@ impl CircuitSession for MosaicCircuitSession {
     fn process_chunk(
         &mut self,
         _chunk: &std::sync::Arc<OwnedChunk>,
-    ) -> impl Future<Output = Result<(), CircuitError>> + Send {
-        async { Ok(()) }
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 
-    fn finish(self) -> impl Future<Output = HandlerOutcome> + Send {
-        async { HandlerOutcome::Retry }
+    fn finish(self: Box<Self>) -> std::pin::Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+        Box::pin(async { HandlerOutcome::Retry })
     }
 }
 

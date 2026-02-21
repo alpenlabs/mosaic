@@ -217,7 +217,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// Shut down all pools gracefully.
     ///
     /// Workers finish in-flight jobs but do not pick up new ones.
-    pub fn shutdown(self) {
+    pub fn shutdown(mut self) {
         tracing::info!("job scheduler shutting down");
 
         self.garbling.shutdown();

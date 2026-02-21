@@ -15,6 +15,7 @@ mosaic-job-api.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-net-svc-api.workspace = true
 
+ckt-fmtv5-types.workspace = true
 fasm.workspace = true
 kanal = "0.1.1"
 monoio = { version = "0.2", features = ["sync"] }

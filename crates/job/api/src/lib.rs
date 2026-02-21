@@ -1,5 +1,6 @@
 //! API types for the Mosaic job scheduler.
 //!
+//!
 //! This crate defines the interface between the SM Scheduler, Job Scheduler,
 //! and Job Executors. It provides:
 //!
@@ -23,16 +24,17 @@
 mod handle;
 mod submission;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use mosaic_cac_types::{
     AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
     CommitMsgChunk, CommitMsgHeader, DepositId, GarblingSeed, GarblingTableCommitment, Seed,
-    state_machine::evaluator::ChunkIndex,
-    state_machine::garbler::Wire,
+    state_machine::evaluator::ChunkIndex, state_machine::garbler::Wire,
 };
-use mosaic_vs3::Index;
 use mosaic_net_svc_api::PeerId;
+use mosaic_vs3::Index;
 
 pub use handle::{JobSchedulerHandle, SchedulerStopped};
 pub use submission::{ActionCompletion, JobActions, JobBatch, JobCompletion};
@@ -101,6 +103,11 @@ pub struct OwnedChunk {
 /// The coordinator reads circuit blocks, wraps them in `Arc<OwnedChunk>`,
 /// and calls `process_chunk` on all active sessions. After all blocks are
 /// processed, the coordinator calls `finish` to produce the completion.
+/// A live circuit session driven block-by-block by the garbling coordinator.
+///
+/// This trait is **dyn-compatible** (uses `Pin<Box<dyn Future>>`) so the
+/// coordinator can hold heterogeneous sessions (garbling commitment,
+/// garbling transfer, evaluation) in the same batch.
 pub trait CircuitSession: Send {
     /// Process one chunk of blocks from the shared circuit reader.
     ///
@@ -111,13 +118,13 @@ pub trait CircuitSession: Send {
     fn process_chunk(
         &mut self,
         chunk: &Arc<OwnedChunk>,
-    ) -> impl Future<Output = Result<(), CircuitError>> + Send;
+    ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>>;
 
     /// Finalize the session after all blocks have been processed.
     ///
     /// Extracts output labels, computes commitments, translates evaluation
     /// results, etc. Returns the action completion to deliver to the SM.
-    fn finish(self) -> impl Future<Output = HandlerOutcome> + Send;
+    fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>>;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
