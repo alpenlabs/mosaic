@@ -261,9 +261,10 @@ impl Classify for GarblerAction {
     fn category(&self) -> ActionCategory {
         match self {
             // Light (outbound protocol sends)
-            Self::SendCommitMsgChunk(_) | Self::SendChallengeResponseMsgChunk(_) => {
-                ActionCategory::Light
-            }
+            Self::SendCommitMsgHeader(_)
+            | Self::SendCommitMsgChunk(_)
+            | Self::SendChallengeResponseMsgHeader(_)
+            | Self::SendChallengeResponseMsgChunk(_) => ActionCategory::Light,
 
             // Garbling (coordinated disk I/O)
             Self::GenerateTableCommitment(..) | Self::TransferGarblingTable(_) => {

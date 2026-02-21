@@ -1,8 +1,10 @@
 //! Handlers for evaluator state machine actions.
 //!
-//! Each handler executes a single evaluator action and produces an
-//! [`ActionCompletion`]. Handlers retry internally until they succeed —
-//! the caller always receives a valid completion.
+//! Each handler executes a single evaluator action and returns a
+//! [`HandlerOutcome`]. On success, [`HandlerOutcome::Done`] carries the
+//! [`ActionCompletion`] back to the SM. On transient failure (network
+//! timeout, cache full, storage unavailable), [`HandlerOutcome::Retry`]
+//! causes the worker to requeue the job so other peers can progress.
 
 use mosaic_cac_types::{
     GarblingTableCommitment,
@@ -11,19 +13,19 @@ use mosaic_cac_types::{
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
 
-use super::HandlerContext;
+use super::{HandlerContext, HandlerOutcome};
 
 /// Build a successful evaluator completion from an action ID and result.
-fn completed(id: ActionId, result: ActionResult) -> ActionCompletion {
-    ActionCompletion::Evaluator { id, result }
+fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
+    HandlerOutcome::Done(ActionCompletion::Evaluator { id, result })
 }
 
 /// Dispatch an evaluator action to the appropriate handler.
 pub(crate) async fn execute(
     ctx: &HandlerContext,
     peer_id: &PeerId,
-    action: Action,
-) -> ActionCompletion {
+    action: &Action,
+) -> HandlerOutcome {
     match action {
         // ── Light (Network I/O) ─────────────────────────────────────
         Action::SendChallengeMsg(msg) => send_challenge_msg(ctx, peer_id, msg).await,
@@ -33,28 +35,28 @@ pub(crate) async fn execute(
 
         // ── Garbling (Coordinator) ──────────────────────────────────
         Action::GenerateTableCommitment(index, seed) => {
-            generate_table_commitment(ctx, index, seed).await
+            generate_table_commitment(ctx, *index, *seed).await
         }
         Action::ReceiveGarblingTable(commitment) => {
-            receive_garbling_table(ctx, peer_id, commitment).await
+            receive_garbling_table(ctx, peer_id, *commitment).await
         }
 
         // ── Heavy (Deposit) ─────────────────────────────────────────
         Action::GenerateDepositAdaptors(deposit_id) => {
-            generate_deposit_adaptors(ctx, deposit_id).await
+            generate_deposit_adaptors(ctx, *deposit_id).await
         }
         Action::GenerateWithdrawalAdaptorsChunk(deposit_id, chunk_idx) => {
-            generate_withdrawal_adaptors(ctx, deposit_id, chunk_idx).await
+            generate_withdrawal_adaptors_chunk(ctx, *deposit_id, chunk_idx).await
         }
 
         // ── Light (Deposit Network I/O) ─────────────────────────────
         Action::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
-            send_adaptor_msg_chunk(ctx, peer_id, deposit_id, chunk).await
+            send_adaptor_msg_chunk(ctx, peer_id, *deposit_id, chunk).await
         }
 
         // ── Heavy (Withdrawal — Critical) ───────────────────────────
         Action::EvaluateGarblingTable(index, commitment) => {
-            evaluate_garbling_table(ctx, index, commitment).await
+            evaluate_garbling_table(ctx, *index, *commitment).await
         }
 
         _ => {
@@ -72,16 +74,13 @@ pub(crate) async fn execute(
 async fn send_challenge_msg(
     ctx: &HandlerContext,
     peer_id: &PeerId,
-    msg: mosaic_cac_types::ChallengeMsg,
-) -> ActionCompletion {
-    loop {
-        match ctx.net_client.send(*peer_id, msg.clone()).await {
-            Ok(_ack) => {
-                return completed(ActionId::SendChallengeMsg, ActionResult::ChallengeMsgAcked);
-            }
-            Err(e) => {
-                tracing::warn!(%e, "send challenge msg failed, retrying")
-            }
+    msg: &mosaic_cac_types::ChallengeMsg,
+) -> HandlerOutcome {
+    match ctx.net_client.send(*peer_id, msg.clone()).await {
+        Ok(_ack) => completed(ActionId::SendChallengeMsg, ActionResult::ChallengeMsgAcked),
+        Err(e) => {
+            tracing::warn!(%e, "send challenge msg failed, will retry");
+            HandlerOutcome::Retry
         }
     }
 }
@@ -90,15 +89,14 @@ async fn send_adaptor_msg_chunk(
     ctx: &HandlerContext,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
-    chunk: mosaic_cac_types::AdaptorMsgChunk,
-) -> ActionCompletion {
+    chunk: &mosaic_cac_types::AdaptorMsgChunk,
+) -> HandlerOutcome {
     let id = ActionId::DepositSendAdaptorMsgChunk(deposit_id, chunk.chunk_index);
-    loop {
-        match ctx.net_client.send(*peer_id, chunk.clone()).await {
-            Ok(_ack) => return completed(id, ActionResult::DepositAdaptorChunkSent(deposit_id)),
-            Err(e) => {
-                tracing::warn!(chunk_index = chunk.chunk_index, %e, "send adaptor chunk failed, retrying")
-            }
+    match ctx.net_client.send(*peer_id, chunk.clone()).await {
+        Ok(_ack) => completed(id, ActionResult::DepositAdaptorChunkSent(deposit_id)),
+        Err(e) => {
+            tracing::warn!(%e, "send adaptor chunk failed, will retry");
+            HandlerOutcome::Retry
         }
     }
 }
@@ -107,39 +105,20 @@ async fn send_adaptor_msg_chunk(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn verify_opened_input_shares(
-    _ctx: &HandlerContext,
-    // challenge_indices: Box<mosaic_cac_types::ChallengeIndices>,
-    // shares: Box<mosaic_cac_types::OpenedInputShares>,
-    // commitments: Box<mosaic_cac_types::InputPolynomialCommitments>,
-) -> ActionCompletion {
-    unimplemented!()
-    // FIXME(sapinb): load data from storage
-    // Verify each opened share against its polynomial commitment.
-    // Any failure aborts with a reason; success returns None.
-    // let failure_reason = (|| {
-    //     for idx in 0..N_OPEN_CIRCUITS {
-    //         for wire in 0..N_INPUT_WIRES {
-    //             for val in 0..WIDE_LABEL_VALUE_COUNT {
-    //                 let share = shares[idx][wire][val].clone();
-    //                 if commitments[wire][val].verify_share(share).is_err() {
-    //                     return Some(format!(
-    //                         "verify failed for circuit {}, wire {}, value {}",
-    //                         challenge_indices[idx].get(),
-    //                         wire,
-    //                         val
-    //                     ));
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     None
-    // })();
-
-    // completed(
-    //     ActionId::VerifyOpenedInputShares,
-    //     ActionResult::VerifyOpenedInputSharesResult(failure_reason),
-    // )
+async fn verify_opened_input_shares(_ctx: &HandlerContext) -> HandlerOutcome {
+    // TODO(phase2): Load data from StateRead, run verification loop.
+    //
+    // Flow:
+    //   1. Load challenge_indices, opened_input_shares, input_polynomial_commitments
+    //      from storage via StateRead
+    //   2. For each opened circuit × wire × value:
+    //      commitments[wire][val].verify_share(shares[idx][wire][val])
+    //   3. Return VerifyOpenedInputSharesResult(None) on success,
+    //      or VerifyOpenedInputSharesResult(Some(reason)) on failure
+    //   4. Return Retry if storage reads return None (data not ready)
+    //
+    // Reference: PR #68 setup_evaluator.rs exec_verify() step 1
+    unimplemented!("verify_opened_input_shares: blocked on StateRead wiring")
 }
 
 // ============================================================================
@@ -148,24 +127,42 @@ async fn verify_opened_input_shares(
 
 async fn generate_table_commitment(
     _ctx: &HandlerContext,
-    _index: mosaic_cac_types::Index,
+    _index: mosaic_vs3::Index,
     _seed: mosaic_cac_types::GarblingSeed,
-) -> ActionCompletion {
-    // TODO: generate garbling table from seed and shares, compute commitment
-    // NOTE: this action is routed through the GarblingCoordinator, not the
-    //       heavy pool directly. The coordinator handles topology reading.
-    unimplemented!()
+) -> HandlerOutcome {
+    // TODO(phase5): Factor out garble_commit() from PR #68 setup_garbler.rs.
+    //
+    // Flow (same algorithm as garbler side):
+    //   1. Load withdrawal wire shares + output share for circuit index from storage
+    //   2. Truncate shares to 16-byte labels
+    //   3. Derive delta + bit labels from garbling seed via ChaCha20
+    //   4. Generate input/output translation material
+    //   5. Run ckt-runner-exec::GarbleTask → writes gc_{index}.bin
+    //   6. Hash: blake3(hash(ciphertext) || hash(translation) || output_label_ct)
+    //   7. Return TableCommitmentGenerated(index, commitment)
+    //   8. Return Retry if storage reads fail
+    //
+    // Reference: PR #68 setup_garbler.rs garble_commit()
+    unimplemented!("generate_table_commitment: blocked on ckt integration")
 }
 
 async fn receive_garbling_table(
     _ctx: &HandlerContext,
     _peer_id: &PeerId,
-    _commitment: GarblingTableCommitment,
-) -> ActionCompletion {
-    // TODO: register bulk transfer expectations with net-svc for each
-    //       unchallenged circuit. Wait for all tables to arrive. Verify
-    //       each table's hash matches the expected commitment.
-    unimplemented!()
+    _commitment: mosaic_cac_types::GarblingTableCommitment,
+) -> HandlerOutcome {
+    // TODO(phase5): Receive garbling table from peer via net-svc bulk transfer.
+    //
+    // Flow:
+    //   1. Register bulk transfer expectation with net-svc
+    //   2. Wait for table data from peer
+    //   3. Hash received data with blake3
+    //   4. Verify hash matches expected commitment
+    //   5. Return GarblingTableReceived(index, commitment)
+    //   6. Return Retry if peer hasn't sent yet or transfer fails
+    //
+    // Reference: PR #68 setup_evaluator.rs exec_verify() step 3b
+    unimplemented!("receive_garbling_table: blocked on ckt integration + net-svc bulk")
 }
 
 // ============================================================================
@@ -175,20 +172,38 @@ async fn receive_garbling_table(
 async fn generate_deposit_adaptors(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
-) -> ActionCompletion {
-    // TODO: generate adaptor signatures for deposit and withdrawal input wires
-    //       using evaluator's secret key and input share commitments
-    unimplemented!()
+) -> HandlerOutcome {
+    // TODO(phase4): Load from StateRead, generate deposit wire adaptors.
+    //
+    // Flow:
+    //   1. Load sighashes, deposit_inputs, evaluator sk/pk, reserved input
+    //      share commitments (computed from polynomial commitments at index 0)
+    //   2. For each deposit wire:
+    //      Adaptor::generate(rng, share_commitment, sk, pk, sighash)
+    //   3. Return DepositAdaptorsGenerated(deposit_id, DepositAdaptors)
+    //   4. Return Retry if storage reads fail
+    //
+    // Reference: PR #68 deposit_evaluator.rs exec_generate_adaptors() (deposit section)
+    unimplemented!("generate_deposit_adaptors: blocked on StateRead wiring")
 }
 
-async fn generate_withdrawal_adaptors(
+async fn generate_withdrawal_adaptors_chunk(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
-    _chunk_idx: ChunkIndex,
-) -> ActionCompletion {
-    // TODO: generate adaptor signatures for withdrawal input wires
-    //       using evaluator's secret key and input share commitments
-    unimplemented!()
+    _chunk_idx: &ChunkIndex,
+) -> HandlerOutcome {
+    // TODO(phase4): Load from StateRead, generate withdrawal wire adaptors for one chunk.
+    //
+    // Flow:
+    //   1. Load sighashes, evaluator sk/pk, reserved input share commitments
+    //   2. Determine which WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK wires this chunk covers
+    //   3. For each wire in chunk, for each of 256 values:
+    //      Adaptor::generate(rng, share_commitment, sk, pk, sighash)
+    //   4. Return WithdrawalAdaptorsChunkGenerated(deposit_id, chunk_idx, chunk)
+    //   5. Return Retry if storage reads fail
+    //
+    // Reference: PR #68 deposit_evaluator.rs exec_generate_adaptors() (withdrawal section)
+    unimplemented!("generate_withdrawal_adaptors_chunk: blocked on StateRead wiring")
 }
 
 // ============================================================================
@@ -197,11 +212,21 @@ async fn generate_withdrawal_adaptors(
 
 async fn evaluate_garbling_table(
     _ctx: &HandlerContext,
-    _index: mosaic_cac_types::Index,
+    _index: mosaic_vs3::Index,
     _commitment: mosaic_cac_types::GarblingTableCommitment,
-) -> ActionCompletion {
-    // TODO: evaluate a single garbling table with interpolated input labels
-    //       to produce an output share. If the output polynomial evaluates to
-    //       the committed secret, the fault secret has been found.
-    unimplemented!()
+) -> HandlerOutcome {
+    // TODO(phase5): Factor out evaluate_gc_table() from PR #68 deposit_evaluator.rs.
+    //
+    // Flow:
+    //   1. Load shares for this circuit via interpolation of opened + committed shares
+    //   2. Truncate to 16-byte labels
+    //   3. Read translation material from file
+    //   4. Translate byte labels → bit labels
+    //   5. Run ckt-runner-exec::EvalTask
+    //   6. Translate output label → output share scalar
+    //   7. Return TableEvaluationResult(commitment, Option<CircuitOutputShare>)
+    //   8. Return Retry if storage reads or file I/O fails
+    //
+    // Reference: PR #68 deposit_evaluator.rs evaluate_gc_table()
+    unimplemented!("evaluate_garbling_table: blocked on ckt integration")
 }

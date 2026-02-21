@@ -291,6 +291,12 @@ impl Valid for Msg {
 // From impls for ergonomic message construction
 // ============================================================================
 
+impl From<CommitMsgHeader> for Msg {
+    fn from(msg: CommitMsgHeader) -> Self {
+        Msg::CommitHeader(msg)
+    }
+}
+
 impl From<CommitMsgChunk> for Msg {
     fn from(msg: CommitMsgChunk) -> Self {
         Msg::CommitChunk(msg)
@@ -300,6 +306,12 @@ impl From<CommitMsgChunk> for Msg {
 impl From<ChallengeMsg> for Msg {
     fn from(msg: ChallengeMsg) -> Self {
         Msg::Challenge(msg)
+    }
+}
+
+impl From<ChallengeResponseMsgHeader> for Msg {
+    fn from(msg: ChallengeResponseMsgHeader) -> Self {
+        Msg::ChallengeResponseHeader(msg)
     }
 }
 

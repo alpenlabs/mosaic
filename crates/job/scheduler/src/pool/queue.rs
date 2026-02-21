@@ -105,6 +105,16 @@ impl JobQueue {
         let _ = self.signal_tx.send(());
     }
 
+    /// Requeue a job to the back of the queue for retry.
+    ///
+    /// Semantically identical to [`push`](Self::push) — the job goes to the
+    /// back of its priority level (or FIFO tail). This is a separate method
+    /// for clarity at call sites: `push` is for new jobs from the dispatcher,
+    /// `requeue` is for transient-failure retries from workers.
+    pub(crate) fn requeue(&self, job: PoolJob) {
+        self.push(job);
+    }
+
     /// Take the next job, waiting asynchronously if the queue is empty.
     ///
     /// Returns `None` when the queue is closed and drained.
@@ -176,6 +186,7 @@ mod tests {
                     Wire::Output,
                 ),
             },
+            attempts: 0,
         }
     }
 

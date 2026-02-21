@@ -28,6 +28,8 @@ pub(crate) struct PoolJob {
     pub priority: Priority,
     /// The job to execute on a worker.
     pub job: WorkerJob,
+    /// Number of times this job has been retried due to transient failures.
+    pub attempts: u32,
 }
 
 impl std::fmt::Debug for PoolJob {
@@ -112,7 +114,11 @@ impl JobThreadPool {
     /// The job is placed in the shared queue. The next idle worker will pull
     /// it automatically.
     pub(crate) fn submit(&self, priority: Priority, job: WorkerJob) {
-        self.queue.push(PoolJob { priority, job });
+        self.queue.push(PoolJob {
+            priority,
+            job,
+            attempts: 0,
+        });
     }
 
     /// Number of jobs waiting in the queue (not yet pulled by a worker).

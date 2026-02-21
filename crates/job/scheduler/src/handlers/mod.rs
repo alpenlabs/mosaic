@@ -4,9 +4,13 @@
 //! the state machines. Handlers are internal to the scheduler — workers invoke
 //! them as opaque one-shot async tasks.
 //!
-//! Each handler takes an action and produces an [`ActionCompletion`] with the
-//! tracked action ID and result, ready to be routed back to the originating SM
-//! as `TrackedActionCompleted { id, result }`.
+//! Each handler returns a [`HandlerOutcome`] which is either:
+//! - [`HandlerOutcome::Done`] — the action completed successfully, producing an
+//!   [`ActionCompletion`] to route back to the originating SM as
+//!   `TrackedActionCompleted { id, result }`.
+//! - [`HandlerOutcome::Retry`] — the action hit a transient failure (network
+//!   timeout, cache full, storage unavailable). The worker requeues the job to
+//!   the back of the queue so other peers' jobs can progress.
 //!
 //! # Responsibilities
 //!
@@ -15,10 +19,26 @@
 //!   signatures, polynomial generation)
 //! - **Garbling handlers**: Processing gate chunks with a given seed
 
+use mosaic_job_api::ActionCompletion;
+
 use crate::polynomial_cache::PolynomialCache;
 
 pub(crate) mod evaluator;
 pub(crate) mod garbler;
+
+/// Outcome of a handler execution.
+///
+/// The SM never sees failures. [`Done`](HandlerOutcome::Done) delivers the
+/// completion; [`Retry`](HandlerOutcome::Retry) requeues the job to the back
+/// of the queue so other peers can make progress while this job waits for a
+/// transient condition to resolve (network peer responding, cache slot freeing
+/// up, storage becoming available, etc.).
+pub(crate) enum HandlerOutcome {
+    /// Action completed successfully — deliver [`ActionCompletion`] to the SM.
+    Done(ActionCompletion),
+    /// Transient failure — requeue job to back of queue.
+    Retry,
+}
 
 /// Shared resources available to all handlers during execution.
 ///

@@ -5,10 +5,16 @@
 //! shared [`JobQueue`], spawns them as local `!Send` tasks, and limits
 //! concurrency with the queue's built-in backpressure.
 //!
+//! When a handler signals a transient failure via [`ExecuteResult::Retry`], the
+//! worker sleeps briefly and requeues the job to the back of the queue. This
+//! ensures one unresponsive peer cannot monopolise worker slots — other peers'
+//! jobs get a chance to run between retries.
+//!
 //! The handler context (net-client, storage, crypto) lives on the worker thread
 //! and is shared across all local tasks via [`Arc`].
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
@@ -16,8 +22,15 @@ use mosaic_cac_types::state_machine::{
 use mosaic_job_api::JobCompletion;
 use mosaic_net_svc_api::PeerId;
 
+use super::PoolJob;
 use super::queue::JobQueue;
-use crate::handlers::HandlerContext;
+use crate::handlers::{HandlerContext, HandlerOutcome};
+
+/// Delay before requeuing a job that returned [`ExecuteResult::Retry`].
+///
+/// Prevents busy-spinning when a transient condition (unresponsive peer,
+/// full cache, unavailable storage) persists across consecutive attempts.
+const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 
 /// A job descriptor that lives in the shared queue.
 ///
@@ -143,13 +156,25 @@ async fn worker_loop(
         };
 
         let ctx = Arc::clone(&ctx);
+        let queue = Arc::clone(&queue);
         let completion_tx = completion_tx.clone();
         let permit_tx = permit_tx.clone();
 
-        // 3. Spawn local task. The permit is returned when the task completes.
+        // 3. Spawn local task. The permit is returned when the task completes,
+        //    regardless of whether it succeeded or was requeued for retry.
         monoio::spawn(async move {
-            let completion = execute_job(&ctx, pool_job.job).await;
-            let _ = completion_tx.send(completion).await;
+            let result = execute_job(&ctx, &pool_job).await;
+            match result {
+                ExecuteResult::Complete(completion) => {
+                    let _ = completion_tx.send(completion).await;
+                }
+                ExecuteResult::Retry => {
+                    let mut job = pool_job;
+                    job.attempts += 1;
+                    monoio::time::sleep(RETRY_BACKOFF).await;
+                    queue.requeue(job);
+                }
+            }
             // Release permit back to the pool.
             let _ = permit_tx.send(());
         });
@@ -158,25 +183,41 @@ async fn worker_loop(
     tracing::info!(worker = id, "worker shutting down");
 }
 
-/// Execute a single job and produce a completion.
+/// Result of executing a job.
 ///
-/// Handlers retry internally until they succeed — this function always
-/// returns a valid [`JobCompletion`] with an [`ActionCompletion`].
-async fn execute_job(ctx: &HandlerContext, job: WorkerJob) -> JobCompletion {
-    match job {
+/// [`Complete`](Self::Complete) carries the finished [`JobCompletion`] to be
+/// sent to the SM. [`Retry`](Self::Retry) tells the caller to requeue the
+/// original [`PoolJob`] (which the caller still owns — `execute_job` only
+/// borrows it).
+enum ExecuteResult {
+    /// Job completed successfully — deliver to SM.
+    Complete(JobCompletion),
+    /// Transient failure — caller should requeue the original job.
+    Retry,
+}
+
+/// Execute a single job by dispatching to the appropriate handler.
+///
+/// Borrows the [`PoolJob`] so that on [`HandlerOutcome::Retry`] the caller
+/// retains ownership and can requeue it. Handlers receive `&Action` and
+/// clone any data they need to send over the network.
+async fn execute_job(ctx: &HandlerContext, pool_job: &PoolJob) -> ExecuteResult {
+    let (peer_id, outcome) = match &pool_job.job {
         WorkerJob::Garbler { peer_id, action } => {
-            let completion = crate::handlers::garbler::execute(ctx, &peer_id, action).await;
-            JobCompletion {
-                peer_id,
-                completion,
-            }
+            let o = crate::handlers::garbler::execute(ctx, peer_id, action).await;
+            (*peer_id, o)
         }
         WorkerJob::Evaluator { peer_id, action } => {
-            let completion = crate::handlers::evaluator::execute(ctx, &peer_id, action).await;
-            JobCompletion {
-                peer_id,
-                completion,
-            }
+            let o = crate::handlers::evaluator::execute(ctx, peer_id, action).await;
+            (*peer_id, o)
         }
+    };
+
+    match outcome {
+        HandlerOutcome::Done(completion) => ExecuteResult::Complete(JobCompletion {
+            peer_id,
+            completion,
+        }),
+        HandlerOutcome::Retry => ExecuteResult::Retry,
     }
 }
