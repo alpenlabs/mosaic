@@ -6,9 +6,15 @@
 //! timeout, cache full, storage unavailable), [`HandlerOutcome::Retry`]
 //! causes the worker to requeue the job so other peers can progress.
 
-use mosaic_cac_types::state_machine::evaluator::{
-    Action, ActionId, ActionResult, ChunkIndex, StateRead as _,
+use mosaic_cac_types::{
+    Adaptor, DepositAdaptors,
+    state_machine::evaluator::{Action, ActionId, ActionResult, ChunkIndex, StateRead as _},
 };
+use mosaic_common::constants::{
+    N_DEPOSIT_INPUT_WIRES, N_SETUP_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
+    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+};
+use mosaic_heap_array::HeapArray;
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::StorageProvider;
@@ -43,10 +49,10 @@ pub(crate) async fn execute<SP: StorageProvider>(
 
         // ── Heavy (Deposit) ─────────────────────────────────────────
         Action::GenerateDepositAdaptors(deposit_id) => {
-            generate_deposit_adaptors(ctx, *deposit_id).await
+            generate_deposit_adaptors(ctx, peer_id, *deposit_id).await
         }
         Action::GenerateWithdrawalAdaptorsChunk(deposit_id, chunk_idx) => {
-            generate_withdrawal_adaptors_chunk(ctx, *deposit_id, chunk_idx).await
+            generate_withdrawal_adaptors_chunk(ctx, peer_id, *deposit_id, chunk_idx).await
         }
 
         // ── Light (Deposit Network I/O) ─────────────────────────────
@@ -205,40 +211,134 @@ async fn receive_garbling_table<SP: StorageProvider>(
 // ============================================================================
 
 async fn generate_deposit_adaptors<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
-    _deposit_id: mosaic_cac_types::DepositId,
+    ctx: &HandlerContext<SP>,
+    peer_id: &PeerId,
+    deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
-    // TODO(phase4): Load from StateRead, generate deposit wire adaptors.
-    //
-    // Flow:
-    //   1. Load sighashes, deposit_inputs, evaluator sk/pk, reserved input
-    //      share commitments (computed from polynomial commitments at index 0)
-    //   2. For each deposit wire:
-    //      Adaptor::generate(rng, share_commitment, sk, pk, sighash)
-    //   3. Return DepositAdaptorsGenerated(deposit_id, DepositAdaptors)
-    //   4. Return Retry if storage reads fail
-    //
-    // Reference: PR #68 deposit_evaluator.rs exec_generate_adaptors() (deposit section)
-    unimplemented!("generate_deposit_adaptors: blocked on StateRead wiring")
+    let eval_state = ctx.storage.evaluator_state(peer_id);
+
+    // Load required data. Retry if any reads return None (data not yet written by STF).
+    let Some(deposit_state) = eval_state.get_deposit(&deposit_id).await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(sighashes) = eval_state
+        .get_deposit_sighashes(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(deposit_inputs) = eval_state
+        .get_deposit_inputs(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(input_poly_commits) = eval_state
+        .get_input_polynomial_commitments()
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+
+    let sk = deposit_state.sk.0;
+    let pk = deposit_state.sk.to_pubkey().0;
+    let mut rng = rand::thread_rng();
+
+    // Generate one adaptor per deposit wire, using the share commitment at
+    // reserved index (= zeroth polynomial coefficient) for the wire's input value.
+    let mut adaptors = Vec::with_capacity(N_DEPOSIT_INPUT_WIRES);
+    for i in 0..N_DEPOSIT_INPUT_WIRES {
+        let wire = N_SETUP_INPUT_WIRES + i;
+        let val = deposit_inputs[i] as usize;
+        // Zeroth coefficient of commitment polynomial = commitment to share at index 0
+        let share_commitment = input_poly_commits[wire][val].get_zeroth_coefficient();
+        let adaptor =
+            Adaptor::generate(&mut rng, share_commitment, sk, pk, sighashes[i].0.as_ref())
+                .expect("adaptor generation should not fail with valid inputs");
+        adaptors.push(adaptor);
+    }
+
+    let deposit_adaptors: DepositAdaptors = HeapArray::from_vec(adaptors);
+    completed(
+        ActionId::GenerateDepositAdaptors(deposit_id),
+        ActionResult::DepositAdaptorsGenerated(deposit_id, deposit_adaptors),
+    )
 }
 
 async fn generate_withdrawal_adaptors_chunk<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
-    _deposit_id: mosaic_cac_types::DepositId,
-    _chunk_idx: &ChunkIndex,
+    ctx: &HandlerContext<SP>,
+    peer_id: &PeerId,
+    deposit_id: mosaic_cac_types::DepositId,
+    chunk_idx: &ChunkIndex,
 ) -> HandlerOutcome {
-    // TODO(phase4): Load from StateRead, generate withdrawal wire adaptors for one chunk.
-    //
-    // Flow:
-    //   1. Load sighashes, evaluator sk/pk, reserved input share commitments
-    //   2. Determine which WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK wires this chunk covers
-    //   3. For each wire in chunk, for each of 256 values:
-    //      Adaptor::generate(rng, share_commitment, sk, pk, sighash)
-    //   4. Return WithdrawalAdaptorsChunkGenerated(deposit_id, chunk_idx, chunk)
-    //   5. Return Retry if storage reads fail
-    //
-    // Reference: PR #68 deposit_evaluator.rs exec_generate_adaptors() (withdrawal section)
-    unimplemented!("generate_withdrawal_adaptors_chunk: blocked on StateRead wiring")
+    let eval_state = ctx.storage.evaluator_state(peer_id);
+
+    // Load required data. Retry if any reads return None.
+    let Some(deposit_state) = eval_state.get_deposit(&deposit_id).await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(sighashes) = eval_state
+        .get_deposit_sighashes(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(input_poly_commits) = eval_state
+        .get_input_polynomial_commitments()
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+
+    let sk = deposit_state.sk.0;
+    let pk = deposit_state.sk.to_pubkey().0;
+    let mut rng = rand::thread_rng();
+
+    // Each chunk covers WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK consecutive withdrawal wires.
+    let chunk_offset = chunk_idx.get() as usize * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
+
+    let mut wires = Vec::with_capacity(WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK);
+    for wire_in_chunk in 0..WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK {
+        let withdrawal_wire = chunk_offset + wire_in_chunk;
+        let wire = N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
+        let sighash_idx = N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
+
+        let mut wire_adaptors = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+        for val in 0..WIDE_LABEL_VALUE_COUNT {
+            // Zeroth coefficient = commitment to share at reserved index
+            let share_commitment = input_poly_commits[wire][val].get_zeroth_coefficient();
+            let adaptor = Adaptor::generate(
+                &mut rng,
+                share_commitment,
+                sk,
+                pk,
+                sighashes[sighash_idx].0.as_ref(),
+            )
+            .expect("adaptor generation should not fail with valid inputs");
+            wire_adaptors.push(adaptor);
+        }
+        wires.push(HeapArray::from_vec(wire_adaptors));
+    }
+
+    let chunk = HeapArray::from_vec(wires);
+    completed(
+        ActionId::GenerateWithdrawalAdaptorsChunk(deposit_id, chunk_idx.get()),
+        ActionResult::WithdrawalAdaptorsChunkGenerated(
+            deposit_id,
+            ChunkIndex(chunk_idx.get()),
+            chunk,
+        ),
+    )
 }
 
 // ============================================================================

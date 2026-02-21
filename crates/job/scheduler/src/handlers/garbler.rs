@@ -7,12 +7,16 @@
 //! causes the worker to requeue the job so other peers can progress.
 
 use mosaic_cac_types::{
-    AllPolynomials, InputPolynomials, OutputPolynomial, Seed, WideLabelWireShares,
+    AllPolynomials, CompletedSignatures, InputPolynomials, OutputPolynomial, Seed,
+    WideLabelWireShares,
     state_machine::garbler::{
-        Action, ActionId, ActionResult, GeneratedPolynomialCommitments, Wire,
+        Action, ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Wire,
     },
 };
-use mosaic_common::constants::{N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT};
+use mosaic_common::constants::{
+    N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
+    WIDE_LABEL_VALUE_COUNT,
+};
 use mosaic_heap_array::HeapArray;
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
@@ -56,11 +60,13 @@ pub(crate) async fn execute<SP: StorageProvider>(
         }
 
         // ── Heavy (Deposit) ─────────────────────────────────────────
-        Action::DepositVerifyAdaptors(deposit_id) => verify_adaptors(ctx, *deposit_id).await,
+        Action::DepositVerifyAdaptors(deposit_id) => {
+            verify_adaptors(ctx, peer_id, *deposit_id).await
+        }
 
         // ── Heavy (Withdrawal — Critical) ───────────────────────────
         Action::CompleteAdaptorSignatures(deposit_id) => {
-            complete_adaptor_signatures(ctx, *deposit_id).await
+            complete_adaptor_signatures(ctx, peer_id, *deposit_id).await
         }
 
         _ => {
@@ -289,20 +295,77 @@ async fn send_challenge_response_msg_chunk<SP: StorageProvider>(
 // ============================================================================
 
 async fn verify_adaptors<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
-    _deposit_id: mosaic_cac_types::DepositId,
+    ctx: &HandlerContext<SP>,
+    peer_id: &PeerId,
+    deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
-    // TODO(phase4): Load from StateRead, verify each adaptor signature.
-    //
-    // Flow:
-    //   1. Load deposit_adaptors, withdrawal_adaptors, sighashes, deposit pk from storage
-    //   2. For each deposit adaptor: adaptor.verify(evaluator_pk, sighash)
-    //   3. For each withdrawal adaptor (wire × 256): adaptor.verify(evaluator_pk, sighash)
-    //   4. Return DepositAdaptorVerificationResult(deposit_id, bool)
-    //   5. Return Retry if storage read fails
-    //
-    // Reference: PR #68 deposit_garbler.rs exec_verify_adaptors()
-    unimplemented!("verify_adaptors: blocked on StateRead wiring")
+    let garb_state = ctx.storage.garbler_state(peer_id);
+
+    // Load all required data. Retry if any reads return None (data not yet written).
+    let Some(deposit_state) = garb_state.get_deposit(&deposit_id).await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(deposit_adaptors) = garb_state
+        .get_deposit_adaptors(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(withdrawal_adaptors) = garb_state
+        .get_withdrawal_adaptors(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(sighashes) = garb_state
+        .get_deposit_sighashes(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+
+    let evaluator_pk = deposit_state.pk.0;
+    let id = ActionId::DepositVerifyAdaptors(deposit_id);
+
+    // Verify deposit adaptors (one per deposit wire)
+    for (wire, adaptor) in deposit_adaptors.iter().enumerate() {
+        if adaptor
+            .verify(evaluator_pk, sighashes[wire].0.as_ref())
+            .is_err()
+        {
+            return completed(
+                id,
+                ActionResult::DepositAdaptorVerificationResult(deposit_id, false),
+            );
+        }
+    }
+
+    // Verify withdrawal adaptors (each wire × 256 values)
+    for (wire, wire_adaptors) in withdrawal_adaptors.iter().enumerate() {
+        let sighash_idx = N_DEPOSIT_INPUT_WIRES + wire;
+        for adaptor in wire_adaptors.iter() {
+            if adaptor
+                .verify(evaluator_pk, sighashes[sighash_idx].0.as_ref())
+                .is_err()
+            {
+                return completed(
+                    id,
+                    ActionResult::DepositAdaptorVerificationResult(deposit_id, false),
+                );
+            }
+        }
+    }
+
+    completed(
+        id,
+        ActionResult::DepositAdaptorVerificationResult(deposit_id, true),
+    )
 }
 
 // ============================================================================
@@ -310,19 +373,73 @@ async fn verify_adaptors<SP: StorageProvider>(
 // ============================================================================
 
 async fn complete_adaptor_signatures<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
-    _deposit_id: mosaic_cac_types::DepositId,
+    ctx: &HandlerContext<SP>,
+    peer_id: &PeerId,
+    deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
-    // TODO(phase4): Load from StateRead, complete adaptor signatures.
-    //
-    // Flow:
-    //   1. Load deposit_adaptors, withdrawal_adaptors, reserved_input_shares,
-    //      deposit_inputs, withdrawal_input from storage
-    //   2. For each deposit wire: adaptor.complete(share.value())
-    //   3. For each withdrawal wire: adaptor[val].complete(share[val].value())
-    //   4. Return AdaptorSignaturesCompleted(deposit_id, CompletedSignatures)
-    //   5. Return Retry if storage read fails
-    //
-    // Reference: PR #68 deposit_garbler.rs exec_sign()
-    unimplemented!("complete_adaptor_signatures: blocked on StateRead wiring")
+    let garb_state = ctx.storage.garbler_state(peer_id);
+
+    // Load all required data. Retry if any reads return None.
+    let Some(deposit_adaptors) = garb_state
+        .get_deposit_adaptors(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(withdrawal_adaptors) = garb_state
+        .get_withdrawal_adaptors(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(reserved_input_shares) = garb_state.get_reserved_input_shares().await.ok().flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(deposit_inputs) = garb_state
+        .get_deposit_inputs(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(withdrawal_input) = garb_state
+        .get_withdrawal_input(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+
+    let mut signatures = Vec::with_capacity(N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES);
+
+    // Complete deposit adaptor signatures.
+    // For each deposit wire, select the share at the known deposit input value
+    // from the reserved (index 0) shares, and complete the adaptor with it.
+    for wire in 0..N_DEPOSIT_INPUT_WIRES {
+        let val = deposit_inputs[wire] as usize;
+        let share_value = reserved_input_shares[N_SETUP_INPUT_WIRES + wire][val].value();
+        signatures.push(deposit_adaptors[wire].complete(share_value));
+    }
+
+    // Complete withdrawal adaptor signatures.
+    // For each withdrawal wire, select the adaptor and share at the withdrawal input value.
+    for wire in 0..N_WITHDRAWAL_INPUT_WIRES {
+        let val = withdrawal_input[wire] as usize;
+        let share_value =
+            reserved_input_shares[N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + wire][val].value();
+        signatures.push(withdrawal_adaptors[wire][val].complete(share_value));
+    }
+
+    let completed_sigs = CompletedSignatures::from_vec(signatures);
+    completed(
+        ActionId::CompleteAdaptorSignatures(deposit_id),
+        ActionResult::AdaptorSignaturesCompleted(deposit_id, completed_sigs),
+    )
 }
