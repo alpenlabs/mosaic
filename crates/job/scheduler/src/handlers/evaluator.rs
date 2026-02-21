@@ -6,7 +6,9 @@
 //! timeout, cache full, storage unavailable), [`HandlerOutcome::Retry`]
 //! causes the worker to requeue the job so other peers can progress.
 
-use mosaic_cac_types::state_machine::evaluator::{Action, ActionId, ActionResult, ChunkIndex};
+use mosaic_cac_types::state_machine::evaluator::{
+    Action, ActionId, ActionResult, ChunkIndex, StateRead as _,
+};
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::StorageProvider;
@@ -29,7 +31,7 @@ pub(crate) async fn execute<SP: StorageProvider>(
         Action::SendChallengeMsg(msg) => send_challenge_msg(ctx, peer_id, msg).await,
 
         // ── Heavy (Setup) ───────────────────────────────────────────
-        Action::VerifyOpenedInputShares => verify_opened_input_shares(ctx).await,
+        Action::VerifyOpenedInputShares => verify_opened_input_shares(ctx, peer_id).await,
 
         // ── Garbling (Coordinator) ──────────────────────────────────
         Action::GenerateTableCommitment(index, seed) => {
@@ -104,21 +106,54 @@ async fn send_adaptor_msg_chunk<SP: StorageProvider>(
 // ============================================================================
 
 async fn verify_opened_input_shares<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
+    ctx: &HandlerContext<SP>,
+    peer_id: &PeerId,
 ) -> HandlerOutcome {
-    // TODO(phase2): Load data from StateRead, run verification loop.
-    //
-    // Flow:
-    //   1. Load challenge_indices, opened_input_shares, input_polynomial_commitments
-    //      from storage via StateRead
-    //   2. For each opened circuit × wire × value:
-    //      commitments[wire][val].verify_share(shares[idx][wire][val])
-    //   3. Return VerifyOpenedInputSharesResult(None) on success,
-    //      or VerifyOpenedInputSharesResult(Some(reason)) on failure
-    //   4. Return Retry if storage reads return None (data not ready)
-    //
-    // Reference: PR #68 setup_evaluator.rs exec_verify() step 1
-    unimplemented!("verify_opened_input_shares: blocked on StateRead wiring")
+    use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS, WIDE_LABEL_VALUE_COUNT};
+
+    let eval_state = ctx.storage.evaluator_state(peer_id);
+
+    // Load all three data sets from storage. Retry if any are not yet available.
+    let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(shares) = eval_state.get_opened_input_shares().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(commitments) = eval_state
+        .get_input_polynomial_commitments()
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+
+    // Verify each opened share against its polynomial commitment.
+    // Any failure produces a reason string; success returns None.
+    let failure_reason = (|| {
+        for idx in 0..N_OPEN_CIRCUITS {
+            for wire in 0..N_INPUT_WIRES {
+                for val in 0..WIDE_LABEL_VALUE_COUNT {
+                    let share = shares[idx][wire][val].clone();
+                    if commitments[wire][val].verify_share(share).is_err() {
+                        return Some(format!(
+                            "verify failed for circuit {}, wire {}, value {}",
+                            challenge_indices[idx].get(),
+                            wire,
+                            val,
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    })();
+
+    completed(
+        ActionId::VerifyOpenedInputShares,
+        ActionResult::VerifyOpenedInputSharesResult(failure_reason),
+    )
 }
 
 // ============================================================================
