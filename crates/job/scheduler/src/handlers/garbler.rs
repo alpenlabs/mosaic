@@ -7,10 +7,10 @@
 //! causes the worker to requeue the job so other peers can progress.
 
 use mosaic_cac_types::{
-    AllPolynomialCommitments, AllPolynomials, InputPolynomialCommitments, InputPolynomials,
-    OutputPolynomial, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
-    WideLabelWireShares,
-    state_machine::garbler::{Action, ActionId, ActionResult, Wire},
+    AllPolynomials, InputPolynomials, OutputPolynomial, Seed, WideLabelWireShares,
+    state_machine::garbler::{
+        Action, ActionId, ActionResult, GeneratedPolynomialCommitments, Wire,
+    },
 };
 use mosaic_common::constants::{N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT};
 use mosaic_heap_array::HeapArray;
@@ -76,18 +76,25 @@ pub(crate) async fn execute<SP: StorageProvider>(
 // ============================================================================
 
 async fn generate_polynomial_commitments<SP: StorageProvider>(
-    _ctx: &HandlerContext<SP>,
-    _seed: Seed,
-    _wire: Wire,
+    ctx: &HandlerContext<SP>,
+    seed: Seed,
+    wire: Wire,
 ) -> HandlerOutcome {
-    // TODO(phase2): Implement with new polynomial cache (RAII guard + pending).
-    //
-    // Flow:
-    //   1. ctx.polynomial_cache.get(&seed)
-    //   2. Hit → commit requested wire, mark_completed, Done
-    //   3. Unavailable → Retry
-    //   4. Generate(guard) → generate_polynomials_from_seed, guard.complete, commit wire, Done
-    unimplemented!("generate_polynomial_commitments: blocked on polynomial cache redesign")
+    use crate::polynomial_cache::CacheResult;
+
+    let polys = match ctx.polynomial_cache.get(&seed) {
+        CacheResult::Hit(arc) => arc,
+        CacheResult::Unavailable => return HandlerOutcome::Retry,
+        CacheResult::Generate(guard) => {
+            let generated = generate_polynomials_from_seed(seed);
+            guard.complete(generated)
+        }
+    };
+
+    let result = commit_for_wire(&polys, wire);
+    ctx.polynomial_cache.mark_completed(&seed);
+    let id = ActionId::GeneratePolynomialCommitments(seed, wire);
+    completed(id, ActionResult::PolynomialCommitmentsGenerated(result))
 }
 
 async fn generate_shares<SP: StorageProvider>(
@@ -129,20 +136,30 @@ fn generate_polynomials_from_seed(seed: Seed) -> AllPolynomials {
     (input_polys, output_poly)
 }
 
-/// Compute commitments for all polynomials (EC scalar multiplications).
-#[expect(dead_code, reason = "will be used after polynomial cache redesign")]
-fn commit_polynomials(polys: &AllPolynomials) -> AllPolynomialCommitments {
+/// Compute polynomial commitments for a single wire.
+///
+/// For [`Wire::Input(idx)`]: commits all 256 polynomials for that input wire
+/// (~270ms of EC scalar multiplications per wire).
+///
+/// For [`Wire::Output`]: commits the single output polynomial (~1.5ms).
+fn commit_for_wire(polys: &AllPolynomials, wire: Wire) -> GeneratedPolynomialCommitments {
     let (input_polys, output_poly) = polys;
-    let mut input_commits: Vec<WideLabelWirePolynomialCommitments> =
-        Vec::with_capacity(N_INPUT_WIRES);
-    for wire in 0..N_INPUT_WIRES {
-        let commits: Vec<PolynomialCommitment> =
-            input_polys[wire].iter().map(|p| p.commit()).collect();
-        input_commits.push(HeapArray::from_vec(commits));
+    match wire {
+        Wire::Input(idx) => {
+            let commits: Vec<PolynomialCommitment> = input_polys[idx as usize]
+                .iter()
+                .map(|p| p.commit())
+                .collect();
+            GeneratedPolynomialCommitments::Input {
+                wire: idx,
+                commitments: HeapArray::from_vec(commits),
+            }
+        }
+        Wire::Output => {
+            let commit = output_poly.commit();
+            GeneratedPolynomialCommitments::Output(HeapArray::from_elem(commit))
+        }
     }
-    let input_commits: InputPolynomialCommitments = HeapArray::from_vec(input_commits);
-    let output_commit: OutputPolynomialCommitment = HeapArray::from_elem(output_poly.commit());
-    (input_commits, output_commit)
 }
 
 /// Evaluate all polynomials at a single circuit index.
