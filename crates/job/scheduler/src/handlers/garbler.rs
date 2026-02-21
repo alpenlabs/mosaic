@@ -6,8 +6,6 @@
 //! timeout, cache full, storage unavailable), [`HandlerOutcome::Retry`]
 //! causes the worker to requeue the job so other peers can progress.
 
-use std::sync::Arc;
-
 use mosaic_cac_types::{
     AllPolynomialCommitments, AllPolynomials, InputPolynomialCommitments, InputPolynomials,
     OutputPolynomial, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
@@ -97,17 +95,19 @@ async fn generate_shares<SP: StorageProvider>(
     seed: Seed,
     index: Index,
 ) -> HandlerOutcome {
-    // Try cache first, fall back to regenerating from seed.
-    // TODO(phase2): Replace with new cache API (CacheResult::Hit/Unavailable/Generate).
+    use crate::polynomial_cache::CacheResult;
+
     let polys = match ctx.polynomial_cache.get(&seed) {
-        Some(arc) => arc,
-        None => {
-            tracing::warn!("polynomial cache miss for generate_shares, regenerating from seed");
-            Arc::new(generate_polynomials_from_seed(seed))
+        CacheResult::Hit(arc) => arc,
+        CacheResult::Unavailable => return HandlerOutcome::Retry,
+        CacheResult::Generate(guard) => {
+            let generated = generate_polynomials_from_seed(seed);
+            guard.complete(generated)
         }
     };
 
     let (input_shares, output_share) = evaluate_polynomials_at_index(&polys, index);
+    ctx.polynomial_cache.mark_completed(&seed);
     let id = ActionId::GenerateShares(seed, index);
     completed(
         id,
