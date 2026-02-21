@@ -18,6 +18,11 @@ mosaic-net-svc-api.workspace = true
 mosaic-net-client.workspace = true
 mosaic-storage-api.workspace = true
 
+ark-ff.workspace = true
+bitvec = "1.0"
+blake3.workspace = true
+ckt-fmtv5-types.workspace = true
+ckt-gobble.workspace = true
 fasm.workspace = true
 kanal = "0.1.1"
 monoio = { version = "0.2", features = ["sync"] }

@@ -78,6 +78,9 @@ mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
 
 anyhow = "1.0"
+blake3 = "1.6"
+ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt" }
+ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
 ark-ec = "0.5.0"
 ark-ff = "0.5.0"
 ark-secp256k1 = "0.5.0"
