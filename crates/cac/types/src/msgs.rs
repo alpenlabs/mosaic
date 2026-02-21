@@ -40,6 +40,10 @@ pub struct CommitMsgHeader {
     pub all_aes128_keys: HeapArray<[u8; 16], N_CIRCUITS>,
     /// Public S values for all N_CIRCUITS garbling instances.
     pub all_public_s: HeapArray<[u8; 16], N_CIRCUITS>,
+    /// Constant-false wire labels for all N_CIRCUITS garbling instances.
+    pub all_constant_zero_labels: HeapArray<[u8; 16], N_CIRCUITS>,
+    /// Constant-true wire labels for all N_CIRCUITS garbling instances.
+    pub all_constant_one_labels: HeapArray<[u8; 16], N_CIRCUITS>,
 }
 
 /// CommitMsgChunk: Garbler -> Evaluator (chunked by wire)

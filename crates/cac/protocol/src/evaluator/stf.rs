@@ -503,6 +503,8 @@ async fn handle_commit_msg_header<S: StateMut>(
                 output_polynomial_commitment,
                 all_aes128_keys,
                 all_public_s,
+                all_constant_zero_labels,
+                all_constant_one_labels,
             } = commit_msg_header;
 
             artifact_store
@@ -519,6 +521,14 @@ async fn handle_commit_msg_header<S: StateMut>(
                 .map_err(SMError::storage)?;
             artifact_store
                 .put_all_public_s(&all_public_s)
+                .await
+                .map_err(SMError::storage)?;
+            artifact_store
+                .put_all_constant_zero_labels(&all_constant_zero_labels)
+                .await
+                .map_err(SMError::storage)?;
+            artifact_store
+                .put_all_constant_one_labels(&all_constant_one_labels)
                 .await
                 .map_err(SMError::storage)?;
 

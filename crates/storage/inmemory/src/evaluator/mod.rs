@@ -41,6 +41,10 @@ pub struct StoredEvaluatorState {
     pub aes128_keys: BTreeMap<usize, [u8; 16]>,
     /// Public S values for all garbling instances, indexed by circuit (0-indexed).
     pub public_s_values: BTreeMap<usize, [u8; 16]>,
+    /// Constant-false wire labels for all garbling instances, indexed by circuit (0-indexed).
+    pub constant_zero_labels: BTreeMap<usize, [u8; 16]>,
+    /// Constant-true wire labels for all garbling instances, indexed by circuit (0-indexed).
+    pub constant_one_labels: BTreeMap<usize, [u8; 16]>,
     /// Output label ciphertexts for unopened circuits.
     pub output_label_cts: BTreeMap<usize, Byte32>,
     /// Per-deposit state indexed by `DepositId`.

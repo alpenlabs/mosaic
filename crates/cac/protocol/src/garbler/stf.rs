@@ -581,6 +581,8 @@ async fn handle_table_commitment_generated<S: StateMut>(
                 output_polynomial_commitment,
                 all_aes128_keys: todo!(),
                 all_public_s: todo!(),
+                all_constant_zero_labels: todo!(),
+                all_constant_one_labels: todo!(),
             };
             emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
             for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
@@ -718,6 +720,8 @@ pub(crate) async fn restore<S: StateRead>(
                 output_polynomial_commitment,
                 all_aes128_keys: todo!(),
                 all_public_s: todo!(),
+                all_constant_zero_labels: todo!(),
+                all_constant_one_labels: todo!(),
             };
             emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
 

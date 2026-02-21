@@ -215,6 +215,8 @@ fn arb_commit_msg_header() -> impl Strategy<Value = CommitMsgHeader> {
             output_polynomial_commitment,
             all_aes128_keys: HeapArray::from_elem([0u8; 16]),
             all_public_s: HeapArray::from_elem([0u8; 16]),
+            all_constant_zero_labels: HeapArray::from_elem([0u8; 16]),
+            all_constant_one_labels: HeapArray::from_elem([0u8; 16]),
         }
     })
 }
@@ -670,6 +672,8 @@ fn test_commit_msg_header_fits_in_frame() {
         output_polynomial_commitment,
         all_aes128_keys: HeapArray::from_elem([0u8; 16]),
         all_public_s: HeapArray::from_elem([0u8; 16]),
+        all_constant_zero_labels: HeapArray::from_elem([0u8; 16]),
+        all_constant_one_labels: HeapArray::from_elem([0u8; 16]),
     };
 
     assert_fits_in_frame(&header, "CommitMsgHeader", Compress::Yes);
@@ -679,8 +683,8 @@ fn test_commit_msg_header_fits_in_frame() {
     // ~17 KB base + 181×16 aes keys + 181×16 public S = ~23 KB
     let size = header.serialized_size(Compress::No);
     assert!(
-        size < 25 * 1024,
-        "CommitMsgHeader should be ~23 KB, got {} bytes",
+        size < 30 * 1024,
+        "CommitMsgHeader should be ~29 KB, got {} bytes",
         size
     );
 }

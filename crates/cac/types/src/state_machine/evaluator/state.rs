@@ -123,6 +123,18 @@ pub trait StateRead {
         index: Index,
     ) -> impl Future<Output = Result<Option<[u8; 16]>, Self::Error>> + Send;
 
+    /// Retrieves the constant-false wire label for a specific garbling circuit index.
+    fn get_constant_zero_label(
+        &self,
+        index: Index,
+    ) -> impl Future<Output = Result<Option<[u8; 16]>, Self::Error>> + Send;
+
+    /// Retrieves the constant-true wire label for a specific garbling circuit index.
+    fn get_constant_one_label(
+        &self,
+        index: Index,
+    ) -> impl Future<Output = Result<Option<[u8; 16]>, Self::Error>> + Send;
+
     /// Retrieves the output label ciphertext for an unopened (evaluation) circuit.
     fn get_output_label_ct(
         &self,
@@ -248,6 +260,18 @@ pub trait StateMut: StateRead {
     fn put_all_public_s(
         &mut self,
         values: &crate::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Stores constant-false wire labels for all garbling circuit indices.
+    fn put_all_constant_zero_labels(
+        &mut self,
+        labels: &crate::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Stores constant-true wire labels for all garbling circuit indices.
+    fn put_all_constant_one_labels(
+        &mut self,
+        labels: &crate::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stores output label ciphertexts for the unopened (evaluation) circuits.

@@ -198,6 +198,20 @@ impl StateRead for StoredEvaluatorState {
         Ok(self.public_s_values.get(&index.get()).copied())
     }
 
+    async fn get_constant_zero_label(
+        &self,
+        index: mosaic_vs3::Index,
+    ) -> Result<Option<[u8; 16]>, Self::Error> {
+        Ok(self.constant_zero_labels.get(&index.get()).copied())
+    }
+
+    async fn get_constant_one_label(
+        &self,
+        index: mosaic_vs3::Index,
+    ) -> Result<Option<[u8; 16]>, Self::Error> {
+        Ok(self.constant_one_labels.get(&index.get()).copied())
+    }
+
     async fn get_output_label_ct(
         &self,
         index: mosaic_vs3::Index,
