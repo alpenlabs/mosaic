@@ -11,13 +11,13 @@ pub(crate) mod worker;
 
 use std::sync::Arc;
 
-use mosaic_job_api::JobCompletion;
-use mosaic_job_api::{ExecuteGarblerJob, ExecuteEvaluatorJob};
+use mosaic_job_api::{ExecuteEvaluatorJob, ExecuteGarblerJob, JobCompletion};
 
+use self::{
+    queue::JobQueue,
+    worker::{Worker, WorkerJob},
+};
 use crate::priority::Priority;
-
-use self::queue::JobQueue;
-use self::worker::{Worker, WorkerJob};
 
 /// A job waiting in the pool's shared queue.
 ///
@@ -127,11 +127,23 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
         self.queue.len()
     }
 
-    /// Shut down the pool.
+    /// Close the queue without joining worker threads.
+    ///
+    /// Workers will finish in-flight jobs and then exit when they see the
+    /// closed queue. This is non-blocking — use it in `Drop` impls where
+    /// you can't wait for threads.
+    pub(crate) fn close_queue(&self) {
+        self.queue.close();
+    }
+
+    /// Shut down the pool and join all worker threads.
     ///
     /// Closes the queue (workers will finish after draining remaining jobs)
     /// and shuts down all workers. Workers finish in-flight jobs but don't
-    /// accept new ones.
+    /// accept new ones. This method blocks until all workers exit.
+    ///
+    /// For non-blocking cleanup (e.g. in `Drop`), use [`close_queue`](Self::close_queue).
+    #[allow(dead_code)]
     pub(crate) fn shutdown(self) {
         self.queue.close();
         for worker in self.workers {

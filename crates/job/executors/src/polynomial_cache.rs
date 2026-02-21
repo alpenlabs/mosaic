@@ -10,19 +10,16 @@
 //! and shared across all handlers via [`Arc`]. The design addresses three
 //! concurrency concerns:
 //!
-//! - **No redundant generation**: A `pending` set ensures only one worker
-//!   generates polynomials for a given seed. Other workers see
-//!   [`CacheResult::Unavailable`] and retry.
+//! - **No redundant generation**: A `pending` set ensures only one worker generates polynomials for
+//!   a given seed. Other workers see [`CacheResult::Unavailable`] and retry.
 //!
-//! - **No premature eviction**: Entries track a `remaining` counter that is
-//!   decremented by [`mark_completed`](PolynomialCache::mark_completed) (called
-//!   by handlers only on success, never on retry). Eviction occurs only when
-//!   `remaining` reaches 0.
+//! - **No premature eviction**: Entries track a `remaining` counter that is decremented by
+//!   [`mark_completed`](PolynomialCache::mark_completed) (called by handlers only on success, never
+//!   on retry). Eviction occurs only when `remaining` reaches 0.
 //!
-//! - **Slot reservation invariant**: `entries.len() + pending.len() <= max_entries`
-//!   at all times. A [`GenerationGuard`] reserves a slot on creation; its
-//!   [`complete`](GenerationGuard::complete) method is therefore guaranteed to
-//!   find room for insertion.
+//! - **Slot reservation invariant**: `entries.len() + pending.len() <= max_entries` at all times. A
+//!   [`GenerationGuard`] reserves a slot on creation; its [`complete`](GenerationGuard::complete)
+//!   method is therefore guaranteed to find room for insertion.
 //!
 //! [`GeneratePolynomialCommitments`]: mosaic_cac_types::state_machine::garbler::Action::GeneratePolynomialCommitments
 //! [`GenerateShares`]: mosaic_cac_types::state_machine::garbler::Action::GenerateShares
@@ -201,11 +198,11 @@ impl PolynomialCache {
     /// Returns one of three outcomes:
     ///
     /// - [`CacheResult::Hit`] — polynomials are cached. Use them directly.
-    /// - [`CacheResult::Unavailable`] — another worker is generating this seed,
-    ///   or the cache is full with no evictable entries. Caller should retry.
-    /// - [`CacheResult::Generate`] — caller is designated as the generator.
-    ///   A slot has been reserved. Call [`GenerationGuard::complete`] after
-    ///   generating, or drop the guard to release the slot.
+    /// - [`CacheResult::Unavailable`] — another worker is generating this seed, or the cache is
+    ///   full with no evictable entries. Caller should retry.
+    /// - [`CacheResult::Generate`] — caller is designated as the generator. A slot has been
+    ///   reserved. Call [`GenerationGuard::complete`] after generating, or drop the guard to
+    ///   release the slot.
     pub fn get(&self, seed: &Seed) -> CacheResult {
         let mut state = self.state.lock();
 

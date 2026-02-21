@@ -10,21 +10,24 @@
 //! # Modules
 //!
 //! - [`garbler`] / [`evaluator`] — per-role action execution.
-//! - [`garbling`] — reusable [`GarblingSession`](garbling::GarblingSession) for
-//!   circuit garbling (shared by commitment and transfer actions).
+//! - [`garbling`] — reusable [`GarblingSession`](garbling::GarblingSession) for circuit garbling
+//!   (shared by commitment and transfer actions).
 //! - [`polynomial_cache`] — bounded cache for polynomial data during setup.
 
 use std::path::PathBuf;
 
+pub mod circuit_sessions;
 pub mod evaluator;
 pub mod garbler;
 pub mod garbling;
 pub mod polynomial_cache;
 
-use mosaic_job_api::{
-    CircuitError, CircuitSession, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome,
-    OwnedChunk,
+use ckt_fmtv5_types::v5::c::ReaderV5c;
+use mosaic_cac_types::{WideLabelWireShares, state_machine::garbler::StateRead as _};
+use mosaic_common::constants::{
+    N_DEPOSIT_INPUT_WIRES, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
 };
+use mosaic_job_api::{CircuitError, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
 
@@ -91,34 +94,12 @@ impl<SP: StorageProvider, TS: TableStore> std::fmt::Debug for MosaicExecutor<SP,
     }
 }
 
-/// Placeholder circuit session — will be replaced with concrete garbling/evaluation sessions.
-pub struct MosaicCircuitSession;
-
-impl std::fmt::Debug for MosaicCircuitSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MosaicCircuitSession").finish()
-    }
-}
-
-impl CircuitSession for MosaicCircuitSession {
-    fn process_chunk(
-        &mut self,
-        _chunk: &std::sync::Arc<OwnedChunk>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn finish(self: Box<Self>) -> std::pin::Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
-        Box::pin(async { HandlerOutcome::Retry })
-    }
-}
-
 impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<SP, TS> {
-    type Session = MosaicCircuitSession;
+    type Session = circuit_sessions::GarblerCircuitSession;
 
     fn generate_polynomial_commitments(
         &self,
-        peer_id: &PeerId,
+        _peer_id: &PeerId,
         seed: mosaic_cac_types::Seed,
         wire: mosaic_cac_types::state_machine::garbler::Wire,
     ) -> impl Future<Output = HandlerOutcome> + Send {
@@ -127,7 +108,7 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
 
     fn generate_shares(
         &self,
-        peer_id: &PeerId,
+        _peer_id: &PeerId,
         seed: mosaic_cac_types::Seed,
         index: mosaic_vs3::Index,
     ) -> impl Future<Output = HandlerOutcome> + Send {
@@ -184,32 +165,66 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
 
     fn begin_table_commitment(
         &self,
-        _peer_id: &PeerId,
-        _index: mosaic_vs3::Index,
-        _seed: mosaic_cac_types::GarblingSeed,
+        peer_id: &PeerId,
+        index: mosaic_vs3::Index,
+        seed: mosaic_cac_types::GarblingSeed,
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
-        async {
-            Err(CircuitError::SetupFailed(
-                "not yet wired to coordinator".into(),
+        let peer_id = *peer_id;
+        async move {
+            let garb_state = self.storage.garbler_state(&peer_id);
+            let input_shares = garb_state
+                .get_input_shares()
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CircuitError::StorageUnavailable)?;
+            let output_shares = garb_state
+                .get_output_shares()
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CircuitError::StorageUnavailable)?;
+
+            let idx = index.get();
+            let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] = input_shares
+                [idx][N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
+                .try_into()
+                .map_err(|_| CircuitError::SetupFailed("shares slice mismatch".into()))?;
+            let output_share = &output_shares[idx];
+
+            let reader = ReaderV5c::open(&self.circuit_path)
+                .map_err(|e| CircuitError::SetupFailed(format!("circuit open: {e}")))?;
+            let header = *reader.header();
+            let outputs = reader.outputs().to_vec();
+
+            let setup =
+                garbling::GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
+
+            Ok(circuit_sessions::GarblerCircuitSession::Commitment(
+                Box::new(circuit_sessions::CommitmentSession::new(
+                    setup, outputs, index, true,
+                )),
             ))
         }
     }
 
     fn begin_table_transfer(
         &self,
-        _peer_id: &PeerId,
-        _seed: mosaic_cac_types::GarblingSeed,
+        peer_id: &PeerId,
+        seed: mosaic_cac_types::GarblingSeed,
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
-        async {
-            Err(CircuitError::SetupFailed(
-                "not yet wired to coordinator".into(),
-            ))
+        let peer_id = *peer_id;
+        async move {
+            let session = garbler::setup_transfer_session(self, &peer_id, seed).await?;
+            Ok(circuit_sessions::GarblerCircuitSession::Transfer(Box::new(
+                session,
+            )))
         }
     }
 }
 
 impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor<SP, TS> {
-    type Session = MosaicCircuitSession;
+    type Session = circuit_sessions::EvaluatorCircuitSession;
 
     fn send_challenge_msg(
         &self,
@@ -254,38 +269,80 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
 
     fn begin_table_commitment(
         &self,
-        _peer_id: &PeerId,
-        _index: mosaic_vs3::Index,
-        _seed: mosaic_cac_types::GarblingSeed,
+        peer_id: &PeerId,
+        index: mosaic_vs3::Index,
+        seed: mosaic_cac_types::GarblingSeed,
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
-        async {
-            Err(CircuitError::SetupFailed(
-                "not yet wired to coordinator".into(),
+        use mosaic_cac_types::state_machine::evaluator::StateRead as _;
+
+        let peer_id = *peer_id;
+        async move {
+            let eval_state = self.storage.evaluator_state(&peer_id);
+            let challenge_indices = eval_state
+                .get_challenge_indices()
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CircuitError::StorageUnavailable)?;
+            let opened_input_shares = eval_state
+                .get_opened_input_shares()
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CircuitError::StorageUnavailable)?;
+            let opened_output_shares = eval_state
+                .get_opened_output_shares()
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CircuitError::StorageUnavailable)?;
+
+            let pos = challenge_indices.iter().position(|ci| *ci == index).ok_or(
+                CircuitError::SetupFailed("index not in challenge indices".into()),
+            )?;
+
+            let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] =
+                opened_input_shares[pos][N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
+                    .try_into()
+                    .map_err(|_| CircuitError::SetupFailed("shares slice mismatch".into()))?;
+            let output_share = &opened_output_shares[pos];
+
+            let reader = ReaderV5c::open(&self.circuit_path)
+                .map_err(|e| CircuitError::SetupFailed(format!("circuit open: {e}")))?;
+            let header = *reader.header();
+            let outputs = reader.outputs().to_vec();
+
+            let setup =
+                garbling::GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
+
+            Ok(circuit_sessions::EvaluatorCircuitSession::Commitment(
+                Box::new(circuit_sessions::CommitmentSession::new(
+                    setup, outputs, index, false,
+                )),
             ))
         }
     }
 
-    fn begin_table_receive(
+    fn receive_garbling_table(
         &self,
-        _peer_id: &PeerId,
-        _commitment: mosaic_cac_types::GarblingTableCommitment,
-    ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
-        async {
-            Err(CircuitError::SetupFailed(
-                "not yet wired to coordinator".into(),
-            ))
-        }
+        peer_id: &PeerId,
+        commitment: mosaic_cac_types::GarblingTableCommitment,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_receive_garbling_table(self, peer_id, commitment)
     }
 
     fn begin_evaluation(
         &self,
-        _peer_id: &PeerId,
-        _index: mosaic_vs3::Index,
-        _commitment: mosaic_cac_types::GarblingTableCommitment,
+        peer_id: &PeerId,
+        index: mosaic_vs3::Index,
+        commitment: mosaic_cac_types::GarblingTableCommitment,
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
-        async {
-            Err(CircuitError::SetupFailed(
-                "not yet wired to coordinator".into(),
+        let peer_id = *peer_id;
+        async move {
+            let session =
+                evaluator::setup_evaluation_session(self, &peer_id, index, commitment).await?;
+            Ok(circuit_sessions::EvaluatorCircuitSession::Evaluation(
+                Box::new(session),
             ))
         }
     }

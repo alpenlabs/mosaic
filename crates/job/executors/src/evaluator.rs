@@ -2,42 +2,39 @@
 
 use ark_ff::{BigInteger, PrimeField};
 use bitvec::vec::BitVec;
-use ckt_fmtv5_types::{
-    GateType,
-    v5::c::{ReaderV5c, get_block_num_gates},
-};
+use ckt_fmtv5_types::v5::c::ReaderV5c;
 use ckt_gobble::{
-    Ciphertext, Engine, InputTranslationMaterial, Label, OutputTranslationMaterial,
-    traits::{
-        EvaluationInstance as EvaluationInstanceTrait, EvaluationInstanceConfig, GobbleEngine,
-    },
-    translate_input, translate_output,
+    Ciphertext, Engine, InputTranslationMaterial, Label,
+    traits::{EvaluationInstanceConfig, GobbleEngine},
+    translate_input,
 };
 use mosaic_cac_types::{
-    Adaptor, DepositAdaptors, WideLabelWireShares,
-    state_machine::evaluator::{Action, ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
+    Adaptor, DepositAdaptors, GarblingTableCommitment,
+    state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
 };
 use mosaic_common::constants::{
     N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
     N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
 use mosaic_heap_array::HeapArray;
-use mosaic_job_api::{ActionCompletion, HandlerOutcome};
+use mosaic_job_api::{ActionCompletion, CircuitError, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::StorageProvider;
-use mosaic_vs3::{Index, Scalar, Share, interpolate};
+use mosaic_storage_api::{
+    StorageProvider,
+    table_store::{TableId, TableReader as _, TableStore, TableWriter as _},
+};
+use mosaic_vs3::{Index, Share, interpolate};
 
 use super::MosaicExecutor;
-use crate::garbling::{GarblingSession, compute_commitment};
-use mosaic_storage_api::table_store::{TableId, TableReader as _, TableStore, TableWriter as _};
+use crate::{
+    circuit_sessions::{CiphertextReaderAdapter, EvaluationSession},
+    garbling::compute_commitment,
+};
 
 /// Build a successful evaluator completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
     HandlerOutcome::Done(ActionCompletion::Evaluator { id, result })
 }
-
-/// Dispatch an evaluator action to the appropriate handler.
-// Light handlers (Network I/O)
 // ============================================================================
 
 pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStore>(
@@ -126,78 +123,10 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
 }
 
 // ============================================================================
-// Garbling handlers (routed through GarblingCoordinator)
+// Network handler (E4 — pool action, not circuit session)
 // ============================================================================
 
-async fn generate_table_commitment<SP: StorageProvider, TS: TableStore>(
-    ctx: &MosaicExecutor<SP, TS>,
-    peer_id: &PeerId,
-    index: mosaic_vs3::Index,
-    seed: mosaic_cac_types::GarblingSeed,
-) -> HandlerOutcome {
-    let eval_state = ctx.storage.evaluator_state(peer_id);
-
-    // Load opened shares and challenge indices.
-    let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(opened_input_shares) = eval_state.get_opened_input_shares().await.ok().flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(opened_output_shares) = eval_state.get_opened_output_shares().await.ok().flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-
-    // Find which position in the opened arrays corresponds to this index.
-    let Some(pos) = challenge_indices.iter().position(|ci| *ci == index) else {
-        // This index is not among the challenged circuits — shouldn't happen.
-        return HandlerOutcome::Retry;
-    };
-
-    // Extract withdrawal wire shares for this opened circuit.
-    let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] = opened_input_shares
-        [pos][N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
-        .try_into()
-        .expect("withdrawal shares slice length mismatch");
-    let output_share = &opened_output_shares[pos];
-
-    // Open circuit and garble.
-    let Ok(mut reader) = ReaderV5c::open(&ctx.circuit_path) else {
-        return HandlerOutcome::Retry;
-    };
-    let header = *reader.header();
-    let outputs = reader.outputs().to_vec();
-
-    let setup = GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
-    let mut session = setup.session;
-
-    let translate_hash = blake3::hash(&setup.translation_bytes);
-
-    let mut ct_hasher = blake3::Hasher::new();
-    while let Some(chunk) = reader
-        .next_blocks_chunk()
-        .await
-        .expect("circuit read error")
-    {
-        for block in chunk.blocks_iter() {
-            let ct_bytes = session.process_block(block);
-            ct_hasher.update(ct_bytes);
-        }
-    }
-    let ct_hash = ct_hasher.finalize();
-
-    let finish = session.finish(&outputs);
-    let commitment = compute_commitment(&ct_hash, &translate_hash, &finish.output_label_ct);
-
-    completed(
-        ActionId::GenerateTableCommitment(index),
-        ActionResult::TableCommitmentGenerated(index, commitment),
-    )
-}
-
-async fn receive_garbling_table<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     expected_commitment: mosaic_cac_types::GarblingTableCommitment,
@@ -420,7 +349,10 @@ pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: Ta
     )
 }
 
-pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<SP: StorageProvider, TS: TableStore>(
+pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
+    SP: StorageProvider,
+    TS: TableStore,
+>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
@@ -491,87 +423,97 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<SP: StorageProvide
 }
 
 // ============================================================================
-// Heavy handlers (Withdrawal — Critical priority)
+// Circuit session setup (called by MosaicExecutor trait impls)
 // ============================================================================
 
-async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
+/// Set up an [`EvaluationSession`] for E8 (`EvaluateGarblingTable`).
+///
+/// Performs all setup work (share interpolation, label translation, evaluation
+/// instance creation, table reader opening) and returns the session for the
+/// garbling coordinator to drive block-by-block.
+///
+/// This is the most complex session setup because it must:
+/// 1. Interpolate shares across opened + committed circuits to find labels at the target evaluation
+///    index.
+/// 2. Load and parse input translation material from the table store.
+/// 3. Translate byte-level labels to bit-level labels for the evaluation instance.
+/// 4. Create the `EvaluationInstance` with all configuration.
+/// 5. Leave the table reader positioned at ciphertext data for streaming during `process_chunk`.
+pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     index: Index,
-    commitment: mosaic_cac_types::GarblingTableCommitment,
-) -> HandlerOutcome {
+    commitment: GarblingTableCommitment,
+) -> Result<EvaluationSession, CircuitError> {
     let eval_state = ctx.storage.evaluator_state(peer_id);
 
     // ── Resolve deposit_id from root state ──────────────────────────────
-    let Some(root_state) = eval_state.get_root_state().await.ok().flatten() else {
-        return HandlerOutcome::Retry;
-    };
+    let root_state = eval_state
+        .get_root_state()
+        .await
+        .ok()
+        .flatten()
+        .ok_or(CircuitError::StorageUnavailable)?;
     let deposit_id = match &root_state.step {
         Step::EvaluatingTables { deposit_id, .. } => *deposit_id,
-        _ => return HandlerOutcome::Retry,
+        _ => return Err(CircuitError::StorageUnavailable),
     };
 
     // ── Load all data needed for interpolation ──────────────────────────
-    let Some(root_config) = root_state.config.as_ref() else {
-        return HandlerOutcome::Retry;
-    };
+    let root_config = root_state
+        .config
+        .as_ref()
+        .ok_or(CircuitError::StorageUnavailable)?;
     let setup_input = root_config.setup_inputs;
 
-    let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(opened_input_shares) = eval_state.get_opened_input_shares().await.ok().flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(deposit_inputs) = eval_state
+    let challenge_indices = eval_state
+        .get_challenge_indices()
+        .await
+        .ok()
+        .flatten()
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let opened_input_shares = eval_state
+        .get_opened_input_shares()
+        .await
+        .ok()
+        .flatten()
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let deposit_inputs = eval_state
         .get_deposit_inputs(&deposit_id)
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(withdrawal_inputs) = eval_state
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let withdrawal_inputs = eval_state
         .get_withdrawal_inputs(&deposit_id)
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(reserved_setup_shares) = eval_state
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let reserved_setup_shares = eval_state
         .get_reserved_setup_input_shares()
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(deposit_adaptors) = eval_state
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let deposit_adaptors = eval_state
         .get_deposit_adaptors(&deposit_id)
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(withdrawal_adaptors) = eval_state
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let withdrawal_adaptors = eval_state
         .get_withdrawal_adaptors(&deposit_id)
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(signatures) = eval_state
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let signatures = eval_state
         .get_completed_signatures(&deposit_id)
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
+        .ok_or(CircuitError::StorageUnavailable)?;
 
     // ── Build selected input values (which value index per wire) ────────
     let mut selected_input: [u8; N_INPUT_WIRES] = [0; N_INPUT_WIRES];
@@ -610,9 +552,11 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
         .filter(|i| !challenged.contains(i))
         .collect();
 
-    let Some(_eval_pos) = eval_indices.iter().position(|&i| i == index.get()) else {
-        return HandlerOutcome::Retry;
-    };
+    if !eval_indices.iter().any(|&i| i == index.get()) {
+        return Err(CircuitError::SetupFailed(
+            "index not in evaluation indices".into(),
+        ));
+    }
 
     let mut withdrawal_labels: Vec<[u8; 16]> = Vec::with_capacity(N_WITHDRAWAL_INPUT_WIRES);
 
@@ -624,71 +568,82 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
         }
         shares_for_wire.push(committed[wire].clone());
 
-        let missing = match interpolate(&shares_for_wire) {
-            Ok(m) => m,
-            Err(_) => return HandlerOutcome::Retry,
-        };
+        let missing = interpolate(&shares_for_wire).map_err(|_| {
+            CircuitError::SetupFailed(format!("interpolation failed for wire {wire}"))
+        })?;
 
         // Find the share for our specific circuit index.
-        if let Some(share) = missing.iter().find(|s| s.index() == index) {
-            if wire >= N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES {
-                // Withdrawal wire — truncate to 16-byte label.
-                let full: Vec<u8> = share.value().into_bigint().to_bytes_le();
-                let mut label = [0u8; 16];
-                label.copy_from_slice(&full[..16]);
-                withdrawal_labels.push(label);
-            }
-        } else {
-            return HandlerOutcome::Retry;
+        let share =
+            missing
+                .iter()
+                .find(|s| s.index() == index)
+                .ok_or(CircuitError::SetupFailed(format!(
+                    "interpolation did not produce share for index {}",
+                    index.get()
+                )))?;
+
+        if wire >= N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES {
+            // Withdrawal wire — truncate to 16-byte label.
+            let full: Vec<u8> = share.value().into_bigint().to_bytes_le();
+            let mut label = [0u8; 16];
+            label.copy_from_slice(&full[..16]);
+            withdrawal_labels.push(label);
         }
     }
 
     // ── Load evaluation parameters from state ───────────────────────────
-    let Some(aes_key) = eval_state.get_aes128_key(index).await.ok().flatten() else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(public_s) = eval_state.get_public_s(index).await.ok().flatten() else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(constant_zero) = eval_state
+    let aes_key = eval_state
+        .get_aes128_key(index)
+        .await
+        .ok()
+        .flatten()
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let public_s = eval_state
+        .get_public_s(index)
+        .await
+        .ok()
+        .flatten()
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let constant_zero = eval_state
         .get_constant_zero_label(index)
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(constant_one) = eval_state
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let constant_one = eval_state
         .get_constant_one_label(index)
         .await
         .ok()
         .flatten()
-    else {
-        return HandlerOutcome::Retry;
-    };
-    let Some(output_label_ct) = eval_state.get_output_label_ct(index).await.ok().flatten() else {
-        return HandlerOutcome::Retry;
-    };
+        .ok_or(CircuitError::StorageUnavailable)?;
+    let output_label_ct = eval_state
+        .get_output_label_ct(index)
+        .await
+        .ok()
+        .flatten()
+        .ok_or(CircuitError::StorageUnavailable)?;
 
-    // ── Open circuit file for gate structure ─────────────────────────────
-    let Ok(mut circuit_reader) = ReaderV5c::open(&ctx.circuit_path) else {
-        return HandlerOutcome::Retry;
-    };
-    let header = *circuit_reader.header();
-    let outputs = circuit_reader.outputs().to_vec();
-    let total_gates = header.total_gates();
+    // ── Open circuit file for header + outputs ──────────────────────────
+    // The coordinator handles actual block reading via the shared reader.
+    let reader = ReaderV5c::open(&ctx.circuit_path)
+        .map_err(|e| CircuitError::SetupFailed(format!("circuit open: {e}")))?;
+    let header = *reader.header();
+    let outputs = reader.outputs().to_vec();
 
     // ── Load translation material from table store ──────────────────────
     let table_id = TableId {
         peer_id: *peer_id,
         index,
     };
-    let Ok(mut table_reader) = ctx.table_store.open(&table_id).await else {
-        return HandlerOutcome::Retry;
-    };
-    let Ok(translation_bytes) = table_reader.read_translation().await else {
-        return HandlerOutcome::Retry;
-    };
+    let table_reader = ctx
+        .table_store
+        .open(&table_id)
+        .await
+        .map_err(|_e| CircuitError::StorageUnavailable)?;
+    let translation_bytes = table_reader
+        .read_translation()
+        .await
+        .map_err(|e| CircuitError::SetupFailed(format!("translation read: {e}")))?;
 
     // ── Parse translation material from bytes ───────────────────────────
     let mut translation_material: Vec<InputTranslationMaterial> =
@@ -755,116 +710,22 @@ async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
     };
 
     let engine = Engine::new();
-    let mut instance = engine.new_evaluation_instance(config);
+    let instance = engine.new_evaluation_instance(config);
 
-    // ── Evaluation loop: feed gates + ciphertexts ───────────────────────
-    //
-    // For each chunk of blocks from the circuit reader (up to 16 blocks per
-    // chunk), we first count the total AND gates across all blocks in that
-    // chunk, then pre-read exactly that many ciphertexts (16 bytes each) from
-    // the table store in a single call. This keeps the number of storage
-    // reads proportional to circuit chunks (~34K reads), not AND gates (~2.9B).
-    let mut block_idx: usize = 0;
+    // ── Wrap table reader for ciphertext streaming ──────────────────────
+    // The reader has already delivered translation material. Subsequent
+    // read_ciphertext calls will stream AND-gate ciphertexts in circuit
+    // execution order, synchronized with the coordinator's block delivery.
+    let ct_reader = Box::new(CiphertextReaderAdapter::new(table_reader));
 
-    while let Some(chunk) = circuit_reader
-        .next_blocks_chunk()
-        .await
-        .expect("circuit read error")
-    {
-        // Collect block metadata for this chunk so we can pre-compute the
-        // total ciphertext bytes needed.
-        let blocks: Vec<_> = chunk.blocks_iter().collect();
-        let block_gate_counts: Vec<usize> = blocks
-            .iter()
-            .enumerate()
-            .map(|(i, _)| get_block_num_gates(total_gates, block_idx + i))
-            .collect();
+    let output_label_ct_bytes: [u8; 32] = output_label_ct.into();
 
-        // Count AND gates across all blocks in this chunk.
-        let mut and_count: usize = 0;
-        for (block, &gate_count) in blocks.iter().zip(&block_gate_counts) {
-            for i in 0..gate_count {
-                if matches!(block.gate_type(i), GateType::AND) {
-                    and_count += 1;
-                }
-            }
-        }
-
-        // Pre-read all ciphertexts for this chunk in one storage call.
-        let ct_bytes_needed = and_count * 16;
-        let mut ct_data = vec![0u8; ct_bytes_needed];
-        if ct_bytes_needed > 0 {
-            let mut filled = 0;
-            while filled < ct_bytes_needed {
-                let n = match table_reader.read_ciphertext(&mut ct_data[filled..]).await {
-                    Ok(n) => n,
-                    Err(_) => return HandlerOutcome::Retry,
-                };
-                if n == 0 {
-                    return HandlerOutcome::Retry;
-                }
-                filled += n;
-            }
-        }
-
-        // Process all blocks in this chunk, consuming pre-read ciphertexts.
-        let mut ct_offset = 0;
-        for (block, &gate_count) in blocks.iter().zip(&block_gate_counts) {
-            for i in 0..gate_count {
-                let gate = &block.gates[i];
-                let in1 = gate.in1 as usize;
-                let in2 = gate.in2 as usize;
-                let out = gate.out as usize;
-
-                match block.gate_type(i) {
-                    GateType::XOR => {
-                        instance.feed_xor_gate(in1, in2, out);
-                    }
-                    GateType::AND => {
-                        let mut ct_bytes = [0u8; 16];
-                        ct_bytes.copy_from_slice(&ct_data[ct_offset..ct_offset + 16]);
-                        ct_offset += 16;
-                        instance.feed_and_gate(in1, in2, out, Ciphertext::from(ct_bytes));
-                    }
-                }
-            }
-        }
-
-        debug_assert_eq!(ct_offset, ct_bytes_needed);
-        block_idx += blocks.len();
-    }
-
-    // ── Extract output and translate ────────────────────────────────────
-    let output_wire_ids: Vec<u64> = outputs.iter().map(|&w| w as u64).collect();
-    let mut output_labels = vec![[0u8; 16]; outputs.len()];
-    let mut output_values = vec![false; outputs.len()];
-    instance.get_labels(&output_wire_ids, &mut output_labels);
-    instance.get_values(&output_wire_ids, &mut output_values);
-
-    // Construct output translation material from the stored output_label_ct.
-    // OutputTranslationCiphertext is [u8; 32] — the full encrypted share.
-    let output_label_bytes: [u8; 32] = output_label_ct.into();
-    let output_translation_material: OutputTranslationMaterial = vec![output_label_bytes];
-    let output_label_vec: Vec<Label> = output_labels.iter().map(|l| Label::from(*l)).collect();
-    let output_result = translate_output(
-        &output_label_vec,
-        &output_values,
-        &output_translation_material,
-    );
-
-    let output_share = match output_result {
-        Ok(ref results) if !results.is_empty() => match &results[0] {
-            Some(bytes) => {
-                let scalar = Scalar::from_le_bytes_mod_order(bytes);
-                Some(Share::new(index, scalar))
-            }
-            None => None,
-        },
-        _ => None,
-    };
-
-    completed(
-        ActionId::EvaluateGarblingTable(index),
-        ActionResult::TableEvaluationResult(commitment, output_share),
-    )
+    Ok(EvaluationSession::new(
+        instance,
+        ct_reader,
+        index,
+        commitment,
+        outputs,
+        output_label_ct_bytes,
+    ))
 }

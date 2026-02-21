@@ -23,13 +23,11 @@ mod paths;
 mod reader;
 mod writer;
 
-use std::future::Future;
-use std::sync::Arc;
-
-use mosaic_storage_api::table_store::{TableId, TableStore};
-use object_store::ObjectStore;
+use std::{future::Future, sync::Arc};
 
 pub use error::S3Error;
+use mosaic_storage_api::table_store::{TableId, TableStore};
+use object_store::ObjectStore;
 
 /// Minimum part size for S3 multipart uploads (5 MiB).
 #[allow(dead_code)]

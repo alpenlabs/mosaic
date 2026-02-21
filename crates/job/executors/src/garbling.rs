@@ -86,7 +86,7 @@ pub struct GarblingFinish {
 /// call [`finish`](Self::finish) to extract output label material.
 pub struct GarblingSession {
     /// The gobble garbling instance (holds ~1 GB working space).
-    instance: ckt_gobble::GarblingInstance,
+    pub(crate) instance: ckt_gobble::GarblingInstance,
     /// Reusable buffer for ciphertext output from a single block.
     ct_buffer: Vec<u8>,
     /// Running block index for [`get_block_num_gates`].

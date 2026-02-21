@@ -1,7 +1,6 @@
 use std::{error::Error, fmt::Debug};
 
 use futures::Stream;
-
 use mosaic_common::Byte32;
 use mosaic_vs3::Index;
 

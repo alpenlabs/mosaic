@@ -55,13 +55,12 @@
 pub mod error;
 pub mod protocol;
 
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
-use mosaic_cac_types::Msg;
-use mosaic_net_svc::FrameLimits;
-use mosaic_net_svc::NetServiceHandle;
 use std::time::{Duration, Instant};
 
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 pub use error::{AckError, RecvError, SendError};
+use mosaic_cac_types::Msg;
+use mosaic_net_svc::{FrameLimits, NetServiceHandle};
 pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
 
 /// Configuration for [`NetClient`].
@@ -219,8 +218,7 @@ impl NetClient {
     /// This method:
     /// 1. Accepts the next incoming protocol stream
     /// 2. Reads and deserializes the message
-    /// 3. Returns an [`InboundRequest`] containing the message and a handle
-    ///    to send acknowledgment
+    /// 3. Returns an [`InboundRequest`] containing the message and a handle to send acknowledgment
     ///
     /// The returned [`InboundRequest`] must be acknowledged by calling
     /// [`InboundRequest::ack`] after processing the message.

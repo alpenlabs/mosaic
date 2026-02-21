@@ -8,7 +8,6 @@ use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
     Write,
 };
-
 use mosaic_common::{
     Byte32,
     constants::{N_CIRCUITS, N_EVAL_CIRCUITS},

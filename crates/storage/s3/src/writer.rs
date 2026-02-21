@@ -10,9 +10,7 @@ use bytes::Bytes;
 use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
 use object_store::ObjectStore;
 
-use crate::PART_BUFFER_SIZE;
-use crate::error::S3Error;
-use crate::paths::TablePaths;
+use crate::{PART_BUFFER_SIZE, error::S3Error, paths::TablePaths};
 
 /// Commands sent from the monoio caller to the background tokio writer task.
 enum WriterCmd {

@@ -5,16 +5,14 @@
 //! Ciphertext data is streamed lazily via a background tokio task that
 //! pre-fetches chunks through a bounded channel.
 
-use std::future::Future;
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use futures::StreamExt;
 use mosaic_common::Byte32;
 use mosaic_storage_api::table_store::{TableMetadata, TableReader};
 use object_store::ObjectStore;
 
-use crate::error::S3Error;
-use crate::paths::TablePaths;
+use crate::{error::S3Error, paths::TablePaths};
 
 /// Reads a garbling table from object storage.
 ///

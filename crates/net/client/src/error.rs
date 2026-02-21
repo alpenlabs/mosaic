@@ -1,8 +1,7 @@
 //! Error types for net-client operations.
 
 use ark_serialize::SerializationError;
-use mosaic_net_svc::StreamClosed;
-use mosaic_net_svc::api::OpenStreamError;
+use mosaic_net_svc::{StreamClosed, api::OpenStreamError};
 
 /// Error sending a protocol message.
 #[derive(Debug, thiserror::Error)]

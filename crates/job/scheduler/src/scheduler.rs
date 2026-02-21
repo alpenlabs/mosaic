@@ -12,7 +12,8 @@ use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
 use mosaic_job_api::{
-    ExecuteEvaluatorJob, ExecuteGarblerJob, JobActions, JobBatch, JobSchedulerHandle,
+    CircuitAction, ExecuteEvaluatorJob, ExecuteGarblerJob, JobActions, JobBatch,
+    JobSchedulerHandle, PendingCircuitJob, SessionFactory,
 };
 use mosaic_net_svc_api::PeerId;
 
@@ -70,8 +71,6 @@ pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     light: JobThreadPool<D>,
     heavy: JobThreadPool<D>,
     garbling: GarblingCoordinator,
-    /// The executor, used to create circuit sessions for garbling actions.
-    executor: Arc<D>,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
 }
@@ -101,9 +100,15 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         let (completion_tx, completion_rx) = kanal::bounded_async(config.completion_queue_size);
 
         let executor = Arc::new(dispatcher);
+
+        // The executor implements SessionFactory via blanket impl (any
+        // D: ExecuteGarblerJob + ExecuteEvaluatorJob gets it automatically).
+        // We erase the concrete type so the coordinator is not generic over D.
+        let factory: Arc<dyn SessionFactory> = Arc::clone(&executor) as Arc<dyn SessionFactory>;
+
         let light = JobThreadPool::new(config.light, Arc::clone(&executor), completion_tx.clone());
         let heavy = JobThreadPool::new(config.heavy, Arc::clone(&executor), completion_tx.clone());
-        let garbling = GarblingCoordinator::new(config.garbling, completion_tx);
+        let garbling = GarblingCoordinator::new(config.garbling, factory, completion_tx);
 
         let handle = JobSchedulerHandle::new(submit_tx, completion_rx);
 
@@ -111,7 +116,6 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             light,
             heavy,
             garbling,
-            executor,
             submission_rx,
         };
 
@@ -220,94 +224,102 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         }
     }
 
-    /// Create a circuit session for a garbler circuit action and submit it
-    /// to the garbling coordinator.
+    /// Build a [`PendingCircuitJob`] for a garbler circuit action and submit
+    /// it to the garbling coordinator.
+    ///
+    /// Session creation happens inside the coordinator (with retry for
+    /// transient failures), not here. This method never blocks.
     async fn dispatch_garbler_circuit(&self, peer_id: PeerId, action: GarblerAction) {
-        let session_result = match &action {
+        let circuit_action = match &action {
             GarblerAction::GenerateTableCommitment(index, seed) => {
-                ExecuteGarblerJob::begin_table_commitment(&*self.executor, &peer_id, *index, *seed)
-                    .await
+                CircuitAction::GarblerCommitment {
+                    index: *index,
+                    seed: *seed,
+                }
             }
             GarblerAction::TransferGarblingTable(seed) => {
-                ExecuteGarblerJob::begin_table_transfer(&*self.executor, &peer_id, *seed).await
+                CircuitAction::GarblerTransfer { seed: *seed }
             }
             _ => {
-                tracing::error!("non-circuit garbler action routed to circuit dispatch");
+                tracing::error!(
+                    ?action,
+                    "non-circuit garbler action routed to circuit dispatch"
+                );
                 return;
             }
         };
 
-        match session_result {
-            Ok(session) => {
-                self.garbling.submit(crate::garbling::SubmittedSession {
-                    peer_id,
-                    session: Box::new(session),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(?e, ?peer_id, "failed to create garbler circuit session");
-                // Session creation failed — the action will not produce a completion.
-                // The SM will eventually time out and re-emit the action.
-            }
-        }
+        self.garbling
+            .submit(PendingCircuitJob {
+                peer_id,
+                action: circuit_action,
+            })
+            .await;
     }
 
-    /// Create a circuit session for an evaluator circuit action and submit it
-    /// to the garbling coordinator.
+    /// Build a [`PendingCircuitJob`] for an evaluator circuit action and
+    /// submit it to the garbling coordinator.
     async fn dispatch_evaluator_circuit(&self, peer_id: PeerId, action: EvaluatorAction) {
-        let session_result = match &action {
+        let circuit_action = match &action {
             EvaluatorAction::GenerateTableCommitment(index, seed) => {
-                ExecuteEvaluatorJob::begin_table_commitment(
-                    &*self.executor,
-                    &peer_id,
-                    *index,
-                    *seed,
-                )
-                .await
-            }
-            EvaluatorAction::ReceiveGarblingTable(commitment) => {
-                ExecuteEvaluatorJob::begin_table_receive(&*self.executor, &peer_id, *commitment)
-                    .await
+                CircuitAction::EvaluatorCommitment {
+                    index: *index,
+                    seed: *seed,
+                }
             }
             EvaluatorAction::EvaluateGarblingTable(index, commitment) => {
-                ExecuteEvaluatorJob::begin_evaluation(
-                    &*self.executor,
-                    &peer_id,
-                    *index,
-                    *commitment,
-                )
-                .await
+                CircuitAction::EvaluatorEvaluation {
+                    index: *index,
+                    commitment: *commitment,
+                }
+            }
+            // E4 is a pool action (Light), not a circuit action — should never
+            // reach here. If it does, routing logic has a bug.
+            EvaluatorAction::ReceiveGarblingTable(_) => {
+                tracing::error!(
+                    "ReceiveGarblingTable routed to circuit dispatch — should go to light pool"
+                );
+                return;
             }
             _ => {
-                tracing::error!("non-circuit evaluator action routed to circuit dispatch");
+                tracing::error!(
+                    ?action,
+                    "non-circuit evaluator action routed to circuit dispatch"
+                );
                 return;
             }
         };
 
-        match session_result {
-            Ok(session) => {
-                self.garbling.submit(crate::garbling::SubmittedSession {
-                    peer_id,
-                    session: Box::new(session),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(?e, ?peer_id, "failed to create evaluator circuit session");
-            }
-        }
+        self.garbling
+            .submit(PendingCircuitJob {
+                peer_id,
+                action: circuit_action,
+            })
+            .await;
     }
 
     /// Shut down all pools gracefully.
     ///
-    /// Workers finish in-flight jobs but do not pick up new ones.
-    pub fn shutdown(mut self) {
+    /// Closes pool queues so workers drain remaining jobs and exit, then
+    /// shuts down the garbling coordinator (joining its thread). Safe to
+    /// call multiple times — all operations are idempotent.
+    pub fn shutdown(&mut self) {
         tracing::info!("job scheduler shutting down");
-
+        self.light.close_queue();
+        self.heavy.close_queue();
         self.garbling.shutdown();
-        self.light.shutdown();
-        self.heavy.shutdown();
-
         tracing::info!("job scheduler shut down complete");
+    }
+}
+
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Drop for JobScheduler<D> {
+    fn drop(&mut self) {
+        // Ensure queues are closed and coordinator thread is joined even if
+        // the caller forgot to call shutdown(). All operations are idempotent
+        // so double-calling (shutdown + drop) is safe.
+        self.light.close_queue();
+        self.heavy.close_queue();
+        self.garbling.shutdown();
     }
 }
 
@@ -383,21 +395,20 @@ impl Classify for GarblerAction {
 impl Classify for EvaluatorAction {
     fn category(&self) -> ActionCategory {
         match self {
-            // Light (outbound protocol sends)
-            Self::SendChallengeMsg(_) | Self::DepositSendAdaptorMsgChunk(..) => {
-                ActionCategory::Light
-            }
+            // Light (outbound protocol sends + network receive)
+            Self::SendChallengeMsg(_)
+            | Self::DepositSendAdaptorMsgChunk(..)
+            | Self::ReceiveGarblingTable(_) => ActionCategory::Light,
 
-            // Garbling (coordinated disk I/O)
-            Self::GenerateTableCommitment(..) | Self::ReceiveGarblingTable(_) => {
+            // Garbling (coordinated disk I/O — shared circuit reader)
+            Self::GenerateTableCommitment(..) | Self::EvaluateGarblingTable(..) => {
                 ActionCategory::Garbling
             }
 
             // Heavy (everything else)
             Self::VerifyOpenedInputShares
             | Self::GenerateDepositAdaptors(_)
-            | Self::GenerateWithdrawalAdaptorsChunk(..)
-            | Self::EvaluateGarblingTable(..) => ActionCategory::Heavy,
+            | Self::GenerateWithdrawalAdaptorsChunk(..) => ActionCategory::Heavy,
 
             // Non-exhaustive fallback
             _ => ActionCategory::Heavy,

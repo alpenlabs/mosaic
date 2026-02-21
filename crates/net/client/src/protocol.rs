@@ -4,12 +4,11 @@
 //! used by protocol messages: sender sends a message, receiver acknowledges.
 
 use mosaic_cac_types::Msg;
+// Re-export PeerId for convenience
+pub use mosaic_net_svc::PeerId;
 use mosaic_net_svc::Stream;
 
 use crate::error::AckError;
-
-// Re-export PeerId for convenience
-pub use mosaic_net_svc::PeerId;
 
 /// Zero-sized acknowledgment type.
 ///

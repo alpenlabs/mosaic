@@ -2,18 +2,18 @@
 //!
 //! # State Machine Storage
 //!
-//! - [`StorageProvider`] — returns read-only handles ([`StateRead`]) for the
-//!   Job Scheduler. Handlers can inspect state machine data but **cannot**
-//!   mutate it. This is enforced at the type level.
+//! - [`StorageProvider`] — returns read-only handles ([`StateRead`]) for the Job Scheduler.
+//!   Handlers can inspect state machine data but **cannot** mutate it. This is enforced at the type
+//!   level.
 //!
-//! - [`StorageProviderMut`] — returns mutable handles ([`StateMut`]) for the
-//!   SM Scheduler, which needs write access to run the STF.
+//! - [`StorageProviderMut`] — returns mutable handles ([`StateMut`]) for the SM Scheduler, which
+//!   needs write access to run the STF.
 //!
 //! # Garbling Table Storage
 //!
-//! - [`TableStore`] — persistent storage for garbling tables (ciphertexts,
-//!   translation material, metadata). Implementations include S3 (via
-//!   `object_store`), local filesystem, and in-memory for testing.
+//! - [`TableStore`] — persistent storage for garbling tables (ciphertexts, translation material,
+//!   metadata). Implementations include S3 (via `object_store`), local filesystem, and in-memory
+//!   for testing.
 //!
 //! [`StateRead`]: mosaic_cac_types::state_machine::garbler::StateRead
 //! [`StateMut`]: mosaic_cac_types::state_machine::garbler::StateMut
@@ -22,9 +22,8 @@ pub mod table_store;
 
 use mosaic_cac_types::state_machine::{evaluator, garbler};
 use mosaic_net_svc_api::PeerId;
-use thiserror::Error;
-
 pub use table_store::{TableId, TableMetadata, TableReader, TableStore, TableWriter};
+use thiserror::Error;
 
 /// Storage Error.
 #[derive(Debug, Error)]

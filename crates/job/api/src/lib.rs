@@ -1,13 +1,16 @@
 //! API types for the Mosaic job scheduler.
 //!
-//!
 //! This crate defines the interface between the SM Scheduler, Job Scheduler,
 //! and Job Executors. It provides:
 //!
-//! - [`ExecuteGarblerJob`] / [`ExecuteEvaluatorJob`] — per-action executor
-//!   traits with separate methods for pool actions and circuit actions.
-//! - [`CircuitSession`] — block-by-block session driven by the garbling
-//!   coordinator for coordinated circuit operations.
+//! - [`ExecuteGarblerJob`] / [`ExecuteEvaluatorJob`] — per-action executor traits with separate
+//!   methods for pool actions and circuit actions.
+//! - [`CircuitSession`] — block-by-block session driven by the garbling coordinator for coordinated
+//!   circuit operations.
+//! - [`SessionFactory`] — dyn-compatible trait for type-erased session creation, used by the
+//!   coordinator so it doesn't need executor generics.
+//! - [`CircuitAction`] / [`PendingCircuitJob`] — action descriptors submitted to the garbling
+//!   coordinator. Retainable for retry on transient failure.
 //! - [`HandlerOutcome`] — success/retry result type.
 //! - Submission and completion types for the SM ↔ scheduler channel.
 //!
@@ -20,23 +23,34 @@
 //! scheduler's garbling coordinator drives them block-by-block with a shared
 //! circuit reader. A circuit action physically cannot go through the pool
 //! path because it returns a `Session`, not a `HandlerOutcome`.
+//!
+//! # Session Lifecycle
+//!
+//! The scheduler submits [`PendingCircuitJob`]s to the garbling coordinator.
+//! The coordinator creates sessions via [`SessionFactory::create_session`],
+//! retrying on [`CircuitError::StorageUnavailable`]. If a session is evicted
+//! mid-pass (timeout or error), the original [`CircuitAction`] is preserved
+//! for retry on the next pass. No action is ever silently dropped.
 
 mod handle;
 mod submission;
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
+/// Return type for [`SessionFactory::create_session`].
+///
+/// A boxed future that produces a boxed [`CircuitSession`] or a [`CircuitError`].
+pub type CreateSessionFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Box<dyn CircuitSession>, CircuitError>> + Send + 'a>>;
+
+pub use handle::{JobSchedulerHandle, SchedulerStopped};
 use mosaic_cac_types::{
     AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
     CommitMsgChunk, CommitMsgHeader, DepositId, GarblingSeed, GarblingTableCommitment, Seed,
-    state_machine::evaluator::ChunkIndex, state_machine::garbler::Wire,
+    state_machine::{evaluator::ChunkIndex, garbler::Wire},
 };
 use mosaic_net_svc_api::PeerId;
 use mosaic_vs3::Index;
-
-pub use handle::{JobSchedulerHandle, SchedulerStopped};
 pub use submission::{ActionCompletion, JobActions, JobBatch, JobCompletion};
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -125,6 +139,141 @@ pub trait CircuitSession: Send {
     /// Extracts output labels, computes commitments, translates evaluation
     /// results, etc. Returns the action completion to deliver to the SM.
     fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Circuit action descriptors (submitted to garbling coordinator)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Describes a circuit action that the garbling coordinator will execute.
+///
+/// Unlike a live [`CircuitSession`], this is a plain data struct that can be
+/// stored, retried, and resubmitted. The coordinator calls
+/// [`SessionFactory::create_session`] to turn it into a live session when
+/// it's ready to start a pass.
+///
+/// If session creation fails with [`CircuitError::StorageUnavailable`], the
+/// action stays in the coordinator's pending list for the next pass —
+/// no action is ever silently dropped.
+#[derive(Debug, Clone)]
+pub enum CircuitAction {
+    /// G3: Generate garbling table commitment.
+    GarblerCommitment {
+        /// Circuit index (1..=N_CIRCUITS).
+        index: Index,
+        /// Garbling seed for deterministic RNG derivation.
+        seed: GarblingSeed,
+    },
+    /// G8: Transfer garbling table to evaluator via bulk stream.
+    GarblerTransfer {
+        /// Garbling seed (also used to resolve circuit index and commitment
+        /// from the SM root state).
+        seed: GarblingSeed,
+    },
+    /// E3: Re-garble to verify garbling table commitment.
+    EvaluatorCommitment {
+        /// Circuit index (must be in the challenge set).
+        index: Index,
+        /// Opened garbling seed for the challenged circuit.
+        seed: GarblingSeed,
+    },
+    /// E8: Evaluate a stored garbling table.
+    EvaluatorEvaluation {
+        /// Circuit index of the unopened (evaluation) circuit.
+        index: Index,
+        /// Expected commitment to verify evaluation against.
+        commitment: GarblingTableCommitment,
+    },
+}
+
+/// A circuit action waiting to be executed by the garbling coordinator.
+///
+/// Submitted by the scheduler via the coordinator's async channel. The
+/// coordinator collects these into batches, creates sessions, and drives
+/// them through the circuit file.
+#[derive(Debug)]
+pub struct PendingCircuitJob {
+    /// The peer this action belongs to.
+    pub peer_id: PeerId,
+    /// The circuit action to execute.
+    pub action: CircuitAction,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Session factory (dyn-compatible, used by coordinator)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Creates [`CircuitSession`]s from [`PendingCircuitJob`] descriptors.
+///
+/// This trait is **dyn-compatible** (`Pin<Box<dyn Future>>` return) so the
+/// garbling coordinator can hold an `Arc<dyn SessionFactory>` without being
+/// generic over the concrete executor type.
+///
+/// A blanket implementation is provided for any type that implements both
+/// [`ExecuteGarblerJob`] and [`ExecuteEvaluatorJob`], so [`MosaicExecutor`]
+/// gets this automatically — no manual impl needed.
+///
+/// [`MosaicExecutor`]: https://docs.rs/mosaic-job-executors/latest/mosaic_job_executors/struct.MosaicExecutor.html
+pub trait SessionFactory: Send + Sync + 'static {
+    /// Create a live [`CircuitSession`] for the given job.
+    ///
+    /// # Errors
+    ///
+    /// - [`CircuitError::StorageUnavailable`] — transient; the coordinator will keep the job and
+    ///   retry on the next pass.
+    /// - [`CircuitError::SetupFailed`] — permanent; the coordinator logs an error and drops the job
+    ///   (programming bug).
+    fn create_session<'a>(&'a self, job: &'a PendingCircuitJob) -> CreateSessionFuture<'a>;
+}
+
+/// Blanket impl: any executor that implements both garbler and evaluator
+/// traits automatically implements [`SessionFactory`].
+impl<D> SessionFactory for D
+where
+    D: ExecuteGarblerJob + ExecuteEvaluatorJob,
+{
+    fn create_session<'a>(&'a self, job: &'a PendingCircuitJob) -> CreateSessionFuture<'a> {
+        Box::pin(async move {
+            match &job.action {
+                CircuitAction::GarblerCommitment { index, seed } => {
+                    let session = <D as ExecuteGarblerJob>::begin_table_commitment(
+                        self,
+                        &job.peer_id,
+                        *index,
+                        *seed,
+                    )
+                    .await?;
+                    Ok(Box::new(session) as Box<dyn CircuitSession>)
+                }
+                CircuitAction::GarblerTransfer { seed } => {
+                    let session =
+                        <D as ExecuteGarblerJob>::begin_table_transfer(self, &job.peer_id, *seed)
+                            .await?;
+                    Ok(Box::new(session) as Box<dyn CircuitSession>)
+                }
+                CircuitAction::EvaluatorCommitment { index, seed } => {
+                    let session = <D as ExecuteEvaluatorJob>::begin_table_commitment(
+                        self,
+                        &job.peer_id,
+                        *index,
+                        *seed,
+                    )
+                    .await?;
+                    Ok(Box::new(session) as Box<dyn CircuitSession>)
+                }
+                CircuitAction::EvaluatorEvaluation { index, commitment } => {
+                    let session = <D as ExecuteEvaluatorJob>::begin_evaluation(
+                        self,
+                        &job.peer_id,
+                        *index,
+                        *commitment,
+                    )
+                    .await?;
+                    Ok(Box::new(session) as Box<dyn CircuitSession>)
+                }
+            }
+        })
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -277,6 +426,19 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
         chunk: &AdaptorMsgChunk,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
+    /// Receive a garbling table from the garbler (E4).
+    ///
+    /// Registers a bulk transfer expectation, receives the ciphertext stream,
+    /// hashes and verifies against the expected commitment, and stores to
+    /// the table store. This is a pool action (not a circuit session) because
+    /// it does not need the shared circuit reader — data arrives from the
+    /// network, not from garbling.
+    fn receive_garbling_table(
+        &self,
+        peer_id: &PeerId,
+        commitment: GarblingTableCommitment,
+    ) -> impl Future<Output = HandlerOutcome> + Send;
+
     // ── Circuit actions ──────────────────────────────────────────────────
 
     /// Begin a garbling session for table commitment verification (E3).
@@ -288,17 +450,6 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
         peer_id: &PeerId,
         index: Index,
         seed: GarblingSeed,
-    ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send;
-
-    /// Begin receiving a garbling table from the garbler (E4).
-    ///
-    /// Registers a bulk transfer expectation, receives ciphertext stream,
-    /// hashes and verifies against the expected commitment, and stores
-    /// to the table store.
-    fn begin_table_receive(
-        &self,
-        peer_id: &PeerId,
-        commitment: GarblingTableCommitment,
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send;
 
     /// Begin evaluating a stored garbling table (E8).

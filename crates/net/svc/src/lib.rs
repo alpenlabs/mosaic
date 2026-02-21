@@ -46,9 +46,7 @@
 
 // Re-export API modules from svc-api so existing `mosaic_net_svc::api::*`
 // and `mosaic_net_svc::config::*` paths continue to work.
-pub use mosaic_net_svc_api::api;
-pub use mosaic_net_svc_api::config;
-pub use mosaic_net_svc_api::peer_id;
+pub use mosaic_net_svc_api::{api, config, peer_id};
 
 // Local modules that remain in this crate.
 pub mod close_codes;

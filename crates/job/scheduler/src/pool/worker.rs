@@ -10,8 +10,7 @@
 //! ensures one unresponsive peer cannot monopolise worker slots — other peers'
 //! jobs get a chance to run between retries.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
@@ -19,14 +18,31 @@ use mosaic_cac_types::state_machine::{
 use mosaic_job_api::{ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome, JobCompletion};
 use mosaic_net_svc_api::PeerId;
 
-use super::PoolJob;
-use super::queue::JobQueue;
+use super::{PoolJob, queue::JobQueue};
 
-/// Delay before requeuing a job that returned [`ExecuteResult::Retry`].
+/// Initial backoff delay before requeuing a job that returned
+/// [`ExecuteResult::Retry`].
+const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(100);
+
+/// Maximum backoff delay. Caps the exponential growth so a persistently
+/// failing job doesn't wait unreasonably long between attempts.
+const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(10);
+
+/// Compute exponential backoff with cap: `min(base * 2^attempts, max)`.
 ///
 /// Prevents busy-spinning when a transient condition (unresponsive peer,
-/// full cache, unavailable storage) persists across consecutive attempts.
-const RETRY_BACKOFF: Duration = Duration::from_millis(100);
+/// full cache, unavailable storage) persists across consecutive attempts,
+/// while bounding the worst-case delay.
+///
+/// All operations are saturating — no panic or overflow is possible
+/// regardless of `attempts` value.
+fn retry_backoff(attempts: u32) -> Duration {
+    // checked_shl returns None when attempts >= 32; fall back to u32::MAX
+    // so that the subsequent saturating_mul + min clamps to RETRY_BACKOFF_MAX.
+    let multiplier = 1u32.checked_shl(attempts).unwrap_or(u32::MAX);
+    let backoff = RETRY_BACKOFF_BASE.saturating_mul(multiplier);
+    backoff.min(RETRY_BACKOFF_MAX)
+}
 
 /// A job descriptor that lives in the shared queue.
 ///
@@ -61,7 +77,8 @@ pub(crate) enum WorkerJob {
 /// to `concurrency` at a time), and sends completions through `completion_tx`.
 pub(crate) struct Worker<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     id: usize,
-    /// Thread join handle.
+    /// Thread join handle (used by `shutdown` for graceful join).
+    #[allow(dead_code)]
     handle: Option<std::thread::JoinHandle<()>>,
     _d: std::marker::PhantomData<D>,
 }
@@ -112,6 +129,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
     ///
     /// The worker will finish after the shared queue is closed and drained.
     /// This method blocks until the thread exits.
+    #[allow(dead_code)]
     pub(crate) fn shutdown(mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
@@ -164,8 +182,8 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
         let completion_tx = completion_tx.clone();
         let permit_tx = permit_tx.clone();
 
-        // 3. Spawn local task. The permit is returned when the task completes,
-        //    regardless of whether it succeeded or was requeued for retry.
+        // 3. Spawn local task. The permit is returned when the task completes, regardless of
+        //    whether it succeeded or was requeued for retry.
         monoio::spawn(async move {
             let result = execute_job(dispatcher.as_ref(), &pool_job).await;
             match result {
@@ -175,7 +193,13 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
                 ExecuteResult::Retry => {
                     let mut job = pool_job;
                     job.attempts += 1;
-                    monoio::time::sleep(RETRY_BACKOFF).await;
+                    let backoff = retry_backoff(job.attempts);
+                    tracing::trace!(
+                        attempts = job.attempts,
+                        backoff_ms = backoff.as_millis(),
+                        "retrying job with exponential backoff"
+                    );
+                    monoio::time::sleep(backoff).await;
                     queue.requeue(job);
                 }
             }
@@ -304,9 +328,12 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
             exec.deposit_send_adaptor_msg_chunk(peer_id, *deposit_id, chunk)
                 .await
         }
+        // E4: Pool action — receives from network, no circuit reader needed.
+        EvaluatorAction::ReceiveGarblingTable(commitment) => {
+            exec.receive_garbling_table(peer_id, *commitment).await
+        }
         // Circuit actions should be routed to the garbling coordinator.
         EvaluatorAction::GenerateTableCommitment(..)
-        | EvaluatorAction::ReceiveGarblingTable(..)
         | EvaluatorAction::EvaluateGarblingTable(..) => {
             tracing::error!(
                 "circuit action reached worker pool — should go to garbling coordinator"
