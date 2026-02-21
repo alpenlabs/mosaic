@@ -16,6 +16,7 @@ use mosaic_storage_api::StorageProvider;
 
 use super::MosaicExecutor;
 use crate::garbling::{GarblingSession, compute_commitment};
+use crate::table_store::{TableStore, TableWriter as _};
 
 /// Build a successful evaluator completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
@@ -23,8 +24,8 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 }
 
 /// Dispatch an evaluator action to the appropriate handler.
-pub(crate) async fn execute<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+pub(crate) async fn execute<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     action: &Action,
 ) -> HandlerOutcome {
@@ -73,8 +74,8 @@ pub(crate) async fn execute<SP: StorageProvider>(
 // Light handlers (Network I/O)
 // ============================================================================
 
-async fn send_challenge_msg<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn send_challenge_msg<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     msg: &mosaic_cac_types::ChallengeMsg,
 ) -> HandlerOutcome {
@@ -87,8 +88,8 @@ async fn send_challenge_msg<SP: StorageProvider>(
     }
 }
 
-async fn send_adaptor_msg_chunk<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn send_adaptor_msg_chunk<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
     chunk: &mosaic_cac_types::AdaptorMsgChunk,
@@ -107,8 +108,8 @@ async fn send_adaptor_msg_chunk<SP: StorageProvider>(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn verify_opened_input_shares<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn verify_opened_input_shares<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
 ) -> HandlerOutcome {
     use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS, WIDE_LABEL_VALUE_COUNT};
@@ -162,8 +163,8 @@ async fn verify_opened_input_shares<SP: StorageProvider>(
 // Garbling handlers (routed through GarblingCoordinator)
 // ============================================================================
 
-async fn generate_table_commitment<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn generate_table_commitment<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     index: mosaic_vs3::Index,
     seed: mosaic_cac_types::GarblingSeed,
@@ -230,31 +231,170 @@ async fn generate_table_commitment<SP: StorageProvider>(
     )
 }
 
-async fn receive_garbling_table<SP: StorageProvider>(
-    _ctx: &MosaicExecutor<SP>,
-    _peer_id: &PeerId,
-    _commitment: mosaic_cac_types::GarblingTableCommitment,
+async fn receive_garbling_table<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
+    peer_id: &PeerId,
+    expected_commitment: mosaic_cac_types::GarblingTableCommitment,
 ) -> HandlerOutcome {
-    // TODO(phase5): Receive garbling table from peer via net-svc bulk transfer.
-    //
-    // Flow:
-    //   1. Register bulk transfer expectation with net-svc
-    //   2. Wait for table data from peer
-    //   3. Hash received data with blake3
-    //   4. Verify hash matches expected commitment
-    //   5. Return GarblingTableReceived(index, commitment)
-    //   6. Return Retry if peer hasn't sent yet or transfer fails
-    //
-    // Reference: PR #68 setup_evaluator.rs exec_verify() step 3b
-    unimplemented!("receive_garbling_table: blocked on ckt integration + net-svc bulk")
+    use crate::table_store::{TableId, TableMetadata};
+
+    let eval_state = ctx.storage.evaluator_state(peer_id);
+
+    // Resolve the commitment → circuit index from the evaluator root state.
+    let Some(root_state) = eval_state.get_root_state().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let (eval_indices, eval_commitments) = match &root_state.step {
+        mosaic_cac_types::state_machine::evaluator::Step::ReceivingGarblingTables {
+            eval_indices,
+            eval_commitments,
+            ..
+        } => (*eval_indices, eval_commitments.clone()),
+        _ => return HandlerOutcome::Retry,
+    };
+
+    let Some(pos) = eval_commitments
+        .iter()
+        .position(|c| *c == expected_commitment)
+    else {
+        // Commitment not found — stale action or state mismatch.
+        return HandlerOutcome::Retry;
+    };
+    let index = eval_indices[pos];
+
+    // Register to receive the bulk transfer using the commitment as identifier.
+    let identifier: [u8; 32] = expected_commitment
+        .as_ref()
+        .try_into()
+        .expect("commitment is 32 bytes");
+
+    let expectation = ctx
+        .net_client
+        .handle()
+        .expect_bulk_transfer(*peer_id, identifier)
+        .await;
+
+    let Ok(expectation) = expectation else {
+        return HandlerOutcome::Retry;
+    };
+
+    // Wait for the garbler to open the stream.
+    let Ok(mut stream) = expectation.recv().await else {
+        return HandlerOutcome::Retry;
+    };
+
+    // The garbler sends: translation bytes first, then ciphertext data.
+    // Translation size is a protocol constant.
+    let translation_size: usize = N_WITHDRAWAL_INPUT_WIRES * 256 * 8 * 16;
+
+    // Open a table writer for persistent storage.
+    let table_id = TableId {
+        peer_id: *peer_id,
+        index,
+    };
+    let writer = ctx.table_store.create(&table_id).await;
+    let Ok(mut writer) = writer else {
+        return HandlerOutcome::Retry;
+    };
+
+    // Receive and process all data from the stream.
+    let mut translate_hasher = blake3::Hasher::new();
+    let mut ct_hasher = blake3::Hasher::new();
+    let mut translation_buf = Vec::with_capacity(translation_size);
+    let mut translation_remaining = translation_size;
+
+    loop {
+        let chunk = match stream.read().await {
+            Ok(data) => data,
+            Err(_closed) => break,
+        };
+
+        if chunk.is_empty() {
+            break;
+        }
+
+        if translation_remaining > 0 {
+            // Still reading translation material.
+            let take = chunk.len().min(translation_remaining);
+            let (translate_part, ct_part) = chunk.split_at(take);
+
+            translation_buf.extend_from_slice(translate_part);
+            translate_hasher.update(translate_part);
+            translation_remaining -= take;
+
+            // Any overflow goes to ciphertext.
+            if !ct_part.is_empty() {
+                ct_hasher.update(ct_part);
+                if writer.write_ciphertext(ct_part).await.is_err() {
+                    let _ = ctx.table_store.delete(&table_id).await;
+                    return HandlerOutcome::Retry;
+                }
+            }
+        } else {
+            // All translation received — remaining data is ciphertext.
+            ct_hasher.update(&chunk);
+            if writer.write_ciphertext(&chunk).await.is_err() {
+                let _ = ctx.table_store.delete(&table_id).await;
+                return HandlerOutcome::Retry;
+            }
+        }
+    }
+
+    // Verify we received enough translation data.
+    if translation_remaining > 0 {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    }
+
+    let translate_hash = translate_hasher.finalize();
+    let ct_hash = ct_hasher.finalize();
+
+    // Load metadata from evaluator state. These were stored when the garbler's
+    // CommitMsgHeader (aes keys, public S) and ChallengeResponseMsgHeader
+    // (output label ciphertexts) were processed by the STF.
+    let Some(aes_key) = eval_state.get_aes128_key(index).await.ok().flatten() else {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    };
+    let Some(public_s) = eval_state.get_public_s(index).await.ok().flatten() else {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    };
+    let Some(output_label_ct) = eval_state.get_output_label_ct(index).await.ok().flatten() else {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    };
+
+    // Verify the received data matches the expected commitment.
+    let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct);
+    if computed != expected_commitment {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    }
+
+    let metadata = TableMetadata {
+        output_label_ct,
+        aes_key,
+        public_s,
+    };
+
+    if writer.finish(&translation_buf, metadata).await.is_err() {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    }
+
+    completed(
+        ActionId::ReceiveGarblingTable(expected_commitment),
+        ActionResult::GarblingTableReceived(index, expected_commitment),
+    )
 }
 
 // ============================================================================
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn generate_deposit_adaptors<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn generate_deposit_adaptors<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
@@ -314,8 +454,8 @@ async fn generate_deposit_adaptors<SP: StorageProvider>(
     )
 }
 
-async fn generate_withdrawal_adaptors_chunk<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn generate_withdrawal_adaptors_chunk<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
     chunk_idx: &ChunkIndex,
@@ -388,8 +528,8 @@ async fn generate_withdrawal_adaptors_chunk<SP: StorageProvider>(
 // Heavy handlers (Withdrawal — Critical priority)
 // ============================================================================
 
-async fn evaluate_garbling_table<SP: StorageProvider>(
-    _ctx: &MosaicExecutor<SP>,
+async fn evaluate_garbling_table<SP: StorageProvider, TS: TableStore>(
+    _ctx: &MosaicExecutor<SP, TS>,
     _index: mosaic_vs3::Index,
     _commitment: mosaic_cac_types::GarblingTableCommitment,
 ) -> HandlerOutcome {

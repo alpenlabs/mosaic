@@ -16,7 +16,7 @@ use std::time::Duration;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::{JobExecutor, HandlerOutcome, JobCompletion};
+use mosaic_job_api::{HandlerOutcome, JobCompletion, JobExecutor};
 use mosaic_net_svc_api::PeerId;
 
 use super::PoolJob;

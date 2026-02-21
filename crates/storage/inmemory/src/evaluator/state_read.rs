@@ -183,4 +183,25 @@ impl StateRead for StoredEvaluatorState {
 
         Ok(deposit_data.deposit_inputs)
     }
+
+    async fn get_aes128_key(
+        &self,
+        index: mosaic_vs3::Index,
+    ) -> Result<Option<[u8; 16]>, Self::Error> {
+        Ok(self.aes128_keys.get(&index.get()).copied())
+    }
+
+    async fn get_public_s(
+        &self,
+        index: mosaic_vs3::Index,
+    ) -> Result<Option<[u8; 16]>, Self::Error> {
+        Ok(self.public_s_values.get(&index.get()).copied())
+    }
+
+    async fn get_output_label_ct(
+        &self,
+        index: mosaic_vs3::Index,
+    ) -> Result<Option<mosaic_common::Byte32>, Self::Error> {
+        Ok(self.output_label_cts.get(&index.get()).copied())
+    }
 }

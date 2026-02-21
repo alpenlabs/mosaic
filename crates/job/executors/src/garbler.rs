@@ -5,12 +5,12 @@ use mosaic_cac_types::{
     AllPolynomials, CompletedSignatures, InputPolynomials, OutputPolynomial, Seed,
     WideLabelWireShares,
     state_machine::garbler::{
-        Action, ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Wire,
+        Action, ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Step, Wire,
     },
 };
 use mosaic_common::constants::{
-    N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
-    WIDE_LABEL_VALUE_COUNT,
+    N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_SETUP_INPUT_WIRES,
+    N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
 };
 use mosaic_heap_array::HeapArray;
 use mosaic_job_api::{ActionCompletion, HandlerOutcome};
@@ -20,6 +20,7 @@ use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
 use super::MosaicExecutor;
 use crate::garbling::{GarblingSession, compute_commitment};
+use crate::table_store::TableStore;
 
 /// Build a successful garbler completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
@@ -27,8 +28,8 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 }
 
 /// Dispatch a garbler action to the appropriate handler.
-pub(crate) async fn execute<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+pub(crate) async fn execute<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     action: &Action,
 ) -> HandlerOutcome {
@@ -77,8 +78,8 @@ pub(crate) async fn execute<SP: StorageProvider>(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn generate_polynomial_commitments<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn generate_polynomial_commitments<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     seed: Seed,
     wire: Wire,
 ) -> HandlerOutcome {
@@ -99,8 +100,8 @@ async fn generate_polynomial_commitments<SP: StorageProvider>(
     completed(id, ActionResult::PolynomialCommitmentsGenerated(result))
 }
 
-async fn generate_shares<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn generate_shares<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     seed: Seed,
     index: Index,
 ) -> HandlerOutcome {
@@ -190,8 +191,8 @@ fn evaluate_polynomials_at_index(
 // Garbling handlers (routed through GarblingCoordinator)
 // ============================================================================
 
-async fn generate_table_commitment<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn generate_table_commitment<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     index: mosaic_cac_types::Index,
     seed: mosaic_cac_types::GarblingSeed,
@@ -245,22 +246,121 @@ async fn generate_table_commitment<SP: StorageProvider>(
     )
 }
 
-async fn transfer_garbling_table<SP: StorageProvider>(
-    _ctx: &MosaicExecutor<SP>,
-    _peer_id: &PeerId,
-    _seed: mosaic_cac_types::GarblingSeed,
+async fn transfer_garbling_table<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
+    peer_id: &PeerId,
+    seed: mosaic_cac_types::GarblingSeed,
 ) -> HandlerOutcome {
-    // TODO(phase5): Read gc_{index}.bin + .translation, stream via net-svc bulk transfer.
-    // Return Retry on network failure.
-    unimplemented!("transfer_garbling_table: blocked on ckt integration + net-svc bulk")
+    let garb_state = ctx.storage.garbler_state(peer_id);
+
+    // Resolve seed → (circuit_index, commitment) from the SM root state.
+    // The eval_seeds and eval_commitments are stored in the TransferringGarblingTables step.
+    let Some(root_state) = garb_state.get_root_state().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let (eval_seeds, eval_commitments) = match &root_state.step {
+        Step::TransferringGarblingTables {
+            eval_seeds,
+            eval_commitments,
+            ..
+        } => (eval_seeds.clone(), eval_commitments.clone()),
+        _ => return HandlerOutcome::Retry,
+    };
+
+    let Some(pos) = eval_seeds.iter().position(|s| *s == seed) else {
+        // Seed not found among eval seeds — stale action or state mismatch.
+        return HandlerOutcome::Retry;
+    };
+    let commitment = eval_commitments[pos];
+
+    // Derive the circuit index from challenge indices.
+    let Some(challenge_indices) = garb_state.get_challenge_indices().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let challenged: Vec<usize> = challenge_indices.iter().map(|ci| ci.get()).collect();
+    let eval_indices: Vec<usize> = (1..=N_CIRCUITS)
+        .filter(|i| !challenged.contains(i))
+        .collect();
+    let circuit_index = eval_indices[pos];
+
+    // Load shares for this circuit.
+    let Some(input_shares) = garb_state.get_input_shares().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(output_shares) = garb_state.get_output_shares().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+
+    let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] = input_shares
+        [circuit_index][N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
+        .try_into()
+        .expect("withdrawal shares slice length mismatch");
+    let output_share = &output_shares[circuit_index];
+
+    // Open circuit and set up garbling session.
+    let Ok(mut reader) = ReaderV5c::open(&ctx.circuit_path) else {
+        return HandlerOutcome::Retry;
+    };
+    let header = *reader.header();
+    let outputs = reader.outputs().to_vec();
+
+    let setup = GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
+    let mut session = setup.session;
+
+    // Open a bulk transfer stream to the peer.
+    // The commitment serves as the stream identifier — the evaluator registers
+    // to receive using the same commitment via expect_bulk_transfer.
+    let identifier: [u8; 32] = commitment
+        .as_ref()
+        .try_into()
+        .expect("commitment is 32 bytes");
+
+    let bulk_stream = ctx
+        .net_client
+        .handle()
+        .open_bulk_stream(*peer_id, identifier, -1)
+        .await;
+
+    let Ok(mut stream) = bulk_stream else {
+        return HandlerOutcome::Retry;
+    };
+
+    // Stream translation material first.
+    if stream.write(setup.translation_bytes).await.is_err() {
+        return HandlerOutcome::Retry;
+    }
+
+    // Stream ciphertext data block by block.
+    loop {
+        match reader.next_blocks_chunk().await {
+            Ok(Some(chunk)) => {
+                for block in chunk.blocks_iter() {
+                    let ct_bytes = session.process_block(block);
+                    if !ct_bytes.is_empty() && stream.write(ct_bytes.to_vec()).await.is_err() {
+                        return HandlerOutcome::Retry;
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(_) => return HandlerOutcome::Retry,
+        }
+    }
+
+    // Finalize the session (consumes it cleanly).
+    let _finish = session.finish(&outputs);
+
+    completed(
+        ActionId::TransferGarblingTable(seed),
+        ActionResult::GarblingTableTransferred(seed, commitment),
+    )
 }
 
 // ============================================================================
 // Light handlers (Network I/O)
 // ============================================================================
 
-async fn send_commit_msg_header<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn send_commit_msg_header<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::CommitMsgHeader,
 ) -> HandlerOutcome {
@@ -277,8 +377,8 @@ async fn send_commit_msg_header<SP: StorageProvider>(
     }
 }
 
-async fn send_commit_msg_chunk<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn send_commit_msg_chunk<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::CommitMsgChunk,
 ) -> HandlerOutcome {
@@ -292,8 +392,8 @@ async fn send_commit_msg_chunk<SP: StorageProvider>(
     }
 }
 
-async fn send_challenge_response_msg_header<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn send_challenge_response_msg_header<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::ChallengeResponseMsgHeader,
 ) -> HandlerOutcome {
@@ -308,8 +408,8 @@ async fn send_challenge_response_msg_header<SP: StorageProvider>(
     }
 }
 
-async fn send_challenge_response_msg_chunk<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn send_challenge_response_msg_chunk<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
 ) -> HandlerOutcome {
@@ -327,8 +427,8 @@ async fn send_challenge_response_msg_chunk<SP: StorageProvider>(
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn verify_adaptors<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn verify_adaptors<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
@@ -405,8 +505,8 @@ async fn verify_adaptors<SP: StorageProvider>(
 // Heavy handlers (Withdrawal — Critical priority)
 // ============================================================================
 
-async fn complete_adaptor_signatures<SP: StorageProvider>(
-    ctx: &MosaicExecutor<SP>,
+async fn complete_adaptor_signatures<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {

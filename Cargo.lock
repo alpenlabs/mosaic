@@ -1837,6 +1837,7 @@ dependencies = [
  "futures",
  "mosaic-cac-types",
  "mosaic-common",
+ "mosaic-vs3",
  "thiserror 2.0.18",
 ]
 

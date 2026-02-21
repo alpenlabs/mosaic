@@ -9,8 +9,13 @@ use ark_serialize::{
     Write,
 };
 
+use mosaic_common::{
+    Byte32,
+    constants::{N_CIRCUITS, N_EVAL_CIRCUITS},
+};
+
 use crate::{
-    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
+    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, HeapArray,
     OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk,
 };
@@ -31,6 +36,10 @@ pub struct CommitMsgHeader {
     pub garbling_table_commitments: AllGarblingTableCommitments,
     /// Commitment to output wire polynomial for value 0.
     pub output_polynomial_commitment: OutputPolynomialCommitment,
+    /// AES-128 keys for all N_CIRCUITS garbling instances.
+    pub all_aes128_keys: HeapArray<[u8; 16], N_CIRCUITS>,
+    /// Public S values for all N_CIRCUITS garbling instances.
+    pub all_public_s: HeapArray<[u8; 16], N_CIRCUITS>,
 }
 
 /// CommitMsgChunk: Garbler -> Evaluator (chunked by wire)
@@ -80,7 +89,7 @@ pub struct ChallengeMsg {
 #[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct ChallengeResponseMsgHeader {
     /// Reserved input shares for setup input wires.
-    /// Size: N_SETUP_INPUT_WIRES (4) shares
+    /// Size: N_SETUP_INPUT_WIRES (32) shares
     pub reserved_setup_input_shares: ReservedSetupInputShares,
     /// Output shares for all opened circuits.
     /// Size: N_OPEN_CIRCUITS (174) shares
@@ -88,6 +97,10 @@ pub struct ChallengeResponseMsgHeader {
     /// Garbling seeds for all opened circuits.
     /// Size: N_OPEN_CIRCUITS (174) seeds
     pub opened_garbling_seeds: OpenedGarblingSeeds,
+    /// Output label ciphertexts for the N_EVAL_CIRCUITS unopened circuits.
+    /// Each encrypts the output share under the garbler's output label.
+    /// The evaluator needs these to translate evaluation output → share scalar.
+    pub unchallenged_output_label_cts: HeapArray<Byte32, N_EVAL_CIRCUITS>,
 }
 
 /// ChallengeResponseMsgChunk: Garbler -> Evaluator (chunked by circuit)

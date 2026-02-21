@@ -579,6 +579,8 @@ async fn handle_table_commitment_generated<S: StateMut>(
             let commit_msg_header = CommitMsgHeader {
                 garbling_table_commitments,
                 output_polynomial_commitment,
+                all_aes128_keys: todo!(),
+                all_public_s: todo!(),
             };
             emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
             for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
@@ -714,6 +716,8 @@ pub(crate) async fn restore<S: StateRead>(
             let commit_msg_header = CommitMsgHeader {
                 garbling_table_commitments,
                 output_polynomial_commitment,
+                all_aes128_keys: todo!(),
+                all_public_s: todo!(),
             };
             emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
 

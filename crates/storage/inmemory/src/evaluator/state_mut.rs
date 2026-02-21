@@ -175,4 +175,37 @@ impl StateMut for StoredEvaluatorState {
 
         Ok(())
     }
+
+    async fn put_all_aes128_keys(
+        &mut self,
+        keys: &mosaic_cac_types::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
+    ) -> Result<(), Self::Error> {
+        for (i, key) in keys.iter().enumerate() {
+            self.aes128_keys.insert(i, *key);
+        }
+        Ok(())
+    }
+
+    async fn put_all_public_s(
+        &mut self,
+        values: &mosaic_cac_types::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
+    ) -> Result<(), Self::Error> {
+        for (i, val) in values.iter().enumerate() {
+            self.public_s_values.insert(i, *val);
+        }
+        Ok(())
+    }
+
+    async fn put_unchallenged_output_label_cts(
+        &mut self,
+        cts: &mosaic_cac_types::HeapArray<
+            mosaic_common::Byte32,
+            { mosaic_common::constants::N_EVAL_CIRCUITS },
+        >,
+    ) -> Result<(), Self::Error> {
+        for (i, ct) in cts.iter().enumerate() {
+            self.output_label_cts.insert(i, *ct);
+        }
+        Ok(())
+    }
 }

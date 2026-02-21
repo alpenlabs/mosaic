@@ -11,8 +11,8 @@ pub(crate) mod worker;
 
 use std::sync::Arc;
 
-use mosaic_job_api::JobExecutor;
 use mosaic_job_api::JobCompletion;
+use mosaic_job_api::JobExecutor;
 
 use crate::priority::Priority;
 

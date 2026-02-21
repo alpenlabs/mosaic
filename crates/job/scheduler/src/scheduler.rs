@@ -11,7 +11,7 @@ use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::{JobExecutor, JobActions, JobBatch, JobSchedulerHandle};
+use mosaic_job_api::{JobActions, JobBatch, JobExecutor, JobSchedulerHandle};
 
 use crate::{
     garbling::{GarblingConfig, GarblingCoordinator},
