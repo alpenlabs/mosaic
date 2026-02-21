@@ -11,7 +11,10 @@ use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::{ExecuteGarblerJob, ExecuteEvaluatorJob, JobActions, JobBatch, JobSchedulerHandle};
+use mosaic_job_api::{
+    ExecuteEvaluatorJob, ExecuteGarblerJob, JobActions, JobBatch, JobSchedulerHandle,
+};
+use mosaic_net_svc_api::PeerId;
 
 use crate::{
     garbling::{GarblingConfig, GarblingCoordinator},
@@ -67,6 +70,8 @@ pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     light: JobThreadPool<D>,
     heavy: JobThreadPool<D>,
     garbling: GarblingCoordinator,
+    /// The executor, used to create circuit sessions for garbling actions.
+    executor: Arc<D>,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
 }
@@ -95,11 +100,9 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         // Channel for Job Scheduler → SM Scheduler (completed results).
         let (completion_tx, completion_rx) = kanal::bounded_async(config.completion_queue_size);
 
-        let dispatcher = Arc::new(dispatcher);
-        let light =
-            JobThreadPool::new(config.light, Arc::clone(&dispatcher), completion_tx.clone());
-        let heavy =
-            JobThreadPool::new(config.heavy, Arc::clone(&dispatcher), completion_tx.clone());
+        let executor = Arc::new(dispatcher);
+        let light = JobThreadPool::new(config.light, Arc::clone(&executor), completion_tx.clone());
+        let heavy = JobThreadPool::new(config.heavy, Arc::clone(&executor), completion_tx.clone());
         let garbling = GarblingCoordinator::new(config.garbling, completion_tx);
 
         let handle = JobSchedulerHandle::new(submit_tx, completion_rx);
@@ -108,6 +111,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             light,
             heavy,
             garbling,
+            executor,
             submission_rx,
         };
 
@@ -138,7 +142,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         tracing::info!("job scheduler started");
 
         while let Ok(batch) = self.submission_rx.recv().await {
-            self.dispatch_batch(batch);
+            self.dispatch_batch(batch).await;
         }
 
         tracing::info!("job scheduler submission channel closed, shutting down");
@@ -149,7 +153,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// Unwraps the FASM [`ActionContainer`] to extract individual tracked
     /// actions, categorizes each one, assigns priority, and dispatches to the
     /// appropriate pool.
-    fn dispatch_batch(&self, batch: JobBatch) {
+    async fn dispatch_batch(&self, batch: JobBatch) {
         let peer_id = batch.peer_id;
 
         match batch.actions {
@@ -160,25 +164,26 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                             let (_id, action) = tracked.into_parts();
                             let category = action.category();
                             let priority = action.priority();
-                            let worker_job = WorkerJob::Garbler { peer_id, action };
 
                             match category {
-                                ActionCategory::Light => {
-                                    self.light.submit(priority, worker_job);
-                                }
-                                ActionCategory::Heavy => {
-                                    self.heavy.submit(priority, worker_job);
-                                }
                                 ActionCategory::Garbling => {
-                                    // TODO: register with garbling coordinator
-                                    tracing::warn!("garbling dispatch not yet implemented");
+                                    self.dispatch_garbler_circuit(peer_id, action).await;
+                                }
+                                _ => {
+                                    let worker_job = WorkerJob::Garbler { peer_id, action };
+                                    match category {
+                                        ActionCategory::Light => {
+                                            self.light.submit(priority, worker_job);
+                                        }
+                                        ActionCategory::Heavy => {
+                                            self.heavy.submit(priority, worker_job);
+                                        }
+                                        _ => unreachable!(),
+                                    }
                                 }
                             }
                         }
-                        FasmAction::Untracked(_) => {
-                            // Untracked actions are fire-and-forget.
-                            // Currently unused by either SM.
-                        }
+                        FasmAction::Untracked(_) => {}
                     }
                 }
             }
@@ -189,27 +194,105 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                             let (_id, action) = tracked.into_parts();
                             let category = action.category();
                             let priority = action.priority();
-                            let worker_job = WorkerJob::Evaluator { peer_id, action };
 
                             match category {
-                                ActionCategory::Light => {
-                                    self.light.submit(priority, worker_job);
-                                }
-                                ActionCategory::Heavy => {
-                                    self.heavy.submit(priority, worker_job);
-                                }
                                 ActionCategory::Garbling => {
-                                    // TODO: register with garbling coordinator
-                                    tracing::warn!("garbling dispatch not yet implemented");
+                                    self.dispatch_evaluator_circuit(peer_id, action).await;
+                                }
+                                _ => {
+                                    let worker_job = WorkerJob::Evaluator { peer_id, action };
+                                    match category {
+                                        ActionCategory::Light => {
+                                            self.light.submit(priority, worker_job);
+                                        }
+                                        ActionCategory::Heavy => {
+                                            self.heavy.submit(priority, worker_job);
+                                        }
+                                        _ => unreachable!(),
+                                    }
                                 }
                             }
                         }
-                        FasmAction::Untracked(_) => {
-                            // Untracked actions are fire-and-forget.
-                            // Currently unused by either SM.
-                        }
+                        FasmAction::Untracked(_) => {}
                     }
                 }
+            }
+        }
+    }
+
+    /// Create a circuit session for a garbler circuit action and submit it
+    /// to the garbling coordinator.
+    async fn dispatch_garbler_circuit(&self, peer_id: PeerId, action: GarblerAction) {
+        let session_result = match &action {
+            GarblerAction::GenerateTableCommitment(index, seed) => {
+                ExecuteGarblerJob::begin_table_commitment(&*self.executor, &peer_id, *index, *seed)
+                    .await
+            }
+            GarblerAction::TransferGarblingTable(seed) => {
+                ExecuteGarblerJob::begin_table_transfer(&*self.executor, &peer_id, *seed).await
+            }
+            _ => {
+                tracing::error!("non-circuit garbler action routed to circuit dispatch");
+                return;
+            }
+        };
+
+        match session_result {
+            Ok(session) => {
+                self.garbling.submit(crate::garbling::SubmittedSession {
+                    peer_id,
+                    session: Box::new(session),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(?e, ?peer_id, "failed to create garbler circuit session");
+                // Session creation failed — the action will not produce a completion.
+                // The SM will eventually time out and re-emit the action.
+            }
+        }
+    }
+
+    /// Create a circuit session for an evaluator circuit action and submit it
+    /// to the garbling coordinator.
+    async fn dispatch_evaluator_circuit(&self, peer_id: PeerId, action: EvaluatorAction) {
+        let session_result = match &action {
+            EvaluatorAction::GenerateTableCommitment(index, seed) => {
+                ExecuteEvaluatorJob::begin_table_commitment(
+                    &*self.executor,
+                    &peer_id,
+                    *index,
+                    *seed,
+                )
+                .await
+            }
+            EvaluatorAction::ReceiveGarblingTable(commitment) => {
+                ExecuteEvaluatorJob::begin_table_receive(&*self.executor, &peer_id, *commitment)
+                    .await
+            }
+            EvaluatorAction::EvaluateGarblingTable(index, commitment) => {
+                ExecuteEvaluatorJob::begin_evaluation(
+                    &*self.executor,
+                    &peer_id,
+                    *index,
+                    *commitment,
+                )
+                .await
+            }
+            _ => {
+                tracing::error!("non-circuit evaluator action routed to circuit dispatch");
+                return;
+            }
+        };
+
+        match session_result {
+            Ok(session) => {
+                self.garbling.submit(crate::garbling::SubmittedSession {
+                    peer_id,
+                    session: Box::new(session),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(?e, ?peer_id, "failed to create evaluator circuit session");
             }
         }
     }
