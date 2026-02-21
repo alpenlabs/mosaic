@@ -12,6 +12,7 @@ use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
 use mosaic_job_api::{JobActions, JobBatch, JobSchedulerHandle};
+use mosaic_storage_api::StorageProvider;
 
 use crate::{
     garbling::{GarblingConfig, GarblingCoordinator},
@@ -64,15 +65,15 @@ impl Default for JobSchedulerConfig {
 ///
 /// Constructed by the main binary. The SM Scheduler interacts with it
 /// exclusively through the [`JobSchedulerHandle`] returned by [`new`](Self::new).
-pub struct JobScheduler {
-    light: JobThreadPool,
-    heavy: JobThreadPool,
+pub struct JobScheduler<SP: StorageProvider> {
+    light: JobThreadPool<SP>,
+    heavy: JobThreadPool<SP>,
     garbling: GarblingCoordinator,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
 }
 
-impl std::fmt::Debug for JobScheduler {
+impl<SP: StorageProvider> std::fmt::Debug for JobScheduler<SP> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobScheduler")
             .field("light", &self.light)
@@ -82,14 +83,14 @@ impl std::fmt::Debug for JobScheduler {
     }
 }
 
-impl JobScheduler {
+impl<SP: StorageProvider> JobScheduler<SP> {
     /// Create a new job scheduler and return a handle for the SM Scheduler.
     ///
     /// The returned [`JobSchedulerHandle`] is the SM Scheduler's only interface
     /// to the job system. It is cheaply cloneable.
     ///
     /// After construction, call [`run`](Self::run) to start the dispatch loop.
-    pub fn new(config: JobSchedulerConfig, ctx: HandlerContext) -> (Self, JobSchedulerHandle) {
+    pub fn new(config: JobSchedulerConfig, ctx: HandlerContext<SP>) -> (Self, JobSchedulerHandle) {
         // Channel for SM Scheduler → Job Scheduler (batch submissions).
         let (submit_tx, submission_rx) = kanal::bounded_async(config.submission_queue_size);
 

@@ -22,6 +22,8 @@ use mosaic_cac_types::state_machine::{
 use mosaic_job_api::JobCompletion;
 use mosaic_net_svc_api::PeerId;
 
+use mosaic_storage_api::StorageProvider;
+
 use super::PoolJob;
 use super::queue::JobQueue;
 use crate::handlers::{HandlerContext, HandlerOutcome};
@@ -63,19 +65,20 @@ pub(crate) enum WorkerJob {
 /// The worker runs on a dedicated thread with its own monoio runtime. It
 /// pulls jobs from the shared [`JobQueue`], spawns them as local tasks (up
 /// to `concurrency` at a time), and sends completions through `completion_tx`.
-pub(crate) struct Worker {
+pub(crate) struct Worker<SP: StorageProvider> {
     id: usize,
     /// Thread join handle.
     handle: Option<std::thread::JoinHandle<()>>,
+    _sp: std::marker::PhantomData<SP>,
 }
 
-impl std::fmt::Debug for Worker {
+impl<SP: StorageProvider> std::fmt::Debug for Worker<SP> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Worker").field("id", &self.id).finish()
     }
 }
 
-impl Worker {
+impl<SP: StorageProvider> Worker<SP> {
     /// Spawn a new worker thread with a monoio runtime.
     ///
     /// The worker immediately begins pulling jobs from `queue`.
@@ -83,7 +86,7 @@ impl Worker {
     /// `concurrency`.
     pub(crate) fn spawn(
         id: usize,
-        ctx: Arc<HandlerContext>,
+        ctx: Arc<HandlerContext<SP>>,
         queue: Arc<JobQueue>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
         concurrency: usize,
@@ -101,6 +104,7 @@ impl Worker {
         Self {
             id,
             handle: Some(handle),
+            _sp: std::marker::PhantomData,
         }
     }
 
@@ -127,9 +131,9 @@ impl Worker {
 ///
 /// This ensures the worker only pulls from the shared queue when it has
 /// capacity to run the job — other workers can grab jobs in the meantime.
-async fn worker_loop(
+async fn worker_loop<SP: StorageProvider>(
     id: usize,
-    ctx: Arc<HandlerContext>,
+    ctx: Arc<HandlerContext<SP>>,
     queue: Arc<JobQueue>,
     completion_tx: kanal::AsyncSender<JobCompletion>,
     concurrency: usize,
@@ -201,7 +205,10 @@ enum ExecuteResult {
 /// Borrows the [`PoolJob`] so that on [`HandlerOutcome::Retry`] the caller
 /// retains ownership and can requeue it. Handlers receive `&Action` and
 /// clone any data they need to send over the network.
-async fn execute_job(ctx: &HandlerContext, pool_job: &PoolJob) -> ExecuteResult {
+async fn execute_job<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
+    pool_job: &PoolJob,
+) -> ExecuteResult {
     let (peer_id, outcome) = match &pool_job.job {
         WorkerJob::Garbler { peer_id, action } => {
             let o = crate::handlers::garbler::execute(ctx, peer_id, action).await;

@@ -18,6 +18,7 @@ use mosaic_common::constants::{N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT};
 use mosaic_heap_array::HeapArray;
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
+use mosaic_storage_api::StorageProvider;
 use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
 use super::{HandlerContext, HandlerOutcome};
@@ -28,8 +29,8 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 }
 
 /// Dispatch a garbler action to the appropriate handler.
-pub(crate) async fn execute(
-    ctx: &HandlerContext,
+pub(crate) async fn execute<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     action: &Action,
 ) -> HandlerOutcome {
@@ -76,8 +77,8 @@ pub(crate) async fn execute(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn generate_polynomial_commitments(
-    _ctx: &HandlerContext,
+async fn generate_polynomial_commitments<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _seed: Seed,
     _wire: Wire,
 ) -> HandlerOutcome {
@@ -91,7 +92,11 @@ async fn generate_polynomial_commitments(
     unimplemented!("generate_polynomial_commitments: blocked on polynomial cache redesign")
 }
 
-async fn generate_shares(ctx: &HandlerContext, seed: Seed, index: Index) -> HandlerOutcome {
+async fn generate_shares<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
+    seed: Seed,
+    index: Index,
+) -> HandlerOutcome {
     // Try cache first, fall back to regenerating from seed.
     // TODO(phase2): Replace with new cache API (CacheResult::Hit/Unavailable/Generate).
     let polys = match ctx.polynomial_cache.get(&seed) {
@@ -166,8 +171,8 @@ fn evaluate_polynomials_at_index(
 // Garbling handlers (routed through GarblingCoordinator)
 // ============================================================================
 
-async fn generate_table_commitment(
-    _ctx: &HandlerContext,
+async fn generate_table_commitment<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _index: mosaic_cac_types::Index,
     _seed: mosaic_cac_types::GarblingSeed,
 ) -> HandlerOutcome {
@@ -184,8 +189,8 @@ async fn generate_table_commitment(
     unimplemented!("generate_table_commitment: blocked on ckt integration")
 }
 
-async fn transfer_garbling_table(
-    _ctx: &HandlerContext,
+async fn transfer_garbling_table<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _peer_id: &PeerId,
     _seed: mosaic_cac_types::GarblingSeed,
 ) -> HandlerOutcome {
@@ -198,8 +203,8 @@ async fn transfer_garbling_table(
 // Light handlers (Network I/O)
 // ============================================================================
 
-async fn send_commit_msg_header(
-    ctx: &HandlerContext,
+async fn send_commit_msg_header<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::CommitMsgHeader,
 ) -> HandlerOutcome {
@@ -216,8 +221,8 @@ async fn send_commit_msg_header(
     }
 }
 
-async fn send_commit_msg_chunk(
-    ctx: &HandlerContext,
+async fn send_commit_msg_chunk<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::CommitMsgChunk,
 ) -> HandlerOutcome {
@@ -231,8 +236,8 @@ async fn send_commit_msg_chunk(
     }
 }
 
-async fn send_challenge_response_msg_header(
-    ctx: &HandlerContext,
+async fn send_challenge_response_msg_header<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     header: &mosaic_cac_types::ChallengeResponseMsgHeader,
 ) -> HandlerOutcome {
@@ -247,8 +252,8 @@ async fn send_challenge_response_msg_header(
     }
 }
 
-async fn send_challenge_response_msg_chunk(
-    ctx: &HandlerContext,
+async fn send_challenge_response_msg_chunk<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
 ) -> HandlerOutcome {
@@ -266,8 +271,8 @@ async fn send_challenge_response_msg_chunk(
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn verify_adaptors(
-    _ctx: &HandlerContext,
+async fn verify_adaptors<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
     // TODO(phase4): Load from StateRead, verify each adaptor signature.
@@ -287,8 +292,8 @@ async fn verify_adaptors(
 // Heavy handlers (Withdrawal — Critical priority)
 // ============================================================================
 
-async fn complete_adaptor_signatures(
-    _ctx: &HandlerContext,
+async fn complete_adaptor_signatures<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
     // TODO(phase4): Load from StateRead, complete adaptor signatures.

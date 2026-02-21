@@ -1656,6 +1656,7 @@ dependencies = [
  "mosaic-job-api",
  "mosaic-net-client",
  "mosaic-net-svc-api",
+ "mosaic-storage-api",
  "mosaic-vs3",
  "parking_lot",
  "rand 0.8.5",
@@ -1756,6 +1757,8 @@ dependencies = [
 name = "mosaic-storage-api"
 version = "0.1.0"
 dependencies = [
+ "mosaic-cac-types",
+ "mosaic-net-svc-api",
  "thiserror 2.0.18",
 ]
 

@@ -12,6 +12,7 @@ pub(crate) mod worker;
 use std::sync::Arc;
 
 use mosaic_job_api::JobCompletion;
+use mosaic_storage_api::StorageProvider;
 
 use crate::handlers::HandlerContext;
 use crate::priority::Priority;
@@ -68,12 +69,12 @@ impl Default for PoolConfig {
 /// the next highest-priority job (or next FIFO job for light pools).
 ///
 /// This naturally load-balances: busy workers don't pull, idle workers do.
-pub(crate) struct JobThreadPool {
+pub(crate) struct JobThreadPool<SP: StorageProvider> {
     queue: Arc<JobQueue>,
-    workers: Vec<Worker>,
+    workers: Vec<Worker<SP>>,
 }
 
-impl std::fmt::Debug for JobThreadPool {
+impl<SP: StorageProvider> std::fmt::Debug for JobThreadPool<SP> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobThreadPool")
             .field("workers", &self.workers.len())
@@ -82,19 +83,19 @@ impl std::fmt::Debug for JobThreadPool {
     }
 }
 
-impl JobThreadPool {
+impl<SP: StorageProvider> JobThreadPool<SP> {
     /// Create a new pool with the given configuration.
     ///
     /// Spawns worker threads immediately. Each worker runs its own monoio
     /// runtime and pulls jobs from the shared queue.
     pub(crate) fn new(
         config: PoolConfig,
-        ctx: Arc<HandlerContext>,
+        ctx: Arc<HandlerContext<SP>>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
     ) -> Self {
         let queue = Arc::new(JobQueue::new(config.priority_queue));
 
-        let workers: Vec<Worker> = (0..config.threads)
+        let workers: Vec<Worker<SP>> = (0..config.threads)
             .map(|id| {
                 Worker::spawn(
                     id,

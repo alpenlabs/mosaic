@@ -20,6 +20,7 @@
 //! - **Garbling handlers**: Processing gate chunks with a given seed
 
 use mosaic_job_api::ActionCompletion;
+use mosaic_storage_api::StorageProvider;
 
 use crate::polynomial_cache::PolynomialCache;
 
@@ -44,35 +45,50 @@ pub(crate) enum HandlerOutcome {
 ///
 /// Constructed once by the scheduler and passed to each job by reference.
 /// All fields are cheaply cloneable or behind `Arc`.
-pub struct HandlerContext {
+///
+/// Generic over [`StorageProvider`] so the concrete storage backend
+/// (in-memory, FDB, etc.) is pluggable. Job handlers use
+/// [`garbler::StateRead`] / [`evaluator::StateRead`] obtained from the
+/// provider; the SM Scheduler can use the same provider for
+/// [`StateMut`] access.
+///
+/// [`garbler::StateRead`]: mosaic_cac_types::state_machine::garbler::StateRead
+/// [`evaluator::StateRead`]: mosaic_cac_types::state_machine::evaluator::StateRead
+/// [`StateMut`]: mosaic_cac_types::state_machine::garbler::StateMut
+pub struct HandlerContext<SP: StorageProvider> {
     /// Typed network client for protocol message sends and acks.
     pub net_client: mosaic_net_client::NetClient,
-    /// Polynomial cache for garbler setup (generate-once, read-181-times).
+    /// Polynomial cache for garbler setup (generate-once, read-many-times).
     pub polynomial_cache: PolynomialCache,
+    /// Per-peer storage provider for reading state machine data.
+    pub storage: SP,
 }
 
-impl HandlerContext {
+impl<SP: StorageProvider> HandlerContext<SP> {
     /// Create a new handler context with default polynomial cache size.
-    pub fn new(net_client: mosaic_net_client::NetClient) -> Self {
+    pub fn new(net_client: mosaic_net_client::NetClient, storage: SP) -> Self {
         Self {
             net_client,
             polynomial_cache: PolynomialCache::new(4),
+            storage,
         }
     }
 
     /// Create a new handler context with a custom polynomial cache size.
     pub fn with_cache_size(
         net_client: mosaic_net_client::NetClient,
+        storage: SP,
         max_cache_entries: usize,
     ) -> Self {
         Self {
             net_client,
             polynomial_cache: PolynomialCache::new(max_cache_entries),
+            storage,
         }
     }
 }
 
-impl std::fmt::Debug for HandlerContext {
+impl<SP: StorageProvider> std::fmt::Debug for HandlerContext<SP> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HandlerContext").finish_non_exhaustive()
     }

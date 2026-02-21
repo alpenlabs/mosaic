@@ -16,6 +16,7 @@ mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 mosaic-net-svc-api.workspace = true
 mosaic-net-client.workspace = true
+mosaic-storage-api.workspace = true
 
 fasm.workspace = true
 kanal = "0.1.1"

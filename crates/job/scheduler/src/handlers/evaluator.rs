@@ -6,12 +6,10 @@
 //! timeout, cache full, storage unavailable), [`HandlerOutcome::Retry`]
 //! causes the worker to requeue the job so other peers can progress.
 
-use mosaic_cac_types::{
-    GarblingTableCommitment,
-    state_machine::evaluator::{Action, ActionId, ActionResult, ChunkIndex},
-};
+use mosaic_cac_types::state_machine::evaluator::{Action, ActionId, ActionResult, ChunkIndex};
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
+use mosaic_storage_api::StorageProvider;
 
 use super::{HandlerContext, HandlerOutcome};
 
@@ -21,8 +19,8 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 }
 
 /// Dispatch an evaluator action to the appropriate handler.
-pub(crate) async fn execute(
-    ctx: &HandlerContext,
+pub(crate) async fn execute<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     action: &Action,
 ) -> HandlerOutcome {
@@ -71,8 +69,8 @@ pub(crate) async fn execute(
 // Light handlers (Network I/O)
 // ============================================================================
 
-async fn send_challenge_msg(
-    ctx: &HandlerContext,
+async fn send_challenge_msg<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     msg: &mosaic_cac_types::ChallengeMsg,
 ) -> HandlerOutcome {
@@ -85,8 +83,8 @@ async fn send_challenge_msg(
     }
 }
 
-async fn send_adaptor_msg_chunk(
-    ctx: &HandlerContext,
+async fn send_adaptor_msg_chunk<SP: StorageProvider>(
+    ctx: &HandlerContext<SP>,
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
     chunk: &mosaic_cac_types::AdaptorMsgChunk,
@@ -105,7 +103,9 @@ async fn send_adaptor_msg_chunk(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn verify_opened_input_shares(_ctx: &HandlerContext) -> HandlerOutcome {
+async fn verify_opened_input_shares<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
+) -> HandlerOutcome {
     // TODO(phase2): Load data from StateRead, run verification loop.
     //
     // Flow:
@@ -125,8 +125,8 @@ async fn verify_opened_input_shares(_ctx: &HandlerContext) -> HandlerOutcome {
 // Garbling handlers (routed through GarblingCoordinator)
 // ============================================================================
 
-async fn generate_table_commitment(
-    _ctx: &HandlerContext,
+async fn generate_table_commitment<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _index: mosaic_vs3::Index,
     _seed: mosaic_cac_types::GarblingSeed,
 ) -> HandlerOutcome {
@@ -146,8 +146,8 @@ async fn generate_table_commitment(
     unimplemented!("generate_table_commitment: blocked on ckt integration")
 }
 
-async fn receive_garbling_table(
-    _ctx: &HandlerContext,
+async fn receive_garbling_table<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _peer_id: &PeerId,
     _commitment: mosaic_cac_types::GarblingTableCommitment,
 ) -> HandlerOutcome {
@@ -169,8 +169,8 @@ async fn receive_garbling_table(
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn generate_deposit_adaptors(
-    _ctx: &HandlerContext,
+async fn generate_deposit_adaptors<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
     // TODO(phase4): Load from StateRead, generate deposit wire adaptors.
@@ -187,8 +187,8 @@ async fn generate_deposit_adaptors(
     unimplemented!("generate_deposit_adaptors: blocked on StateRead wiring")
 }
 
-async fn generate_withdrawal_adaptors_chunk(
-    _ctx: &HandlerContext,
+async fn generate_withdrawal_adaptors_chunk<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _deposit_id: mosaic_cac_types::DepositId,
     _chunk_idx: &ChunkIndex,
 ) -> HandlerOutcome {
@@ -210,8 +210,8 @@ async fn generate_withdrawal_adaptors_chunk(
 // Heavy handlers (Withdrawal — Critical priority)
 // ============================================================================
 
-async fn evaluate_garbling_table(
-    _ctx: &HandlerContext,
+async fn evaluate_garbling_table<SP: StorageProvider>(
+    _ctx: &HandlerContext<SP>,
     _index: mosaic_vs3::Index,
     _commitment: mosaic_cac_types::GarblingTableCommitment,
 ) -> HandlerOutcome {
