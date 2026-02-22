@@ -1,39 +1,30 @@
-use std::collections::HashMap;
-
-use bitvec::BitArr;
-use mosaic_cac_types::{
-    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, Seed, SetupInputs,
-};
 use mosaic_common::constants::{
-    N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS,
+    N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_INPUT_WIRES,
 };
 
-use super::deposit::DepositState;
+use crate::{
+    AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, HeapArray, Seed,
+    SetupInputs,
+};
 
-#[derive(Debug)]
-pub struct State<S> {
-    pub(crate) config: Option<Config>,
-    pub(crate) step: Step,
-    pub(crate) deposits: HashMap<DepositId, DepositState>,
-    pub(crate) artifact_store: S,
-}
-
-impl<S> State<S> {
-    pub fn new_empty(artifact_store: S) -> Self {
-        Self {
-            config: None,
-            step: Step::Uninit,
-            deposits: HashMap::new(),
-            artifact_store,
-        }
-    }
+/// Root state for the garbler in the setup protocol.
+///
+/// Contains the configuration and current step in the protocol state machine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GarblerState {
+    /// Immutable garbler config set at init.
+    pub config: Option<Config>,
+    /// Current step in the state machine.
+    pub step: Step,
 }
 
 /// Immutable state that is set during init and never updated
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
-    pub(crate) seed: Seed,
-    pub(crate) setup_inputs: SetupInputs,
+    /// Seed for deterministic rng.
+    pub seed: Seed,
+    /// Values for setup input wires.
+    pub setup_inputs: SetupInputs,
 }
 
 /// Valid states.
@@ -44,20 +35,30 @@ pub enum Step {
     /// Not initialized; Default
     Uninit,
     /// Polynomials generated.
-    GeneratingPolynomialCommitments,
+    GeneratingPolynomialCommitments {
+        /// Track generated input polynomial commitments.
+        inputs: HeapArray<bool, N_INPUT_WIRES>,
+        /// Track whether output polynomial commitment has been generated.
+        output: bool,
+    },
     /// Generate shares for all tables.
-    GeneratingShares { generated: BitArr!(for N_CIRCUITS) },
+    GeneratingShares {
+        /// Track which shares have been generated.
+        generated: HeapArray<bool, { N_CIRCUITS + 1 }>,
+    },
     /// Dispatch actions to generate commitments.
     /// Wait for all table commitments to be provided.
     GeneratingTableCommitments {
-        seeds: Box<AllGarblingSeeds>,
-        generated: BitArr!(for N_CIRCUITS),
+        /// Seeds for all garbling operations.
+        seeds: AllGarblingSeeds,
+        /// Track which table commitments have been generated.
+        generated: HeapArray<bool, N_CIRCUITS>,
     },
     /// Got table commitments, sending commit msg chunks.
     /// Transitions to WaitingForChallenge when all chunks are acked.
     SendingCommit {
         /// Track which commit msg chunks have been acked.
-        acked: BitArr!(for N_COMMIT_MSG_CHUNKS),
+        acked: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
     },
     /// All commit chunks acked, waiting for challenge msg from evaluator.
     WaitingForChallenge,
@@ -65,16 +66,16 @@ pub enum Step {
     /// TransferringGarblingTables when all chunks are acked.
     SendingChallengeResponse {
         /// Track which challenge response chunks have been acked.
-        acked: BitArr!(for N_CHALLENGE_RESPONSE_CHUNKS),
+        acked: HeapArray<bool, N_CHALLENGE_RESPONSE_CHUNKS>,
     },
     /// Challenge response msg ack received, send garbling tables
     TransferringGarblingTables {
         /// Seeds for garbling table generation
-        eval_seeds: Box<EvalGarblingSeeds>,
+        eval_seeds: EvalGarblingSeeds,
         /// Expected commitments of garbling tables, for sanity
-        eval_commitments: Box<EvalGarblingTableCommitments>,
+        eval_commitments: EvalGarblingTableCommitments,
         /// Track transferred garbling tables
-        transferred: BitArr!(for N_EVAL_CIRCUITS),
+        transferred: HeapArray<bool, N_EVAL_CIRCUITS>,
     },
     /// Setup is completed, ready to be used for deposits.
     /// Accepts deposit inputs

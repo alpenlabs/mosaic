@@ -2,9 +2,8 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    AdaptorMsgChunk, ChallengeIndices, ChallengeMsg, CircuitOutputShare, DepositAdaptors,
-    DepositId, EvalGarblingTableCommitments, GarblingSeed, GarblingTableCommitment,
-    InputPolynomialCommitments, OpenedInputShares, WithdrawalAdaptors,
+    AdaptorMsgChunk, ChallengeMsg, CircuitOutputShare, DepositAdaptors, DepositId, GarblingSeed,
+    GarblingTableCommitment, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -30,10 +29,12 @@ pub enum ActionId {
     VerifyOpenedInputShares,
     /// Identifies a [`Action::GenerateTableCommitment`] action by circuit index.
     GenerateTableCommitment(Index),
-    /// Identifies a [`Action::ReceiveGarblingTables`] action.
-    ReceiveGarblingTables,
-    /// Identifies a [`Action::DepositGenerateAdaptors`] action by deposit.
-    DepositGenerateAdaptors(DepositId),
+    /// Identifies a [`Action::ReceiveGarblingTable`] action by garbling table commitment.
+    ReceiveGarblingTable(GarblingTableCommitment),
+    /// Identifies a [`Action::GenerateDepositAdaptors`] action by deposit.
+    GenerateDepositAdaptors(DepositId),
+    /// Identifies a [`Action::GenerateWithdrawalAdaptorsChunk`] action by deposit and chunk index.
+    GenerateWithdrawalAdaptorsChunk(DepositId, u8),
     /// Identifies a [`Action::DepositSendAdaptorMsgChunk`] action by deposit
     /// and chunk index.
     DepositSendAdaptorMsgChunk(DepositId, u8),
@@ -72,8 +73,10 @@ pub enum ActionResult {
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Garbling table received from garbler and verified.
     GarblingTableReceived(Index, GarblingTableCommitment),
-    /// Adaptor signatures were generated for deposit and withdrawal wires.
-    DepositAdaptorsGenerated(DepositId, DepositAdaptors, WithdrawalAdaptors),
+    /// Adaptor signatures were generated for deposit wires.
+    DepositAdaptorsGenerated(DepositId, DepositAdaptors),
+    /// Adaptor signatures were generated for a chunk of withdrawal wires.
+    WithdrawalAdaptorsChunkGenerated(DepositId, ChunkIndex, WithdrawalAdaptorsChunk),
     /// Adaptor message chunk was sent to the garbler.
     DepositAdaptorChunkSent(DepositId),
     /// Garbling table evaluation completed.
@@ -87,22 +90,21 @@ pub enum ActionResult {
 
 /// Actions emitted by the evaluator state machine for external execution.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(clippy::large_enum_variant, reason = "AdaptorMsgChunk is large")]
 #[non_exhaustive]
 pub enum Action {
     /// Send challenge message with set of challenge indices.
     SendChallengeMsg(ChallengeMsg),
     /// Verify opened input shares against polynomial commitments.
-    VerifyOpenedInputShares(
-        Box<ChallengeIndices>,
-        Box<OpenedInputShares>,
-        Box<InputPolynomialCommitments>,
-    ),
+    VerifyOpenedInputShares,
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
-    ReceiveGarblingTables(EvalGarblingTableCommitments),
-    /// Generate adaptors for a deposit.
-    DepositGenerateAdaptors(DepositId),
+    ReceiveGarblingTable(GarblingTableCommitment),
+    /// Generate adaptors of deposit wires for a deposit.
+    GenerateDepositAdaptors(DepositId),
+    /// Generate adaptors of a portion of withdrawal wires for a deposit.
+    GenerateWithdrawalAdaptorsChunk(DepositId, ChunkIndex),
     /// Send adaptor chunk for a deposit to garbler.
     DepositSendAdaptorMsgChunk(DepositId, AdaptorMsgChunk),
     /// Evaluate a single garbling table with provided inputs.
@@ -115,15 +117,32 @@ impl Action {
     pub fn id(&self) -> ActionId {
         match self {
             Self::SendChallengeMsg(_) => ActionId::SendChallengeMsg,
-            Self::VerifyOpenedInputShares(..) => ActionId::VerifyOpenedInputShares,
+            Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
-            Self::ReceiveGarblingTables(_) => ActionId::ReceiveGarblingTables,
-            Self::DepositGenerateAdaptors(id) => ActionId::DepositGenerateAdaptors(*id),
+            Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
+            Self::GenerateDepositAdaptors(id) => ActionId::GenerateDepositAdaptors(*id),
+            Self::GenerateWithdrawalAdaptorsChunk(id, chunk_index) => {
+                ActionId::GenerateWithdrawalAdaptorsChunk(*id, chunk_index.0)
+            }
             Self::DepositSendAdaptorMsgChunk(id, chunk) => {
                 ActionId::DepositSendAdaptorMsgChunk(*id, chunk.chunk_index)
             }
             Self::EvaluateGarblingTable(idx, _) => ActionId::EvaluateGarblingTable(*idx),
         }
+    }
+}
+
+// ============================================================================
+// Action data types
+// ============================================================================
+
+/// Index a chunk.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChunkIndex(pub u8);
+impl ChunkIndex {
+    /// Get inner chunk index.
+    pub fn get(&self) -> u8 {
+        self.0
     }
 }
 

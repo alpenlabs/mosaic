@@ -20,8 +20,9 @@ members = [
   "crates/rpc/provider",
   "crates/rpc/server",
   "crates/rpc/types",
-  "crates/state-machine/executor",
+  # "crates/state-machine/executor",
   "crates/storage/api",
+  "crates/storage/inmemory",
   "crates/table-types",
   "crates/vs3",
 ]
@@ -70,8 +71,9 @@ mosaic-net-wire = { path = "crates/net/wire" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
-mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
+# mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
 mosaic-storage-api = { path = "crates/storage/api" }
+mosaic-storage-inmemory = { path = "crates/storage/inmemory" }
 mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
 
@@ -81,18 +83,17 @@ ark-ff = "0.5.0"
 ark-secp256k1 = "0.5.0"
 ark-serialize = "0.5.0"
 async-trait = "0.1"
-bitvec = "1.0.1"
+bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
+bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }
+bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" }
 bytes = "1.10"
 criterion = "0.5"
 fasm = "0.3.1"
 futures = "0.3.31"
-bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
-bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }
-bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" }
-once_cell = "1.21.3"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
-jsonrpsee-types = "*"                                                     # constrained by jsonrpsee dep
+jsonrpsee-types = "*"                                                             # constrained by jsonrpsee dep
 k256 = "0.13.4"
+once_cell = "1.21.3"
 proptest = "1.5"
 rand = "0.8"
 rand_chacha = "0.3.0"

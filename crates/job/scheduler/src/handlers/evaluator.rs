@@ -4,8 +4,10 @@
 //! [`ActionCompletion`]. Handlers retry internally until they succeed —
 //! the caller always receives a valid completion.
 
-use mosaic_cac_types::state_machine::evaluator::{Action, ActionId, ActionResult};
-use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS, WIDE_LABEL_VALUE_COUNT};
+use mosaic_cac_types::{
+    GarblingTableCommitment,
+    state_machine::evaluator::{Action, ActionId, ActionResult, ChunkIndex},
+};
 use mosaic_job_api::ActionCompletion;
 use mosaic_net_svc_api::PeerId;
 
@@ -27,20 +29,23 @@ pub(crate) async fn execute(
         Action::SendChallengeMsg(msg) => send_challenge_msg(ctx, peer_id, msg).await,
 
         // ── Heavy (Setup) ───────────────────────────────────────────
-        Action::VerifyOpenedInputShares(challenge_indices, shares, commitments) => {
-            verify_opened_input_shares(ctx, challenge_indices, shares, commitments).await
-        }
+        Action::VerifyOpenedInputShares => verify_opened_input_shares(ctx).await,
 
         // ── Garbling (Coordinator) ──────────────────────────────────
         Action::GenerateTableCommitment(index, seed) => {
             generate_table_commitment(ctx, index, seed).await
         }
-        Action::ReceiveGarblingTables(commitments) => {
-            receive_garbling_tables(ctx, peer_id, commitments).await
+        Action::ReceiveGarblingTable(commitment) => {
+            receive_garbling_table(ctx, peer_id, commitment).await
         }
 
         // ── Heavy (Deposit) ─────────────────────────────────────────
-        Action::DepositGenerateAdaptors(deposit_id) => generate_adaptors(ctx, deposit_id).await,
+        Action::GenerateDepositAdaptors(deposit_id) => {
+            generate_deposit_adaptors(ctx, deposit_id).await
+        }
+        Action::GenerateWithdrawalAdaptorsChunk(deposit_id, chunk_idx) => {
+            generate_withdrawal_adaptors(ctx, deposit_id, chunk_idx).await
+        }
 
         // ── Light (Deposit Network I/O) ─────────────────────────────
         Action::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
@@ -104,35 +109,37 @@ async fn send_adaptor_msg_chunk(
 
 async fn verify_opened_input_shares(
     _ctx: &HandlerContext,
-    challenge_indices: Box<mosaic_cac_types::ChallengeIndices>,
-    shares: Box<mosaic_cac_types::OpenedInputShares>,
-    commitments: Box<mosaic_cac_types::InputPolynomialCommitments>,
+    // challenge_indices: Box<mosaic_cac_types::ChallengeIndices>,
+    // shares: Box<mosaic_cac_types::OpenedInputShares>,
+    // commitments: Box<mosaic_cac_types::InputPolynomialCommitments>,
 ) -> ActionCompletion {
+    unimplemented!()
+    // FIXME(sapinb): load data from storage
     // Verify each opened share against its polynomial commitment.
     // Any failure aborts with a reason; success returns None.
-    let failure_reason = (|| {
-        for idx in 0..N_OPEN_CIRCUITS {
-            for wire in 0..N_INPUT_WIRES {
-                for val in 0..WIDE_LABEL_VALUE_COUNT {
-                    let share = shares[idx][wire][val].clone();
-                    if commitments[wire][val].verify_share(share).is_err() {
-                        return Some(format!(
-                            "verify failed for circuit {}, wire {}, value {}",
-                            challenge_indices[idx].get(),
-                            wire,
-                            val
-                        ));
-                    }
-                }
-            }
-        }
-        None
-    })();
+    // let failure_reason = (|| {
+    //     for idx in 0..N_OPEN_CIRCUITS {
+    //         for wire in 0..N_INPUT_WIRES {
+    //             for val in 0..WIDE_LABEL_VALUE_COUNT {
+    //                 let share = shares[idx][wire][val].clone();
+    //                 if commitments[wire][val].verify_share(share).is_err() {
+    //                     return Some(format!(
+    //                         "verify failed for circuit {}, wire {}, value {}",
+    //                         challenge_indices[idx].get(),
+    //                         wire,
+    //                         val
+    //                     ));
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     None
+    // })();
 
-    completed(
-        ActionId::VerifyOpenedInputShares,
-        ActionResult::VerifyOpenedInputSharesResult(failure_reason),
-    )
+    // completed(
+    //     ActionId::VerifyOpenedInputShares,
+    //     ActionResult::VerifyOpenedInputSharesResult(failure_reason),
+    // )
 }
 
 // ============================================================================
@@ -150,10 +157,10 @@ async fn generate_table_commitment(
     unimplemented!()
 }
 
-async fn receive_garbling_tables(
+async fn receive_garbling_table(
     _ctx: &HandlerContext,
     _peer_id: &PeerId,
-    _commitments: mosaic_cac_types::EvalGarblingTableCommitments,
+    _commitment: GarblingTableCommitment,
 ) -> ActionCompletion {
     // TODO: register bulk transfer expectations with net-svc for each
     //       unchallenged circuit. Wait for all tables to arrive. Verify
@@ -165,11 +172,21 @@ async fn receive_garbling_tables(
 // Heavy handlers (Deposit)
 // ============================================================================
 
-async fn generate_adaptors(
+async fn generate_deposit_adaptors(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
 ) -> ActionCompletion {
     // TODO: generate adaptor signatures for deposit and withdrawal input wires
+    //       using evaluator's secret key and input share commitments
+    unimplemented!()
+}
+
+async fn generate_withdrawal_adaptors(
+    _ctx: &HandlerContext,
+    _deposit_id: mosaic_cac_types::DepositId,
+    _chunk_idx: ChunkIndex,
+) -> ActionCompletion {
+    // TODO: generate adaptor signatures for withdrawal input wires
     //       using evaluator's secret key and input share commitments
     unimplemented!()
 }

@@ -2,10 +2,9 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    AllPolynomialCommitments, ChallengeResponseMsgChunk, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositId, GarblingSeed,
-    GarblingTableCommitment, InputShares, PubKey, ReservedDepositInputShares,
-    ReservedWithdrawalInputShares, Seed, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
+    CommitMsgChunk, CommitMsgHeader, CompletedSignatures, DepositId, GarblingSeed,
+    GarblingTableCommitment, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
 };
 
 // ============================================================================
@@ -26,13 +25,17 @@ use crate::{
 #[non_exhaustive]
 pub enum ActionId {
     /// Identifies a [`Action::GeneratePolynomialCommitments`] action.
-    GeneratePolynomialCommitments(Seed),
+    GeneratePolynomialCommitments(Seed, Wire),
     /// Identifies a [`Action::GenerateShares`] action by circuit index.
     GenerateShares(Seed, Index),
     /// Identifies a [`Action::GenerateTableCommitment`] action by circuit index.
     GenerateTableCommitment(Index),
+    /// Identifies a [`Action::SendCommitMsgHeader`] action.
+    SendCommitMsgHeader,
     /// Identifies a [`Action::SendCommitMsgChunk`] action by wire index.
     SendCommitMsgChunk(u16),
+    /// Identifies a [`Action::SendChallengeResponseMsgHeader`] action.
+    SendChallengeResponseMsgHeader,
     /// Identifies a [`Action::SendChallengeResponseMsgChunk`] action by circuit
     /// index.
     SendChallengeResponseMsgChunk(u16),
@@ -68,9 +71,9 @@ impl PartialOrd for ActionId {
 #[non_exhaustive]
 pub enum ActionResult {
     /// Polynomial commitments were generated from the base seed.
-    PolynomialCommitmentsGenerated(AllPolynomialCommitments),
+    PolynomialCommitmentsGenerated(GeneratedPolynomialCommitments),
     /// Input and output shares were generated for a circuit.
-    SharesGenerated(Index, Box<CircuitInputShares>, Box<CircuitOutputShare>),
+    SharesGenerated(Index, CircuitInputShares, CircuitOutputShare),
     /// Garbling table commitment was generated for a circuit.
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Commit message chunk was sent and acknowledged by the evaluator.
@@ -82,7 +85,7 @@ pub enum ActionResult {
     /// Adaptor signature verification completed. `bool` indicates pass/fail.
     DepositAdaptorVerificationResult(DepositId, bool),
     /// Adaptor signatures were completed for a disputed withdrawal.
-    AdaptorSignaturesCompleted(DepositId, Box<CompletedSignatures>),
+    AdaptorSignaturesCompleted(DepositId, CompletedSignatures),
 }
 
 // ============================================================================
@@ -95,25 +98,30 @@ pub enum ActionResult {
 pub enum Action {
     /// Generate polynomials from the base seed, compute and return commitments.
     /// Polynomials are cached job-side for subsequent [`Self::GenerateShares`] calls.
-    GeneratePolynomialCommitments(Seed),
+    GeneratePolynomialCommitments(Seed, Wire),
     /// Generate input/output shares by evaluating polynomials at a circuit index.
     /// Reads polynomials from the job-side cache (falls back to regenerating from seed).
     GenerateShares(Seed, Index),
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
+    /// Send commit message header with garbling table commitments and output polynomial commitment.
+    SendCommitMsgHeader(CommitMsgHeader),
     /// Send commit message chunk with polynomial commitments for a single wire
     /// to evaluator.
     SendCommitMsgChunk(CommitMsgChunk),
+    /// Send challenge response header with setup input shares, output shares and garbling seeds for
+    /// opened circuits.
+    SendChallengeResponseMsgHeader(ChallengeResponseMsgHeader),
     /// Send challenge response chunk with revealed shares for a single circuit.
     SendChallengeResponseMsgChunk(ChallengeResponseMsgChunk),
     /// Transfer a garbling table to the evaluator.
     TransferGarblingTable(GarblingSeed),
 
     /// Verify adaptor signatures received from evaluator.
-    DepositVerifyAdaptors(DepositId, AdaptorVerificationData),
+    DepositVerifyAdaptors(DepositId),
 
     /// Complete adaptor signatures for a disputed withdrawal.
-    CompleteAdaptorSignatures(DepositId, CompleteAdaptorSignaturesData),
+    CompleteAdaptorSignatures(DepositId),
 }
 
 impl Action {
@@ -121,18 +129,20 @@ impl Action {
     /// its [`ActionResult`] when it completes.
     pub fn id(&self) -> ActionId {
         match self {
-            Self::GeneratePolynomialCommitments(seed) => {
-                ActionId::GeneratePolynomialCommitments(*seed)
+            Self::GeneratePolynomialCommitments(seed, wire) => {
+                ActionId::GeneratePolynomialCommitments(*seed, *wire)
             }
             Self::GenerateShares(seed, idx) => ActionId::GenerateShares(*seed, *idx),
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
+            Self::SendCommitMsgHeader(_) => ActionId::SendCommitMsgHeader,
             Self::SendCommitMsgChunk(chunk) => ActionId::SendCommitMsgChunk(chunk.wire_index),
+            Self::SendChallengeResponseMsgHeader(_) => ActionId::SendChallengeResponseMsgHeader,
             Self::SendChallengeResponseMsgChunk(chunk) => {
                 ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index)
             }
             Self::TransferGarblingTable(seed) => ActionId::TransferGarblingTable(*seed),
-            Self::DepositVerifyAdaptors(id, _) => ActionId::DepositVerifyAdaptors(*id),
-            Self::CompleteAdaptorSignatures(id, _) => ActionId::CompleteAdaptorSignatures(*id),
+            Self::DepositVerifyAdaptors(id) => ActionId::DepositVerifyAdaptors(*id),
+            Self::CompleteAdaptorSignatures(id) => ActionId::CompleteAdaptorSignatures(*id),
         }
     }
 }
@@ -141,38 +151,27 @@ impl Action {
 // Action data types
 // ============================================================================
 
-/// Data required to verify adaptor signatures from the evaluator.
-#[derive(Debug, PartialEq, Eq)]
-pub struct AdaptorVerificationData {
-    /// Public key used to verify adaptors created under evaluator's secret key.
-    pub pk: PubKey,
-    /// Adaptor signatures for deposits.
-    pub deposit_adaptors: Box<DepositAdaptors>,
-    /// Adaptor signatures for withdrawals.
-    pub withdrawal_adaptors: Box<WithdrawalAdaptors>,
-    /// Input shares for verification.
-    pub input_shares: Box<InputShares>,
-    /// Sighashes to verify against.
-    pub sighashes: Box<Sighashes>,
+/// Identifies an input or output wire
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wire {
+    /// Input wire index
+    Input(u16),
+    /// Output wire
+    Output,
 }
 
-/// Data required to complete adaptor signatures during a disputed withdrawal.
+/// Identifies an input or output wire.
 #[derive(Debug, PartialEq, Eq)]
-pub struct CompleteAdaptorSignaturesData {
-    /// Public key used to verify adaptors created under evaluator's secret key.
-    pub pk: PubKey,
-    /// Sighashes to sign.
-    pub sighashes: Box<Sighashes>,
-    /// Adaptor signatures for deposits.
-    pub deposit_adaptors: Box<DepositAdaptors>,
-    /// Adaptor signatures for withdrawals.
-    pub withdrawal_adaptors: Box<WithdrawalAdaptors>,
-    /// Reserved input shares for deposits.
-    pub reserved_deposit_input_shares: Box<ReservedDepositInputShares>,
-    /// Reserved input shares for withdrawals.
-    pub reserved_withdrawal_input_shares: Box<ReservedWithdrawalInputShares>,
-    /// Withdrawal input data.
-    pub withdrawal_input: Box<WithdrawalInputs>,
+pub enum GeneratedPolynomialCommitments {
+    /// Polynomial commitments for all wide label values for an input wire.
+    Input {
+        /// Input wire index (0..N_INPUT_WIRES).
+        wire: u16,
+        /// Polynomial commitments for all wide label values for this wire.
+        commitments: WideLabelWirePolynomialCommitments,
+    },
+    /// Polynomial commitment for false value (0) of output wire.
+    Output(OutputPolynomialCommitment),
 }
 
 // ============================================================================

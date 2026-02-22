@@ -13,11 +13,12 @@ use mosaic_cac_types::state_machine::{
 };
 use mosaic_job_api::{JobActions, JobBatch, JobSchedulerHandle};
 
-use crate::garbling::{GarblingConfig, GarblingCoordinator};
-use crate::handlers::HandlerContext;
-use crate::pool::worker::WorkerJob;
-use crate::pool::{JobThreadPool, PoolConfig};
-use crate::priority::Priority;
+use crate::{
+    garbling::{GarblingConfig, GarblingCoordinator},
+    handlers::HandlerContext,
+    pool::{JobThreadPool, PoolConfig, worker::WorkerJob},
+    priority::Priority,
+};
 
 /// Configuration for the [`JobScheduler`].
 #[derive(Debug, Clone)]
@@ -270,7 +271,7 @@ impl Classify for GarblerAction {
             }
 
             // Heavy (everything else)
-            Self::GeneratePolynomialCommitments(_)
+            Self::GeneratePolynomialCommitments(..)
             | Self::GenerateShares(..)
             | Self::DepositVerifyAdaptors(..)
             | Self::CompleteAdaptorSignatures(..) => ActionCategory::Heavy,
@@ -303,13 +304,14 @@ impl Classify for EvaluatorAction {
             }
 
             // Garbling (coordinated disk I/O)
-            Self::GenerateTableCommitment(..) | Self::ReceiveGarblingTables(_) => {
+            Self::GenerateTableCommitment(..) | Self::ReceiveGarblingTable(_) => {
                 ActionCategory::Garbling
             }
 
             // Heavy (everything else)
-            Self::VerifyOpenedInputShares(..)
-            | Self::DepositGenerateAdaptors(_)
+            Self::VerifyOpenedInputShares
+            | Self::GenerateDepositAdaptors(_)
+            | Self::GenerateWithdrawalAdaptorsChunk(..)
             | Self::EvaluateGarblingTable(..) => ActionCategory::Heavy,
 
             // Non-exhaustive fallback
@@ -323,9 +325,9 @@ impl Classify for EvaluatorAction {
             Self::EvaluateGarblingTable(..) => Priority::Critical,
 
             // Deposit — High
-            Self::DepositGenerateAdaptors(_) | Self::DepositSendAdaptorMsgChunk(..) => {
-                Priority::High
-            }
+            Self::GenerateDepositAdaptors(_)
+            | Self::GenerateWithdrawalAdaptorsChunk(..)
+            | Self::DepositSendAdaptorMsgChunk(..) => Priority::High,
 
             // Setup / everything else — Normal
             _ => Priority::Normal,

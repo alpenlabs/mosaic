@@ -10,15 +10,16 @@ use mosaic_common::{
     Byte32,
     constants::{N_CIRCUITS, N_OPEN_CIRCUITS},
 };
+use mosaic_heap_array::HeapArray;
 use mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share};
 use proptest::prelude::*;
 
 use crate::{
-    Adaptor, AdaptorMsgChunk, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments,
-    ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
-    CircuitInputShares, CommitMsgChunk, CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds,
-    OpenedOutputShares, PubKey, ReservedSetupInputShares, SecretKey, Sighash, Signature,
-    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+    Adaptor, AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CommitMsgChunk,
+    CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds, OpenedOutputShares, PubKey,
+    ReservedSetupInputShares, SecretKey, Sighash, Signature, WideLabelWireAdaptors,
+    WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptorsChunk,
 };
 
 /// Helper to perform a serialization roundtrip and verify equality.
@@ -93,13 +94,13 @@ fn arb_share() -> impl Strategy<Value = Share> {
 
 /// Generate a random Adaptor.
 fn arb_adaptor() -> impl Strategy<Value = Adaptor> {
-    (arb_scalar(), arb_point(), arb_point()).prop_map(|(tweaked_s, tweaked_r, share_commitment)| {
-        Adaptor {
+    (arb_scalar(), arb_point(), arb_point()).prop_map(
+        |(tweaked_s, r_dash_commit, share_commitment)| Adaptor {
             tweaked_s,
-            tweaked_r,
+            R_dash_commit: r_dash_commit,
             share_commitment,
-        }
-    })
+        },
+    )
 }
 
 /// Generate a random Polynomial.
@@ -118,7 +119,7 @@ fn arb_polynomial_commitment() -> impl Strategy<Value = PolynomialCommitment> {
 
 /// Generate a random Signature.
 fn arb_signature() -> impl Strategy<Value = Signature> {
-    (arb_scalar(), arb_point()).prop_map(|(s, r)| Signature { s, r })
+    (arb_scalar(), arb_point()).prop_map(|(s, r)| Signature { s, r: r.x })
 }
 
 // =============================================================================
@@ -184,14 +185,14 @@ fn arb_adaptor_msg_chunk() -> impl Strategy<Value = AdaptorMsgChunk> {
 
         let single_adaptor = Adaptor {
             tweaked_s: scalar,
-            tweaked_r: point,
+            R_dash_commit: point,
             share_commitment: point,
         };
 
         AdaptorMsgChunk {
             chunk_index: (seed % 4) as u8,
             deposit_adaptor: single_adaptor,
-            withdrawal_adaptors: AdaptorMsgChunkWithdrawals::new(|_| {
+            withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {
                 WideLabelWireAdaptors::new(|_| single_adaptor)
             }),
         }
@@ -204,8 +205,14 @@ fn arb_commit_msg_header() -> impl Strategy<Value = CommitMsgHeader> {
         let bytes: [u8; 32] = std::array::from_fn(|i| ((seed >> (i % 8)) & 0xff) as u8);
         let commitment: Byte32 = bytes.into();
 
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let output_polynomial_commitment =
+            HeapArray::from_elem(Polynomial::rand(&mut rng).commit());
+
         CommitMsgHeader {
             garbling_table_commitments: AllGarblingTableCommitments::new(|_| commitment),
+            output_polynomial_commitment,
         }
     })
 }
@@ -649,9 +656,15 @@ fn assert_fits_in_frame<T: CanonicalSerialize>(msg: &T, name: &str, compress: Co
 #[test]
 fn test_commit_msg_header_fits_in_frame() {
     // CommitMsgHeader contains N_CIRCUITS (181) garbling table commitments (32 bytes each)
-    // Expected size: ~5.7 KB
+    // + 1 Polynomial Commitment (65 bytes * 174 uncompressed)
+    // Expected size: ~17 KB
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+    let output_polynomial_commitment = HeapArray::from_elem(Polynomial::rand(&mut rng).commit());
+
     let header = CommitMsgHeader {
         garbling_table_commitments: AllGarblingTableCommitments::new(|_| [0u8; 32].into()),
+        output_polynomial_commitment,
     };
 
     assert_fits_in_frame(&header, "CommitMsgHeader", Compress::Yes);
@@ -660,8 +673,8 @@ fn test_commit_msg_header_fits_in_frame() {
     // Verify actual size is what we expect (sanity check)
     let size = header.serialized_size(Compress::No);
     assert!(
-        size < 10 * 1024,
-        "CommitMsgHeader should be ~5.7 KB, got {} bytes",
+        size < 20 * 1024,
+        "CommitMsgHeader should be ~17 KB, got {} bytes",
         size
     );
 }

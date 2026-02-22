@@ -16,6 +16,7 @@
 
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{AdditiveGroup, BigInteger, PrimeField, UniformRand};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand::{CryptoRng, Rng};
 use sha2::{Digest, Sha256};
 
@@ -47,7 +48,7 @@ fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
 }
 
 /// Signature for the VSSS
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Signature {
     /// s = s' ± share
     pub s: ark_secp256k1::Fr,
@@ -81,7 +82,7 @@ impl Signature {
 }
 
 /// Adaptor for the VSSS
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Adaptor {
     /// s' = ±r' + e * x  (the evaluator’s partial Schnorr s)
     pub tweaked_s: ark_secp256k1::Fr,

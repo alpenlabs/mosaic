@@ -3,21 +3,15 @@ use std::marker::PhantomData;
 
 use fasm::{StateMachine, actions::Action as FasmAction};
 use mosaic_cac_types::state_machine::evaluator::{
-    Action, ActionContainer, EvaluatorTrackedActionTypes, Input, UntrackedAction,
+    Action, ActionContainer, EvaluatorTrackedActionTypes, Input, StateMut, UntrackedAction,
 };
 
-pub mod artifact;
-pub mod deposit;
-pub mod state;
 mod stf;
 
-use artifact::EvaluatorArtifactStore;
-use state::State;
-
-use crate::{SMError, SMResult};
+use crate::SMError;
 
 #[derive(Debug)]
-pub struct EvaluatorSM<S: EvaluatorArtifactStore> {
+pub struct EvaluatorSM<S: StateMut> {
     _s: PhantomData<S>,
 }
 
@@ -27,8 +21,8 @@ pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
     actions.push(FasmAction::new_tracked(id, action));
 }
 
-impl<S: EvaluatorArtifactStore> StateMachine for EvaluatorSM<S> {
-    type State = State<S>;
+impl<S: StateMut> StateMachine for EvaluatorSM<S> {
+    type State = S;
 
     type Input = Input;
 

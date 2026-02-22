@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-cac-protocol"
+name = "mosaic-storage-inmemory"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -14,15 +14,8 @@ keywords.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 
-fasm.workspace = true
 futures.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
-mosaic-storage-inmemory.workspace = true
-rand_chacha.workspace = true
-rand.workspace = true
 
 [lints]
 workspace = true

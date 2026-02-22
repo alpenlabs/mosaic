@@ -11,10 +11,12 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-common.workspace = true
+
 ark-ec.workspace = true
 ark-ff.workspace = true
 ark-secp256k1.workspace = true
-mosaic-common.workspace = true
+ark-serialize.workspace = true
 once_cell.workspace = true
 rand.workspace = true
 sha2.workspace = true

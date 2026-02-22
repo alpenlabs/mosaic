@@ -10,9 +10,9 @@ use ark_serialize::{
 };
 
 use crate::{
-    Adaptor, AdaptorMsgChunkWithdrawals, AllGarblingTableCommitments, ChallengeIndices,
-    CircuitInputShares, OpenedGarblingSeeds, OpenedOutputShares, ReservedSetupInputShares,
-    WideLabelWirePolynomialCommitments,
+    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
+    OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
+    WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -29,6 +29,8 @@ use crate::{
 pub struct CommitMsgHeader {
     /// Commitments to all N_CIRCUITS garbling tables.
     pub garbling_table_commitments: AllGarblingTableCommitments,
+    /// Commitment to output wire polynomial for value 0.
+    pub output_polynomial_commitment: OutputPolynomialCommitment,
 }
 
 /// CommitMsgChunk: Garbler -> Evaluator (chunked by wire)
@@ -121,7 +123,7 @@ pub struct AdaptorMsgChunk {
     /// Single deposit adaptor for this chunk's deposit wire
     pub deposit_adaptor: Adaptor,
     /// Adaptor signatures for 41 withdrawal wires × 256 values each.
-    pub withdrawal_adaptors: AdaptorMsgChunkWithdrawals,
+    pub withdrawal_adaptors: WithdrawalAdaptorsChunk,
 }
 
 // ============================================================================

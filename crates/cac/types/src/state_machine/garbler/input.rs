@@ -50,7 +50,7 @@ pub enum Input {
     ///
     /// The garbler provides withdrawal input bytes (the proof) which will be
     /// used to complete adaptor signatures and post on-chain.
-    DisputedWithdrawal(DepositId, Box<WithdrawalInputs>),
+    DisputedWithdrawal(DepositId, WithdrawalInputs),
 }
 
 /// Data required during garbler state machine initialization.
@@ -68,7 +68,7 @@ pub struct GarblerDepositInitData {
     /// Public key used to verify adaptors created under evaluator's secret key.
     pub pk: PubKey,
     /// Sighashes to be signed using the adaptors.
-    pub sighashes: Box<Sighashes>,
+    pub sighashes: Sighashes,
     /// Deposit input wire values.
-    pub deposit_inputs: Box<DepositInputs>,
+    pub deposit_inputs: DepositInputs,
 }

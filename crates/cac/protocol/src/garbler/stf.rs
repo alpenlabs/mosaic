@@ -1,24 +1,17 @@
-use bitvec::array::BitArray;
-use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, AllPolynomialCommitments,
-    ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, CommitMsgChunk, DepositId,
-    EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices, Index, InputShares,
-    OutputShares, ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares,
-    Seed, SetupInputs,
-    state_machine::garbler::{
-        Action, ActionContainer, ActionId, ActionResult, AdaptorVerificationData,
-        CompleteAdaptorSignaturesData, GarblerDepositInitData, Input,
-    },
-};
-use mosaic_common::constants::N_CIRCUITS;
+use std::pin::pin;
 
-use super::{
-    artifact::GarblerArtifactStore,
-    deposit::{DepositState, DepositStep},
-    emit,
-    state::{State, Step},
+use futures::StreamExt;
+use mosaic_cac_types::{
+    AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
+    CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
+    EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
+    InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
 };
-use crate::{SMError, SMResult, garbler::state::Config};
+use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES};
+
+use super::emit;
+use crate::{ResultOptionExt, SMError, SMResult};
 
 // ============================================================================
 // External event handler
@@ -28,66 +21,94 @@ use crate::{SMError, SMResult, garbler::state::Config};
 ///
 /// External events are messages from peers, bridge triggers, and initialization
 /// — anything that originates outside the state machine.
-pub(crate) async fn handle_event<S: GarblerArtifactStore>(
-    state: &mut State<S>,
+pub(crate) async fn handle_event<S: StateMut>(
+    state: &mut S,
     input: Input,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
+    let mut root_state = state
+        .get_root_state()
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::MissingRootState)?;
+
     match input {
         Input::Init(data) => {
-            match state.step {
+            match root_state.step {
                 Step::Uninit => {
                     // state update
-                    state.config = Some(Config {
+                    root_state.config = Some(Config {
                         seed: data.seed,
                         setup_inputs: data.setup_inputs,
                     });
 
-                    state.step = Step::GeneratingPolynomialCommitments;
-
                     // Polynomial generation + commitment is handled entirely
                     // by the job handler. Polynomials are cached job-side for
                     // the subsequent GenerateShares calls.
-                    emit(actions, Action::GeneratePolynomialCommitments(data.seed));
+                    root_state.step = Step::GeneratingPolynomialCommitments {
+                        inputs: HeapArray::from_elem(false),
+                        output: false,
+                    };
+
+                    emit(
+                        actions,
+                        Action::GeneratePolynomialCommitments(data.seed, Wire::Output),
+                    );
+                    for wire_idx in 0..N_INPUT_WIRES {
+                        emit(
+                            actions,
+                            Action::GeneratePolynomialCommitments(
+                                data.seed,
+                                Wire::Input(wire_idx as u16),
+                            ),
+                        );
+                    }
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
         Input::RecvChallengeMsg(challenge_msg) => {
-            match state.step {
+            match root_state.step {
                 Step::SendingCommit { .. } | Step::WaitingForChallenge => {
                     if is_valid_challenge(&challenge_msg) {
-                        let (input_shares, output_shares) =
-                            state.artifact_store.load_shares().await?;
-                        let config = require_config(state)?;
+                        let input_shares = state
+                            .get_input_shares()
+                            .await
+                            .require("expected input shares")?;
+                        let output_shares = state
+                            .get_output_shares()
+                            .await
+                            .require("expected output shares")?;
+                        let config = require_config(&root_state)?;
                         let seeds = generate_garbling_table_seeds(config.seed);
-                        let challenge_response_msg_chunks = create_challenge_response_msg_chunks(
+                        let (header, chunks) = create_challenge_response_msgs(
                             &challenge_msg.challenge_indices,
-                            *input_shares,
-                            *output_shares,
+                            input_shares,
+                            output_shares,
                             seeds,
                             config.setup_inputs,
                         );
                         state
-                            .artifact_store
-                            .save_challenge_indices(&challenge_msg.challenge_indices)
-                            .await?;
+                            .put_challenge_indices(&challenge_msg.challenge_indices)
+                            .await
+                            .map_err(SMError::storage)?;
 
-                        state.step = Step::SendingChallengeResponse {
-                            acked: BitArray::ZERO,
+                        root_state.step = Step::SendingChallengeResponse {
+                            acked: HeapArray::from_elem(false),
                         };
 
-                        for chunk in challenge_response_msg_chunks {
+                        emit(actions, Action::SendChallengeResponseMsgHeader(header));
+                        for chunk in chunks {
                             emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                         }
                     } else {
                         // TODO: should this abort, or just ignore and stay at same state ?
-                        state.step = Step::Aborted {
+                        root_state.step = Step::Aborted {
                             reason: "invalid challenge msg".into(),
                         };
                     }
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
         Input::DepositInit(
@@ -97,112 +118,104 @@ pub(crate) async fn handle_event<S: GarblerArtifactStore>(
                 sighashes,
                 deposit_inputs,
             },
-        ) => match state.step {
+        ) => match root_state.step {
             Step::SetupComplete => {
-                if state.deposits.contains_key(&deposit_id) {
+                if state
+                    .get_deposit(&deposit_id)
+                    .await
+                    .map_err(SMError::storage)?
+                    .is_some()
+                {
                     // deposit already exists
-                    return Err(SMError::DepositAlreadyExists(deposit_id));
+                    return Err(SMError::deposit_already_exists(deposit_id));
                 }
 
-                state
-                    .artifact_store
-                    .save_sighashes_for_deposit(deposit_id, sighashes.as_ref())
-                    .await?;
-                state
-                    .artifact_store
-                    .save_inputs_for_deposit(deposit_id, deposit_inputs.as_ref())
-                    .await?;
-
-                state.deposits.insert(
-                    deposit_id,
-                    DepositState {
-                        step: DepositStep::WaitingForAdaptors {
-                            chunks: BitArray::ZERO,
-                        },
-                        pk,
+                let deposit_state = DepositState {
+                    step: DepositStep::WaitingForAdaptors {
+                        chunks: HeapArray::from_elem(false),
                     },
-                );
+                    pk,
+                };
+
+                state
+                    .put_sighashes_for_deposit(&deposit_id, &sighashes)
+                    .await
+                    .map_err(SMError::storage)?;
+                state
+                    .put_inputs_for_deposit(&deposit_id, &deposit_inputs)
+                    .await
+                    .map_err(SMError::storage)?;
+
+                state
+                    .put_deposit(deposit_id, &deposit_state)
+                    .await
+                    .map_err(SMError::storage)?;
             }
-            _ => return Err(SMError::UnexpectedInput),
+            _ => return Err(SMError::unexpected_input()),
         },
         Input::DepositRecvAdaptorMsgChunk(deposit_id, adaptor_msg_chunk) => {
-            handle_recv_deposit_adaptor_msg_chunk(state, deposit_id, adaptor_msg_chunk, actions)
-                .await?;
+            handle_recv_deposit_adaptor_msg_chunk(
+                &mut root_state,
+                state,
+                deposit_id,
+                adaptor_msg_chunk,
+                actions,
+            )
+            .await?;
         }
-        Input::DepositUndisputedWithdrawal(deposit_id) => {
-            match state.step {
-                Step::SetupComplete => {
-                    let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                        // deposit does not exist
-                        return Err(SMError::UnknownDeposit(deposit_id));
-                    };
-                    match deposit_state.step {
-                        DepositStep::DepositReady => {
-                            deposit_state.step = DepositStep::WithdrawnUndisputed;
-                        }
-                        _ => return Err(SMError::UnexpectedInput),
-                    }
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
-        }
-        Input::DisputedWithdrawal(deposit_id, withdrawal_input) => {
-            match state.step {
-                Step::SetupComplete => {
-                    let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                        // deposit does not exist
-                        return Err(SMError::UnknownDeposit(deposit_id));
-                    };
+        Input::DepositUndisputedWithdrawal(deposit_id) => match root_state.step {
+            Step::SetupComplete => {
+                let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
-                    match deposit_state.step {
+                match &mut deposit_state.step {
+                    DepositStep::DepositReady => {
+                        deposit_state.step = DepositStep::WithdrawnUndisputed;
+                    }
+                    _ => return Err(SMError::unexpected_input()),
+                }
+
+                state
+                    .put_deposit(deposit_id, &deposit_state)
+                    .await
+                    .map_err(SMError::storage)?;
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
+        Input::DisputedWithdrawal(deposit_id, withdrawal_input) => {
+            match &mut root_state.step {
+                Step::SetupComplete => {
+                    let mut deposit_state = require_deposit(state, &deposit_id).await?;
+
+                    match &mut deposit_state.step {
                         DepositStep::DepositReady => {
                             // next step
-                            state.step = Step::CompletingAdaptors { deposit_id };
+                            root_state.step = Step::CompletingAdaptors { deposit_id };
 
                             state
-                                .artifact_store
-                                .save_withdrawal_input(deposit_id, withdrawal_input.as_ref())
-                                .await?;
+                                .put_withdrawal_input(&deposit_id, &withdrawal_input)
+                                .await
+                                .map_err(SMError::storage)?;
 
-                            let pk = deposit_state.pk;
-                            let sighashes = state
-                                .artifact_store
-                                .load_sighashes_for_deposit(deposit_id)
-                                .await?;
-                            let (deposit_adaptors, withdrawal_adaptors) = state
-                                .artifact_store
-                                .load_adaptors_for_deposit(deposit_id)
-                                .await?;
-
-                            let reserved_input_shares =
-                                state.artifact_store.load_reserved_input_shares().await?;
-                            let (reserved_deposit_input_shares, reserved_withdrawal_input_shares) =
-                                get_reserved_deposit_withdrawal_shares(&reserved_input_shares);
-
-                            emit(
-                                actions,
-                                Action::CompleteAdaptorSignatures(
-                                    deposit_id,
-                                    CompleteAdaptorSignaturesData {
-                                        pk,
-                                        sighashes,
-                                        deposit_adaptors,
-                                        withdrawal_adaptors,
-                                        reserved_deposit_input_shares,
-                                        reserved_withdrawal_input_shares,
-                                        withdrawal_input,
-                                    },
-                                ),
-                            );
+                            emit(actions, Action::CompleteAdaptorSignatures(deposit_id));
                         }
-                        _ => return Err(SMError::UnexpectedInput),
+                        _ => return Err(SMError::unexpected_input()),
                     }
+
+                    state
+                        .put_deposit(deposit_id, &deposit_state)
+                        .await
+                        .map_err(SMError::storage)?;
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
-        _ => return Err(SMError::UnexpectedInput),
+        _ => return Err(SMError::unexpected_input()),
     };
+
+    state
+        .put_root_state(&root_state)
+        .await
+        .map_err(SMError::storage)?;
 
     Ok(())
 }
@@ -216,187 +229,109 @@ pub(crate) async fn handle_event<S: GarblerArtifactStore>(
 ///
 /// Each action emitted by the STF eventually completes and its result is
 /// routed back here with the [`ActionId`] used to correlate it.
-pub(crate) async fn handle_action_result<S: GarblerArtifactStore>(
-    state: &mut State<S>,
+pub(crate) async fn handle_action_result<S: StateMut>(
+    state: &mut S,
     id: ActionId,
     result: ActionResult,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
+    let mut root_state = state
+        .get_root_state()
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::MissingRootState)?;
+
     match result {
-        ActionResult::PolynomialCommitmentsGenerated(commitments) => {
-            match state.step {
-                Step::GeneratingPolynomialCommitments => {
-                    // state update
-                    state
-                        .artifact_store
-                        .save_polynomial_commitments(&commitments)
-                        .await?;
-                    state.step = Step::GeneratingShares {
-                        generated: BitArray::ZERO,
-                    };
-
-                    // generate actions
-                    let config = require_config(state)?;
-                    for idx in 0..N_CIRCUITS {
-                        let index = Index::new(idx + 1).expect("valid index");
-                        emit(actions, Action::GenerateShares(config.seed, index));
-                    }
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
+        ActionResult::PolynomialCommitmentsGenerated(generated) => {
+            handle_polynomial_commitments_generated(&mut root_state, state, generated, actions)
+                .await?;
         }
-        ActionResult::SharesGenerated(index, input_shares, output_shares) => {
-            match &mut state.step {
-                Step::GeneratingShares { generated } => {
-                    let idx = index.get().checked_sub(1).ok_or_else(|| {
-                        // not expecting reserved (0) index
-                        SMError::InvalidInputData
-                    })?;
-                    if generated[idx] {
-                        // already have this data
-                        return Err(SMError::InvalidInputData);
-                    }
-
-                    // state update
-                    generated.set(idx, true);
-                    state
-                        .artifact_store
-                        .save_shares_for_index(index, input_shares.as_ref(), output_shares.as_ref())
-                        .await?;
-
-                    if generated.all() {
-                        let config = require_config(state)?;
-                        let seeds = Box::new(generate_garbling_table_seeds(config.seed));
-
-                        // generate actions
-                        for idx in 0..N_CIRCUITS {
-                            let index = Index::new(idx + 1).expect("valid index");
-                            let seed = seeds[idx];
-                            emit(actions, Action::GenerateTableCommitment(index, seed));
-                        }
-
-                        state.step = Step::GeneratingTableCommitments {
-                            seeds,
-                            generated: BitArray::ZERO,
-                        };
-                    }
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
+        ActionResult::SharesGenerated(index, input_shares, output_share) => {
+            handle_shares_generated(
+                &mut root_state,
+                state,
+                index,
+                input_shares,
+                output_share,
+                actions,
+            )
+            .await?;
         }
         ActionResult::TableCommitmentGenerated(index, commitment) => {
-            match &mut state.step {
-                Step::GeneratingTableCommitments { generated, .. } => {
-                    let idx = index.get().checked_sub(1).ok_or_else(|| {
-                        // not expecting reserved (0) index
-                        SMError::InvalidInputData
-                    })?;
-                    if generated[idx] {
-                        // already have this data
-                        return Err(SMError::InvalidInputData);
-                    }
-
-                    // state update
-                    generated.set(idx, true);
-                    state
-                        .artifact_store
-                        .save_garbling_table_commitment(index, &commitment)
-                        .await?;
-
-                    if generated.all() {
-                        state.step = Step::SendingCommit {
-                            acked: BitArray::ZERO,
-                        };
-
-                        // generate actions
-                        let polynomial_commitments =
-                            state.artifact_store.load_polynomial_commitments().await?;
-                        let garbling_table_commitments = state
-                            .artifact_store
-                            .load_all_garbling_table_commitments()
-                            .await?;
-                        for chunk in create_commit_msg_chunks(
-                            polynomial_commitments,
-                            garbling_table_commitments,
-                        ) {
-                            emit(actions, Action::SendCommitMsgChunk(chunk));
-                        }
-                    }
-                    // else stay on same step and wait for all table commitments to be generated
-                }
-                _ => return Err(SMError::UnexpectedInput),
-            }
+            handle_table_commitment_generated(&mut root_state, state, index, commitment, actions)
+                .await?;
         }
         ActionResult::CommitMsgChunkAcked => {
-            match &mut state.step {
+            match &mut root_state.step {
                 Step::SendingCommit { acked } => {
                     let ActionId::SendCommitMsgChunk(wire_index) = id else {
-                        return Err(SMError::InvalidInputData);
+                        return Err(SMError::invalid_input_data());
                     };
                     let idx = wire_index as usize;
                     if acked[idx] {
                         // already acked this chunk
-                        return Err(SMError::InvalidInputData);
+                        return Err(SMError::duplicate_action());
                     }
 
-                    acked.set(idx, true);
+                    acked[idx] = true;
 
                     if acked.all() {
-                        state.step = Step::WaitingForChallenge;
+                        root_state.step = Step::WaitingForChallenge;
                     }
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
 
         ActionResult::ChallengeResponseChunkAcked => {
-            match &mut state.step {
+            match &mut root_state.step {
                 Step::SendingChallengeResponse { acked } => {
                     let ActionId::SendChallengeResponseMsgChunk(circuit_index) = id else {
-                        return Err(SMError::InvalidInputData);
+                        return Err(SMError::invalid_input_data());
                     };
                     let idx = circuit_index as usize;
                     if acked[idx] {
                         // already acked this chunk
-                        return Err(SMError::InvalidInputData);
+                        return Err(SMError::invalid_input_data());
                     }
 
-                    acked.set(idx, true);
+                    acked[idx] = true;
 
                     if acked.all() {
-                        let challenge_indices =
-                            state.artifact_store.load_challenge_indices().await?;
-                        let eval_indices = get_eval_indices(challenge_indices.as_ref());
+                        let challenge_indices = state
+                            .get_challenge_indices()
+                            .await
+                            .require("expected challenge indices")?;
+                        let eval_indices = get_eval_indices(&challenge_indices);
 
                         let garbling_table_commitments = state
-                            .artifact_store
-                            .load_all_garbling_table_commitments()
-                            .await?;
-                        let eval_commitments = Box::new(get_eval_commitments(
-                            &eval_indices,
-                            &garbling_table_commitments,
-                        ));
+                            .get_all_garbling_table_commitments()
+                            .await
+                            .require("expected garbling table commitments")?;
 
-                        let config = require_config(state)?;
+                        let eval_commitments =
+                            get_eval_commitments(&eval_indices, &garbling_table_commitments);
+
+                        let config = require_config(&root_state)?;
                         let garbling_seeds = generate_garbling_table_seeds(config.seed);
-                        let eval_seeds = Box::new(get_eval_seeds(&eval_indices, &garbling_seeds));
+                        let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
 
-                        for seed in eval_seeds.as_ref() {
+                        for seed in &eval_seeds {
                             emit(actions, Action::TransferGarblingTable(*seed));
                         }
 
-                        state.step = Step::TransferringGarblingTables {
+                        root_state.step = Step::TransferringGarblingTables {
                             eval_seeds,
                             eval_commitments,
-                            transferred: BitArray::ZERO,
+                            transferred: HeapArray::from_elem(false),
                         };
                     }
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
         ActionResult::GarblingTableTransferred(garbling_seed, commitment) => {
-            match &mut state.step {
+            match &mut root_state.step {
                 Step::TransferringGarblingTables {
                     eval_seeds,
                     eval_commitments,
@@ -409,32 +344,29 @@ pub(crate) async fn handle_action_result<S: GarblerArtifactStore>(
                             None
                         }
                     }) else {
-                        return Err(SMError::InvalidInputData);
+                        return Err(SMError::invalid_input_data());
                     };
 
                     if eval_commitments[index] != commitment {
-                        return Err(SMError::InvalidInputData);
+                        return Err(SMError::invalid_input_data());
                     }
 
-                    transferred.set(index, true);
+                    transferred[index] = true;
 
                     if transferred.all() {
                         // all tables are transferred
-                        state.step = Step::SetupComplete;
+                        root_state.step = Step::SetupComplete;
                     }
                     // else stay on same step and wait all tables to be transferred
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
 
         ActionResult::DepositAdaptorVerificationResult(deposit_id, verification_success) => {
-            match state.step {
+            match root_state.step {
                 Step::SetupComplete => {
-                    let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                        // deposit does not exist
-                        return Err(SMError::UnknownDeposit(deposit_id));
-                    };
+                    let mut deposit_state = require_deposit(state, &deposit_id).await?;
                     match deposit_state.step {
                         DepositStep::VerifyingAdaptors => {
                             if verification_success {
@@ -445,33 +377,42 @@ pub(crate) async fn handle_action_result<S: GarblerArtifactStore>(
                                 };
                             }
                         }
-                        _ => return Err(SMError::UnexpectedInput),
+                        _ => return Err(SMError::unexpected_input()),
                     }
+                    state
+                        .put_deposit(deposit_id, &deposit_state)
+                        .await
+                        .map_err(SMError::storage)?;
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
         ActionResult::AdaptorSignaturesCompleted(signature_deposit_id, signatures) => {
-            match state.step {
+            match root_state.step {
                 Step::CompletingAdaptors { deposit_id } => {
                     // just in case
                     if signature_deposit_id != deposit_id {
-                        return Err(SMError::UnexpectedInput);
+                        return Err(SMError::unexpected_input());
                     }
 
                     state
-                        .artifact_store
-                        .save_completed_signatures(deposit_id, signatures.as_ref())
-                        .await?;
+                        .put_completed_signatures(&deposit_id, &signatures)
+                        .await
+                        .map_err(SMError::storage)?;
 
                     // next step
-                    state.step = Step::SetupConsumed { deposit_id };
+                    root_state.step = Step::SetupConsumed { deposit_id };
                 }
-                _ => return Err(SMError::UnexpectedInput),
+                _ => return Err(SMError::unexpected_input()),
             }
         }
-        _ => return Err(SMError::UnexpectedInput),
+        _ => return Err(SMError::unexpected_input()),
     };
+
+    state
+        .put_root_state(&root_state)
+        .await
+        .map_err(SMError::storage)?;
 
     Ok(())
 }
@@ -480,31 +421,201 @@ pub(crate) async fn handle_action_result<S: GarblerArtifactStore>(
 // Deposit adaptor chunk handler (helper for handle_event)
 // ============================================================================
 
-async fn handle_recv_deposit_adaptor_msg_chunk<S: GarblerArtifactStore>(
-    state: &mut State<S>,
+async fn handle_polynomial_commitments_generated<S: StateMut>(
+    root_state: &mut GarblerState,
+    state: &mut S,
+    generated: GeneratedPolynomialCommitments,
+    actions: &mut ActionContainer,
+) -> SMResult<()> {
+    match &mut root_state.step {
+        Step::GeneratingPolynomialCommitments { inputs, output } => {
+            match generated {
+                GeneratedPolynomialCommitments::Input { wire, commitments } => {
+                    let Some(&seen) = inputs.get(wire as usize) else {
+                        return Err(SMError::invalid_input_data());
+                    };
+                    if seen {
+                        // already seen
+                        return Err(SMError::duplicate_action());
+                    }
+                    inputs[wire as usize] = true;
+                    state
+                        .put_input_polynomial_commitments_chunk(wire, &commitments)
+                        .await
+                        .map_err(SMError::storage)?;
+                }
+                GeneratedPolynomialCommitments::Output(output_commitment) => {
+                    if *output {
+                        // already seen
+                        return Err(SMError::duplicate_action());
+                    }
+                    state
+                        .put_output_polynomial_commitment(&output_commitment)
+                        .await
+                        .map_err(SMError::storage)?;
+                }
+            }
+
+            if !*output || !inputs.all() {
+                // not all commitments saved, continue
+                return Ok(());
+            }
+            // all commitments generated; go to next step
+            let config = require_config(root_state)?;
+
+            // NOTE: 0 is reserved index
+            emit(
+                actions,
+                Action::GenerateShares(config.seed, Index::reserved()),
+            );
+            for idx in 1..N_CIRCUITS + 1 {
+                let index = Index::new(idx).expect("valid ckt index");
+                emit(actions, Action::GenerateShares(config.seed, index));
+            }
+            root_state.step = Step::GeneratingShares {
+                generated: HeapArray::from_elem(false),
+            };
+        }
+        _ => return Err(SMError::unexpected_input()),
+    };
+    Ok(())
+}
+
+async fn handle_shares_generated<S: StateMut>(
+    root_state: &mut GarblerState,
+    state: &mut S,
+    index: Index,
+    input_shares: CircuitInputShares,
+    output_share: CircuitOutputShare,
+    actions: &mut ActionContainer,
+) -> SMResult<()> {
+    match &mut root_state.step {
+        Step::GeneratingShares { generated } => {
+            if generated[index.get()] {
+                // already have this data
+                return Err(SMError::duplicate_action());
+            }
+
+            // state update
+            generated[index.get()] = true;
+            state
+                .put_shares_for_index(index, &input_shares, &output_share)
+                .await
+                .map_err(SMError::storage)?;
+
+            if !generated.all() {
+                // not all shares generated
+                return Ok(());
+            }
+            // all shares generate; go to next step
+
+            let config = require_config(root_state)?;
+            let seeds = generate_garbling_table_seeds(config.seed);
+
+            // generate actions
+            for (tracker_idx, seed) in seeds.iter().enumerate() {
+                // NOTE: ckt index and tracker index offset by 1
+                let index = Index::new(tracker_idx + 1).expect("valid index");
+                emit(actions, Action::GenerateTableCommitment(index, *seed));
+            }
+
+            root_state.step = Step::GeneratingTableCommitments {
+                seeds,
+                generated: HeapArray::from_elem(false),
+            };
+        }
+        _ => return Err(SMError::unexpected_input()),
+    };
+    Ok(())
+}
+
+async fn handle_table_commitment_generated<S: StateMut>(
+    root_state: &mut GarblerState,
+    state: &mut S,
+    index: Index,
+    commitment: GarblingTableCommitment,
+    actions: &mut ActionContainer,
+) -> SMResult<()> {
+    match &mut root_state.step {
+        Step::GeneratingTableCommitments { generated, .. } => {
+            let idx = index.get().checked_sub(1).ok_or_else(|| {
+                // not expecting reserved (0) index
+                SMError::invalid_input_data()
+            })?;
+            if generated[idx] {
+                // already have this data
+                return Err(SMError::duplicate_action());
+            }
+
+            // state update
+            generated[idx] = true;
+            state
+                .put_garbling_table_commitment(index, &commitment)
+                .await
+                .map_err(SMError::storage)?;
+
+            if !generated.all() {
+                // wait for all commitments to be generated.
+                return Ok(());
+            }
+            root_state.step = Step::SendingCommit {
+                acked: HeapArray::from_elem(false),
+            };
+
+            // generate actions
+            let input_polynomial_commitments = state
+                .get_input_polynomial_commitments()
+                .await
+                .require("expected input polynomial commitments")?;
+            let output_polynomial_commitment = state
+                .get_output_polynomial_commitment()
+                .await
+                .require("expected output polynomial commitment")?;
+            let garbling_table_commitments = state
+                .get_all_garbling_table_commitments()
+                .await
+                .require("expected garbling table commitments")?;
+
+            let commit_msg_header = CommitMsgHeader {
+                garbling_table_commitments,
+                output_polynomial_commitment,
+            };
+            emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
+            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
+                emit(actions, Action::SendCommitMsgChunk(chunk));
+            }
+        }
+        _ => return Err(SMError::unexpected_input()),
+    };
+
+    Ok(())
+}
+
+async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
+    root_state: &mut GarblerState,
+    state: &mut S,
     deposit_id: DepositId,
     adaptor_msg_chunk: AdaptorMsgChunk,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match state.step {
+    match root_state.step {
         Step::SetupComplete => {
-            let Some(deposit_state) = state.deposits.get_mut(&deposit_id) else {
-                // deposit does not exist
-                return Err(SMError::UnknownDeposit(deposit_id));
-            };
+            let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
-            if let DepositStep::WaitingForAdaptors { chunks } = deposit_state.step {
+            if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
                 let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
                 if chunks[chunk_idx] {
                     // message for this chunk already seen
-                    return Err(SMError::InvalidInputData);
+                    return Err(SMError::invalid_input_data());
                 }
 
                 state
-                    .artifact_store
-                    .save_adaptor_msg_chunk_for_deposit(deposit_id, &adaptor_msg_chunk)
-                    .await?;
+                    .put_adaptor_msg_chunk_for_deposit(&deposit_id, &adaptor_msg_chunk)
+                    .await
+                    .map_err(SMError::storage)?;
+
+                chunks[chunk_idx] = true;
 
                 if !chunks.all() {
                     // Not all chunks received, wait for more
@@ -512,34 +623,17 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: GarblerArtifactStore>(
                 }
 
                 // all chunks received
-
-                let (input_shares, _) = state.artifact_store.load_shares().await?;
-                let sighashes = state
-                    .artifact_store
-                    .load_sighashes_for_deposit(deposit_id)
-                    .await?;
-                let (deposit_adaptors, withdrawal_adaptors) = state
-                    .artifact_store
-                    .load_adaptors_for_deposit(deposit_id)
-                    .await?;
-
-                let adaptor_verif_data = AdaptorVerificationData {
-                    pk: deposit_state.pk,
-                    deposit_adaptors,
-                    withdrawal_adaptors,
-                    input_shares,
-                    sighashes,
-                };
-
                 deposit_state.step = DepositStep::VerifyingAdaptors;
 
-                emit(
-                    actions,
-                    Action::DepositVerifyAdaptors(deposit_id, adaptor_verif_data),
-                );
+                emit(actions, Action::DepositVerifyAdaptors(deposit_id));
             }
+
+            state
+                .put_deposit(deposit_id, &deposit_state)
+                .await
+                .map_err(SMError::storage)?;
         }
-        _ => return Err(SMError::UnexpectedInput),
+        _ => return Err(SMError::unexpected_input()),
     };
 
     Ok(())
@@ -549,18 +643,42 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: GarblerArtifactStore>(
 // Restore
 // ============================================================================
 
-pub(crate) async fn restore<S: GarblerArtifactStore>(
-    state: &State<S>,
+pub(crate) async fn restore<S: StateRead>(
+    state: &S,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match &state.step {
+    let root_state = state
+        .get_root_state()
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::MissingRootState)?;
+
+    match &root_state.step {
         Step::Uninit => {}
-        Step::GeneratingPolynomialCommitments => {
-            let config = require_config(state)?;
-            emit(actions, Action::GeneratePolynomialCommitments(config.seed));
+        Step::GeneratingPolynomialCommitments { inputs, output } => {
+            let config = require_config(&root_state)?;
+
+            if !output {
+                emit(
+                    actions,
+                    Action::GeneratePolynomialCommitments(config.seed, Wire::Output),
+                );
+            }
+            for (wire_idx, generated) in inputs.iter().enumerate() {
+                if *generated {
+                    continue;
+                }
+                emit(
+                    actions,
+                    Action::GeneratePolynomialCommitments(
+                        config.seed,
+                        Wire::Input(wire_idx as u16),
+                    ),
+                );
+            }
         }
         Step::GeneratingShares { generated } => {
-            let config = require_config(state)?;
+            let config = require_config(&root_state)?;
             for idx in 0..N_CIRCUITS {
                 if generated[idx] {
                     continue;
@@ -580,15 +698,26 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
             }
         }
         Step::SendingCommit { acked } => {
-            let polynomial_commitments = state.artifact_store.load_polynomial_commitments().await?;
+            let input_polynomial_commitments = state
+                .get_input_polynomial_commitments()
+                .await
+                .require("expected input polynomial commitments")?;
+            let output_polynomial_commitment = state
+                .get_output_polynomial_commitment()
+                .await
+                .require("expected output polynomial commitment")?;
             let garbling_table_commitments = state
-                .artifact_store
-                .load_all_garbling_table_commitments()
-                .await?;
+                .get_all_garbling_table_commitments()
+                .await
+                .require("expected garbling table commitments")?;
 
-            for chunk in
-                create_commit_msg_chunks(polynomial_commitments, garbling_table_commitments)
-            {
+            let commit_msg_header = CommitMsgHeader {
+                garbling_table_commitments,
+                output_polynomial_commitment,
+            };
+            emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
+
+            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
                 if !acked[chunk.wire_index as usize] {
                     emit(actions, Action::SendCommitMsgChunk(chunk));
                 }
@@ -596,17 +725,29 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
         }
         Step::WaitingForChallenge => {}
         Step::SendingChallengeResponse { acked } => {
-            let challenge_indices = state.artifact_store.load_challenge_indices().await?;
-            let (input_shares, output_shares) = state.artifact_store.load_shares().await?;
-            let config = require_config(state)?;
+            let challenge_indices = state
+                .get_challenge_indices()
+                .await
+                .require("expected challenge indices")?;
+            let input_shares = state
+                .get_input_shares()
+                .await
+                .require("expected input shares")?;
+            let output_shares = state
+                .get_output_shares()
+                .await
+                .require("expected output shares")?;
+            let config = require_config(&root_state)?;
             let seeds = generate_garbling_table_seeds(config.seed);
-            for chunk in create_challenge_response_msg_chunks(
-                challenge_indices.as_ref(),
-                *input_shares,
-                *output_shares,
+            let (header, chunks) = create_challenge_response_msgs(
+                &challenge_indices,
+                input_shares,
+                output_shares,
                 seeds,
                 config.setup_inputs,
-            ) {
+            );
+            emit(actions, Action::SendChallengeResponseMsgHeader(header));
+            for chunk in chunks {
                 if !acked[chunk.circuit_index as usize] {
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                 }
@@ -625,32 +766,13 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
             }
         }
         Step::SetupComplete => {
-            for (deposit_id, deposit_state) in state.deposits.iter() {
+            let mut all_deposits = pin!(state.stream_all_deposits());
+            while let Some(res) = all_deposits.next().await {
+                let (deposit_id, deposit_state) = res.map_err(SMError::storage)?;
                 match &deposit_state.step {
                     DepositStep::WaitingForAdaptors { .. } => {}
                     DepositStep::VerifyingAdaptors => {
-                        let (input_shares, _) = state.artifact_store.load_shares().await?;
-                        let sighashes = state
-                            .artifact_store
-                            .load_sighashes_for_deposit(*deposit_id)
-                            .await?;
-                        let (deposit_adaptors, withdrawal_adaptors) = state
-                            .artifact_store
-                            .load_adaptors_for_deposit(*deposit_id)
-                            .await?;
-
-                        let adaptor_verif_data = AdaptorVerificationData {
-                            pk: deposit_state.pk,
-                            deposit_adaptors,
-                            withdrawal_adaptors,
-                            input_shares,
-                            sighashes,
-                        };
-
-                        emit(
-                            actions,
-                            Action::DepositVerifyAdaptors(*deposit_id, adaptor_verif_data),
-                        );
+                        emit(actions, Action::DepositVerifyAdaptors(deposit_id));
                     }
                     DepositStep::DepositReady => {}
                     DepositStep::WithdrawnUndisputed => {}
@@ -659,50 +781,22 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
             }
         }
         Step::CompletingAdaptors { deposit_id } => {
-            let Some(deposit_state) = state.deposits.get(deposit_id) else {
-                // deposit does not exist
-                return Err(SMError::StateInconsistency(
-                    "CompletingAdaptors: missing expected deposit",
+            let deposit_state = state
+                .get_deposit(deposit_id)
+                .await
+                .require("CompletingAdaptors: missing expected deposit")?;
+
+            if !matches!(&deposit_state.step, DepositStep::DepositReady) {
+                return Err(SMError::state_inconsistency(
+                    "CompletingAdaptors: unexpected deposit state",
                 ));
-            };
+            }
 
-            let pk = deposit_state.pk;
-            let sighashes = state
-                .artifact_store
-                .load_sighashes_for_deposit(*deposit_id)
-                .await?;
-            let (deposit_adaptors, withdrawal_adaptors) = state
-                .artifact_store
-                .load_adaptors_for_deposit(*deposit_id)
-                .await?;
-
-            let reserved_input_shares = state.artifact_store.load_reserved_input_shares().await?;
-            let (deposit_input_shares, withdrawal_input_shares) =
-                get_reserved_deposit_withdrawal_shares(&reserved_input_shares);
-
-            let withdrawal_input = state
-                .artifact_store
-                .load_withdrawal_input(*deposit_id)
-                .await?;
-
-            emit(
-                actions,
-                Action::CompleteAdaptorSignatures(
-                    *deposit_id,
-                    CompleteAdaptorSignaturesData {
-                        pk,
-                        sighashes,
-                        deposit_adaptors,
-                        withdrawal_adaptors,
-                        reserved_deposit_input_shares: deposit_input_shares,
-                        reserved_withdrawal_input_shares: withdrawal_input_shares,
-                        withdrawal_input,
-                    },
-                ),
-            );
+            emit(actions, Action::CompleteAdaptorSignatures(*deposit_id));
         }
         Step::SetupConsumed { .. } => {}
         Step::Aborted { .. } => {}
+        _ => unimplemented!(),
     };
 
     Ok(())
@@ -712,11 +806,22 @@ pub(crate) async fn restore<S: GarblerArtifactStore>(
 // Helper functions
 // ============================================================================
 
-fn require_config<S>(state: &State<S>) -> SMResult<&Config> {
+fn require_config(state: &GarblerState) -> SMResult<&Config> {
     state
         .config
         .as_ref()
-        .ok_or_else(|| SMError::StateInconsistency("expected config to not be None"))
+        .ok_or_else(|| SMError::state_inconsistency("expected config to not be None"))
+}
+
+async fn require_deposit<S: StateRead>(
+    state: &mut S,
+    deposit_id: &DepositId,
+) -> SMResult<DepositState> {
+    state
+        .get_deposit(deposit_id)
+        .await
+        .map_err(SMError::storage)?
+        .ok_or_else(|| SMError::unknown_deposit(*deposit_id))
 }
 
 #[expect(unused_variables)]
@@ -732,20 +837,19 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
 
 #[expect(unused_variables)]
 fn create_commit_msg_chunks(
-    polynomial_commitments: AllPolynomialCommitments,
-    garbling_table_commitments: AllGarblingTableCommitments,
+    polynomial_commitments: InputPolynomialCommitments,
 ) -> Vec<CommitMsgChunk> {
     todo!()
 }
 
 #[expect(unused_variables)]
-fn create_challenge_response_msg_chunks(
+fn create_challenge_response_msgs(
     challenge_idxs: &ChallengeIndices,
     input_shares: InputShares,
     output_shares: OutputShares,
     garbling_seeds: AllGarblingSeeds,
     setup_inputs: SetupInputs,
-) -> Vec<ChallengeResponseMsgChunk> {
+) -> (ChallengeResponseMsgHeader, Vec<ChallengeResponseMsgChunk>) {
     todo!()
 }
 
@@ -758,7 +862,7 @@ fn get_eval_seeds(
     eval_indices: &EvaluationIndices,
     garbling_seeds: &AllGarblingSeeds,
 ) -> EvalGarblingSeeds {
-    std::array::from_fn(|i| {
+    HeapArray::new(|i| {
         // eval_indices are 1-indexed (1..=181), garbling_seeds are 0-indexed (0..=180)
         let seed_idx = eval_indices[i].get() - 1;
         garbling_seeds[seed_idx]
@@ -769,19 +873,9 @@ fn get_eval_commitments(
     eval_indices: &EvaluationIndices,
     garbling_commitments: &AllGarblingTableCommitments,
 ) -> EvalGarblingTableCommitments {
-    std::array::from_fn(|i| {
+    HeapArray::new(|i| {
         // eval_indices are 1-indexed (1..=181), garbling_commitments are 0-indexed (0..=180)
         let seed_idx = eval_indices[i].get() - 1;
         garbling_commitments[seed_idx]
     })
-}
-
-#[expect(unused_variables)]
-fn get_reserved_deposit_withdrawal_shares(
-    reserved_input_shares: &ReservedInputShares,
-) -> (
-    Box<ReservedDepositInputShares>,
-    Box<ReservedWithdrawalInputShares>,
-) {
-    todo!()
 }

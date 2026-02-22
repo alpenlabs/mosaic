@@ -8,12 +8,12 @@
 //! delivered to exactly one worker. Workers block asynchronously when the queue
 //! is empty and wake on the next push.
 
-use parking_lot::Mutex;
 use std::collections::VecDeque;
 
-use crate::priority::Priority;
+use parking_lot::Mutex;
 
 use super::PoolJob;
+use crate::priority::Priority;
 
 /// Thread-safe, async-aware job queue with optional priority ordering.
 pub(crate) struct JobQueue {
@@ -157,18 +157,24 @@ impl JobQueue {
 
 #[cfg(test)]
 mod tests {
+    use mosaic_cac_types::state_machine::garbler::Wire;
+
     use super::*;
 
     fn dummy_job(priority: Priority) -> PoolJob {
-        use crate::pool::worker::WorkerJob;
         use mosaic_cac_types::state_machine::garbler::Action as GarblerAction;
         use mosaic_common::Byte32;
+
+        use crate::pool::worker::WorkerJob;
 
         PoolJob {
             priority,
             job: WorkerJob::Garbler {
                 peer_id: mosaic_net_svc_api::PeerId::from_bytes([0u8; 32]),
-                action: GarblerAction::GeneratePolynomialCommitments(Byte32::from([0u8; 32])),
+                action: GarblerAction::GeneratePolynomialCommitments(
+                    Byte32::from([0u8; 32]),
+                    Wire::Output,
+                ),
             },
         }
     }

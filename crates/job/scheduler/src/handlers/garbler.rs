@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use mosaic_cac_types::state_machine::garbler::{Action, ActionId, ActionResult};
 use mosaic_cac_types::{
     AllPolynomialCommitments, AllPolynomials, InputPolynomialCommitments, InputPolynomials,
     OutputPolynomial, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
     WideLabelWireShares,
+    state_machine::garbler::{Action, ActionId, ActionResult, Wire},
 };
 use mosaic_common::constants::{N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT};
 use mosaic_heap_array::HeapArray;
@@ -33,8 +33,8 @@ pub(crate) async fn execute(
 ) -> ActionCompletion {
     match action {
         // ── Heavy (Setup) ───────────────────────────────────────────
-        Action::GeneratePolynomialCommitments(seed) => {
-            generate_polynomial_commitments(ctx, seed).await
+        Action::GeneratePolynomialCommitments(seed, wire) => {
+            generate_polynomial_commitments(ctx, seed, wire).await
         }
         Action::GenerateShares(seed, index) => generate_shares(ctx, seed, index).await,
 
@@ -51,13 +51,11 @@ pub(crate) async fn execute(
         }
 
         // ── Heavy (Deposit) ─────────────────────────────────────────
-        Action::DepositVerifyAdaptors(deposit_id, data) => {
-            verify_adaptors(ctx, deposit_id, data).await
-        }
+        Action::DepositVerifyAdaptors(deposit_id) => verify_adaptors(ctx, deposit_id).await,
 
         // ── Heavy (Withdrawal — Critical) ───────────────────────────
-        Action::CompleteAdaptorSignatures(deposit_id, data) => {
-            complete_adaptor_signatures(ctx, deposit_id, data).await
+        Action::CompleteAdaptorSignatures(deposit_id) => {
+            complete_adaptor_signatures(ctx, deposit_id).await
         }
 
         _ => {
@@ -72,26 +70,32 @@ pub(crate) async fn execute(
 // Heavy handlers (Setup)
 // ============================================================================
 
-async fn generate_polynomial_commitments(ctx: &HandlerContext, seed: Seed) -> ActionCompletion {
-    let polys = generate_polynomials_from_seed(seed);
+async fn generate_polynomial_commitments(
+    _ctx: &HandlerContext,
+    _seed: Seed,
+    _wire: Wire,
+) -> ActionCompletion {
+    unimplemented!()
+    // FIXME(@sapinb): update with new action, action result types
+    // let polys = generate_polynomials_from_seed(seed);
 
-    // Cache for the subsequent GenerateShares calls.
-    let arc = match ctx.polynomial_cache.insert(seed, polys) {
-        Ok(arc) => arc,
-        Err(_full) => {
-            // Cache is at capacity — generate without caching.
-            // This path is unlikely with max_entries = 4.
-            tracing::warn!("polynomial cache full, generating without caching");
-            Arc::new(generate_polynomials_from_seed(seed))
-        }
-    };
+    // // Cache for the subsequent GenerateShares calls.
+    // let arc = match ctx.polynomial_cache.insert(seed, polys) {
+    //     Ok(arc) => arc,
+    //     Err(_full) => {
+    //         // Cache is at capacity — generate without caching.
+    //         // This path is unlikely with max_entries = 4.
+    //         tracing::warn!("polynomial cache full, generating without caching");
+    //         Arc::new(generate_polynomials_from_seed(seed))
+    //     }
+    // };
 
-    let commitments = commit_polynomials(&arc);
-    let id = ActionId::GeneratePolynomialCommitments(seed);
-    completed(
-        id,
-        ActionResult::PolynomialCommitmentsGenerated(commitments),
-    )
+    // let commitments = commit_polynomials(&arc);
+    // let id = ActionId::GeneratePolynomialCommitments(seed);
+    // completed(
+    //     id,
+    //     ActionResult::PolynomialCommitmentsGenerated(commitments),
+    // )
 }
 
 async fn generate_shares(ctx: &HandlerContext, seed: Seed, index: Index) -> ActionCompletion {
@@ -108,7 +112,7 @@ async fn generate_shares(ctx: &HandlerContext, seed: Seed, index: Index) -> Acti
     let id = ActionId::GenerateShares(seed, index);
     completed(
         id,
-        ActionResult::SharesGenerated(index, Box::new(input_shares), Box::new(output_share)),
+        ActionResult::SharesGenerated(index, input_shares, output_share),
     )
 }
 
@@ -121,12 +125,13 @@ fn generate_polynomials_from_seed(seed: Seed) -> AllPolynomials {
     use rand::SeedableRng;
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
     let input_polys: InputPolynomials =
-        std::array::from_fn(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
+        HeapArray::new(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
     let output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
-    (Box::new(input_polys), Box::new(output_poly))
+    (input_polys, output_poly)
 }
 
 /// Compute commitments for all polynomials (EC scalar multiplications).
+#[expect(dead_code, reason = "FIXME: generate_polynomial_commitments")]
 fn commit_polynomials(polys: &AllPolynomials) -> AllPolynomialCommitments {
     let (input_polys, output_poly) = polys;
     let mut input_commits: Vec<WideLabelWirePolynomialCommitments> =
@@ -136,10 +141,9 @@ fn commit_polynomials(polys: &AllPolynomials) -> AllPolynomialCommitments {
             input_polys[wire].iter().map(|p| p.commit()).collect();
         input_commits.push(HeapArray::from_vec(commits));
     }
-    let input_commits: InputPolynomialCommitments =
-        input_commits.try_into().expect("N_INPUT_WIRES match");
-    let output_commit: OutputPolynomialCommitment = output_poly.commit();
-    (Box::new(input_commits), Box::new(output_commit))
+    let input_commits: InputPolynomialCommitments = HeapArray::from_vec(input_commits);
+    let output_commit: OutputPolynomialCommitment = HeapArray::from_elem(output_poly.commit());
+    (input_commits, output_commit)
 }
 
 /// Evaluate all polynomials at a single circuit index.
@@ -233,7 +237,6 @@ async fn send_challenge_response_msg_chunk(
 async fn verify_adaptors(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
-    _data: mosaic_cac_types::state_machine::garbler::AdaptorVerificationData,
 ) -> ActionCompletion {
     // TODO: verify adaptor signatures against commitments and sighashes
     unimplemented!()
@@ -246,7 +249,6 @@ async fn verify_adaptors(
 async fn complete_adaptor_signatures(
     _ctx: &HandlerContext,
     _deposit_id: mosaic_cac_types::DepositId,
-    _data: mosaic_cac_types::state_machine::garbler::CompleteAdaptorSignaturesData,
 ) -> ActionCompletion {
     // TODO: complete adaptor signatures for disputed withdrawal
     unimplemented!()

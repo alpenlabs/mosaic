@@ -3,14 +3,13 @@ use std::sync::Arc;
 use fasm::{Input as FasmInput, StateMachine};
 use mosaic_cac_protocol::{
     SMResult,
-    evaluator::{EvaluatorSM, artifact::EvaluatorArtifactStore, state::State as EvaluatorState},
+    evaluator::{EvaluatorSM, artifact::EvaluatorArtifactStore, state::EvaluatorStateContainer},
 };
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, AllPolynomialCommitments, ChallengeIndices,
-    ChallengeResponseMsgChunk, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
-    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WithdrawalAdaptors, WithdrawalInputs,
+    AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
+    DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds,
+    OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{ActionContainer, EvaluatorInitData, Input},
 };
 
@@ -55,31 +54,31 @@ pub(crate) async fn handle_evaluator_restore<D: Db>(
     unimplemented!()
 }
 
-#[derive(Debug, Default)]
-struct SaveCache {}
-
 #[derive(Debug)]
 #[expect(dead_code)]
 pub(crate) struct EvaluatorArtifactStoreImpl<D: Db> {
     sm_id: StateMachineId,
-    saved: SaveCache,
     db: Arc<D>,
 }
 
 #[expect(unused_variables)]
 impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
-    async fn save_polynomial_commitments(
+    async fn save_input_polynomial_commitments_chunk(
         &mut self,
-        commitments: &AllPolynomialCommitments,
+        wire_idx: u16,
+        commitments: &mosaic_cac_types::WideLabelWirePolynomialCommitments,
     ) -> SMResult<()> {
         todo!()
     }
 
-    async fn load_polynomial_commitments(&self) -> SMResult<AllPolynomialCommitments> {
+    async fn load_input_polynomial_commitments(&self) -> SMResult<Box<InputPolynomialCommitments>> {
         todo!()
     }
 
-    async fn load_input_polynomial_commitments(&self) -> SMResult<Box<InputPolynomialCommitments>> {
+    async fn save_output_polynomial_commitment(
+        &mut self,
+        commitment: &OutputPolynomialCommitment,
+    ) -> SMResult<()> {
         todo!()
     }
 
@@ -98,17 +97,6 @@ impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn save_commit_msg_chunk(&mut self, chunk: CommitMsgChunk) -> SMResult<()> {
-        todo!()
-    }
-
-    async fn save_challenge_response_msg_chunk(
-        &mut self,
-        chunk: ChallengeResponseMsgChunk,
-    ) -> SMResult<()> {
-        todo!()
-    }
-
     async fn save_challenge_indices(&mut self, challenge_idxs: &ChallengeIndices) -> SMResult<()> {
         todo!()
     }
@@ -117,9 +105,10 @@ impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
         todo!()
     }
 
-    async fn save_openend_input_shares(
+    async fn save_openend_input_shares_chunk(
         &mut self,
-        opened_input_shares: &OpenedInputShares,
+        opened_ckt_idx: u16,
+        input_shares: &CircuitInputShares,
     ) -> SMResult<()> {
         todo!()
     }
@@ -236,10 +225,9 @@ impl<D: Db> EvaluatorArtifactStore for EvaluatorArtifactStoreImpl<D> {
 async fn load_evaluator_state<D: Db>(
     sm_id: StateMachineId,
     db: Arc<D>,
-) -> ExecutorResult<EvaluatorState<EvaluatorArtifactStoreImpl<D>>> {
+) -> ExecutorResult<EvaluatorStateContainer<EvaluatorArtifactStoreImpl<D>>> {
     let artifact_store = EvaluatorArtifactStoreImpl {
         sm_id,
-        saved: SaveCache::default(),
         db: db.clone(),
     };
 
@@ -249,7 +237,7 @@ async fn load_evaluator_state<D: Db>(
 #[expect(unused_variables)]
 async fn save_evaluator_state<D: Db, S: EvaluatorArtifactStore>(
     db: &D,
-    state: &EvaluatorState<S>,
+    state: &EvaluatorStateContainer<S>,
 ) -> ExecutorResult<()> {
     unimplemented!()
 }
