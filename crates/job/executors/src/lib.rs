@@ -1,10 +1,10 @@
 //! Action executor implementations for the Mosaic job scheduler.
 //!
 //! Provides [`MosaicExecutor`], the concrete implementation of the
-//! [`JobExecutor`] trait defined in `mosaic-job-api`.
+//! `JobExecutor` trait defined in `mosaic-job-api`.
 //!
 //! This crate provides [`MosaicExecutor`], the concrete implementation of the
-//! [`JobExecutor`] trait. The scheduler is generic over `JobExecutor` and has
+//! `JobExecutor` trait. The scheduler is generic over `JobExecutor` and has
 //! no compile-time dependency on the execution logic in this crate.
 //!
 //! # Modules

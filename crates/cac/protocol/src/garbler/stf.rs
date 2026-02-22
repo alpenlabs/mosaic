@@ -4,9 +4,9 @@ use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
-    EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
+    CommitMsgChunk, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices,
+    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments, InputShares,
+    OutputShares, Seed, SetupInputs, state_machine::garbler::*,
 };
 use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES};
 
@@ -534,7 +534,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
     state: &mut S,
     index: Index,
     commitment: GarblingTableCommitment,
-    actions: &mut ActionContainer,
+    _actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::GeneratingTableCommitments { generated, .. } => {
@@ -563,31 +563,10 @@ async fn handle_table_commitment_generated<S: StateMut>(
             };
 
             // generate actions
-            let input_polynomial_commitments = state
-                .get_input_polynomial_commitments()
-                .await
-                .require("expected input polynomial commitments")?;
-            let output_polynomial_commitment = state
-                .get_output_polynomial_commitment()
-                .await
-                .require("expected output polynomial commitment")?;
-            let garbling_table_commitments = state
-                .get_all_garbling_table_commitments()
-                .await
-                .require("expected garbling table commitments")?;
-
-            let commit_msg_header = CommitMsgHeader {
-                garbling_table_commitments,
-                output_polynomial_commitment,
-                all_aes128_keys: todo!(),
-                all_public_s: todo!(),
-                all_constant_zero_labels: todo!(),
-                all_constant_one_labels: todo!(),
-            };
-            emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
-            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
-                emit(actions, Action::SendCommitMsgChunk(chunk));
-            }
+            // TODO(sapinb): populate CommitMsgHeader fields from garbling results
+            // (all_aes128_keys, all_public_s, all_constant_zero_labels, all_constant_one_labels)
+            // then emit SendCommitMsgHeader + SendCommitMsgChunk actions.
+            // See #72 for details.
         }
         _ => return Err(SMError::unexpected_input()),
     };
@@ -701,35 +680,9 @@ pub(crate) async fn restore<S: StateRead>(
                 emit(actions, Action::GenerateTableCommitment(index, seed));
             }
         }
-        Step::SendingCommit { acked } => {
-            let input_polynomial_commitments = state
-                .get_input_polynomial_commitments()
-                .await
-                .require("expected input polynomial commitments")?;
-            let output_polynomial_commitment = state
-                .get_output_polynomial_commitment()
-                .await
-                .require("expected output polynomial commitment")?;
-            let garbling_table_commitments = state
-                .get_all_garbling_table_commitments()
-                .await
-                .require("expected garbling table commitments")?;
-
-            let commit_msg_header = CommitMsgHeader {
-                garbling_table_commitments,
-                output_polynomial_commitment,
-                all_aes128_keys: todo!(),
-                all_public_s: todo!(),
-                all_constant_zero_labels: todo!(),
-                all_constant_one_labels: todo!(),
-            };
-            emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
-
-            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
-                if !acked[chunk.wire_index as usize] {
-                    emit(actions, Action::SendCommitMsgChunk(chunk));
-                }
-            }
+        Step::SendingCommit { acked: _ } => {
+            // TODO(sapinb): restore SendCommitMsgHeader + SendCommitMsgChunk
+            // emission once CommitMsgHeader fields are populated. See #72.
         }
         Step::WaitingForChallenge => {}
         Step::SendingChallengeResponse { acked } => {
@@ -843,7 +796,7 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
     todo!()
 }
 
-#[expect(unused_variables)]
+#[expect(unused_variables, dead_code)]
 fn create_commit_msg_chunks(
     polynomial_commitments: InputPolynomialCommitments,
 ) -> Vec<CommitMsgChunk> {

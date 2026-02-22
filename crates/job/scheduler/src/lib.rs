@@ -7,14 +7,13 @@
 //! - **Heavy pool**: Priority queue for CPU-bound tasks (verification, crypto)
 //! - **Garbling coordinator**: Barrier-synchronized circuit reads for garbling
 //!
-//! The scheduler is generic over [`ExecuteGarblerJob`] + [`ExecuteEvaluatorJob`], which decouples
+//! The scheduler is generic over `ExecuteGarblerJob` + `ExecuteEvaluatorJob`, which decouples
 //! it from handler implementations. The concrete dispatch logic lives in a separate
 //! crate (`mosaic-job-handlers`).
 //!
 //! The SM Scheduler does not depend on this crate. It interacts with the job
 //! system exclusively through [`mosaic_job_api`] types.
 //!
-//! [`ExecuteGarblerJob`] + [`ExecuteEvaluatorJob`]: mosaic_job_api::ExecuteGarblerJob
 
 pub mod garbling;
 pub(crate) mod pool;

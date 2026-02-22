@@ -14,7 +14,7 @@
 //!
 //! [`GarblerCircuitSession`] and [`EvaluatorCircuitSession`] unify the
 //! different session types per role into a single `type Session` for the
-//! [`ExecuteGarblerJob`] / [`ExecuteEvaluatorJob`] traits.
+//! `ExecuteGarblerJob` / `ExecuteEvaluatorJob` traits.
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
@@ -147,7 +147,7 @@ pub(crate) trait DynCiphertextReader: Send {
     ) -> Pin<Box<dyn Future<Output = Result<usize, CircuitError>> + Send + 'a>>;
 }
 
-/// Adapts any [`TableReader`] into a [`DynCiphertextReader`].
+/// Adapts any [`TableReader`] into a `DynCiphertextReader`.
 pub(crate) struct CiphertextReaderAdapter<R> {
     reader: R,
 }
@@ -287,7 +287,7 @@ impl CircuitSession for CommitmentSession {
 /// coordinator starts reading blocks), so `process_chunk` only handles
 /// ciphertext.
 ///
-/// Created by [`ExecuteGarblerJob::begin_table_transfer`], which:
+/// Created by `ExecuteGarblerJob::begin_table_transfer`, which:
 /// 1. Loads shares from storage
 /// 2. Resolves seed → commitment from SM root state
 /// 3. Creates a [`GarblingSession`]
@@ -390,18 +390,18 @@ impl CircuitSession for TransferSession {
 /// Circuit session that evaluates a stored garbling table.
 ///
 /// Needs both the circuit gate structure (from the shared reader, delivered
-/// via `process_chunk`) AND stored ciphertext data (from [`TableStore`],
-/// read via the [`DynCiphertextReader`]).
+/// via `process_chunk`) AND stored ciphertext data (from `TableStore`,
+/// read via the `DynCiphertextReader`).
 ///
 /// For each chunk of blocks the coordinator delivers:
 /// 1. Count AND gates across all blocks in the chunk.
 /// 2. Pre-read exactly that many ciphertexts (16 bytes each) from storage.
-/// 3. Feed gates + ciphertexts to the [`EvaluationInstance`].
+/// 3. Feed gates + ciphertexts to the `EvaluationInstance`.
 ///
 /// This keeps the number of storage reads proportional to circuit chunks
 /// (~34K reads), not individual AND gates (~2.9B).
 ///
-/// Created by [`ExecuteEvaluatorJob::begin_evaluation`], which performs all
+/// Created by `ExecuteEvaluatorJob::begin_evaluation`, which performs all
 /// setup work (share interpolation, label translation, instance creation)
 /// before returning this session.
 pub struct EvaluationSession {
@@ -534,7 +534,7 @@ impl CircuitSession for EvaluationSession {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Unifies garbler circuit session types into a single associated type for
-/// [`ExecuteGarblerJob::Session`].
+/// `ExecuteGarblerJob::Session`.
 ///
 /// - G3 (`GenerateTableCommitment`) → [`CommitmentSession`]
 /// - G8 (`TransferGarblingTable`) → [`TransferSession`]
@@ -570,7 +570,7 @@ impl CircuitSession for GarblerCircuitSession {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Unifies evaluator circuit session types into a single associated type for
-/// [`ExecuteEvaluatorJob::Session`].
+/// `ExecuteEvaluatorJob::Session`.
 ///
 /// - E3 (`GenerateTableCommitment`) → [`CommitmentSession`]
 /// - E8 (`EvaluateGarblingTable`) → [`EvaluationSession`]
