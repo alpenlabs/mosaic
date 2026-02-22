@@ -1,0 +1,21 @@
+# Nextest configuration for Mosaic.
+#
+# The default nextest timeout is 60s per test. Network integration tests need
+# longer because they establish real QUIC connections with TLS handshakes,
+# which can be slow on CI runners.
+
+[profile.default]
+# Bump the default timeout slightly above the 60s default to give all tests
+# a bit more headroom on slow CI runners.
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Network integration tests use retry_until_ok(CI_TIMEOUT=120s) internally,
+# so the per-test timeout must exceed that. Give 180s (3 min) to accommodate
+# CI scheduling jitter on top of the 120s retry deadline.
+[[profile.default.overrides]]
+filter = "package(mosaic-net-svc) & kind(test)"
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.overrides]]
+filter = "package(mosaic-net-client) & kind(test)"
+slow-timeout = { period = "60s", terminate-after = 3 }

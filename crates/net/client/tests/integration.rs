@@ -291,7 +291,7 @@ where
         Ok(Err(err)) => panic!("recv failed: {:?}", err),
         Err(_) => {
             send_handle.abort();
-            panic!("recv timed out after 20s");
+            panic!("recv timed out after {CI_TIMEOUT:?}");
         }
     };
 
