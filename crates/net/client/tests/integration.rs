@@ -65,7 +65,8 @@ fn init_tracing() {
 
 fn next_port() -> u16 {
     PORT_INIT.call_once(|| {
-        let start = 40000 + (std::process::id() as u16 % 20000);
+        // Range 50000-59999 — must NOT overlap with net-svc tests (30000-39999).
+        let start = 50000 + (std::process::id() as u16 % 10000);
         PORT_COUNTER.store(start, Ordering::SeqCst);
     });
     PORT_COUNTER.fetch_add(1, Ordering::SeqCst)
