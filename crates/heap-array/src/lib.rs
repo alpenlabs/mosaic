@@ -14,6 +14,8 @@ use ark_serialize::{
     Write,
 };
 
+mod serde_impl;
+
 /// A heap-allocated array of `N` elements of type `T`.
 ///
 /// This type is similar to `Box<[T; N]>`, but constructs elements via a `Vec`

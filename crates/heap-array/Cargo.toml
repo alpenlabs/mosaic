@@ -12,6 +12,10 @@ keywords.workspace = true
 
 [dependencies]
 ark-serialize.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+postcard.workspace = true
 
 [lints]
 workspace = true

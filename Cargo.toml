@@ -82,29 +82,30 @@ mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
 
 anyhow = "1.0"
-blake3 = "1.6"
-ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt" }
-ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
 ark-ec = "0.5.0"
 ark-ff = "0.5.0"
 ark-secp256k1 = "0.5.0"
 ark-serialize = "0.5.0"
 async-trait = "0.1"
-bitvec = "1.0.1"
-bytes = "1.10"
-criterion = "0.5"
-fasm = "0.3.0"
-futures = "0.3.31"
 bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
 bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }
 bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" }
+bitvec = "1.0.1"
+blake3 = "1.6"
+bytes = "1.10"
+ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt" }
+ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
+criterion = "0.5"
+fasm = "0.3.0"
+futures = "0.3.31"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
 jsonrpsee-types = "*"                                                             # constrained by jsonrpsee dep
 k256 = "0.13.4"
 once_cell = "1.21.3"
+postcard = { version = "1.1.3", features = ["alloc"] }
 proptest = "1.5"
 rand = "0.8.5"
-rand_chacha = "0.3.1"                                                     # constrained by ark-std::rand_core
+rand_chacha = "0.3.1"                                                             # constrained by ark-std::rand_core
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "=1.0.149"
 sha2 = "0.10.9"
