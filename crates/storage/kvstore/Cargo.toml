@@ -1,0 +1,29 @@
+[package]
+name = "mosaic-storage-kvstore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-cac-types.workspace = true
+# mosaic-net-svc-api.workspace = true
+# mosaic-storage-api.workspace = true
+mosaic-vs3.workspace = true
+
+ark-serialize.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+mosaic-common.workspace = true
+
+[lints]
+workspace = true

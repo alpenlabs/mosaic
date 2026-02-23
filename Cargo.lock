@@ -2223,6 +2223,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mosaic-storage-kvstore"
+version = "0.1.0"
+dependencies = [
+ "ark-serialize",
+ "async-trait",
+ "futures",
+ "mosaic-cac-types",
+ "mosaic-common",
+ "mosaic-vs3",
+ "postcard",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "mosaic-storage-s3"
 version = "0.1.0"
 dependencies = [
