@@ -13,7 +13,6 @@
 //!
 //! The SM Scheduler does not depend on this crate. It interacts with the job
 //! system exclusively through [`mosaic_job_api`] types.
-//!
 
 pub mod garbling;
 pub(crate) mod pool;

@@ -424,10 +424,6 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
 
-    let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] = input_shares
-        [circuit_index][N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
-        .try_into()
-        .map_err(|_| CircuitError::SetupFailed("shares slice mismatch".into()))?;
     let output_share = &output_shares[circuit_index];
 
     // Open circuit file for header + outputs only.
@@ -438,7 +434,12 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
     let outputs = reader.outputs().to_vec();
 
     // Create garbling session.
-    let mut setup = GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
+    let mut setup = GarblingSession::begin(
+        seed,
+        input_shares[circuit_index].as_ref(),
+        output_share,
+        &header,
+    );
 
     // Open a bulk transfer stream to the evaluator.
     // The commitment serves as the stream identifier — the evaluator registers

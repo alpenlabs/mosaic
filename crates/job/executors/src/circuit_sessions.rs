@@ -44,7 +44,7 @@ use mosaic_net_svc_api::Stream;
 use mosaic_storage_api::table_store::TableReader;
 use mosaic_vs3::{Index, Scalar, Share};
 
-use crate::garbling::{GarblingSession, GarblingSetup, compute_commitment};
+use crate::garbling::{GarblingSession, GarblingSetup, compute_commitment, hash_garbling_params};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Gate parsing helpers for OwnedBlock
@@ -258,8 +258,18 @@ impl CircuitSession for CommitmentSession {
             let ct_hash = self.ct_hasher.finalize();
 
             let finish = self.setup.session.finish(&self.output_wire_ids);
-            let commitment =
-                compute_commitment(&ct_hash, &self.translate_hash, &finish.output_label_ct);
+            let params_hash = hash_garbling_params(
+                &finish.aes128_key,
+                &finish.public_s,
+                &finish.constant_one_label,
+                &finish.constant_zero_label,
+            );
+            let commitment = compute_commitment(
+                &ct_hash,
+                &self.translate_hash,
+                &finish.output_label_ct,
+                &params_hash,
+            );
 
             if self.is_garbler {
                 let metadata = GarblingMetadata {

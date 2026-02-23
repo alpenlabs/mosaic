@@ -23,10 +23,7 @@ pub mod garbling;
 pub mod polynomial_cache;
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
-use mosaic_cac_types::{WideLabelWireShares, state_machine::garbler::StateRead as _};
-use mosaic_common::constants::{
-    N_DEPOSIT_INPUT_WIRES, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
-};
+use mosaic_cac_types::state_machine::garbler::StateRead as _;
 use mosaic_job_api::{CircuitError, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
@@ -186,10 +183,6 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
                 .ok_or(CircuitError::StorageUnavailable)?;
 
             let idx = index.get();
-            let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] = input_shares
-                [idx][N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
-                .try_into()
-                .map_err(|_| CircuitError::SetupFailed("shares slice mismatch".into()))?;
             let output_share = &output_shares[idx];
 
             let reader = ReaderV5c::open(&self.circuit_path)
@@ -197,8 +190,12 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
             let header = *reader.header();
             let outputs = reader.outputs().to_vec();
 
-            let setup =
-                garbling::GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
+            let setup = garbling::GarblingSession::begin(
+                seed,
+                input_shares[idx].as_ref(),
+                output_share,
+                &header,
+            );
 
             Ok(circuit_sessions::GarblerCircuitSession::Commitment(
                 Box::new(circuit_sessions::CommitmentSession::new(
@@ -301,10 +298,6 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                 CircuitError::SetupFailed("index not in challenge indices".into()),
             )?;
 
-            let withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES] =
-                opened_input_shares[pos][N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
-                    .try_into()
-                    .map_err(|_| CircuitError::SetupFailed("shares slice mismatch".into()))?;
             let output_share = &opened_output_shares[pos];
 
             let reader = ReaderV5c::open(&self.circuit_path)
@@ -312,8 +305,12 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
             let header = *reader.header();
             let outputs = reader.outputs().to_vec();
 
-            let setup =
-                garbling::GarblingSession::begin(seed, withdrawal_shares, output_share, &header);
+            let setup = garbling::GarblingSession::begin(
+                seed,
+                opened_input_shares[pos].as_ref(),
+                output_share,
+                &header,
+            );
 
             Ok(circuit_sessions::EvaluatorCircuitSession::Commitment(
                 Box::new(circuit_sessions::CommitmentSession::new(

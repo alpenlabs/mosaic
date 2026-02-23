@@ -44,7 +44,7 @@ use ckt_gobble::{
     traits::{GarblingInstance as GarblingInstanceTrait, GarblingInstanceConfig, GobbleEngine},
 };
 use mosaic_cac_types::{GarblingSeed, GarblingTableCommitment, WideLabelWireShares};
-use mosaic_common::{Byte32, constants::N_WITHDRAWAL_INPUT_WIRES};
+use mosaic_common::Byte32;
 use mosaic_vs3::Share;
 use rand_chacha::{
     ChaCha20Rng,
@@ -134,16 +134,17 @@ impl GarblingSession {
     /// the serialised translation material.
     pub fn begin(
         seed: GarblingSeed,
-        withdrawal_shares: &[WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES],
+        input_shares: &[WideLabelWireShares],
         output_share: &Share,
         header: &HeaderV5c,
     ) -> GarblingSetup {
+        let n_input_wires = input_shares.len();
         assert_eq!(
             header.primary_inputs as usize,
-            N_WITHDRAWAL_INPUT_WIRES * 8,
-            "circuit primary_inputs ({}) must equal N_WITHDRAWAL_INPUT_WIRES × 8 ({})",
+            n_input_wires * 8,
+            "circuit primary_inputs ({}) must equal input_shares.len() × 8 ({})",
             header.primary_inputs,
-            N_WITHDRAWAL_INPUT_WIRES * 8,
+            n_input_wires * 8,
         );
 
         // All randomness is derived from this single seeded RNG. The draw
@@ -155,11 +156,13 @@ impl GarblingSession {
         rng.fill_bytes(&mut delta_bytes);
 
         // Byte-level labels: truncate each share's scalar to 16 bytes.
-        let byte_labels: [ByteLabel; N_WITHDRAWAL_INPUT_WIRES] = std::array::from_fn(|wire| {
-            ByteLabel::new(std::array::from_fn(|val| {
-                Label::from(share_to_label_bytes(&withdrawal_shares[wire][val]))
-            }))
-        });
+        let byte_labels: Vec<ByteLabel> = (0..n_input_wires)
+            .map(|wire| {
+                ByteLabel::new(std::array::from_fn(|val| {
+                    Label::from(share_to_label_bytes(&input_shares[wire][val]))
+                }))
+            })
+            .collect();
 
         // Bit-level labels (FreeXOR: true_label = false_label ⊕ delta).
         #[cfg(target_arch = "aarch64")]
@@ -169,8 +172,8 @@ impl GarblingSession {
 
         let delta = Label::from(delta_bytes);
 
-        let mut bit_labels_all: Vec<[BitLabel; 8]> = Vec::with_capacity(N_WITHDRAWAL_INPUT_WIRES);
-        for _wire in 0..N_WITHDRAWAL_INPUT_WIRES {
+        let mut bit_labels_all: Vec<[BitLabel; 8]> = Vec::with_capacity(n_input_wires);
+        for _wire in 0..n_input_wires {
             let default_label = Label::default();
             let mut bits = [BitLabel::new([default_label, default_label]); 8];
             for bit in &mut bits {
@@ -188,9 +191,9 @@ impl GarblingSession {
         // Serialised into a flat byte buffer so the caller can hash and/or
         // send it in one shot. Each wire contributes 256 × 8 × 16 = 32 KiB.
         let bytes_per_wire: usize = 256 * 8 * 16;
-        let mut translation_bytes = Vec::with_capacity(N_WITHDRAWAL_INPUT_WIRES * bytes_per_wire);
+        let mut translation_bytes = Vec::with_capacity(n_input_wires * bytes_per_wire);
 
-        for wire in 0..N_WITHDRAWAL_INPUT_WIRES {
+        for wire in 0..n_input_wires {
             let material = generate_input_translation_material(
                 wire as u64,
                 byte_labels[wire],
@@ -337,20 +340,45 @@ impl GarblingSession {
 // Commitment
 // ════════════════════════════════════════════════════════════════════════════
 
-/// `commitment = blake3(ct_hash ‖ translate_hash ‖ output_label_ct)`
+/// `commitment = blake3(ct_hash ‖ translate_hash ‖ output_label_ct ‖ params_hash)`
 ///
-/// The caller hashes the ciphertext stream and translation bytes separately,
-/// then combines them here.
+/// The caller hashes the ciphertext stream, translation bytes, and garbling
+/// parameters separately, then combines them here.
+///
+/// The 4th component (`params_hash`) binds the commitment to the garbling
+/// parameters (AES key, public S, constant labels), ensuring the evaluator
+/// can verify the garbler used the claimed parameters.
 pub fn compute_commitment(
     ct_hash: &blake3::Hash,
     translate_hash: &blake3::Hash,
     output_label_ct: &Byte32,
+    garbling_params_hash: &blake3::Hash,
 ) -> GarblingTableCommitment {
-    let mut data = Vec::with_capacity(32 + 32 + 32);
+    let mut data = Vec::with_capacity(32 + 32 + 32 + 32);
     data.extend_from_slice(ct_hash.as_bytes());
     data.extend_from_slice(translate_hash.as_bytes());
     data.extend_from_slice(output_label_ct.as_ref());
+    data.extend_from_slice(garbling_params_hash.as_bytes());
     Byte32::from(*blake3::hash(&data).as_bytes())
+}
+
+/// Hash garbling parameters for inclusion in the commitment.
+///
+/// `params_hash = blake3(aes128_key ‖ public_s ‖ constant_one_label ‖ constant_zero_label)`
+///
+/// Note: the order is ONE before ZERO, matching the reference implementation.
+pub fn hash_garbling_params(
+    aes128_key: &[u8; 16],
+    public_s: &[u8; 16],
+    constant_one_label: &[u8; 16],
+    constant_zero_label: &[u8; 16],
+) -> blake3::Hash {
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(aes128_key);
+    data.extend_from_slice(public_s);
+    data.extend_from_slice(constant_one_label);
+    data.extend_from_slice(constant_zero_label);
+    blake3::hash(&data)
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -14,7 +14,7 @@ use mosaic_cac_types::{
 };
 use mosaic_common::constants::{
     N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
-    N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+    WIDE_LABEL_VALUE_COUNT, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
 use mosaic_heap_array::HeapArray;
 use mosaic_job_api::{ActionCompletion, CircuitError, HandlerOutcome};
@@ -28,7 +28,7 @@ use mosaic_vs3::{Index, Share, interpolate};
 use super::MosaicExecutor;
 use crate::{
     circuit_sessions::{CiphertextReaderAdapter, EvaluationSession},
-    garbling::compute_commitment,
+    garbling::{compute_commitment, hash_garbling_params},
 };
 
 /// Build a successful evaluator completion from an action ID and result.
@@ -179,8 +179,8 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     };
 
     // The garbler sends: translation bytes first, then ciphertext data.
-    // Translation size is a protocol constant.
-    let translation_size: usize = N_WITHDRAWAL_INPUT_WIRES * 256 * 8 * 16;
+    // Translation covers ALL input wires (setup + deposit + withdrawal).
+    let translation_size: usize = N_INPUT_WIRES * 256 * 8 * 16;
 
     // Open a table writer for persistent storage.
     let table_id = TableId {
@@ -259,9 +259,28 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     };
+    let Some(constant_zero) = eval_state
+        .get_constant_zero_label(index)
+        .await
+        .ok()
+        .flatten()
+    else {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    };
+    let Some(constant_one) = eval_state
+        .get_constant_one_label(index)
+        .await
+        .ok()
+        .flatten()
+    else {
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    };
 
     // Verify the received data matches the expected commitment.
-    let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct);
+    let params_hash = hash_garbling_params(&aes_key, &public_s, &constant_one, &constant_zero);
+    let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct, &params_hash);
     if computed != expected_commitment {
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
@@ -558,7 +577,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         ));
     }
 
-    let mut withdrawal_labels: Vec<[u8; 16]> = Vec::with_capacity(N_WITHDRAWAL_INPUT_WIRES);
+    let mut input_labels: Vec<[u8; 16]> = Vec::with_capacity(N_INPUT_WIRES);
 
     for wire in 0..N_INPUT_WIRES {
         // Combine opened + committed shares for this wire.
@@ -582,13 +601,11 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
                     index.get()
                 )))?;
 
-        if wire >= N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES {
-            // Withdrawal wire — truncate to 16-byte label.
-            let full: Vec<u8> = share.value().into_bigint().to_bytes_le();
-            let mut label = [0u8; 16];
-            label.copy_from_slice(&full[..16]);
-            withdrawal_labels.push(label);
-        }
+        // Truncate share scalar to 16-byte label for all input wires.
+        let full: Vec<u8> = share.value().into_bigint().to_bytes_le();
+        let mut label = [0u8; 16];
+        label.copy_from_slice(&full[..16]);
+        input_labels.push(label);
     }
 
     // ── Load evaluation parameters from state ───────────────────────────
@@ -646,14 +663,13 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .map_err(|e| CircuitError::SetupFailed(format!("translation read: {e}")))?;
 
     // ── Parse translation material from bytes ───────────────────────────
-    let mut translation_material: Vec<InputTranslationMaterial> =
-        Vec::with_capacity(N_WITHDRAWAL_INPUT_WIRES);
+    let mut translation_material: Vec<InputTranslationMaterial> = Vec::with_capacity(N_INPUT_WIRES);
     let bytes_per_ct = 16usize;
     let cts_per_row = 8usize;
     let rows_per_wire = 256usize;
     let bytes_per_wire = rows_per_wire * cts_per_row * bytes_per_ct;
 
-    for wire in 0..N_WITHDRAWAL_INPUT_WIRES {
+    for wire in 0..N_INPUT_WIRES {
         let wire_offset = wire * bytes_per_wire;
         let mut material = [[Ciphertext::from([0u8; 16]); 8]; 256];
         for (row_idx, material_row) in material.iter_mut().enumerate() {
@@ -673,9 +689,9 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     let mut input_values_bits = BitVec::new();
     let mut bit_count = 0;
 
-    for byte_pos in 0..N_WITHDRAWAL_INPUT_WIRES {
-        let byte_label = Label::from(withdrawal_labels[byte_pos]);
-        let byte_value = withdrawal_inputs[byte_pos];
+    for byte_pos in 0..N_INPUT_WIRES {
+        let byte_label = Label::from(input_labels[byte_pos]);
+        let byte_value = selected_input[byte_pos];
 
         let translated = translate_input(
             byte_pos as u64,
