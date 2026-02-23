@@ -13,8 +13,8 @@ keywords.workspace = true
 [dependencies]
 mosaic-adaptor-sigs.workspace = true
 mosaic-common.workspace = true
-mosaic-net-svc-api.workspace = true
 mosaic-heap-array.workspace = true
+mosaic-net-svc-api.workspace = true
 mosaic-vs3.workspace = true
 
 ark-ec.workspace = true
@@ -23,6 +23,7 @@ ark-serialize.workspace = true
 fasm.workspace = true
 futures.workspace = true
 rand.workspace = true
+serde.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]

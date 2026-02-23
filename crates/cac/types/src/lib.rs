@@ -18,10 +18,11 @@ mod protocol;
 pub mod state_machine;
 
 pub use adaptor::*;
-use mosaic_common::Byte32;
+use mosaic_common::{Byte32, impl_serde_ark};
 use mosaic_vs3::{Point, Scalar};
 pub use msgs::*;
 pub use protocol::*;
+use serde::{Deserialize, Serialize};
 
 /// Commitment to a Garbling Table
 pub type GarblingTableCommitment = Byte32;
@@ -30,7 +31,18 @@ pub type GarblingTableCommitment = Byte32;
 pub type Seed = Byte32;
 
 /// Unique deposit id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    CanonicalSerialize,
+    CanonicalDeserialize,
+)]
 pub struct DepositId(pub Byte32);
 
 impl std::fmt::Display for DepositId {
@@ -80,6 +92,8 @@ impl SecretKey {
 /// Public Key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct PubKey(pub Point);
+
+impl_serde_ark!(PubKey);
 
 #[cfg(test)]
 mod serde_tests;

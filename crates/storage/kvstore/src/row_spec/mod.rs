@@ -2,6 +2,7 @@ use std::{error::Error, fmt::Debug};
 
 use crate::keyspace::KeyDomain;
 
+pub mod error;
 pub mod garbler;
 
 pub trait KVRowSpec {
