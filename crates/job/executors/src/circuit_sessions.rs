@@ -32,7 +32,9 @@ use mosaic_cac_types::{
     GarblingSeed, GarblingTableCommitment,
     state_machine::{
         evaluator::{ActionId as EvaluatorActionId, ActionResult as EvaluatorActionResult},
-        garbler::{ActionId as GarblerActionId, ActionResult as GarblerActionResult},
+        garbler::{
+            ActionId as GarblerActionId, ActionResult as GarblerActionResult, GarblingMetadata,
+        },
     },
 };
 use mosaic_job_api::{
@@ -260,9 +262,18 @@ impl CircuitSession for CommitmentSession {
                 compute_commitment(&ct_hash, &self.translate_hash, &finish.output_label_ct);
 
             if self.is_garbler {
+                let metadata = GarblingMetadata {
+                    aes128_key: finish.aes128_key,
+                    public_s: finish.public_s,
+                    constant_zero_label: finish.constant_zero_label,
+                    constant_one_label: finish.constant_one_label,
+                    output_label_ct: finish.output_label_ct,
+                };
                 HandlerOutcome::Done(ActionCompletion::Garbler {
                     id: GarblerActionId::GenerateTableCommitment(self.index),
-                    result: GarblerActionResult::TableCommitmentGenerated(self.index, commitment),
+                    result: GarblerActionResult::TableCommitmentGenerated(
+                        self.index, commitment, metadata,
+                    ),
                 })
             } else {
                 HandlerOutcome::Done(ActionCompletion::Evaluator {

@@ -257,9 +257,16 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             )
             .await?;
         }
-        ActionResult::TableCommitmentGenerated(index, commitment) => {
-            handle_table_commitment_generated(&mut root_state, state, index, commitment, actions)
-                .await?;
+        ActionResult::TableCommitmentGenerated(index, commitment, metadata) => {
+            handle_table_commitment_generated(
+                &mut root_state,
+                state,
+                index,
+                commitment,
+                metadata,
+                actions,
+            )
+            .await?;
         }
         ActionResult::CommitMsgChunkAcked => {
             match &mut root_state.step {
@@ -534,6 +541,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
     state: &mut S,
     index: Index,
     commitment: GarblingTableCommitment,
+    _metadata: GarblingMetadata,
     _actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {

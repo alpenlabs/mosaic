@@ -76,6 +76,10 @@ pub struct GarblingFinish {
     pub aes128_key: [u8; 16],
     /// Public S value used in the CCRND hash function.
     pub public_s: [u8; 16],
+    /// Constant wire label for value 0 (wire 0 in the circuit).
+    pub constant_zero_label: [u8; 16],
+    /// Constant wire label for value 1 (wire 1 in the circuit).
+    pub constant_one_label: [u8; 16],
 }
 
 /// A garbling session that processes a circuit block-by-block.
@@ -99,6 +103,10 @@ pub struct GarblingSession {
     aes128_key: [u8; 16],
     /// Public S, kept for [`finish`].
     public_s: [u8; 16],
+    /// Constant zero label, kept for [`finish`].
+    constant_zero_label: [u8; 16],
+    /// Constant one label, kept for [`finish`].
+    constant_one_label: [u8; 16],
 }
 
 impl std::fmt::Debug for GarblingSession {
@@ -245,6 +253,8 @@ impl GarblingSession {
             output_share_bytes: scalar_to_le_bytes(&output_share.value()),
             aes128_key,
             public_s,
+            constant_zero_label,
+            constant_one_label,
         };
 
         GarblingSetup {
@@ -317,6 +327,8 @@ impl GarblingSession {
             output_label_ct,
             aes128_key: self.aes128_key,
             public_s: self.public_s,
+            constant_zero_label: self.constant_zero_label,
+            constant_one_label: self.constant_one_label,
         }
     }
 }

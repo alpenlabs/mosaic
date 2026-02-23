@@ -188,7 +188,7 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
             let result = execute_job(dispatcher.as_ref(), &pool_job).await;
             match result {
                 ExecuteResult::Complete(completion) => {
-                    let _ = completion_tx.send(completion).await;
+                    let _ = completion_tx.send(*completion).await;
                 }
                 ExecuteResult::Retry => {
                     let mut job = pool_job;
@@ -219,7 +219,7 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
 /// borrows it).
 enum ExecuteResult {
     /// Job completed successfully — deliver to SM.
-    Complete(JobCompletion),
+    Complete(Box<JobCompletion>),
     /// Transient failure — caller should requeue the original job.
     Retry,
 }
@@ -245,10 +245,10 @@ async fn execute_job<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
     };
 
     match outcome {
-        HandlerOutcome::Done(completion) => ExecuteResult::Complete(JobCompletion {
+        HandlerOutcome::Done(completion) => ExecuteResult::Complete(Box::new(JobCompletion {
             peer_id,
             completion,
-        }),
+        })),
         HandlerOutcome::Retry => ExecuteResult::Retry,
     }
 }
