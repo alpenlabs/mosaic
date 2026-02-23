@@ -26,7 +26,7 @@ use tracing_subscriber as _;
 /// Tests complete in milliseconds locally, but CI runners can be much slower
 /// (connection establishment, TLS handshake, scheduling delays). This timeout
 /// prevents false failures without slowing down the happy path.
-const CI_TIMEOUT: Duration = Duration::from_secs(120);
+const CI_TIMEOUT: Duration = Duration::from_secs(300);
 
 use ed25519_dalek::SigningKey;
 use mosaic_cac_types::{
