@@ -8,9 +8,13 @@ use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
     Write,
 };
+use mosaic_common::{
+    Byte32,
+    constants::{N_CIRCUITS, N_EVAL_CIRCUITS},
+};
 
 use crate::{
-    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
+    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, HeapArray,
     OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk,
 };
@@ -31,6 +35,14 @@ pub struct CommitMsgHeader {
     pub garbling_table_commitments: AllGarblingTableCommitments,
     /// Commitment to output wire polynomial for value 0.
     pub output_polynomial_commitment: OutputPolynomialCommitment,
+    /// AES-128 keys for all N_CIRCUITS garbling instances.
+    pub all_aes128_keys: HeapArray<[u8; 16], N_CIRCUITS>,
+    /// Public S values for all N_CIRCUITS garbling instances.
+    pub all_public_s: HeapArray<[u8; 16], N_CIRCUITS>,
+    /// Constant-false wire labels for all N_CIRCUITS garbling instances.
+    pub all_constant_zero_labels: HeapArray<[u8; 16], N_CIRCUITS>,
+    /// Constant-true wire labels for all N_CIRCUITS garbling instances.
+    pub all_constant_one_labels: HeapArray<[u8; 16], N_CIRCUITS>,
 }
 
 /// CommitMsgChunk: Garbler -> Evaluator (chunked by wire)
@@ -80,7 +92,7 @@ pub struct ChallengeMsg {
 #[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct ChallengeResponseMsgHeader {
     /// Reserved input shares for setup input wires.
-    /// Size: N_SETUP_INPUT_WIRES (4) shares
+    /// Size: N_SETUP_INPUT_WIRES (32) shares
     pub reserved_setup_input_shares: ReservedSetupInputShares,
     /// Output shares for all opened circuits.
     /// Size: N_OPEN_CIRCUITS (174) shares
@@ -88,6 +100,10 @@ pub struct ChallengeResponseMsgHeader {
     /// Garbling seeds for all opened circuits.
     /// Size: N_OPEN_CIRCUITS (174) seeds
     pub opened_garbling_seeds: OpenedGarblingSeeds,
+    /// Output label ciphertexts for the N_EVAL_CIRCUITS unopened circuits.
+    /// Each encrypts the output share under the garbler's output label.
+    /// The evaluator needs these to translate evaluation output → share scalar.
+    pub unchallenged_output_label_cts: HeapArray<Byte32, N_EVAL_CIRCUITS>,
 }
 
 /// ChallengeResponseMsgChunk: Garbler -> Evaluator (chunked by circuit)
@@ -137,7 +153,6 @@ pub struct AdaptorMsgChunk {
 /// Note: Acknowledgments are handled at the network layer, not here.
 /// Note: Garbling tables are transferred via bulk streams, not protocol messages.
 #[derive(Debug)]
-#[expect(clippy::large_enum_variant, reason = "AdaptorMsgChunk is large")]
 pub enum Msg {
     /// Commitment header (Garbler -> Evaluator)
     CommitHeader(CommitMsgHeader),
@@ -291,6 +306,12 @@ impl Valid for Msg {
 // From impls for ergonomic message construction
 // ============================================================================
 
+impl From<CommitMsgHeader> for Msg {
+    fn from(msg: CommitMsgHeader) -> Self {
+        Msg::CommitHeader(msg)
+    }
+}
+
 impl From<CommitMsgChunk> for Msg {
     fn from(msg: CommitMsgChunk) -> Self {
         Msg::CommitChunk(msg)
@@ -300,6 +321,12 @@ impl From<CommitMsgChunk> for Msg {
 impl From<ChallengeMsg> for Msg {
     fn from(msg: ChallengeMsg) -> Self {
         Msg::Challenge(msg)
+    }
+}
+
+impl From<ChallengeResponseMsgHeader> for Msg {
+    fn from(msg: ChallengeResponseMsgHeader) -> Self {
+        Msg::ChallengeResponseHeader(msg)
     }
 }
 

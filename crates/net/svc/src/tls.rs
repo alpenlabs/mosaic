@@ -9,7 +9,6 @@
 use std::{collections::HashSet, fmt, sync::Arc};
 
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
-
 // Re-export peer identity types from svc-api so existing `crate::tls::PeerId` paths
 // and `use super::*` in tests continue to work.
 pub use mosaic_net_svc_api::peer_id::{

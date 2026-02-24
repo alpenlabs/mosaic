@@ -501,6 +501,10 @@ async fn handle_commit_msg_header<S: StateMut>(
             let CommitMsgHeader {
                 garbling_table_commitments,
                 output_polynomial_commitment,
+                all_aes128_keys,
+                all_public_s,
+                all_constant_zero_labels,
+                all_constant_one_labels,
             } = commit_msg_header;
 
             artifact_store
@@ -509,6 +513,22 @@ async fn handle_commit_msg_header<S: StateMut>(
                 .map_err(SMError::storage)?;
             artifact_store
                 .put_output_polynomial_commitment(&output_polynomial_commitment)
+                .await
+                .map_err(SMError::storage)?;
+            artifact_store
+                .put_all_aes128_keys(&all_aes128_keys)
+                .await
+                .map_err(SMError::storage)?;
+            artifact_store
+                .put_all_public_s(&all_public_s)
+                .await
+                .map_err(SMError::storage)?;
+            artifact_store
+                .put_all_constant_zero_labels(&all_constant_zero_labels)
+                .await
+                .map_err(SMError::storage)?;
+            artifact_store
+                .put_all_constant_one_labels(&all_constant_one_labels)
                 .await
                 .map_err(SMError::storage)?;
 
@@ -618,6 +638,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 reserved_setup_input_shares,
                 opened_output_shares,
                 opened_garbling_seeds,
+                unchallenged_output_label_cts,
             } = response_msg_header;
 
             state
@@ -630,6 +651,10 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 .map_err(SMError::storage)?;
             state
                 .put_opened_garbling_seeds(&opened_garbling_seeds)
+                .await
+                .map_err(SMError::storage)?;
+            state
+                .put_unchallenged_output_label_cts(&unchallenged_output_label_cts)
                 .await
                 .map_err(SMError::storage)?;
 

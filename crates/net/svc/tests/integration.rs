@@ -40,9 +40,8 @@ static PORT_INIT: Once = Once::new();
 
 fn next_port() -> u16 {
     PORT_INIT.call_once(|| {
-        // Pick a random starting port in the range 30000-60000
-        // This reduces collision probability across parallel test processes
-        let start = 30000 + (std::process::id() as u16 % 30000);
+        // Range 30000-39999 — must NOT overlap with net-client tests (50000-59999).
+        let start = 30000 + (std::process::id() as u16 % 10000);
         PORT_COUNTER.store(start, Ordering::SeqCst);
     });
     PORT_COUNTER.fetch_add(1, Ordering::SeqCst)

@@ -11,11 +11,14 @@ use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
-use mosaic_job_api::{JobActions, JobBatch, JobSchedulerHandle};
+use mosaic_job_api::{
+    CircuitAction, ExecuteEvaluatorJob, ExecuteGarblerJob, JobActions, JobBatch,
+    JobSchedulerHandle, PendingCircuitJob, SessionFactory,
+};
+use mosaic_net_svc_api::PeerId;
 
 use crate::{
     garbling::{GarblingConfig, GarblingCoordinator},
-    handlers::HandlerContext,
     pool::{JobThreadPool, PoolConfig, worker::WorkerJob},
     priority::Priority,
 };
@@ -64,15 +67,15 @@ impl Default for JobSchedulerConfig {
 ///
 /// Constructed by the main binary. The SM Scheduler interacts with it
 /// exclusively through the [`JobSchedulerHandle`] returned by [`new`](Self::new).
-pub struct JobScheduler {
-    light: JobThreadPool,
-    heavy: JobThreadPool,
+pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
+    light: JobThreadPool<D>,
+    heavy: JobThreadPool<D>,
     garbling: GarblingCoordinator,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
 }
 
-impl std::fmt::Debug for JobScheduler {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> std::fmt::Debug for JobScheduler<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobScheduler")
             .field("light", &self.light)
@@ -82,24 +85,30 @@ impl std::fmt::Debug for JobScheduler {
     }
 }
 
-impl JobScheduler {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// Create a new job scheduler and return a handle for the SM Scheduler.
     ///
     /// The returned [`JobSchedulerHandle`] is the SM Scheduler's only interface
     /// to the job system. It is cheaply cloneable.
     ///
     /// After construction, call [`run`](Self::run) to start the dispatch loop.
-    pub fn new(config: JobSchedulerConfig, ctx: HandlerContext) -> (Self, JobSchedulerHandle) {
+    pub fn new(config: JobSchedulerConfig, dispatcher: D) -> (Self, JobSchedulerHandle) {
         // Channel for SM Scheduler → Job Scheduler (batch submissions).
         let (submit_tx, submission_rx) = kanal::bounded_async(config.submission_queue_size);
 
         // Channel for Job Scheduler → SM Scheduler (completed results).
         let (completion_tx, completion_rx) = kanal::bounded_async(config.completion_queue_size);
 
-        let ctx = Arc::new(ctx);
-        let light = JobThreadPool::new(config.light, Arc::clone(&ctx), completion_tx.clone());
-        let heavy = JobThreadPool::new(config.heavy, Arc::clone(&ctx), completion_tx.clone());
-        let garbling = GarblingCoordinator::new(config.garbling, completion_tx);
+        let executor = Arc::new(dispatcher);
+
+        // The executor implements SessionFactory via blanket impl (any
+        // D: ExecuteGarblerJob + ExecuteEvaluatorJob gets it automatically).
+        // We erase the concrete type so the coordinator is not generic over D.
+        let factory: Arc<dyn SessionFactory> = Arc::clone(&executor) as Arc<dyn SessionFactory>;
+
+        let light = JobThreadPool::new(config.light, Arc::clone(&executor), completion_tx.clone());
+        let heavy = JobThreadPool::new(config.heavy, Arc::clone(&executor), completion_tx.clone());
+        let garbling = GarblingCoordinator::new(config.garbling, factory, completion_tx);
 
         let handle = JobSchedulerHandle::new(submit_tx, completion_rx);
 
@@ -137,7 +146,7 @@ impl JobScheduler {
         tracing::info!("job scheduler started");
 
         while let Ok(batch) = self.submission_rx.recv().await {
-            self.dispatch_batch(batch);
+            self.dispatch_batch(batch).await;
         }
 
         tracing::info!("job scheduler submission channel closed, shutting down");
@@ -148,7 +157,7 @@ impl JobScheduler {
     /// Unwraps the FASM [`ActionContainer`] to extract individual tracked
     /// actions, categorizes each one, assigns priority, and dispatches to the
     /// appropriate pool.
-    fn dispatch_batch(&self, batch: JobBatch) {
+    async fn dispatch_batch(&self, batch: JobBatch) {
         let peer_id = batch.peer_id;
 
         match batch.actions {
@@ -159,25 +168,26 @@ impl JobScheduler {
                             let (_id, action) = tracked.into_parts();
                             let category = action.category();
                             let priority = action.priority();
-                            let worker_job = WorkerJob::Garbler { peer_id, action };
 
                             match category {
-                                ActionCategory::Light => {
-                                    self.light.submit(priority, worker_job);
-                                }
-                                ActionCategory::Heavy => {
-                                    self.heavy.submit(priority, worker_job);
-                                }
                                 ActionCategory::Garbling => {
-                                    // TODO: register with garbling coordinator
-                                    tracing::warn!("garbling dispatch not yet implemented");
+                                    self.dispatch_garbler_circuit(peer_id, action).await;
+                                }
+                                _ => {
+                                    let worker_job = WorkerJob::Garbler { peer_id, action };
+                                    match category {
+                                        ActionCategory::Light => {
+                                            self.light.submit(priority, worker_job);
+                                        }
+                                        ActionCategory::Heavy => {
+                                            self.heavy.submit(priority, worker_job);
+                                        }
+                                        _ => unreachable!(),
+                                    }
                                 }
                             }
                         }
-                        FasmAction::Untracked(_) => {
-                            // Untracked actions are fire-and-forget.
-                            // Currently unused by either SM.
-                        }
+                        FasmAction::Untracked(_) => {}
                     }
                 }
             }
@@ -188,42 +198,128 @@ impl JobScheduler {
                             let (_id, action) = tracked.into_parts();
                             let category = action.category();
                             let priority = action.priority();
-                            let worker_job = WorkerJob::Evaluator { peer_id, action };
 
                             match category {
-                                ActionCategory::Light => {
-                                    self.light.submit(priority, worker_job);
-                                }
-                                ActionCategory::Heavy => {
-                                    self.heavy.submit(priority, worker_job);
-                                }
                                 ActionCategory::Garbling => {
-                                    // TODO: register with garbling coordinator
-                                    tracing::warn!("garbling dispatch not yet implemented");
+                                    self.dispatch_evaluator_circuit(peer_id, action).await;
+                                }
+                                _ => {
+                                    let worker_job = WorkerJob::Evaluator { peer_id, action };
+                                    match category {
+                                        ActionCategory::Light => {
+                                            self.light.submit(priority, worker_job);
+                                        }
+                                        ActionCategory::Heavy => {
+                                            self.heavy.submit(priority, worker_job);
+                                        }
+                                        _ => unreachable!(),
+                                    }
                                 }
                             }
                         }
-                        FasmAction::Untracked(_) => {
-                            // Untracked actions are fire-and-forget.
-                            // Currently unused by either SM.
-                        }
+                        FasmAction::Untracked(_) => {}
                     }
                 }
             }
         }
     }
 
+    /// Build a [`PendingCircuitJob`] for a garbler circuit action and submit
+    /// it to the garbling coordinator.
+    ///
+    /// Session creation happens inside the coordinator (with retry for
+    /// transient failures), not here. This method never blocks.
+    async fn dispatch_garbler_circuit(&self, peer_id: PeerId, action: GarblerAction) {
+        let circuit_action = match &action {
+            GarblerAction::GenerateTableCommitment(index, seed) => {
+                CircuitAction::GarblerCommitment {
+                    index: *index,
+                    seed: *seed,
+                }
+            }
+            GarblerAction::TransferGarblingTable(seed) => {
+                CircuitAction::GarblerTransfer { seed: *seed }
+            }
+            _ => {
+                tracing::error!(
+                    ?action,
+                    "non-circuit garbler action routed to circuit dispatch"
+                );
+                return;
+            }
+        };
+
+        self.garbling
+            .submit(PendingCircuitJob {
+                peer_id,
+                action: circuit_action,
+            })
+            .await;
+    }
+
+    /// Build a [`PendingCircuitJob`] for an evaluator circuit action and
+    /// submit it to the garbling coordinator.
+    async fn dispatch_evaluator_circuit(&self, peer_id: PeerId, action: EvaluatorAction) {
+        let circuit_action = match &action {
+            EvaluatorAction::GenerateTableCommitment(index, seed) => {
+                CircuitAction::EvaluatorCommitment {
+                    index: *index,
+                    seed: *seed,
+                }
+            }
+            EvaluatorAction::EvaluateGarblingTable(index, commitment) => {
+                CircuitAction::EvaluatorEvaluation {
+                    index: *index,
+                    commitment: *commitment,
+                }
+            }
+            // E4 is a pool action (Light), not a circuit action — should never
+            // reach here. If it does, routing logic has a bug.
+            EvaluatorAction::ReceiveGarblingTable(_) => {
+                tracing::error!(
+                    "ReceiveGarblingTable routed to circuit dispatch — should go to light pool"
+                );
+                return;
+            }
+            _ => {
+                tracing::error!(
+                    ?action,
+                    "non-circuit evaluator action routed to circuit dispatch"
+                );
+                return;
+            }
+        };
+
+        self.garbling
+            .submit(PendingCircuitJob {
+                peer_id,
+                action: circuit_action,
+            })
+            .await;
+    }
+
     /// Shut down all pools gracefully.
     ///
-    /// Workers finish in-flight jobs but do not pick up new ones.
-    pub fn shutdown(self) {
+    /// Closes pool queues so workers drain remaining jobs and exit, then
+    /// shuts down the garbling coordinator (joining its thread). Safe to
+    /// call multiple times — all operations are idempotent.
+    pub fn shutdown(&mut self) {
         tracing::info!("job scheduler shutting down");
-
+        self.light.close_queue();
+        self.heavy.close_queue();
         self.garbling.shutdown();
-        self.light.shutdown();
-        self.heavy.shutdown();
-
         tracing::info!("job scheduler shut down complete");
+    }
+}
+
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Drop for JobScheduler<D> {
+    fn drop(&mut self) {
+        // Ensure queues are closed and coordinator thread is joined even if
+        // the caller forgot to call shutdown(). All operations are idempotent
+        // so double-calling (shutdown + drop) is safe.
+        self.light.close_queue();
+        self.heavy.close_queue();
+        self.garbling.shutdown();
     }
 }
 
@@ -261,9 +357,10 @@ impl Classify for GarblerAction {
     fn category(&self) -> ActionCategory {
         match self {
             // Light (outbound protocol sends)
-            Self::SendCommitMsgChunk(_) | Self::SendChallengeResponseMsgChunk(_) => {
-                ActionCategory::Light
-            }
+            Self::SendCommitMsgHeader(_)
+            | Self::SendCommitMsgChunk(_)
+            | Self::SendChallengeResponseMsgHeader(_)
+            | Self::SendChallengeResponseMsgChunk(_) => ActionCategory::Light,
 
             // Garbling (coordinated disk I/O)
             Self::GenerateTableCommitment(..) | Self::TransferGarblingTable(_) => {
@@ -298,21 +395,20 @@ impl Classify for GarblerAction {
 impl Classify for EvaluatorAction {
     fn category(&self) -> ActionCategory {
         match self {
-            // Light (outbound protocol sends)
-            Self::SendChallengeMsg(_) | Self::DepositSendAdaptorMsgChunk(..) => {
-                ActionCategory::Light
-            }
+            // Light (outbound protocol sends + network receive)
+            Self::SendChallengeMsg(_)
+            | Self::DepositSendAdaptorMsgChunk(..)
+            | Self::ReceiveGarblingTable(_) => ActionCategory::Light,
 
-            // Garbling (coordinated disk I/O)
-            Self::GenerateTableCommitment(..) | Self::ReceiveGarblingTable(_) => {
+            // Garbling (coordinated disk I/O — shared circuit reader)
+            Self::GenerateTableCommitment(..) | Self::EvaluateGarblingTable(..) => {
                 ActionCategory::Garbling
             }
 
             // Heavy (everything else)
             Self::VerifyOpenedInputShares
             | Self::GenerateDepositAdaptors(_)
-            | Self::GenerateWithdrawalAdaptorsChunk(..)
-            | Self::EvaluateGarblingTable(..) => ActionCategory::Heavy,
+            | Self::GenerateWithdrawalAdaptorsChunk(..) => ActionCategory::Heavy,
 
             // Non-exhaustive fallback
             _ => ActionCategory::Heavy,

@@ -4,6 +4,15 @@
 //! two Mosaic instances using the typed NetClient API.
 
 // Silence unused crate warnings for transitive dependencies
+use std::{
+    net::SocketAddr,
+    sync::{
+        Once,
+        atomic::{AtomicU16, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
 use ark_serialize as _;
 use ed25519_dalek as _;
 use mosaic_net_svc_api as _;
@@ -12,17 +21,12 @@ use rand as _;
 use thiserror as _;
 use tracing_subscriber as _;
 
-use std::net::SocketAddr;
-use std::sync::Once;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::time::{Duration, Instant};
-
 /// Generous upper-bound timeout for test operations.
 ///
 /// Tests complete in milliseconds locally, but CI runners can be much slower
 /// (connection establishment, TLS handshake, scheduling delays). This timeout
 /// prevents false failures without slowing down the happy path.
-const CI_TIMEOUT: Duration = Duration::from_secs(120);
+const CI_TIMEOUT: Duration = Duration::from_secs(300);
 
 use ed25519_dalek::SigningKey;
 use mosaic_cac_types::{
@@ -61,7 +65,8 @@ fn init_tracing() {
 
 fn next_port() -> u16 {
     PORT_INIT.call_once(|| {
-        let start = 40000 + (std::process::id() as u16 % 20000);
+        // Range 50000-59999 — must NOT overlap with net-svc tests (30000-39999).
+        let start = 50000 + (std::process::id() as u16 % 10000);
         PORT_COUNTER.store(start, Ordering::SeqCst);
     });
     PORT_COUNTER.fetch_add(1, Ordering::SeqCst)
@@ -287,7 +292,7 @@ where
         Ok(Err(err)) => panic!("recv failed: {:?}", err),
         Err(_) => {
             send_handle.abort();
-            panic!("recv timed out after 20s");
+            panic!("recv timed out after {CI_TIMEOUT:?}");
         }
     };
 
@@ -312,8 +317,7 @@ where
 // ============================================================================
 
 fn make_challenge_msg(seed: u64) -> ChallengeMsg {
-    use rand::SeedableRng;
-    use rand::seq::SliceRandom;
+    use rand::{SeedableRng, seq::SliceRandom};
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut indices: Vec<usize> = (1..=181).collect();

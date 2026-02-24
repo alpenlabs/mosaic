@@ -151,6 +151,7 @@ impl ActionCompletion {
     ///
     /// Returns `Err(self)` if this is an evaluator completion, preserving
     /// the value for further handling.
+    #[allow(clippy::result_large_err)]
     pub fn into_garbler(self) -> Result<(GarblerActionId, GarblerActionResult), Self> {
         match self {
             Self::Garbler { id, result } => Ok((id, result)),
@@ -162,6 +163,7 @@ impl ActionCompletion {
     ///
     /// Returns `Err(self)` if this is a garbler completion, preserving
     /// the value for further handling.
+    #[allow(clippy::result_large_err)]
     pub fn into_evaluator(self) -> Result<(EvaluatorActionId, EvaluatorActionResult), Self> {
         match self {
             Self::Evaluator { id, result } => Ok((id, result)),

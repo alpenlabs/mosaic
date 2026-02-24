@@ -113,6 +113,19 @@ impl Share {
 #[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct ShareCommitment(Index, Point);
 
+impl ShareCommitment {
+    /// Returns the index component of this share commitment.
+    pub fn index(&self) -> Index {
+        self.0
+    }
+
+    /// Returns the point component of this share commitment (the EC commitment
+    /// to the share's scalar value).
+    pub fn point(&self) -> Point {
+        self.1
+    }
+}
+
 /// A polynomial with scalar coefficients.
 #[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Polynomial {
@@ -179,6 +192,15 @@ impl PolynomialCommitment {
         } else {
             Err(Error::ShareCommitmentMismatch { index: share.0 })
         }
+    }
+
+    /// Returns the zeroth coefficient of this polynomial commitment.
+    ///
+    /// This is the EC commitment to the polynomial's constant term, which
+    /// equals the commitment to the share at reserved index 0. Used by the
+    /// evaluator to compute share commitments for adaptor signature generation.
+    pub fn get_zeroth_coefficient(&self) -> Point {
+        self.coefficients[0]
     }
 }
 

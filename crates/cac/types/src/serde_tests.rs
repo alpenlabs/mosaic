@@ -213,6 +213,10 @@ fn arb_commit_msg_header() -> impl Strategy<Value = CommitMsgHeader> {
         CommitMsgHeader {
             garbling_table_commitments: AllGarblingTableCommitments::new(|_| commitment),
             output_polynomial_commitment,
+            all_aes128_keys: HeapArray::from_elem([0u8; 16]),
+            all_public_s: HeapArray::from_elem([0u8; 16]),
+            all_constant_zero_labels: HeapArray::from_elem([0u8; 16]),
+            all_constant_one_labels: HeapArray::from_elem([0u8; 16]),
         }
     })
 }
@@ -230,6 +234,7 @@ fn arb_challenge_response_msg_header() -> impl Strategy<Value = ChallengeRespons
             reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share.clone()),
             opened_output_shares: OpenedOutputShares::new(|_| share.clone()),
             opened_garbling_seeds: OpenedGarblingSeeds::new(|_| seed_bytes),
+            unchallenged_output_label_cts: HeapArray::from_elem(seed_bytes),
         }
     })
 }
@@ -665,16 +670,21 @@ fn test_commit_msg_header_fits_in_frame() {
     let header = CommitMsgHeader {
         garbling_table_commitments: AllGarblingTableCommitments::new(|_| [0u8; 32].into()),
         output_polynomial_commitment,
+        all_aes128_keys: HeapArray::from_elem([0u8; 16]),
+        all_public_s: HeapArray::from_elem([0u8; 16]),
+        all_constant_zero_labels: HeapArray::from_elem([0u8; 16]),
+        all_constant_one_labels: HeapArray::from_elem([0u8; 16]),
     };
 
     assert_fits_in_frame(&header, "CommitMsgHeader", Compress::Yes);
     assert_fits_in_frame(&header, "CommitMsgHeader", Compress::No);
 
     // Verify actual size is what we expect (sanity check)
+    // ~17 KB base + 181×16 aes keys + 181×16 public S = ~23 KB
     let size = header.serialized_size(Compress::No);
     assert!(
-        size < 20 * 1024,
-        "CommitMsgHeader should be ~17 KB, got {} bytes",
+        size < 30 * 1024,
+        "CommitMsgHeader should be ~29 KB, got {} bytes",
         size
     );
 }
@@ -690,10 +700,12 @@ fn test_challenge_response_msg_header_fits_in_frame() {
     let idx = Index::new(1).expect("valid index");
     let share = Share::new(idx, scalar);
 
+    let _header_seed: Byte32 = [0u8; 32].into();
     let header = ChallengeResponseMsgHeader {
         reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share.clone()),
         opened_output_shares: OpenedOutputShares::new(|_| share.clone()),
         opened_garbling_seeds: OpenedGarblingSeeds::new(|_| [0u8; 32].into()),
+        unchallenged_output_label_cts: HeapArray::from_elem([0u8; 32].into()),
     };
 
     assert_fits_in_frame(&header, "ChallengeResponseMsgHeader", Compress::Yes);

@@ -1,4 +1,5 @@
 use fasm::actions::TrackedActionTypes;
+use mosaic_common::Byte32;
 use mosaic_vs3::Index;
 
 use crate::{
@@ -74,8 +75,9 @@ pub enum ActionResult {
     PolynomialCommitmentsGenerated(GeneratedPolynomialCommitments),
     /// Input and output shares were generated for a circuit.
     SharesGenerated(Index, CircuitInputShares, CircuitOutputShare),
-    /// Garbling table commitment was generated for a circuit.
-    TableCommitmentGenerated(Index, GarblingTableCommitment),
+    /// Garbling table commitment was generated for a circuit, along with
+    /// garbling metadata needed for [`CommitMsgHeader`] construction.
+    TableCommitmentGenerated(Index, GarblingTableCommitment, GarblingMetadata),
     /// Commit message chunk was sent and acknowledged by the evaluator.
     CommitMsgChunkAcked,
     /// Challenge response chunk was sent and acknowledged by the evaluator.
@@ -150,6 +152,27 @@ impl Action {
 // ============================================================================
 // Action data types
 // ============================================================================
+
+/// Metadata from a garbling session needed for [`CommitMsgHeader`] construction.
+///
+/// Produced by the job handler when executing [`Action::GenerateTableCommitment`]
+/// and returned in [`ActionResult::TableCommitmentGenerated`]. The garbler STF
+/// accumulates one per circuit and uses them to populate the header fields that
+/// the evaluator needs for E8 evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GarblingMetadata {
+    /// AES-128 key used by the garbling instance.
+    pub aes128_key: [u8; 16],
+    /// Public S value used in the CCRND hash function.
+    pub public_s: [u8; 16],
+    /// Constant wire label for value 0 (wire 0 in the circuit).
+    pub constant_zero_label: [u8; 16],
+    /// Constant wire label for value 1 (wire 1 in the circuit).
+    pub constant_one_label: [u8; 16],
+    /// Output label ciphertext — encrypts the output share under the garbler's
+    /// output label so the evaluator can recover the share.
+    pub output_label_ct: Byte32,
+}
 
 /// Identifies an input or output wire
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

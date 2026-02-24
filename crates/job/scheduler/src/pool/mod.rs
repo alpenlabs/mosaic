@@ -11,13 +11,13 @@ pub(crate) mod worker;
 
 use std::sync::Arc;
 
-use mosaic_job_api::JobCompletion;
+use mosaic_job_api::{ExecuteEvaluatorJob, ExecuteGarblerJob, JobCompletion};
 
-use crate::handlers::HandlerContext;
+use self::{
+    queue::JobQueue,
+    worker::{Worker, WorkerJob},
+};
 use crate::priority::Priority;
-
-use self::queue::JobQueue;
-use self::worker::{Worker, WorkerJob};
 
 /// A job waiting in the pool's shared queue.
 ///
@@ -28,6 +28,8 @@ pub(crate) struct PoolJob {
     pub priority: Priority,
     /// The job to execute on a worker.
     pub job: WorkerJob,
+    /// Number of times this job has been retried due to transient failures.
+    pub attempts: u32,
 }
 
 impl std::fmt::Debug for PoolJob {
@@ -66,12 +68,12 @@ impl Default for PoolConfig {
 /// the next highest-priority job (or next FIFO job for light pools).
 ///
 /// This naturally load-balances: busy workers don't pull, idle workers do.
-pub(crate) struct JobThreadPool {
+pub(crate) struct JobThreadPool<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     queue: Arc<JobQueue>,
-    workers: Vec<Worker>,
+    workers: Vec<Worker<D>>,
 }
 
-impl std::fmt::Debug for JobThreadPool {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> std::fmt::Debug for JobThreadPool<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobThreadPool")
             .field("workers", &self.workers.len())
@@ -80,23 +82,23 @@ impl std::fmt::Debug for JobThreadPool {
     }
 }
 
-impl JobThreadPool {
+impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
     /// Create a new pool with the given configuration.
     ///
     /// Spawns worker threads immediately. Each worker runs its own monoio
     /// runtime and pulls jobs from the shared queue.
     pub(crate) fn new(
         config: PoolConfig,
-        ctx: Arc<HandlerContext>,
+        dispatcher: Arc<D>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
     ) -> Self {
         let queue = Arc::new(JobQueue::new(config.priority_queue));
 
-        let workers: Vec<Worker> = (0..config.threads)
+        let workers: Vec<Worker<D>> = (0..config.threads)
             .map(|id| {
                 Worker::spawn(
                     id,
-                    Arc::clone(&ctx),
+                    Arc::clone(&dispatcher),
                     Arc::clone(&queue),
                     completion_tx.clone(),
                     config.concurrency_per_worker,
@@ -112,7 +114,11 @@ impl JobThreadPool {
     /// The job is placed in the shared queue. The next idle worker will pull
     /// it automatically.
     pub(crate) fn submit(&self, priority: Priority, job: WorkerJob) {
-        self.queue.push(PoolJob { priority, job });
+        self.queue.push(PoolJob {
+            priority,
+            job,
+            attempts: 0,
+        });
     }
 
     /// Number of jobs waiting in the queue (not yet pulled by a worker).
@@ -121,11 +127,23 @@ impl JobThreadPool {
         self.queue.len()
     }
 
-    /// Shut down the pool.
+    /// Close the queue without joining worker threads.
+    ///
+    /// Workers will finish in-flight jobs and then exit when they see the
+    /// closed queue. This is non-blocking — use it in `Drop` impls where
+    /// you can't wait for threads.
+    pub(crate) fn close_queue(&self) {
+        self.queue.close();
+    }
+
+    /// Shut down the pool and join all worker threads.
     ///
     /// Closes the queue (workers will finish after draining remaining jobs)
     /// and shuts down all workers. Workers finish in-flight jobs but don't
-    /// accept new ones.
+    /// accept new ones. This method blocks until all workers exit.
+    ///
+    /// For non-blocking cleanup (e.g. in `Drop`), use [`close_queue`](Self::close_queue).
+    #[allow(dead_code)]
     pub(crate) fn shutdown(self) {
         self.queue.close();
         for worker in self.workers {
