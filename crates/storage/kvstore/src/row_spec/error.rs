@@ -9,6 +9,14 @@ pub enum ArkKeyUnpackError {
     /// Failed to deserialize a key component.
     #[error("failed to deserialize key component: {0}")]
     Deserialize(SerializationError),
+    /// Key bytes length did not match expected fixed width.
+    #[error("invalid key length: expected {expected}, got {found}")]
+    InvalidLength {
+        /// Expected key size in bytes.
+        expected: usize,
+        /// Found key size in bytes.
+        found: usize,
+    },
     /// The byte buffer had extra data after decoding.
     #[error("unexpected trailing bytes in key")]
     TrailingBytes,

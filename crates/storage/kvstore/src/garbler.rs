@@ -6,14 +6,15 @@ use futures::{Stream, StreamExt, stream};
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
     CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs,
-    GarblingTableCommitment, InputPolynomialCommitments, InputShares, OutputPolynomialCommitment,
-    OutputShares, ReservedInputShares, Sighashes, WideLabelWirePolynomialCommitments,
-    WithdrawalAdaptors, WithdrawalInputs,
+    GarblingTableCommitment, HeapArray, InputPolynomialCommitments, InputShares,
+    OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
+    WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::{
         StateMachineId,
         garbler::{DepositState, GarblerState, StateMut, StateRead},
     },
 };
+use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
 use thiserror::Error;
 
 use crate::{
@@ -21,7 +22,15 @@ use crate::{
     kvstore::KvStore,
     row_spec::{
         KVRowSpec, SerializableValue,
-        garbler::{DepositStateKey, DepositStateRowSpec, RootStateKey, RootStateRowSpec},
+        garbler::{
+            ChallengeIndicesRowSpec, CircuitIndexKey, CompletedSignaturesRowSpec,
+            DepositAdaptorChunkRowSpec, DepositChunkKey, DepositInputsRowSpec, DepositKey,
+            DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
+            GarblingTableCommitmentRowSpec, InputPolynomialCommitmentChunkRowSpec,
+            InputShareRowSpec, OutputPolynomialCommitmentRowSpec, OutputShareRowSpec,
+            ProtocolSingletonKey, RootStateKey, RootStateRowSpec, WireIndexKey,
+            WithdrawalAdaptorChunkRowSpec, WithdrawalInputRowSpec,
+        },
     },
 };
 
@@ -43,6 +52,15 @@ pub enum StorageError {
     /// Underlying KV backend error.
     #[error("kvstore: {0}")]
     KvStore(Box<dyn Error + Send + Sync>),
+    /// Received unexpected reserved index 0.
+    #[error("Received unexpected Index(0)")]
+    UnexpectedZeroIndex,
+    /// Received input for unknown deposit id.
+    #[error("Received input for unknown deposit id: {0}")]
+    UnknownDeposit(DepositId),
+    /// Critical state inconsistency with expected invariants.
+    #[error("CRITICAL: State is inconsitent with expectations: {0}")]
+    StateInconsistency(String),
 }
 
 impl StorageError {
@@ -62,6 +80,14 @@ impl StorageError {
 
     fn kvstore(err: impl Error + Send + Sync + 'static) -> Self {
         Self::KvStore(Box::new(err))
+    }
+
+    fn unknown_deposit(id: DepositId) -> Self {
+        Self::UnknownDeposit(id)
+    }
+
+    fn state_inconsistency(s: impl Into<String>) -> Self {
+        Self::StateInconsistency(s.into())
     }
 }
 
@@ -148,9 +174,79 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
             }
         })
     }
+
+    async fn ensure_deposit_exists(&self, deposit_id: &DepositId) -> Result<(), StorageError> {
+        if self
+            .get_value::<DepositStateRowSpec>(&DepositStateKey::new(*deposit_id))
+            .await?
+            .is_none()
+        {
+            return Err(StorageError::unknown_deposit(*deposit_id));
+        }
+        Ok(())
+    }
+
+    async fn get_required_deposit_value<R>(
+        &self,
+        deposit_id: &DepositId,
+    ) -> Result<Option<R::Value>, StorageError>
+    where
+        R: KVRowSpec<Key = DepositKey>,
+    {
+        self.ensure_deposit_exists(deposit_id).await?;
+        self.get_value::<R>(&DepositKey::new(*deposit_id)).await
+    }
+
+    async fn collect_fixed_array_row<R, T, F, const N: usize>(
+        &self,
+        mut key_for: F,
+        missing_message: &'static str,
+    ) -> Result<Option<HeapArray<T, N>>, StorageError>
+    where
+        R: KVRowSpec<Value = T>,
+        F: FnMut(usize) -> R::Key,
+    {
+        let mut values = Vec::with_capacity(N);
+        let mut any_present = false;
+        let mut any_missing = false;
+
+        for idx in 0..N {
+            match self.get_value::<R>(&key_for(idx)).await? {
+                Some(value) => {
+                    any_present = true;
+                    values.push(value);
+                }
+                None => {
+                    any_missing = true;
+                }
+            }
+        }
+
+        if !any_present {
+            return Ok(None);
+        }
+        if any_missing {
+            return Err(StorageError::state_inconsistency(missing_message));
+        }
+
+        Ok(Some(HeapArray::from_vec(values)))
+    }
+
+    fn index_to_u16(index: mosaic_vs3::Index) -> Result<u16, StorageError> {
+        u16::try_from(index.get())
+            .map_err(|_| StorageError::state_inconsistency("index does not fit into u16"))
+    }
+
+    fn index_to_zero_based_u16(index: mosaic_vs3::Index) -> Result<u16, StorageError> {
+        let zero_based = index
+            .get()
+            .checked_sub(1)
+            .ok_or(StorageError::UnexpectedZeroIndex)?;
+        u16::try_from(zero_based)
+            .map_err(|_| StorageError::state_inconsistency("index does not fit into u16"))
+    }
 }
 
-#[expect(unused_variables, reason = "wip")]
 impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     type Error = StorageError;
 
@@ -176,88 +272,156 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     async fn get_input_polynomial_commitments(
         &self,
     ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        todo!()
+        self.collect_fixed_array_row::<
+            InputPolynomialCommitmentChunkRowSpec,
+            WideLabelWirePolynomialCommitments,
+            _,
+            N_INPUT_WIRES,
+        >(
+            |idx| WireIndexKey::new(idx as u16),
+            "missing expected input commitment",
+        )
+        .await
     }
 
     async fn get_output_polynomial_commitment(
         &self,
     ) -> Result<Option<OutputPolynomialCommitment>, Self::Error> {
-        todo!()
+        self.get_value::<OutputPolynomialCommitmentRowSpec>(&ProtocolSingletonKey)
+            .await
     }
 
     async fn get_input_shares(&self) -> Result<Option<InputShares>, Self::Error> {
-        todo!()
+        self.collect_fixed_array_row::<InputShareRowSpec, CircuitInputShares, _, { N_CIRCUITS + 1 }>(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected input share",
+        )
+        .await
     }
 
     async fn get_output_shares(&self) -> Result<Option<OutputShares>, Self::Error> {
-        todo!()
+        self.collect_fixed_array_row::<OutputShareRowSpec, CircuitOutputShare, _, { N_CIRCUITS + 1 }>(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected output share",
+        )
+        .await
     }
 
     async fn get_reserved_input_shares(&self) -> Result<Option<ReservedInputShares>, Self::Error> {
-        todo!()
+        self.get_value::<InputShareRowSpec>(&CircuitIndexKey::new(0))
+            .await
     }
 
     async fn get_garbling_table_commitment(
         &self,
         index: mosaic_vs3::Index,
     ) -> Result<Option<GarblingTableCommitment>, Self::Error> {
-        todo!()
+        let ckt_idx = Self::index_to_zero_based_u16(index)?;
+        self.get_value::<GarblingTableCommitmentRowSpec>(&CircuitIndexKey::new(ckt_idx))
+            .await
     }
 
     async fn get_all_garbling_table_commitments(
         &self,
     ) -> Result<Option<AllGarblingTableCommitments>, Self::Error> {
-        todo!()
+        self.collect_fixed_array_row::<
+            GarblingTableCommitmentRowSpec,
+            GarblingTableCommitment,
+            _,
+            N_CIRCUITS,
+        >(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected garbling table commitment",
+        )
+        .await
     }
 
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {
-        todo!()
+        self.get_value::<ChallengeIndicesRowSpec>(&ProtocolSingletonKey)
+            .await
     }
 
     async fn get_deposit_sighashes(
         &self,
         deposit_id: &mosaic_cac_types::DepositId,
     ) -> Result<Option<Sighashes>, Self::Error> {
-        todo!()
+        self.get_required_deposit_value::<DepositSighashesRowSpec>(deposit_id)
+            .await
     }
 
     async fn get_deposit_inputs(
         &self,
         deposit_id: &mosaic_cac_types::DepositId,
     ) -> Result<Option<DepositInputs>, Self::Error> {
-        todo!()
+        self.get_required_deposit_value::<DepositInputsRowSpec>(deposit_id)
+            .await
     }
 
     async fn get_withdrawal_input(
         &self,
         deposit_id: &mosaic_cac_types::DepositId,
     ) -> Result<Option<WithdrawalInputs>, Self::Error> {
-        todo!()
+        self.get_required_deposit_value::<WithdrawalInputRowSpec>(deposit_id)
+            .await
     }
 
     async fn get_deposit_adaptors(
         &self,
         deposit_id: &mosaic_cac_types::DepositId,
     ) -> Result<Option<DepositAdaptors>, Self::Error> {
-        todo!()
+        self.ensure_deposit_exists(deposit_id).await?;
+
+        let chunks = self
+            .collect_fixed_array_row::<DepositAdaptorChunkRowSpec, mosaic_cac_types::Adaptor, _, N_ADAPTOR_MSG_CHUNKS>(
+                |idx| DepositChunkKey::new(*deposit_id, idx as u8),
+                "expected deposit adaptor",
+            )
+            .await?;
+
+        Ok(chunks.map(|v| HeapArray::from_vec(v.to_vec())))
     }
 
     async fn get_withdrawal_adaptors(
         &self,
         deposit_id: &mosaic_cac_types::DepositId,
     ) -> Result<Option<WithdrawalAdaptors>, Self::Error> {
-        todo!()
+        self.ensure_deposit_exists(deposit_id).await?;
+
+        let chunks = self
+            .collect_fixed_array_row::<
+                WithdrawalAdaptorChunkRowSpec,
+                mosaic_cac_types::WithdrawalAdaptorsChunk,
+                _,
+                N_ADAPTOR_MSG_CHUNKS,
+            >(
+                |idx| DepositChunkKey::new(*deposit_id, idx as u8),
+                "expected withdrawal adaptor chunk",
+            )
+            .await?;
+
+        let Some(chunks) = chunks else {
+            return Ok(None);
+        };
+
+        let mut withdrawal_adaptors = Vec::new();
+        for chunk in chunks {
+            withdrawal_adaptors.extend(chunk.to_vec());
+        }
+
+        Ok(Some(HeapArray::from_vec(withdrawal_adaptors)))
     }
 
     async fn get_completed_signatures(
         &self,
         deposit_id: &mosaic_cac_types::DepositId,
     ) -> Result<CompletedSignatures, Self::Error> {
-        todo!()
+        let signatures = self
+            .get_required_deposit_value::<CompletedSignaturesRowSpec>(deposit_id)
+            .await?;
+        signatures.ok_or_else(|| StorageError::state_inconsistency("expected completed signatures"))
     }
 }
 
-#[expect(unused_variables, reason = "wip")]
 impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
     async fn put_root_state(&mut self, state: &GarblerState) -> Result<(), Self::Error> {
         self.put_value::<RootStateRowSpec>(&RootStateKey, state)
@@ -278,14 +442,19 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         wire_idx: u16,
         commitments: &WideLabelWirePolynomialCommitments,
     ) -> Result<(), Self::Error> {
-        todo!()
+        self.put_value::<InputPolynomialCommitmentChunkRowSpec>(
+            &WireIndexKey::new(wire_idx),
+            commitments,
+        )
+        .await
     }
 
     async fn put_output_polynomial_commitment(
         &mut self,
         commitments: &OutputPolynomialCommitment,
     ) -> Result<(), Self::Error> {
-        todo!()
+        self.put_value::<OutputPolynomialCommitmentRowSpec>(&ProtocolSingletonKey, commitments)
+            .await
     }
 
     async fn put_shares_for_index(
@@ -294,7 +463,11 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         input_shares: &CircuitInputShares,
         output_share: &CircuitOutputShare,
     ) -> Result<(), Self::Error> {
-        todo!()
+        let ckt_idx = Self::index_to_u16(index)?;
+        self.put_value::<InputShareRowSpec>(&CircuitIndexKey::new(ckt_idx), input_shares)
+            .await?;
+        self.put_value::<OutputShareRowSpec>(&CircuitIndexKey::new(ckt_idx), output_share)
+            .await
     }
 
     async fn put_garbling_table_commitment(
@@ -302,14 +475,20 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         index: mosaic_vs3::Index,
         commitments: &GarblingTableCommitment,
     ) -> Result<(), Self::Error> {
-        todo!()
+        let ckt_idx = Self::index_to_zero_based_u16(index)?;
+        self.put_value::<GarblingTableCommitmentRowSpec>(
+            &CircuitIndexKey::new(ckt_idx),
+            commitments,
+        )
+        .await
     }
 
     async fn put_challenge_indices(
         &mut self,
         challenge_idxs: &ChallengeIndices,
     ) -> Result<(), Self::Error> {
-        todo!()
+        self.put_value::<ChallengeIndicesRowSpec>(&ProtocolSingletonKey, challenge_idxs)
+            .await
     }
 
     async fn put_sighashes_for_deposit(
@@ -317,7 +496,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         deposit_id: &DepositId,
         sighashes: &Sighashes,
     ) -> Result<(), Self::Error> {
-        todo!()
+        self.put_value::<DepositSighashesRowSpec>(&DepositKey::new(*deposit_id), sighashes)
+            .await
     }
 
     async fn put_inputs_for_deposit(
@@ -325,7 +505,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         deposit_id: &DepositId,
         inputs: &DepositInputs,
     ) -> Result<(), Self::Error> {
-        todo!()
+        self.put_value::<DepositInputsRowSpec>(&DepositKey::new(*deposit_id), inputs)
+            .await
     }
 
     async fn put_adaptor_msg_chunk_for_deposit(
@@ -333,7 +514,11 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         deposit_id: &DepositId,
         adaptor_chunk: &AdaptorMsgChunk,
     ) -> Result<(), Self::Error> {
-        todo!()
+        let key = DepositChunkKey::new(*deposit_id, adaptor_chunk.chunk_index);
+        self.put_value::<DepositAdaptorChunkRowSpec>(&key, &adaptor_chunk.deposit_adaptor)
+            .await?;
+        self.put_value::<WithdrawalAdaptorChunkRowSpec>(&key, &adaptor_chunk.withdrawal_adaptors)
+            .await
     }
 
     async fn put_withdrawal_input(
@@ -341,7 +526,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         deposit_id: &DepositId,
         withdrawal_input: &WithdrawalInputs,
     ) -> Result<(), Self::Error> {
-        todo!()
+        self.put_value::<WithdrawalInputRowSpec>(&DepositKey::new(*deposit_id), withdrawal_input)
+            .await
     }
 
     async fn put_completed_signatures(
@@ -349,7 +535,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         deposit_id: &DepositId,
         signatures: &CompletedSignatures,
     ) -> Result<(), Self::Error> {
-        todo!()
+        self.put_value::<CompletedSignaturesRowSpec>(&DepositKey::new(*deposit_id), signatures)
+            .await
     }
 }
 
