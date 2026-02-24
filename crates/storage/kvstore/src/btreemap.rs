@@ -8,14 +8,19 @@
 //! - Deterministic key ordering
 //! - Error type is [`std::convert::Infallible`]
 
-use std::{collections::BTreeMap, convert::Infallible, ops::Bound};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    ops::Bound,
+    sync::{Arc, RwLock},
+};
 
 use crate::kvstore::{KvPair, KvStore, KvStream};
 
 /// In-memory key-value store using a `BTreeMap<Vec<u8>, Vec<u8>>`.
 #[derive(Debug, Default, Clone)]
 pub struct BTreeMapKvStore {
-    data: BTreeMap<Vec<u8>, Vec<u8>>,
+    data: Arc<RwLock<BTreeMap<Vec<u8>, Vec<u8>>>>,
 }
 
 impl BTreeMapKvStore {
@@ -47,16 +52,28 @@ impl KvStore for BTreeMapKvStore {
     type Error = Infallible;
 
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        Ok(self.data.get(key).cloned())
+        let data = self
+            .data
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Ok(data.get(key).cloned())
     }
 
     async fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-        self.data.insert(key.to_vec(), value.to_vec());
+        let mut data = self
+            .data
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        data.insert(key.to_vec(), value.to_vec());
         Ok(())
     }
 
     async fn delete(&mut self, key: &[u8]) -> Result<(), Self::Error> {
-        self.data.remove(key);
+        let mut data = self
+            .data
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        data.remove(key);
         Ok(())
     }
 
@@ -68,8 +85,11 @@ impl KvStore for BTreeMapKvStore {
     ) -> KvStream<'a, Self::Error> {
         let start = Self::owned_bound(start);
         let end = Self::owned_bound(end);
-        let mut pairs: Vec<KvPair> = self
+        let data = self
             .data
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut pairs: Vec<KvPair> = data
             .range((start, end))
             .map(|(key, value)| KvPair {
                 key: key.clone(),
@@ -91,14 +111,15 @@ impl KvStore for BTreeMapKvStore {
     ) -> Result<(), Self::Error> {
         let start = Self::owned_bound(start);
         let end = Self::owned_bound(end);
-        let keys_to_remove: Vec<Vec<u8>> = self
+        let mut data = self
             .data
-            .range((start, end))
-            .map(|(k, _)| k.clone())
-            .collect();
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let keys_to_remove: Vec<Vec<u8>> =
+            data.range((start, end)).map(|(k, _)| k.clone()).collect();
 
         for key in keys_to_remove {
-            self.data.remove(&key);
+            data.remove(&key);
         }
 
         Ok(())
