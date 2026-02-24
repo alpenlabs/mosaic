@@ -23,5 +23,9 @@ futures.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+rand_chacha.workspace = true
+
 [lints]
 workspace = true

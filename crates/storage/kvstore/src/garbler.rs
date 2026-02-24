@@ -245,6 +245,11 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
         u16::try_from(zero_based)
             .map_err(|_| StorageError::state_inconsistency("index does not fit into u16"))
     }
+
+    #[cfg(test)]
+    fn full_key<R: KVRowSpec>(&self, key: &R::Key) -> Result<Vec<u8>, StorageError> {
+        keyspace::full_key::<R>(self.statemachine_id, key).map_err(StorageError::key_pack)
+    }
 }
 
 impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
@@ -542,15 +547,26 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
 
 #[cfg(test)]
 mod tests {
-    use futures::{StreamExt as _, pin_mut};
-    use mosaic_cac_types::{DepositId, SecretKey, state_machine::garbler::DepositStep};
-    use mosaic_common::Byte32;
+    use futures::StreamExt as _;
+    use mosaic_cac_types::{
+        Adaptor, AdaptorMsgChunk, ChallengeIndices, CompletedSignatures, DepositAdaptors,
+        DepositId, DepositInputs, InputPolynomialCommitments, SecretKey, Sighash, Signature,
+        WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+        WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs,
+        state_machine::garbler::DepositStep,
+    };
+    use mosaic_common::{
+        Byte32,
+        constants::{
+            N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES,
+            N_WITHDRAWAL_INPUT_WIRES,
+        },
+    };
+    use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul};
+    use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
 
     use super::*;
-    use crate::{
-        btreemap::BTreeMapKvStore,
-        row_spec::garbler::{DepositStateRowSpec, RootStateKey, RootStateRowSpec},
-    };
+    use crate::{btreemap::BTreeMapKvStore, row_spec::garbler::DepositStateRowSpec};
 
     fn sm_id(byte: u8) -> StateMachineId {
         StateMachineId::from([byte; 32])
@@ -571,158 +587,390 @@ mod tests {
         }
     }
 
-    #[test]
-    fn root_and_deposit_roundtrip() {
-        futures::executor::block_on(async {
-            let sm = sm_id(0x11);
-            let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+    fn byte32(seed: u8) -> Byte32 {
+        Byte32::from([seed; 32])
+    }
 
-            let root = GarblerState::default();
-            storage.put_root_state(&root).await.expect("put root");
-            assert_eq!(
-                storage.get_root_state().await.expect("get root"),
-                Some(root)
-            );
+    fn polynomial_commitment(seed: u64) -> PolynomialCommitment {
+        let mut rng = ChaChaRng::seed_from_u64(seed);
+        let poly = Polynomial::rand(&mut rng);
+        poly.commit()
+    }
 
-            let dep_id = dep_id(0xA1);
-            let dep_state = deposit_state(7);
+    fn input_polymonial_commitments(seed: u64) -> WideLabelWirePolynomialCommitments {
+        let commitment = polynomial_commitment(seed);
+        WideLabelWirePolynomialCommitments::new(|_| commitment.clone())
+    }
+
+    fn output_polynomial_commitment(seed: u64) -> OutputPolynomialCommitment {
+        OutputPolynomialCommitment::from_elem(polynomial_commitment(seed))
+    }
+
+    fn circuit_input_shares(index: Index, seed: u64) -> CircuitInputShares {
+        CircuitInputShares::new(|wire| {
+            WideLabelWireShares::new(|value| {
+                Share::new(index, Scalar::from(seed + wire as u64 + value as u64 + 1))
+            })
+        })
+    }
+
+    fn circuit_output_share(index: Index, seed: u64) -> CircuitOutputShare {
+        Share::new(index, Scalar::from(seed))
+    }
+
+    fn challenge_indices() -> ChallengeIndices {
+        ChallengeIndices::new(|idx| Index::new(idx + 1).expect("valid challenge index"))
+    }
+
+    fn sighashes(seed: u8) -> Sighashes {
+        Sighashes::new(|idx| Sighash(byte32(seed.wrapping_add(idx as u8))))
+    }
+
+    fn deposit_inputs(seed: u8) -> DepositInputs {
+        std::array::from_fn(|idx| seed.wrapping_add(idx as u8))
+    }
+
+    fn withdrawal_inputs(seed: u8) -> WithdrawalInputs {
+        std::array::from_fn(|idx| seed.wrapping_add(idx as u8))
+    }
+
+    fn adaptor(seed: u64) -> Adaptor {
+        let scalar = Scalar::from(seed + 1);
+        let point = gen_mul(&scalar);
+        Adaptor {
+            tweaked_s: scalar,
+            R_dash_commit: point,
+            share_commitment: point,
+        }
+    }
+
+    fn adaptor_msg_chunk(chunk_index: u8, seed: u64) -> AdaptorMsgChunk {
+        AdaptorMsgChunk {
+            chunk_index,
+            deposit_adaptor: adaptor(seed + chunk_index as u64),
+            withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|wire_idx| {
+                WideLabelWireAdaptors::new(|value_idx| {
+                    adaptor(
+                        seed + chunk_index as u64 + wire_idx as u64 * 256 + value_idx as u64 + 1,
+                    )
+                })
+            }),
+        }
+    }
+
+    fn signature(seed: u8) -> Signature {
+        let mut bytes = [0u8; 64];
+        bytes[31] = seed.wrapping_add(1);
+        bytes[63] = seed.wrapping_add(2);
+        Signature::from_bytes(bytes).expect("valid test signature")
+    }
+
+    fn completed_signatures(seed: u8) -> CompletedSignatures {
+        CompletedSignatures::new(|idx| signature(seed.wrapping_add(idx as u8)))
+    }
+
+    #[tokio::test]
+    async fn root_and_deposit_roundtrip() {
+        let sm = sm_id(0x11);
+        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+
+        let root = GarblerState::default();
+        storage.put_root_state(&root).await.expect("put root");
+        assert_eq!(
+            storage.get_root_state().await.expect("get root"),
+            Some(root)
+        );
+
+        let dep_id = dep_id(0xA1);
+        let dep_state = deposit_state(7);
+        storage
+            .put_deposit(dep_id, &dep_state)
+            .await
+            .expect("put deposit");
+        assert_eq!(
+            storage.get_deposit(&dep_id).await.expect("get deposit"),
+            Some(dep_state)
+        );
+    }
+
+    #[tokio::test]
+    async fn input_polynomial_commitment_roundtrip() {
+        let sm = sm_id(0x66);
+        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+
+        let expected_wire_commitments = input_polymonial_commitments(19);
+
+        for wire_idx in 0..N_INPUT_WIRES {
             storage
-                .put_deposit(dep_id, &dep_state)
+                .put_input_polynomial_commitments_chunk(wire_idx as u16, &expected_wire_commitments)
                 .await
-                .expect("put deposit");
-            assert_eq!(
-                storage.get_deposit(&dep_id).await.expect("get deposit"),
-                Some(dep_state)
-            );
-        });
+                .expect("put input commitments chunk");
+        }
+
+        let expected_input_commitments =
+            InputPolynomialCommitments::new(|_| expected_wire_commitments.clone());
+        assert_eq!(
+            storage
+                .get_input_polynomial_commitments()
+                .await
+                .expect("get input commitments"),
+            Some(expected_input_commitments)
+        );
     }
 
-    #[test]
-    fn stream_all_deposits_scopes_to_row_and_state_machine() {
-        futures::executor::block_on(async {
-            let sm = sm_id(0x22);
-            let other_sm = sm_id(0x33);
+    #[tokio::test]
+    async fn output_polynomial_commitment_roundtrip() {
+        let sm = sm_id(0x66);
+        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
 
-            let dep1_id = dep_id(0x01);
-            let dep2_id = dep_id(0x02);
-            let dep3_id = dep_id(0x03);
-            let dep1 = deposit_state(1);
-            let dep2 = deposit_state(2);
-            let dep3 = deposit_state(3);
-
-            let mut kv = BTreeMapKvStore::new();
-            kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep1_id))
-                    .expect("encode dep1 key"),
-                &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep1)
-                    .expect("serialize dep1"),
-            )
+        let expected_output_commitment = output_polynomial_commitment(29);
+        storage
+            .put_output_polynomial_commitment(&expected_output_commitment)
             .await
-            .expect("insert dep1");
-            kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep2_id))
-                    .expect("encode dep2 key"),
-                &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep2)
-                    .expect("serialize dep2"),
-            )
-            .await
-            .expect("insert dep2");
-            kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(
-                    other_sm,
-                    &DepositStateKey::new(dep3_id),
-                )
-                .expect("encode dep3 key"),
-                &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep3)
-                    .expect("serialize dep3"),
-            )
-            .await
-            .expect("insert dep3");
-
-            let root = GarblerState::default();
-            kv.set(
-                &keyspace::full_key::<RootStateRowSpec>(sm, &RootStateKey)
-                    .expect("encode root key"),
-                &<GarblerState as crate::row_spec::SerializableValue>::serialize(&root)
-                    .expect("serialize root"),
-            )
-            .await
-            .expect("insert root");
-
-            let storage = KvStoreGarbler::new(sm, kv);
-            let mut got = storage
-                .stream_all_deposits()
-                .collect::<Vec<_>>()
+            .expect("put output commitment");
+        assert_eq!(
+            storage
+                .get_output_polynomial_commitment()
                 .await
-                .into_iter()
-                .map(|item| item.expect("stream item"))
-                .collect::<Vec<_>>();
-            got.sort_by_key(|(id, _)| id.0);
-
-            assert_eq!(got, vec![(dep1_id, dep1), (dep2_id, dep2)]);
-        });
+                .expect("get output commitment"),
+            Some(expected_output_commitment)
+        );
     }
 
-    #[test]
-    fn stream_all_deposits_is_lazy() {
-        futures::executor::block_on(async {
-            let sm = sm_id(0x44);
-            let dep1_id = dep_id(0x10);
-            let dep2_id = dep_id(0x11);
-            let dep1 = deposit_state(10);
-            let dep2 = deposit_state(11);
+    #[tokio::test]
+    async fn shares_roundtrip() {
+        let sm = sm_id(0x66);
+        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut expected_input_shares = Vec::with_capacity(N_CIRCUITS + 1);
+        let mut expected_output_shares = Vec::with_capacity(N_CIRCUITS + 1);
+        for ckt_idx in 0..=N_CIRCUITS {
+            let index = if ckt_idx == 0 {
+                Index::reserved()
+            } else {
+                Index::new(ckt_idx).expect("valid index")
+            };
+            let input_shares = circuit_input_shares(index, 10_000 + ckt_idx as u64);
+            let output_share = circuit_output_share(index, 20_000 + ckt_idx as u64);
+            storage
+                .put_shares_for_index(index, &input_shares, &output_share)
+                .await
+                .expect("put shares");
+            expected_input_shares.push(input_shares);
+            expected_output_shares.push(output_share);
+        }
+        let expected_input_shares = InputShares::from_vec(expected_input_shares);
+        let expected_output_shares = OutputShares::from_vec(expected_output_shares);
+        let expected_reserved = expected_input_shares[0].clone();
 
-            let mut kv = BTreeMapKvStore::new();
-            kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep1_id))
-                    .expect("encode dep1 key"),
-                &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep1)
-                    .expect("serialize dep1"),
-            )
-            .await
-            .expect("insert dep1");
-            kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep2_id))
-                    .expect("encode dep2 key"),
-                &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep2)
-                    .expect("serialize dep2"),
-            )
-            .await
-            .expect("insert dep2");
-
-            let storage = KvStoreGarbler::new(sm, kv);
-            let stream = storage.stream_all_deposits();
-            pin_mut!(stream);
-
-            let first = stream.next().await.expect("item").expect("ok item");
-            assert_eq!(first.0, dep1_id);
-            assert_eq!(first.1, dep1);
-
-            let second = stream.next().await.expect("item").expect("ok item");
-            assert_eq!(second.0, dep2_id);
-            assert_eq!(second.1, dep2);
-        });
+        assert_eq!(
+            storage.get_input_shares().await.expect("get input shares"),
+            Some(expected_input_shares)
+        );
+        assert_eq!(
+            storage
+                .get_output_shares()
+                .await
+                .expect("get output shares"),
+            Some(expected_output_shares)
+        );
+        assert_eq!(
+            storage
+                .get_reserved_input_shares()
+                .await
+                .expect("get reserved input shares"),
+            Some(expected_reserved)
+        );
     }
 
-    #[test]
-    fn deserialize_error_maps_to_storage_error_variant() {
-        futures::executor::block_on(async {
-            let sm = sm_id(0x55);
-            let mut kv = BTreeMapKvStore::new();
-            kv.set(
-                &keyspace::full_key::<RootStateRowSpec>(sm, &RootStateKey)
-                    .expect("encode root key"),
-                b"not-valid-postcard",
-            )
-            .await
-            .expect("insert invalid root state");
-            let storage = KvStoreGarbler::new(sm, kv);
+    #[tokio::test]
+    async fn gt_commitment_roundtrip() {
+        let sm = sm_id(0x66);
+        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
 
-            let err = storage
-                .get_root_state()
+        let mut expected_gt_commitments = Vec::with_capacity(N_CIRCUITS);
+        for ckt_idx in 1..=N_CIRCUITS {
+            let index = Index::new(ckt_idx).expect("valid index");
+            let commitment = byte32(ckt_idx as u8);
+            storage
+                .put_garbling_table_commitment(index, &commitment)
                 .await
-                .expect_err("expected deserialize error");
-            assert!(matches!(err, StorageError::ValueDeserialize(_)));
-        });
+                .expect("put garbling table commitment");
+            expected_gt_commitments.push(commitment);
+        }
+        let expected_all_gt_commitments =
+            AllGarblingTableCommitments::from_vec(expected_gt_commitments);
+        assert_eq!(
+            storage
+                .get_garbling_table_commitment(Index::new(7).expect("valid index"))
+                .await
+                .expect("get garbling table commitment"),
+            Some(byte32(7))
+        );
+        assert_eq!(
+            storage
+                .get_all_garbling_table_commitments()
+                .await
+                .expect("get all garbling table commitments"),
+            Some(expected_all_gt_commitments)
+        );
+    }
+
+    #[tokio::test]
+    async fn protocol_state_roundtrip_all_pairs() {
+        let sm = sm_id(0x66);
+        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+
+        let expected_challenge_indices = challenge_indices();
+        storage
+            .put_challenge_indices(&expected_challenge_indices)
+            .await
+            .expect("put challenge indices");
+        assert_eq!(
+            storage
+                .get_challenge_indices()
+                .await
+                .expect("get challenge indices"),
+            Some(expected_challenge_indices)
+        );
+    }
+
+    #[tokio::test]
+    async fn deposit_scoped_roundtrip_all_pairs() {
+        let sm = sm_id(0x77);
+        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+
+        let deposit_id = dep_id(0xC1);
+        storage
+            .put_deposit(deposit_id, &deposit_state(9))
+            .await
+            .expect("put deposit");
+
+        let expected_sighashes = sighashes(0x31);
+        storage
+            .put_sighashes_for_deposit(&deposit_id, &expected_sighashes)
+            .await
+            .expect("put sighashes");
+        assert_eq!(
+            storage
+                .get_deposit_sighashes(&deposit_id)
+                .await
+                .expect("get sighashes"),
+            Some(expected_sighashes)
+        );
+
+        let expected_deposit_inputs = deposit_inputs(0x41);
+        storage
+            .put_inputs_for_deposit(&deposit_id, &expected_deposit_inputs)
+            .await
+            .expect("put deposit inputs");
+        assert_eq!(
+            storage
+                .get_deposit_inputs(&deposit_id)
+                .await
+                .expect("get deposit inputs"),
+            Some(expected_deposit_inputs)
+        );
+
+        let expected_withdrawal_inputs = withdrawal_inputs(0x51);
+        storage
+            .put_withdrawal_input(&deposit_id, &expected_withdrawal_inputs)
+            .await
+            .expect("put withdrawal input");
+        assert_eq!(
+            storage
+                .get_withdrawal_input(&deposit_id)
+                .await
+                .expect("get withdrawal input"),
+            Some(expected_withdrawal_inputs)
+        );
+
+        let mut expected_deposit_adaptors = Vec::with_capacity(N_DEPOSIT_INPUT_WIRES);
+        let mut expected_withdrawal_adaptors = Vec::with_capacity(N_WITHDRAWAL_INPUT_WIRES);
+        for chunk_idx in 0..N_ADAPTOR_MSG_CHUNKS {
+            let chunk = adaptor_msg_chunk(chunk_idx as u8, 0x1000);
+            storage
+                .put_adaptor_msg_chunk_for_deposit(&deposit_id, &chunk)
+                .await
+                .expect("put adaptor chunk");
+            expected_deposit_adaptors.push(chunk.deposit_adaptor);
+            expected_withdrawal_adaptors.extend(chunk.withdrawal_adaptors.to_vec());
+        }
+
+        assert_eq!(
+            storage
+                .get_deposit_adaptors(&deposit_id)
+                .await
+                .expect("get deposit adaptors"),
+            Some(DepositAdaptors::from_vec(expected_deposit_adaptors))
+        );
+        assert_eq!(
+            storage
+                .get_withdrawal_adaptors(&deposit_id)
+                .await
+                .expect("get withdrawal adaptors"),
+            Some(WithdrawalAdaptors::from_vec(expected_withdrawal_adaptors))
+        );
+
+        let expected_completed_signatures = completed_signatures(0x61);
+        storage
+            .put_completed_signatures(&deposit_id, &expected_completed_signatures)
+            .await
+            .expect("put completed signatures");
+        assert_eq!(
+            storage
+                .get_completed_signatures(&deposit_id)
+                .await
+                .expect("get completed signatures"),
+            expected_completed_signatures
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_all_deposits_scopes_to_row_and_state_machine() {
+        let sm = sm_id(0x22);
+        let other_sm = sm_id(0x33);
+
+        let dep1_id = dep_id(0x01);
+        let dep2_id = dep_id(0x02);
+        let dep3_id = dep_id(0x03);
+        let dep1 = deposit_state(1);
+        let dep2 = deposit_state(2);
+        let dep3 = deposit_state(3);
+
+        let kv = BTreeMapKvStore::new();
+
+        let mut storage = KvStoreGarbler::new(sm, kv.clone());
+        let mut other_storage = KvStoreGarbler::new(other_sm, kv.clone());
+
+        storage.put_deposit(dep1_id, &dep1).await.unwrap();
+        storage.put_deposit(dep2_id, &dep2).await.unwrap();
+        other_storage.put_deposit(dep3_id, &dep3).await.unwrap();
+
+        // ensure that all keys are in the same kvstore
+        let k1 = storage
+            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep1_id))
+            .unwrap();
+        let k2 = storage
+            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep2_id))
+            .unwrap();
+        let k3 = other_storage
+            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep3_id))
+            .unwrap();
+
+        assert!(kv.get(&k1).await.unwrap().is_some());
+        assert!(kv.get(&k2).await.unwrap().is_some());
+        assert!(kv.get(&k3).await.unwrap().is_some());
+
+        // ensure stream only returns deposits for correct statemachine
+        let mut got = storage
+            .stream_all_deposits()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|item| item.expect("stream item"))
+            .collect::<Vec<_>>();
+        got.sort_by_key(|(id, _)| id.0);
+
+        assert_eq!(got, vec![(dep1_id, dep1), (dep2_id, dep2)]);
     }
 }

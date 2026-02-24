@@ -126,14 +126,18 @@ macro_rules! impl_ark_serializable_value {
 
             fn serialize(&self) -> Result<Self::Serialized, Self::SerializeError> {
                 let mut value = Vec::new();
-                self.serialize_compressed(&mut value)
+                self.serialize_uncompressed(&mut value)
                     .map_err(ArkSerializationError::from)?;
                 Ok(value)
             }
 
             fn deserialize(bytes: &[u8]) -> Result<Self, Self::DeserializeError> {
                 let mut reader = bytes;
-                let value = <$ty>::deserialize_compressed(&mut reader)
+                // NOTE: for polynomial commitment x 256 ~ 1.3
+                // deserialize_compressed ~ 7s
+                // deserialize_uncompressed ~ 235ms
+                // deserialize_uncompressed_unchecked ~ 89ms
+                let value = <$ty>::deserialize_uncompressed_unchecked(&mut reader)
                     .map_err(ArkSerializationError::from)?;
                 if !reader.is_empty() {
                     return Err(ArkSerializationError::from(SerializationError::InvalidData));
