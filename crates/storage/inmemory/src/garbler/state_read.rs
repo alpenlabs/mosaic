@@ -3,10 +3,10 @@ use futures::{
     stream::{self, StreamExt},
 };
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    InputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
-    WithdrawalAdaptors, WithdrawalInputs,
+    AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CircuitOutputShare,
+    CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, GarblingTableCommitment,
+    HeapArray, Index, InputPolynomialCommitments, InputShares, OutputPolynomialCommitment,
+    OutputShares, ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
@@ -104,6 +104,20 @@ impl StateRead for StoredGarblerState {
         }
 
         Ok(Some(HeapArray::from_vec(output_shares_vec)))
+    }
+
+    async fn get_input_shares_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        Ok(self.input_shares.get(&circuit_idx.get()).cloned())
+    }
+
+    async fn get_output_share_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitOutputShare>, Self::Error> {
+        Ok(self.output_shares.get(&circuit_idx.get()).cloned())
     }
 
     async fn get_reserved_input_shares(&self) -> Result<Option<ReservedInputShares>, Self::Error> {

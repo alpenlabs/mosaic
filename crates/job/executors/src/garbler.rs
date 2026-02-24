@@ -408,23 +408,21 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
     let eval_indices: Vec<usize> = (1..=N_CIRCUITS)
         .filter(|i| !challenged.contains(i))
         .collect();
-    let circuit_index = eval_indices[pos];
+    let circuit_index = Index::new(eval_indices[pos]).unwrap();
 
     // Load shares for this circuit.
     let input_shares = garb_state
-        .get_input_shares()
+        .get_input_shares_for_circuit(&circuit_index)
         .await
         .ok()
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
-    let output_shares = garb_state
-        .get_output_shares()
+    let output_share = garb_state
+        .get_output_share_for_circuit(&circuit_index)
         .await
         .ok()
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
-
-    let output_share = &output_shares[circuit_index];
 
     // Open circuit file for header + outputs only.
     // The coordinator handles the actual block reading via the shared reader.
@@ -434,12 +432,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
     let outputs = reader.outputs().to_vec();
 
     // Create garbling session.
-    let mut setup = GarblingSession::begin(
-        seed,
-        input_shares[circuit_index].as_ref(),
-        output_share,
-        &header,
-    );
+    let mut setup = GarblingSession::begin(seed, input_shares.as_ref(), &output_share, &header);
 
     // Open a bulk transfer stream to the evaluator.
     // The commitment serves as the stream identifier — the evaluator registers

@@ -15,6 +15,7 @@ use mosaic_cac_types::{
     },
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
+use mosaic_vs3::Index;
 
 use crate::{
     keyspace,
@@ -254,6 +255,24 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
             "missing expected output share",
         )
         .await
+    }
+
+    async fn get_input_shares_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        let ckt_idx = Self::index_to_u16(*circuit_idx)?;
+        self.get_value::<InputShareRowSpec>(&CircuitIndexKey::new(ckt_idx))
+            .await
+    }
+
+    async fn get_output_share_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitOutputShare>, Self::Error> {
+        let ckt_idx = Self::index_to_u16(*circuit_idx)?;
+        self.get_value::<OutputShareRowSpec>(&CircuitIndexKey::new(ckt_idx))
+            .await
     }
 
     async fn get_reserved_input_shares(&self) -> Result<Option<ReservedInputShares>, Self::Error> {

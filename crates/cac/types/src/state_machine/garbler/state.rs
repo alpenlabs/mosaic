@@ -52,6 +52,18 @@ pub trait StateRead {
         &self,
     ) -> impl Future<Output = Result<Option<OutputShares>, Self::Error>> + Send;
 
+    /// Retrieves input shares for a single circuit.
+    fn get_input_shares_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> impl Future<Output = Result<Option<CircuitInputShares>, Self::Error>> + Send;
+
+    /// Retrieves output shares for a single circuit.
+    fn get_output_share_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> impl Future<Output = Result<Option<CircuitOutputShare>, Self::Error>> + Send;
+
     /// Retrieves reserved input shares.
     fn get_reserved_input_shares(
         &self,

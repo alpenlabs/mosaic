@@ -170,20 +170,17 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
         async move {
             let garb_state = self.storage.garbler_state(&peer_id);
             let input_shares = garb_state
-                .get_input_shares()
+                .get_input_shares_for_circuit(&index)
                 .await
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
-            let output_shares = garb_state
-                .get_output_shares()
+            let output_share = garb_state
+                .get_output_share_for_circuit(&index)
                 .await
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
-
-            let idx = index.get();
-            let output_share = &output_shares[idx];
 
             let reader = ReaderV5c::open(&self.circuit_path)
                 .map_err(|e| CircuitError::SetupFailed(format!("circuit open: {e}")))?;
@@ -192,8 +189,8 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
 
             let setup = garbling::GarblingSession::begin(
                 seed,
-                input_shares[idx].as_ref(),
-                output_share,
+                input_shares.as_ref(),
+                &output_share,
                 &header,
             );
 
