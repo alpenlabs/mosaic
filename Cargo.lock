@@ -2232,6 +2232,8 @@ dependencies = [
  "futures",
  "mosaic-cac-types",
  "mosaic-common",
+ "mosaic-net-svc-api",
+ "mosaic-storage-api",
  "mosaic-vs3",
  "postcard",
  "rand_chacha 0.3.1",

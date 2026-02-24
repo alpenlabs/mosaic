@@ -12,9 +12,9 @@ keywords.workspace = true
 
 [dependencies]
 mosaic-cac-types.workspace = true
-# mosaic-net-svc-api.workspace = true
-# mosaic-storage-api.workspace = true
 mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
+mosaic-storage-api.workspace = true
 mosaic-vs3.workspace = true
 
 ark-serialize.workspace = true
