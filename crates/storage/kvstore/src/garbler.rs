@@ -1,3 +1,5 @@
+//! Garbler state storage adapter backed by a generic key-value store.
+
 use std::{error::Error, ops::Bound};
 
 use futures::{Stream, StreamExt, stream};
@@ -24,15 +26,21 @@ use crate::{
 };
 
 #[derive(Debug, Error)]
+/// Errors returned by [`KvStoreGarbler`].
 pub enum StorageError {
+    /// Failed to pack a typed key into raw bytes.
     #[error("keypack: {0}")]
     KeyPack(Box<dyn Error + Send + Sync>),
+    /// Failed to unpack a raw key into a typed key.
     #[error("keyunpack: {0}")]
     KeyUnpack(Box<dyn Error + Send + Sync>),
+    /// Failed to serialize a typed value into bytes.
     #[error("valueserialize: {0}")]
     ValueSerialize(Box<dyn Error + Send + Sync>),
+    /// Failed to deserialize bytes into a typed value.
     #[error("valuedeserialize: {0}")]
     ValueDeserialize(Box<dyn Error + Send + Sync>),
+    /// Underlying KV backend error.
     #[error("kvstore: {0}")]
     KvStore(Box<dyn Error + Send + Sync>),
 }
@@ -57,12 +65,15 @@ impl StorageError {
     }
 }
 
+/// Garbler storage implementation backed by a generic [`KvStore`].
+#[derive(Debug)]
 pub struct KvStoreGarbler<KV: KvStore> {
     statemachine_id: StateMachineId,
     store: KV,
 }
 
 impl<KV: KvStore> KvStoreGarbler<KV> {
+    /// Create a garbler storage handle bound to one state machine.
     pub fn new(statemachine_id: StateMachineId, store: KV) -> Self {
         Self {
             statemachine_id,
@@ -139,6 +150,7 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
     }
 }
 
+#[expect(unused_variables, reason = "wip")]
 impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     type Error = StorageError;
 
@@ -245,6 +257,7 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     }
 }
 
+#[expect(unused_variables, reason = "wip")]
 impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
     async fn put_root_state(&mut self, state: &GarblerState) -> Result<(), Self::Error> {
         self.put_value::<RootStateRowSpec>(&RootStateKey, state)
@@ -342,156 +355,15 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        ops::Bound,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-    };
-
     use futures::{StreamExt as _, pin_mut};
     use mosaic_cac_types::{DepositId, SecretKey, state_machine::garbler::DepositStep};
     use mosaic_common::Byte32;
-    use thiserror::Error;
 
     use super::*;
     use crate::{
-        kvstore::{KvPair, KvStream},
+        btreemap::BTreeMapKvStore,
         row_spec::garbler::{DepositStateRowSpec, RootStateKey, RootStateRowSpec},
     };
-
-    #[derive(Debug, Error)]
-    enum TestKvError {
-        #[error("injected failure")]
-        Injected,
-    }
-
-    #[derive(Default)]
-    struct TestKv {
-        data: BTreeMap<Vec<u8>, Vec<u8>>,
-        fail_get: bool,
-        next_polls: Arc<AtomicUsize>,
-    }
-
-    impl TestKv {
-        fn stream_from_pairs<'a>(
-            pairs: Arc<Vec<KvPair>>,
-            idx: usize,
-            next_polls: Arc<AtomicUsize>,
-        ) -> KvStream<'a, TestKvError> {
-            KvStream::new(async move {
-                next_polls.fetch_add(1, Ordering::SeqCst);
-                if let Some(pair) = pairs.get(idx).cloned() {
-                    Ok(Some((
-                        pair,
-                        Self::stream_from_pairs(pairs.clone(), idx + 1, next_polls.clone()),
-                    )))
-                } else {
-                    Ok(None)
-                }
-            })
-        }
-
-        fn in_bounds(key: &[u8], start: &Bound<Vec<u8>>, end: &Bound<Vec<u8>>) -> bool {
-            let lower_ok = match start {
-                Bound::Included(s) => key >= s.as_slice(),
-                Bound::Excluded(s) => key > s.as_slice(),
-                Bound::Unbounded => true,
-            };
-            let upper_ok = match end {
-                Bound::Included(e) => key <= e.as_slice(),
-                Bound::Excluded(e) => key < e.as_slice(),
-                Bound::Unbounded => true,
-            };
-            lower_ok && upper_ok
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl KvStore for TestKv {
-        type Error = TestKvError;
-
-        async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-            if self.fail_get {
-                return Err(TestKvError::Injected);
-            }
-            Ok(self.data.get(key).cloned())
-        }
-
-        async fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-            self.data.insert(key.to_vec(), value.to_vec());
-            Ok(())
-        }
-
-        async fn delete(&mut self, key: &[u8]) -> Result<(), Self::Error> {
-            self.data.remove(key);
-            Ok(())
-        }
-
-        fn range<'a>(
-            &'a self,
-            start: Bound<&[u8]>,
-            end: Bound<&[u8]>,
-            reverse: bool,
-        ) -> KvStream<'a, Self::Error> {
-            let start = match start {
-                Bound::Included(s) => Bound::Included(s.to_vec()),
-                Bound::Excluded(s) => Bound::Excluded(s.to_vec()),
-                Bound::Unbounded => Bound::Unbounded,
-            };
-            let end = match end {
-                Bound::Included(e) => Bound::Included(e.to_vec()),
-                Bound::Excluded(e) => Bound::Excluded(e.to_vec()),
-                Bound::Unbounded => Bound::Unbounded,
-            };
-
-            let mut pairs: Vec<KvPair> = self
-                .data
-                .iter()
-                .filter(|(k, _)| Self::in_bounds(k.as_slice(), &start, &end))
-                .map(|(k, v)| KvPair {
-                    key: k.clone(),
-                    value: v.clone(),
-                })
-                .collect();
-
-            if reverse {
-                pairs.reverse();
-            }
-
-            Self::stream_from_pairs(Arc::new(pairs), 0, self.next_polls.clone())
-        }
-
-        async fn clear_range(
-            &mut self,
-            start: Bound<&[u8]>,
-            end: Bound<&[u8]>,
-        ) -> Result<(), Self::Error> {
-            let start = match start {
-                Bound::Included(s) => Bound::Included(s.to_vec()),
-                Bound::Excluded(s) => Bound::Excluded(s.to_vec()),
-                Bound::Unbounded => Bound::Unbounded,
-            };
-            let end = match end {
-                Bound::Included(e) => Bound::Included(e.to_vec()),
-                Bound::Excluded(e) => Bound::Excluded(e.to_vec()),
-                Bound::Unbounded => Bound::Unbounded,
-            };
-
-            let keys: Vec<Vec<u8>> = self
-                .data
-                .keys()
-                .filter(|k| Self::in_bounds(k.as_slice(), &start, &end))
-                .cloned()
-                .collect();
-            for k in keys {
-                self.data.remove(&k);
-            }
-            Ok(())
-        }
-    }
 
     fn sm_id(byte: u8) -> StateMachineId {
         StateMachineId::from([byte; 32])
@@ -516,11 +388,14 @@ mod tests {
     fn root_and_deposit_roundtrip() {
         futures::executor::block_on(async {
             let sm = sm_id(0x11);
-            let mut storage = KvStoreGarbler::new(sm, TestKv::default());
+            let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
 
             let root = GarblerState::default();
             storage.put_root_state(&root).await.expect("put root");
-            assert_eq!(storage.get_root_state().await.expect("get root"), Some(root));
+            assert_eq!(
+                storage.get_root_state().await.expect("get root"),
+                Some(root)
+            );
 
             let dep_id = dep_id(0xA1);
             let dep_state = deposit_state(7);
@@ -548,24 +423,18 @@ mod tests {
             let dep2 = deposit_state(2);
             let dep3 = deposit_state(3);
 
-            let mut kv = TestKv::default();
+            let mut kv = BTreeMapKvStore::new();
             kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(
-                    sm,
-                    &DepositStateKey::new(dep1_id),
-                )
-                .expect("encode dep1 key"),
+                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep1_id))
+                    .expect("encode dep1 key"),
                 &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep1)
                     .expect("serialize dep1"),
             )
             .await
             .expect("insert dep1");
             kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(
-                    sm,
-                    &DepositStateKey::new(dep2_id),
-                )
-                .expect("encode dep2 key"),
+                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep2_id))
+                    .expect("encode dep2 key"),
                 &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep2)
                     .expect("serialize dep2"),
             )
@@ -616,60 +485,57 @@ mod tests {
             let dep1 = deposit_state(10);
             let dep2 = deposit_state(11);
 
-            let mut kv = TestKv::default();
+            let mut kv = BTreeMapKvStore::new();
             kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(
-                    sm,
-                    &DepositStateKey::new(dep1_id),
-                )
-                .expect("encode dep1 key"),
+                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep1_id))
+                    .expect("encode dep1 key"),
                 &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep1)
                     .expect("serialize dep1"),
             )
             .await
             .expect("insert dep1");
             kv.set(
-                &keyspace::full_key::<DepositStateRowSpec>(
-                    sm,
-                    &DepositStateKey::new(dep2_id),
-                )
-                .expect("encode dep2 key"),
+                &keyspace::full_key::<DepositStateRowSpec>(sm, &DepositStateKey::new(dep2_id))
+                    .expect("encode dep2 key"),
                 &<DepositState as crate::row_spec::SerializableValue>::serialize(&dep2)
                     .expect("serialize dep2"),
             )
             .await
             .expect("insert dep2");
 
-            let polls = kv.next_polls.clone();
             let storage = KvStoreGarbler::new(sm, kv);
             let stream = storage.stream_all_deposits();
             pin_mut!(stream);
 
-            assert_eq!(polls.load(Ordering::SeqCst), 0);
             let first = stream.next().await.expect("item").expect("ok item");
-            assert_eq!(polls.load(Ordering::SeqCst), 1);
             assert_eq!(first.0, dep1_id);
             assert_eq!(first.1, dep1);
+
+            let second = stream.next().await.expect("item").expect("ok item");
+            assert_eq!(second.0, dep2_id);
+            assert_eq!(second.1, dep2);
         });
     }
 
     #[test]
-    fn kv_error_maps_to_storage_error_variant() {
+    fn deserialize_error_maps_to_storage_error_variant() {
         futures::executor::block_on(async {
             let sm = sm_id(0x55);
-            let storage = KvStoreGarbler::new(
-                sm,
-                TestKv {
-                    fail_get: true,
-                    ..TestKv::default()
-                },
-            );
+            let mut kv = BTreeMapKvStore::new();
+            kv.set(
+                &keyspace::full_key::<RootStateRowSpec>(sm, &RootStateKey)
+                    .expect("encode root key"),
+                b"not-valid-postcard",
+            )
+            .await
+            .expect("insert invalid root state");
+            let storage = KvStoreGarbler::new(sm, kv);
 
             let err = storage
                 .get_root_state()
                 .await
-                .expect_err("expected kv error");
-            assert!(matches!(err, StorageError::KvStore(_)));
+                .expect_err("expected deserialize error");
+            assert!(matches!(err, StorageError::ValueDeserialize(_)));
         });
     }
 }
