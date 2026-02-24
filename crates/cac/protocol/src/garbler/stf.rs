@@ -94,7 +94,8 @@ pub(crate) async fn handle_event<S: StateMut>(
                             .map_err(SMError::storage)?;
 
                         root_state.step = Step::SendingChallengeResponse {
-                            acked: HeapArray::from_elem(false),
+                            header_acked: false,
+                            chunk_acked: HeapArray::from_elem(false),
                         };
 
                         emit(actions, Action::SendChallengeResponseMsgHeader(header));
@@ -271,7 +272,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         ActionResult::CommitMsgHeaderAcked => {
             match &mut root_state.step {
                 Step::SendingCommit {
-                    chunk_acked: acked,
+                    chunk_acked,
                     header_acked: header,
                 } => {
                     if *header {
@@ -281,7 +282,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     *header = true;
 
-                    if acked.all() {
+                    if chunk_acked.all() {
                         root_state.step = Step::WaitingForChallenge;
                     }
                 }
@@ -313,48 +314,48 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             }
         }
 
-        ActionResult::ChallengeResponseChunkAcked => {
+        ActionResult::ChallengeResponseHeaderAcked => {
             match &mut root_state.step {
-                Step::SendingChallengeResponse { acked } => {
-                    let ActionId::SendChallengeResponseMsgChunk(circuit_index) = id else {
-                        return Err(SMError::invalid_input_data());
-                    };
-                    let idx = circuit_index as usize;
-                    if acked[idx] {
+                Step::SendingChallengeResponse {
+                    chunk_acked,
+                    header_acked,
+                } => {
+                    if *header_acked {
                         // already acked this chunk
                         return Err(SMError::invalid_input_data());
                     }
 
-                    acked[idx] = true;
+                    *header_acked = true;
 
-                    if acked.all() {
-                        let challenge_indices = state
-                            .get_challenge_indices()
-                            .await
-                            .require("expected challenge indices")?;
-                        let eval_indices = get_eval_indices(&challenge_indices);
+                    if chunk_acked.all() {
+                        handle_post_sending_challenge_reponse(&mut root_state, state, actions)
+                            .await?;
+                    }
+                }
+                _ => return Err(SMError::unexpected_input()),
+            }
+        }
 
-                        let garbling_table_commitments = state
-                            .get_all_garbling_table_commitments()
-                            .await
-                            .require("expected garbling table commitments")?;
+        ActionResult::ChallengeResponseChunkAcked => {
+            match &mut root_state.step {
+                Step::SendingChallengeResponse {
+                    chunk_acked,
+                    header_acked,
+                } => {
+                    let ActionId::SendChallengeResponseMsgChunk(circuit_index) = id else {
+                        return Err(SMError::invalid_input_data());
+                    };
+                    let idx = circuit_index as usize;
+                    if chunk_acked[idx] {
+                        // already acked this chunk
+                        return Err(SMError::invalid_input_data());
+                    }
 
-                        let eval_commitments =
-                            get_eval_commitments(&eval_indices, &garbling_table_commitments);
+                    chunk_acked[idx] = true;
 
-                        let config = require_config(&root_state)?;
-                        let garbling_seeds = generate_garbling_table_seeds(config.seed);
-                        let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
-
-                        for seed in &eval_seeds {
-                            emit(actions, Action::TransferGarblingTable(*seed));
-                        }
-
-                        root_state.step = Step::TransferringGarblingTables {
-                            eval_seeds,
-                            eval_commitments,
-                            transferred: HeapArray::from_elem(false),
-                        };
+                    if *header_acked && chunk_acked.all() {
+                        handle_post_sending_challenge_reponse(&mut root_state, state, actions)
+                            .await?;
                     }
                 }
                 _ => return Err(SMError::unexpected_input()),
@@ -742,7 +743,10 @@ pub(crate) async fn restore<S: StateRead>(
             }
         }
         Step::WaitingForChallenge => {}
-        Step::SendingChallengeResponse { acked } => {
+        Step::SendingChallengeResponse {
+            chunk_acked,
+            header_acked,
+        } => {
             let challenge_indices = state
                 .get_challenge_indices()
                 .await
@@ -764,9 +768,12 @@ pub(crate) async fn restore<S: StateRead>(
                 seeds,
                 config.setup_inputs,
             );
-            emit(actions, Action::SendChallengeResponseMsgHeader(header));
+
+            if !*header_acked {
+                emit(actions, Action::SendChallengeResponseMsgHeader(header));
+            }
             for chunk in chunks {
-                if !acked[chunk.circuit_index as usize] {
+                if !chunk_acked[chunk.circuit_index as usize] {
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                 }
             }
@@ -815,6 +822,41 @@ pub(crate) async fn restore<S: StateRead>(
         Step::SetupConsumed { .. } => {}
         Step::Aborted { .. } => {}
         _ => unimplemented!(),
+    };
+
+    Ok(())
+}
+
+async fn handle_post_sending_challenge_reponse<S: StateMut>(
+    root_state: &mut GarblerState,
+    state: &mut S,
+    actions: &mut ActionContainer,
+) -> SMResult<()> {
+    let challenge_indices = state
+        .get_challenge_indices()
+        .await
+        .require("expected challenge indices")?;
+    let eval_indices = get_eval_indices(&challenge_indices);
+
+    let garbling_table_commitments = state
+        .get_all_garbling_table_commitments()
+        .await
+        .require("expected garbling table commitments")?;
+
+    let eval_commitments = get_eval_commitments(&eval_indices, &garbling_table_commitments);
+
+    let config = require_config(root_state)?;
+    let garbling_seeds = generate_garbling_table_seeds(config.seed);
+    let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
+
+    for seed in &eval_seeds {
+        emit(actions, Action::TransferGarblingTable(*seed));
+    }
+
+    root_state.step = Step::TransferringGarblingTables {
+        eval_seeds,
+        eval_commitments,
+        transferred: HeapArray::from_elem(false),
     };
 
     Ok(())

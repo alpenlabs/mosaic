@@ -78,10 +78,12 @@ pub enum ActionResult {
     /// Garbling table commitment was generated for a circuit, along with
     /// garbling metadata needed for [`CommitMsgHeader`] construction.
     TableCommitmentGenerated(Index, GarblingTableCommitment, GarblingMetadata),
-    /// Commit message header was send and acknowledged by the evaluator.
+    /// Commit message header was sent and acknowledged by the evaluator.
     CommitMsgHeaderAcked,
     /// Commit message chunk was sent and acknowledged by the evaluator.
     CommitMsgChunkAcked,
+    /// Challenge response message header was sent and acknowledged by the evaluator.
+    ChallengeResponseHeaderAcked,
     /// Challenge response chunk was sent and acknowledged by the evaluator.
     ChallengeResponseChunkAcked,
     /// Garbling table was transferred to the evaluator.
