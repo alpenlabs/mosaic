@@ -11,15 +11,16 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-common.workspace = true
+
 ark-ec.workspace = true
 ark-ff.workspace = true
 ark-secp256k1.workspace = true
 ark-serialize.workspace = true
+blake3.workspace = true
 ckt-gobble.workspace = true
-mosaic-common.workspace = true
 rand_chacha.workspace = true
 thiserror.workspace = true
-blake3.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

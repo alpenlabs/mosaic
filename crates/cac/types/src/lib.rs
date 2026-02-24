@@ -71,6 +71,8 @@ impl<T: Into<Byte32>> From<T> for Sighash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct SecretKey(pub Scalar);
 
+impl_serde_ark!(SecretKey);
+
 impl SecretKey {
     /// Create a secret key from bytes for tests.
     pub fn from_raw_bytes(bytes: &[u8; 32]) -> Self {

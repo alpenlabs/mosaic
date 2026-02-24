@@ -1,11 +1,12 @@
 //! Evaluator state machine types for deposit operations.
 
 use mosaic_common::constants::N_ADAPTOR_MSG_CHUNKS;
+use serde::{Deserialize, Serialize};
 
 use crate::{HeapArray, SecretKey};
 
 /// State for an evaluator managing a deposit operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DepositState {
     /// Current step in the deposit state machine.
     pub step: DepositStep,
@@ -14,7 +15,7 @@ pub struct DepositState {
 }
 
 /// Steps in the evaluator's deposit state machine.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DepositStep {
     /// Generating adaptor signatures for deposit and withdrawal.
     GeneratingAdaptors {
