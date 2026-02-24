@@ -1,4 +1,6 @@
-use std::{error::Error, fmt::Debug, ops::Bound, pin::Pin};
+//! Core async key-value storage traits and stream primitives.
+
+use std::{error::Error, fmt, fmt::Debug, ops::Bound, pin::Pin};
 
 /// A key-value pair returned from range scans.
 #[derive(Debug, Clone)]
@@ -15,6 +17,12 @@ pub struct KvPair {
 /// get the next item, or use `.collect()` to load all items.
 pub struct KvStream<'a, E> {
     inner: KvStreamFuture<'a, E>,
+}
+
+impl<E> Debug for KvStream<'_, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("KvStream(..)")
+    }
 }
 
 /// The boxed future type inside a [`KvStream`].

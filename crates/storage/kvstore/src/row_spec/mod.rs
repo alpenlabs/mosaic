@@ -1,3 +1,5 @@
+//! Row specifications for mapping typed state into KV rows.
+
 use std::{error::Error, fmt::Debug};
 
 use crate::keyspace::KeyDomain;
@@ -5,6 +7,7 @@ use crate::keyspace::KeyDomain;
 pub mod error;
 pub mod garbler;
 
+/// Specification for one logical KV row (domain, row tag, key, and value).
 pub trait KVRowSpec {
     /// Domain this row belongs to (garbler/evaluator).
     const DOMAIN: KeyDomain;

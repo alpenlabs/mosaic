@@ -1,3 +1,5 @@
+//! Keyspace envelope helpers for typed row specs.
+
 use std::ops::Bound;
 
 use ark_serialize::CanonicalSerialize as _;

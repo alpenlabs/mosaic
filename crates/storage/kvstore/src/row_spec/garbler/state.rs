@@ -1,12 +1,16 @@
 use mosaic_cac_types::state_machine::garbler::GarblerState;
 
-use crate::row_spec::{
-    KVRowSpec, PackableKey, SerializableValue,
-    error::{ArkKeyUnpackError, ArkSerializationError},
-    garbler::{ROW_TAG_ROOT_STATE},
+use crate::{
+    keyspace::KeyDomain,
+    row_spec::{
+        KVRowSpec, PackableKey, SerializableValue,
+        error::{ArkKeyUnpackError, ArkSerializationError},
+        garbler::ROW_TAG_ROOT_STATE,
+    },
 };
-use crate::keyspace::KeyDomain;
 
+/// Row-local key for garbler root state.
+#[derive(Debug)]
 pub struct RootStateKey;
 
 impl PackableKey for RootStateKey {
@@ -44,6 +48,8 @@ impl SerializableValue for GarblerState {
     }
 }
 
+/// Row specification for garbler root state.
+#[derive(Debug)]
 pub struct RootStateRowSpec;
 
 impl KVRowSpec for RootStateRowSpec {

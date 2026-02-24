@@ -1,21 +1,23 @@
 use ark_serialize::{CanonicalDeserialize as _, CanonicalSerialize as _};
-use mosaic_cac_types::{
-    DepositId,
-    state_machine::garbler::DepositState,
+use mosaic_cac_types::{DepositId, state_machine::garbler::DepositState};
+
+use crate::{
+    keyspace::KeyDomain,
+    row_spec::{
+        KVRowSpec, PackableKey, SerializableValue,
+        error::{ArkKeyUnpackError, ArkSerializationError},
+        garbler::ROW_TAG_DEPOSIT_STATE,
+    },
 };
 
-use crate::row_spec::{
-    KVRowSpec, PackableKey, SerializableValue,
-    error::{ArkKeyUnpackError, ArkSerializationError},
-    garbler::ROW_TAG_DEPOSIT_STATE,
-};
-use crate::keyspace::KeyDomain;
-
+/// Row-local key for one garbler deposit state record.
+#[derive(Debug)]
 pub struct DepositStateKey {
     pub(crate) deposit_id: DepositId,
 }
 
 impl DepositStateKey {
+    /// Create a row key from a deposit id.
     pub fn new(deposit_id: DepositId) -> Self {
         Self { deposit_id }
     }
@@ -65,6 +67,8 @@ impl SerializableValue for DepositState {
     }
 }
 
+/// Row specification for garbler per-deposit state.
+#[derive(Debug)]
 pub struct DepositStateRowSpec;
 
 impl KVRowSpec for DepositStateRowSpec {
