@@ -11,6 +11,7 @@ use mosaic_cac_types::{
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState},
 };
+use mosaic_common::Byte32;
 
 use crate::error::DbError;
 
@@ -33,6 +34,16 @@ pub struct StoredGarblerState {
     pub challenge_indices: Option<ChallengeIndices>,
     /// Per-deposit state indexed by `DepositId`.
     pub deposits: HashMap<DepositId, GarblerDepositState>,
+    /// AES-128 keys for all garbling instances, indexed by circuit (0-indexed).
+    pub aes128_keys: BTreeMap<usize, [u8; 16]>,
+    /// Public S values for all garbling instances, indexed by circuit (0-indexed).
+    pub public_s_values: BTreeMap<usize, [u8; 16]>,
+    /// Constant-false wire labels for all garbling instances, indexed by circuit (0-indexed).
+    pub constant_zero_labels: BTreeMap<usize, [u8; 16]>,
+    /// Constant-true wire labels for all garbling instances, indexed by circuit (0-indexed).
+    pub constant_one_labels: BTreeMap<usize, [u8; 16]>,
+    /// Output label ciphertexts for unopened circuits.
+    pub output_label_cts: BTreeMap<usize, Byte32>,
 }
 
 impl StoredGarblerState {

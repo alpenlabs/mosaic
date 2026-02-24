@@ -3,6 +3,7 @@ use mosaic_cac_types::{
     DepositInputs, GarblingTableCommitment, OutputPolynomialCommitment, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
 };
+use mosaic_common::Byte32;
 
 use crate::{
     keyspace::KeyDomain,
@@ -12,11 +13,12 @@ use crate::{
             CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey,
         },
         garbler::{
-            ROW_TAG_CHALLENGE_INDICES, ROW_TAG_COMPLETED_SIGNATURES, ROW_TAG_DEPOSIT_ADAPTOR_CHUNK,
+            ROW_TAG_AES128_KEY, ROW_TAG_CHALLENGE_INDICES, ROW_TAG_COMPLETED_SIGNATURES,
+            ROW_TAG_CONSTANT_ONE_LABEL, ROW_TAG_CONSTANT_ZERO_LABEL, ROW_TAG_DEPOSIT_ADAPTOR_CHUNK,
             ROW_TAG_DEPOSIT_INPUTS, ROW_TAG_DEPOSIT_SIGHASHES, ROW_TAG_GARBLING_TABLE_COMMITMENT,
-            ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK, ROW_TAG_INPUT_SHARE,
-            ROW_TAG_OUTPUT_POLY_COMMITMENT, ROW_TAG_OUTPUT_SHARE, ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK,
-            ROW_TAG_WITHDRAWAL_INPUT,
+            ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK, ROW_TAG_INPUT_SHARE, ROW_TAG_OUTPUT_LABEL_CT,
+            ROW_TAG_OUTPUT_POLY_COMMITMENT, ROW_TAG_OUTPUT_SHARE, ROW_TAG_PUBLIC_S,
+            ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK, ROW_TAG_WITHDRAWAL_INPUT,
         },
     },
 };
@@ -163,4 +165,64 @@ impl KVRowSpec for CompletedSignaturesRowSpec {
 
     type Key = DepositKey;
     type Value = CompletedSignatures;
+}
+
+/// Row spec for per-circuit AES128 key.
+#[derive(Debug)]
+pub struct Aes128KeyRowSpec;
+
+impl KVRowSpec for Aes128KeyRowSpec {
+    const DOMAIN: KeyDomain = KeyDomain::Garbler;
+    const ROW_TAG: u8 = ROW_TAG_AES128_KEY;
+
+    type Key = CircuitIndexKey;
+    type Value = [u8; 16];
+}
+
+/// Row spec for per-circuit public S value.
+#[derive(Debug)]
+pub struct PublicSRowSpec;
+
+impl KVRowSpec for PublicSRowSpec {
+    const DOMAIN: KeyDomain = KeyDomain::Garbler;
+    const ROW_TAG: u8 = ROW_TAG_PUBLIC_S;
+
+    type Key = CircuitIndexKey;
+    type Value = [u8; 16];
+}
+
+/// Row spec for per-circuit constant-zero label.
+#[derive(Debug)]
+pub struct ConstantZeroLabelRowSpec;
+
+impl KVRowSpec for ConstantZeroLabelRowSpec {
+    const DOMAIN: KeyDomain = KeyDomain::Garbler;
+    const ROW_TAG: u8 = ROW_TAG_CONSTANT_ZERO_LABEL;
+
+    type Key = CircuitIndexKey;
+    type Value = [u8; 16];
+}
+
+/// Row spec for per-circuit constant-one label.
+#[derive(Debug)]
+pub struct ConstantOneLabelRowSpec;
+
+impl KVRowSpec for ConstantOneLabelRowSpec {
+    const DOMAIN: KeyDomain = KeyDomain::Garbler;
+    const ROW_TAG: u8 = ROW_TAG_CONSTANT_ONE_LABEL;
+
+    type Key = CircuitIndexKey;
+    type Value = [u8; 16];
+}
+
+/// Row spec for per-evaluation-circuit output label ciphertext.
+#[derive(Debug)]
+pub struct OutputLabelCtRowSpec;
+
+impl KVRowSpec for OutputLabelCtRowSpec {
+    const DOMAIN: KeyDomain = KeyDomain::Garbler;
+    const ROW_TAG: u8 = ROW_TAG_OUTPUT_LABEL_CT;
+
+    type Key = CircuitIndexKey;
+    type Value = Byte32;
 }

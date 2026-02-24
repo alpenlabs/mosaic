@@ -1,7 +1,10 @@
-use mosaic_common::constants::{
-    N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS,
-    N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
-    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK, WideLabelValue,
+use mosaic_common::{
+    Byte32,
+    constants::{
+        N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS,
+        N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
+        WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK, WideLabelValue,
+    },
 };
 pub use mosaic_heap_array::HeapArray;
 pub use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
@@ -37,6 +40,17 @@ pub type AllGarblingTableCommitments = HeapArray<GarblingTableCommitment, N_CIRC
 pub type OpenedGarblingTableCommitments = HeapArray<GarblingTableCommitment, N_OPEN_CIRCUITS>;
 /// Commitments for eval garbling tables.
 pub type EvalGarblingTableCommitments = HeapArray<GarblingTableCommitment, N_EVAL_CIRCUITS>;
+
+/// Aes128 keys for all `N_CIRCUITS` garbling tables.
+pub type AllAes128Keys = HeapArray<[u8; 16], N_CIRCUITS>;
+/// Public S values for all `N_CIRCUITS` garbling tables.
+pub type AllPublicSValues = HeapArray<[u8; 16], N_CIRCUITS>;
+/// Constant zero labels for all `N_CIRCUITS` garbling tables.
+pub type AllConstZeroLabels = HeapArray<[u8; 16], N_CIRCUITS>;
+/// Constant one labels for all `N_CIRCUITS` garbling tables.
+pub type AllConstOneLabels = HeapArray<[u8; 16], N_CIRCUITS>;
+/// Output label ciphertexts for all `N_CIRCUITS` garbling tables.
+pub type AllOutputLabelCts = HeapArray<Byte32, N_CIRCUITS>;
 
 /// Challenged `N_COEFFICIENTS` indices. Must NOT include reserved index 0.
 /// Uses HeapArray for derive macro support.

@@ -35,6 +35,16 @@ pub const ROW_TAG_DEPOSIT_ADAPTOR_CHUNK: u8 = 0x0C;
 pub const ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK: u8 = 0x0D;
 /// Row tag for completed signatures by deposit id.
 pub const ROW_TAG_COMPLETED_SIGNATURES: u8 = 0x0E;
+/// Row tag for AES128 key by circuit index.
+pub const ROW_TAG_AES128_KEY: u8 = 0x0F;
+/// Row tag for public S by circuit index.
+pub const ROW_TAG_PUBLIC_S: u8 = 0x10;
+/// Row tag for constant-zero label by circuit index.
+pub const ROW_TAG_CONSTANT_ZERO_LABEL: u8 = 0x11;
+/// Row tag for constant-one label by circuit index.
+pub const ROW_TAG_CONSTANT_ONE_LABEL: u8 = 0x12;
+/// Row tag for output label ciphertext by evaluation-circuit index.
+pub const ROW_TAG_OUTPUT_LABEL_CT: u8 = 0x13;
 
 pub use deposit::*;
 pub use protocol::*;

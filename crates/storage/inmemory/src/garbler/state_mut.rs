@@ -2,7 +2,7 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures,
     DepositId, DepositInputs, GarblingTableCommitment, Index, OutputPolynomialCommitment,
     Sighashes, WideLabelWirePolynomialCommitments, WithdrawalInputs,
-    state_machine::garbler::{DepositState, GarblerState, StateMut},
+    state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateMut},
 };
 
 use super::StoredGarblerState;
@@ -63,6 +63,28 @@ impl StateMut for StoredGarblerState {
             .checked_sub(1)
             .ok_or(DbError::UnexpectedZeroIndex)?;
         self.gt_commitments.insert(zero_offset_index, *commitments);
+        Ok(())
+    }
+
+    async fn put_garbling_table_metadata(
+        &mut self,
+        index: Index,
+        metadata: &GarblingMetadata,
+    ) -> Result<(), Self::Error> {
+        let zero_offset_index = index
+            .get()
+            .checked_sub(1)
+            .ok_or(DbError::UnexpectedZeroIndex)?;
+        self.aes128_keys
+            .insert(zero_offset_index, metadata.aes128_key);
+        self.public_s_values
+            .insert(zero_offset_index, metadata.public_s);
+        self.constant_zero_labels
+            .insert(zero_offset_index, metadata.constant_zero_label);
+        self.constant_one_labels
+            .insert(zero_offset_index, metadata.constant_one_label);
+        self.output_label_cts
+            .insert(zero_offset_index, metadata.output_label_ct);
         Ok(())
     }
 

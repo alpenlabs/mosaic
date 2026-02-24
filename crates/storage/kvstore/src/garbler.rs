@@ -4,14 +4,15 @@ use std::ops::Bound;
 
 use futures::{Stream, StreamExt, stream};
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
-    CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs,
-    GarblingTableCommitment, HeapArray, InputPolynomialCommitments, InputShares,
+    AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
+    AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, GarblingTableCommitment, HeapArray, InputPolynomialCommitments, InputShares,
     OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::{
         StateMachineId,
-        garbler::{DepositState, GarblerState, StateMut, StateRead},
+        garbler::{DepositState, GarblerState, GarblingMetadata, StateMut, StateRead},
     },
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
@@ -26,11 +27,13 @@ use crate::{
             CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey,
         },
         garbler::{
-            ChallengeIndicesRowSpec, CompletedSignaturesRowSpec, DepositAdaptorChunkRowSpec,
+            Aes128KeyRowSpec, ChallengeIndicesRowSpec, CompletedSignaturesRowSpec,
+            ConstantOneLabelRowSpec, ConstantZeroLabelRowSpec, DepositAdaptorChunkRowSpec,
             DepositInputsRowSpec, DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
             GarblingTableCommitmentRowSpec, InputPolynomialCommitmentChunkRowSpec,
-            InputShareRowSpec, OutputPolynomialCommitmentRowSpec, OutputShareRowSpec, RootStateKey,
-            RootStateRowSpec, WithdrawalAdaptorChunkRowSpec, WithdrawalInputRowSpec,
+            InputShareRowSpec, OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec,
+            OutputShareRowSpec, PublicSRowSpec, RootStateKey, RootStateRowSpec,
+            WithdrawalAdaptorChunkRowSpec, WithdrawalInputRowSpec,
         },
     },
     storage_error::StorageError,
@@ -304,6 +307,48 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
         .await
     }
 
+    async fn get_all_aes128_keys(&self) -> Result<Option<AllAes128Keys>, Self::Error> {
+        self.collect_fixed_array_row::<Aes128KeyRowSpec, [u8; 16], _, N_CIRCUITS>(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected garbling metadata aes128 key",
+        )
+        .await
+    }
+
+    async fn get_all_public_s_values(&self) -> Result<Option<AllPublicSValues>, Self::Error> {
+        self.collect_fixed_array_row::<PublicSRowSpec, [u8; 16], _, N_CIRCUITS>(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected garbling metadata public S",
+        )
+        .await
+    }
+
+    async fn get_all_constant_zero_labels(
+        &self,
+    ) -> Result<Option<AllConstZeroLabels>, Self::Error> {
+        self.collect_fixed_array_row::<ConstantZeroLabelRowSpec, [u8; 16], _, N_CIRCUITS>(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected garbling metadata constant-zero label",
+        )
+        .await
+    }
+
+    async fn get_all_constant_one_labels(&self) -> Result<Option<AllConstOneLabels>, Self::Error> {
+        self.collect_fixed_array_row::<ConstantOneLabelRowSpec, [u8; 16], _, N_CIRCUITS>(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected garbling metadata constant-one label",
+        )
+        .await
+    }
+
+    async fn get_all_output_label_cts(&self) -> Result<Option<AllOutputLabelCts>, Self::Error> {
+        self.collect_fixed_array_row::<OutputLabelCtRowSpec, mosaic_common::Byte32, _, N_CIRCUITS>(
+            |idx| CircuitIndexKey::new(idx as u16),
+            "missing expected garbling metadata output label ciphertext",
+        )
+        .await
+    }
+
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {
         self.get_value::<ChallengeIndicesRowSpec>(&ProtocolSingletonKey)
             .await
@@ -449,6 +494,25 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
             commitments,
         )
         .await
+    }
+
+    async fn put_garbling_table_metadata(
+        &mut self,
+        index: Index,
+        metadata: &GarblingMetadata,
+    ) -> Result<(), Self::Error> {
+        let ckt_idx = Self::index_to_zero_based_u16(index)?;
+        let key = CircuitIndexKey::new(ckt_idx);
+        self.put_value::<Aes128KeyRowSpec>(&key, &metadata.aes128_key)
+            .await?;
+        self.put_value::<PublicSRowSpec>(&key, &metadata.public_s)
+            .await?;
+        self.put_value::<ConstantZeroLabelRowSpec>(&key, &metadata.constant_zero_label)
+            .await?;
+        self.put_value::<ConstantOneLabelRowSpec>(&key, &metadata.constant_one_label)
+            .await?;
+        self.put_value::<OutputLabelCtRowSpec>(&key, &metadata.output_label_ct)
+            .await
     }
 
     async fn put_challenge_indices(
