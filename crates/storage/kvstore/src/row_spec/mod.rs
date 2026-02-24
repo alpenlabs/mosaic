@@ -4,7 +4,9 @@ use std::{error::Error, fmt::Debug};
 
 use crate::keyspace::KeyDomain;
 
+pub mod common;
 pub mod error;
+pub mod evaluator;
 pub mod garbler;
 
 /// Specification for one logical KV row (domain, row tag, key, and value).

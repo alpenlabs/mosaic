@@ -22,14 +22,15 @@ use crate::{
     kvstore::KvStore,
     row_spec::{
         KVRowSpec, SerializableValue,
+        common::{
+            CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey,
+        },
         garbler::{
-            ChallengeIndicesRowSpec, CircuitIndexKey, CompletedSignaturesRowSpec,
-            DepositAdaptorChunkRowSpec, DepositChunkKey, DepositInputsRowSpec, DepositKey,
-            DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
+            ChallengeIndicesRowSpec, CompletedSignaturesRowSpec, DepositAdaptorChunkRowSpec,
+            DepositInputsRowSpec, DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
             GarblingTableCommitmentRowSpec, InputPolynomialCommitmentChunkRowSpec,
-            InputShareRowSpec, OutputPolynomialCommitmentRowSpec, OutputShareRowSpec,
-            ProtocolSingletonKey, RootStateKey, RootStateRowSpec, WireIndexKey,
-            WithdrawalAdaptorChunkRowSpec, WithdrawalInputRowSpec,
+            InputShareRowSpec, OutputPolynomialCommitmentRowSpec, OutputShareRowSpec, RootStateKey,
+            RootStateRowSpec, WithdrawalAdaptorChunkRowSpec, WithdrawalInputRowSpec,
         },
     },
 };

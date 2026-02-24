@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Evaluator state machine root state.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvaluatorState {
     /// Immutable evaluator config set at init.
     pub config: Option<Config>,
@@ -16,7 +16,7 @@ pub struct EvaluatorState {
 }
 
 /// Immutable state that is set during init and never updated
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     /// Base seed for all deterministic rngs used in this statemachine.
     pub seed: Seed,
