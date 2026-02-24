@@ -1,4 +1,4 @@
-//! In-memory [`KvStore`](crate::kvstore::KvStore) backed by [`std::collections::BTreeMap`].
+//! In-memory [`KvStore`] backed by [`std::collections::BTreeMap`].
 //!
 //! This implementation is intended for tests, local development, and simple
 //! single-process execution.
