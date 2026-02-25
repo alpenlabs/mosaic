@@ -6,16 +6,23 @@
 //! ## Characteristics
 //! - In-memory only (data is lost when dropped)
 //! - Deterministic key ordering
-//! - Error type is [`std::convert::Infallible`]
+//! - Error type indicates lock poisoning
 
 use std::{
     collections::BTreeMap,
-    convert::Infallible,
     ops::Bound,
     sync::{Arc, RwLock},
 };
 
 use crate::kvstore::{KvPair, KvStore, KvStream};
+
+/// Errors returned by [`BTreeMapKvStore`].
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub enum BTreeMapKvStoreError {
+    /// The underlying lock was poisoned by a panic while held.
+    #[error("btreemap store lock was poisoned")]
+    PoisonedLock,
+}
 
 /// In-memory key-value store using a `BTreeMap<Vec<u8>, Vec<u8>>`.
 #[derive(Debug, Default, Clone)]
@@ -37,7 +44,7 @@ impl BTreeMapKvStore {
         }
     }
 
-    fn stream_from_pairs<'a>(pairs: Vec<KvPair>, idx: usize) -> KvStream<'a, Infallible> {
+    fn stream_from_pairs<'a>(pairs: Vec<KvPair>, idx: usize) -> KvStream<'a, BTreeMapKvStoreError> {
         KvStream::new(async move {
             match pairs.get(idx).cloned() {
                 Some(pair) => Ok(Some((pair, Self::stream_from_pairs(pairs, idx + 1)))),
@@ -49,13 +56,13 @@ impl BTreeMapKvStore {
 
 #[async_trait::async_trait]
 impl KvStore for BTreeMapKvStore {
-    type Error = Infallible;
+    type Error = BTreeMapKvStoreError;
 
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
         let data = self
             .data
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .map_err(|_| BTreeMapKvStoreError::PoisonedLock)?;
         Ok(data.get(key).cloned())
     }
 
@@ -63,7 +70,7 @@ impl KvStore for BTreeMapKvStore {
         let mut data = self
             .data
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .map_err(|_| BTreeMapKvStoreError::PoisonedLock)?;
         data.insert(key.to_vec(), value.to_vec());
         Ok(())
     }
@@ -72,7 +79,7 @@ impl KvStore for BTreeMapKvStore {
         let mut data = self
             .data
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .map_err(|_| BTreeMapKvStoreError::PoisonedLock)?;
         data.remove(key);
         Ok(())
     }
@@ -88,7 +95,11 @@ impl KvStore for BTreeMapKvStore {
         let data = self
             .data
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .map_err(|_| BTreeMapKvStoreError::PoisonedLock);
+        let data = match data {
+            Ok(data) => data,
+            Err(err) => return KvStream::new(async move { Err(err) }),
+        };
         let mut pairs: Vec<KvPair> = data
             .range((start, end))
             .map(|(key, value)| KvPair {
@@ -114,7 +125,7 @@ impl KvStore for BTreeMapKvStore {
         let mut data = self
             .data
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .map_err(|_| BTreeMapKvStoreError::PoisonedLock)?;
         let keys_to_remove: Vec<Vec<u8>> =
             data.range((start, end)).map(|(k, _)| k.clone()).collect();
 
