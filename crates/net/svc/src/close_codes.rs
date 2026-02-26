@@ -13,6 +13,7 @@
 //! | 2    | Unknown/unauthorized peer                    |
 //! | 3    | Invalid peer ID in certificate (outbound)    |
 //! | 4    | Peer ID mismatch (connected to wrong peer)   |
+//! | 5    | Invalid overlap key metadata                 |
 
 use quinn::VarInt;
 
@@ -44,3 +45,9 @@ pub const CLOSE_INVALID_PEER_ID_OUTBOUND: VarInt = VarInt::from_u32(3);
 /// We connected to a peer, but their certificate contains a different peer ID
 /// than we expected. This could indicate a misconfiguration or MITM attempt.
 pub const CLOSE_PEER_ID_MISMATCH: VarInt = VarInt::from_u32(4);
+
+/// Invalid overlap key metadata on incoming connection.
+///
+/// The client did not present a parseable overlap-key server name, so the
+/// connection cannot participate in deterministic race resolution.
+pub const CLOSE_INVALID_OVERLAP_KEY: VarInt = VarInt::from_u32(5);

@@ -34,7 +34,7 @@ use std::{
 use ahash::{HashMap, HashMapExt};
 use kanal::{AsyncReceiver, AsyncSender, bounded_async};
 use quinn::{Endpoint, ServerConfig};
-use state::{ServiceEvent, ServiceState, TrackedConnection};
+use state::{OpenRequestCancelRegistry, PeerConnectionState, ServiceEvent, ServiceState};
 use tokio::runtime::Builder;
 
 use crate::{
@@ -279,28 +279,41 @@ async fn run_service_async(
     // Signal successful startup now that endpoint + TLS config are created.
     let _ = startup_tx.send(Ok(())).await;
 
-    // Internal event channel for tasks to communicate back to main loop
-    let (event_tx, event_rx) = bounded_async::<ServiceEvent>(256);
+    // Internal event channel for spawned tasks to communicate back to main loop.
+    // Unbounded is used to prevent race-resolution liveness from depending on
+    // bounded internal backpressure.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<ServiceEvent>();
 
     // Main service state (owned by this task, no mutex needed)
     let mut state = ServiceState {
         config: config.clone(),
         endpoint: endpoint.clone(),
         client_config,
-        connections: HashMap::<PeerId, TrackedConnection>::new(),
+        peer_states: HashMap::<PeerId, PeerConnectionState>::new(),
         bulk_expectations: HashMap::new(),
         protocol_stream_tx,
         pending_reconnects: Vec::new(),
-        connecting: hashbrown::HashSet::new(),
         pending_stream_requests: HashMap::new(),
+        open_request_states: HashMap::new(),
+        in_flight_open_responders: HashMap::new(),
+        open_request_cancels: Arc::new(OpenRequestCancelRegistry::new()),
+        pending_incoming_by_id: HashMap::new(),
+        pending_incoming_by_peer: HashMap::new(),
+        resolved_incoming_candidate_ids: ahash::HashSet::default(),
         event_tx: event_tx.clone(),
+        next_outbound_attempt_id: 1,
+        next_overlap_key: 1,
+        next_connection_generation: 1,
+        resolved_outbound_attempt_by_peer: HashMap::new(),
     };
 
     // Schedule initial connections to all peers.
-    //
-    // NOTE: We also need to arm the reconnect timer based on the earliest deadline.
     let now = tokio::time::Instant::now();
     for peer_config in config.peers.iter() {
+        state
+            .peer_states
+            .entry(peer_config.peer_id)
+            .or_insert(PeerConnectionState::Idle);
         state.pending_reconnects.push((peer_config.peer_id, now));
     }
 
@@ -309,17 +322,16 @@ async fn run_service_async(
     // Using a fixed 1s ticker makes reconnection effectively quantized to 1s even if
     // `reconnect_backoff` is much smaller. Instead, drive reconnect attempts off the
     // earliest pending reconnect deadline.
-    let reconnect_sleep = tokio::time::sleep(Duration::from_secs(3600));
+    let reconnect_sleep = tokio::time::sleep(handlers::idle_housekeeping_sleep());
     tokio::pin!(reconnect_sleep);
 
-    // Arm reconnect timer for the first time.
-    if let Some((_peer, next)) = state.pending_reconnects.iter().min_by_key(|(_p, t)| *t) {
-        reconnect_sleep.as_mut().reset(*next);
+    // Arm housekeeping timer for the first time.
+    if let Some(next) = handlers::next_wakeup_deadline(&state) {
+        reconnect_sleep.as_mut().reset(next);
     } else {
-        // No reconnects pending; sleep far in the future.
         reconnect_sleep
             .as_mut()
-            .reset(tokio::time::Instant::now() + Duration::from_secs(3600));
+            .reset(tokio::time::Instant::now() + handlers::idle_housekeeping_sleep());
     }
 
     tracing::info!(
@@ -328,35 +340,74 @@ async fn run_service_async(
         "network service started"
     );
 
+    let mut addr_candidates = HashMap::<std::net::SocketAddr, Option<PeerId>>::new();
+    let mut port_candidates = HashMap::<u16, Option<PeerId>>::new();
+    let mut ip_candidates = HashMap::<std::net::IpAddr, Option<PeerId>>::new();
+    for peer in state.config.peers.iter() {
+        let normalized = tasks::normalize_socket_addr(peer.addr);
+        addr_candidates
+            .entry(normalized)
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(peer.peer_id));
+        port_candidates
+            .entry(normalized.port())
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(peer.peer_id));
+        ip_candidates
+            .entry(normalized.ip())
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(peer.peer_id));
+    }
+    let peer_by_addr = Arc::new(
+        addr_candidates
+            .into_iter()
+            .filter_map(|(addr, maybe_peer)| maybe_peer.map(|peer| (addr, peer)))
+            .collect::<HashMap<_, _>>(),
+    );
+    let peer_by_port = Arc::new(
+        port_candidates
+            .into_iter()
+            .filter_map(|(port, maybe_peer)| maybe_peer.map(|peer| (port, peer)))
+            .collect::<HashMap<_, _>>(),
+    );
+    let peer_by_ip = Arc::new(
+        ip_candidates
+            .into_iter()
+            .filter_map(|(ip, maybe_peer)| maybe_peer.map(|peer| (ip, peer)))
+            .collect::<HashMap<_, _>>(),
+    );
+
+    // Dedicated accept loop so accept timestamps are captured at source.
+    tasks::spawn_accept_loop(
+        endpoint.clone(),
+        allowed_peers.clone(),
+        peer_by_addr,
+        peer_by_port,
+        peer_by_ip,
+        event_tx.clone(),
+    );
+
     // Main event loop - NEVER blocks on I/O, only receives and dispatches
     loop {
-        // Re-arm reconnect timer each iteration based on the earliest pending deadline.
-        // (Cheap: peer counts are small; if this grows, we can switch to a binary heap.)
-        if let Some((_peer, next)) = state.pending_reconnects.iter().min_by_key(|(_p, t)| *t) {
-            reconnect_sleep.as_mut().reset(*next);
+        // Re-arm timer from the earliest reconnect deadline.
+        if let Some(next) = handlers::next_wakeup_deadline(&state) {
+            reconnect_sleep.as_mut().reset(next);
         } else {
-            // No reconnects pending; sleep far in the future.
             reconnect_sleep
                 .as_mut()
-                .reset(tokio::time::Instant::now() + Duration::from_secs(3600));
+                .reset(tokio::time::Instant::now() + handlers::idle_housekeeping_sleep());
         }
 
+        // Fair select for command/event processing to avoid starvation.
         tokio::select! {
-            biased;  // Always check shutdown first
-
-            // Handle shutdown signal - highest priority
             _ = shutdown_rx.recv() => {
                 tracing::info!("shutdown signal received");
                 break;
             }
 
-            // Accept incoming connections - just spawns task, doesn't await handshake
-            Some(incoming) = endpoint.accept() => {
-                tasks::spawn_incoming_connection_handler(
-                    incoming,
-                    allowed_peers.clone(),
-                    event_tx.clone(),
-                );
+            // Deadline-driven reconnect housekeeping.
+            _ = &mut reconnect_sleep => {
+                handlers::process_pending_reconnects(&mut state);
             }
 
             // Handle commands from handles - dispatches to tasks, never blocks
@@ -365,13 +416,8 @@ async fn run_service_async(
             }
 
             // Handle events from spawned tasks - just updates state, never blocks
-            Ok(event) = event_rx.recv() => {
+            Some(event) = event_rx.recv() => {
                 handlers::handle_event(event, &mut state);
-            }
-
-            // Deadline-driven reconnection attempts - spawns tasks, doesn't await.
-            _ = &mut reconnect_sleep => {
-                handlers::process_pending_reconnects(&mut state);
             }
         }
     }
@@ -379,15 +425,27 @@ async fn run_service_async(
     // Graceful shutdown
     tracing::info!("shutting down network service");
 
-    // Close all active connections - this will cause connection monitors to exit
-    for (_peer, conn) in state.connections.drain() {
-        conn.connection.close(CLOSE_NORMAL, b"shutdown");
+    // Close active/provisional connections - this will cause monitors to exit.
+    for (_peer, conn_state) in state.peer_states.drain() {
+        match conn_state {
+            PeerConnectionState::ActiveStable { connection } => {
+                if connection.connection.close_reason().is_none() {
+                    connection.connection.close(CLOSE_NORMAL, b"shutdown");
+                }
+            }
+            PeerConnectionState::Race { provisional, .. } => {
+                if provisional.connection.close_reason().is_none() {
+                    provisional.connection.close(CLOSE_NORMAL, b"shutdown");
+                }
+            }
+            PeerConnectionState::Idle | PeerConnectionState::ConnectingOutbound { .. } => {}
+        }
     }
 
     // Clear pending state
     state.pending_reconnects.clear();
-    state.connecting.clear();
     state.pending_stream_requests.clear();
+    state.open_request_states.clear();
 
     // Close endpoint
     endpoint.close(CLOSE_NORMAL, b"shutdown");

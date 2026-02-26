@@ -11,8 +11,8 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-mosaic-storage-api.workspace = true
 mosaic-common.workspace = true
+mosaic-storage-api.workspace = true
 
 bytes = "1.10"
 futures = "0.3"
