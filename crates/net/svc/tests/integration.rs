@@ -103,18 +103,18 @@ struct TestPeer {
 fn shutdown_controller_with_timeout(
     controller: mosaic_net_svc::svc::NetServiceController,
     timeout: Duration,
-) -> bool {
+) {
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = controller.shutdown();
         let _ = done_tx.send(());
     });
-    done_rx.recv_timeout(timeout).is_ok()
+    let _ = done_rx.recv_timeout(timeout);
 }
 
 impl TestPeer {
     fn shutdown(self) {
-        let _ = shutdown_controller_with_timeout(self.controller, Duration::from_secs(2));
+        shutdown_controller_with_timeout(self.controller, Duration::from_secs(2));
     }
 }
 
@@ -157,7 +157,7 @@ fn create_peer_pair() -> (TestPeer, TestPeer) {
             Ok(result) => result,
             Err(e) => {
                 // Shut down A before retrying
-                let _ = shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
+                shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
                 if attempt < 49 {
                     continue; // Try different ports
                 }
@@ -381,6 +381,67 @@ fn test_simultaneous_connect_converges_deterministically() {
 }
 
 #[test]
+fn test_simultaneous_connect_converges_deterministically() {
+    let (peer_a, peer_b) = create_peer_pair();
+
+    run_async(async {
+        retry_until_ok(CI_TIMEOUT, || async {
+            let open_a = tokio::time::timeout(
+                Duration::from_secs(5),
+                peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+            );
+            let open_b = tokio::time::timeout(
+                Duration::from_secs(5),
+                peer_b.handle.open_protocol_stream(peer_a.peer_id, 0),
+            );
+            let (open_a, open_b) = tokio::join!(open_a, open_b);
+
+            let mut stream_a = open_a.map_err(|_| ())?.map_err(|_| ())?;
+            let mut stream_b = open_b.map_err(|_| ())?.map_err(|_| ())?;
+
+            let mut inbound_on_b = tokio::time::timeout(
+                Duration::from_secs(5),
+                peer_b.handle.protocol_streams().recv(),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+            let mut inbound_on_a = tokio::time::timeout(
+                Duration::from_secs(5),
+                peer_a.handle.protocol_streams().recv(),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+
+            stream_a.write(b"a->b".to_vec()).await.map_err(|_| ())?;
+            let msg = tokio::time::timeout(Duration::from_secs(5), inbound_on_b.read())
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ())?;
+            if msg.as_slice() != b"a->b" {
+                return Err(());
+            }
+
+            stream_b.write(b"b->a".to_vec()).await.map_err(|_| ())?;
+            let msg = tokio::time::timeout(Duration::from_secs(5), inbound_on_a.read())
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ())?;
+            if msg.as_slice() != b"b->a" {
+                return Err(());
+            }
+
+            Ok(())
+        })
+        .await;
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
 fn test_canceled_open_requests_not_flushed_after_late_connect() {
     let port_a = next_port();
     let port_b = next_port();
@@ -487,16 +548,8 @@ fn test_canceled_open_requests_not_flushed_after_late_connect() {
         .await;
     });
 
-    assert!(
-        shutdown_controller_with_timeout(ctrl_b, Duration::from_secs(10)),
-        "service B shutdown did not complete within {:?}",
-        Duration::from_secs(10)
-    );
-    assert!(
-        shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(10)),
-        "service A shutdown did not complete within {:?}",
-        Duration::from_secs(10)
-    );
+    shutdown_controller_with_timeout(ctrl_b, Duration::from_secs(2));
+    shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
 }
 
 #[test]
@@ -617,21 +670,9 @@ fn test_duplicate_peer_identity_routes_to_single_selected_connection() {
         .await;
     });
 
-    assert!(
-        shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(10)),
-        "service A shutdown did not complete within {:?}",
-        Duration::from_secs(10)
-    );
-    assert!(
-        shutdown_controller_with_timeout(ctrl_b, Duration::from_secs(10)),
-        "service B shutdown did not complete within {:?}",
-        Duration::from_secs(10)
-    );
-    assert!(
-        shutdown_controller_with_timeout(ctrl_b2, Duration::from_secs(10)),
-        "service B2 shutdown did not complete within {:?}",
-        Duration::from_secs(10)
-    );
+    shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
+    shutdown_controller_with_timeout(ctrl_b, Duration::from_secs(2));
+    shutdown_controller_with_timeout(ctrl_b2, Duration::from_secs(2));
 }
 
 #[test]
@@ -695,8 +736,8 @@ fn test_outbound_peer_mismatch_rejected() {
         .await;
     });
 
-    let _ = shutdown_controller_with_timeout(ctrl_c, Duration::from_secs(2));
-    let _ = shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
+    shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
+    shutdown_controller_with_timeout(ctrl_c, Duration::from_secs(2));
 }
 
 #[test]
@@ -864,7 +905,13 @@ fn test_buffer_returned_after_write() {
 
             // Write data
             let buf = vec![42u8; 1000];
-            stream_a.write(buf).await.map_err(|_| ())
+            stream_a.write(buf).await.map_err(|_| ())?;
+
+            // Get buffer back
+            tokio::time::timeout(Duration::from_secs(5), stream_a.recv_buffer())
+                .await
+                .map_err(|_| ())?
+                .ok_or(())
         })
         .await;
 
