@@ -18,7 +18,7 @@ use crate::{
     Adaptor, AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CommitMsgChunk,
     CommitMsgHeader, DepositId, Msg, OpenedGarblingSeeds, OpenedOutputShares, PubKey,
-    ReservedSetupInputShares, SecretKey, Sighash, Signature, WideLabelWireAdaptors,
+    ReservedSetupInputShares, SecretKey, Seed, Sighash, Signature, WideLabelWireAdaptors,
     WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptorsChunk,
 };
 
@@ -229,13 +229,14 @@ fn arb_challenge_response_msg_header() -> impl Strategy<Value = ChallengeRespons
         let single_scalar = Scalar::from_le_bytes_mod_order(&bytes);
         let idx = Index::new(1).unwrap_or(Index::reserved());
         let share = Share::new(idx, single_scalar);
-        let seed_bytes: Byte32 = bytes.into();
+        let seed: Seed = bytes.into();
+        let bytes: Byte32 = bytes.into();
 
         ChallengeResponseMsgHeader {
             reserved_setup_input_shares: ReservedSetupInputShares::new(|_| share),
             opened_output_shares: OpenedOutputShares::new(|_| share),
-            opened_garbling_seeds: OpenedGarblingSeeds::new(|_| seed_bytes),
-            unchallenged_output_label_cts: HeapArray::from_elem(seed_bytes),
+            opened_garbling_seeds: OpenedGarblingSeeds::new(|_| seed),
+            unchallenged_output_label_cts: HeapArray::from_elem(bytes),
         }
     })
 }

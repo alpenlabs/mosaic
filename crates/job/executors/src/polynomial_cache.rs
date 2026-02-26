@@ -300,7 +300,6 @@ impl std::fmt::Debug for PolynomialCache {
 #[cfg(test)]
 mod tests {
     use mosaic_cac_types::{InputPolynomials, OutputPolynomial};
-    use mosaic_common::Byte32;
     use mosaic_heap_array::HeapArray;
     use mosaic_vs3::Polynomial;
     use rand::SeedableRng;
@@ -318,7 +317,7 @@ mod tests {
     }
 
     fn test_seed(v: u8) -> Seed {
-        Byte32::from([v; 32])
+        Seed::from([v; 32])
     }
 
     #[test]

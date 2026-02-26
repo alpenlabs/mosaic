@@ -167,13 +167,12 @@ impl JobQueue {
 
 #[cfg(test)]
 mod tests {
-    use mosaic_cac_types::state_machine::garbler::Wire;
+    use mosaic_cac_types::{Seed, state_machine::garbler::Wire};
 
     use super::*;
 
     fn dummy_job(priority: Priority) -> PoolJob {
         use mosaic_cac_types::state_machine::garbler::Action as GarblerAction;
-        use mosaic_common::Byte32;
 
         use crate::pool::worker::WorkerJob;
 
@@ -182,7 +181,7 @@ mod tests {
             job: WorkerJob::Garbler {
                 peer_id: mosaic_net_svc_api::PeerId::from_bytes([0u8; 32]),
                 action: GarblerAction::GeneratePolynomialCommitments(
-                    Byte32::from([0u8; 32]),
+                    Seed::from([0u8; 32]),
                     Wire::Output,
                 ),
             },

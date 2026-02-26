@@ -20,8 +20,8 @@ fn test_peer_id() -> PeerId {
     PeerId::from_bytes([1u8; 32])
 }
 
-fn test_seed() -> mosaic_common::Byte32 {
-    mosaic_common::Byte32::from([42u8; 32])
+fn test_seed() -> mosaic_cac_types::Seed {
+    mosaic_cac_types::Seed::from([42u8; 32])
 }
 
 fn garbler_batch_with(

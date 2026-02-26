@@ -15,6 +15,7 @@ use criterion as _;
 mod adaptor;
 mod msgs;
 mod protocol;
+mod seed;
 pub mod state_machine;
 
 pub use adaptor::*;
@@ -22,13 +23,11 @@ use mosaic_common::{Byte32, impl_serde_ark};
 use mosaic_vs3::{Point, Scalar};
 pub use msgs::*;
 pub use protocol::*;
+pub use seed::Seed;
 use serde::{Deserialize, Serialize};
 
 /// Commitment to a Garbling Table
 pub type GarblingTableCommitment = Byte32;
-
-/// Seed for deterministic Garbling Table generation
-pub type Seed = Byte32;
 
 /// Unique deposit id.
 #[derive(
