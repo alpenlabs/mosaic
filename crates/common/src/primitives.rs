@@ -18,6 +18,18 @@ use serde::{Deserialize, Serialize};
 )]
 pub struct Byte32([u8; 32]);
 
+impl Byte32 {
+    /// inner bytes
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Create [`Byte32`] from bytes.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
 impl AsRef<[u8]> for Byte32 {
     fn as_ref(&self) -> &[u8] {
         &self.0

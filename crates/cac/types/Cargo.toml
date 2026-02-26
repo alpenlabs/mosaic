@@ -22,9 +22,9 @@ ark-ff.workspace = true
 ark-serialize.workspace = true
 fasm.workspace = true
 futures.workspace = true
+hex.workspace = true
 rand.workspace = true
 serde.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

@@ -292,7 +292,7 @@ impl KvStore for BTreeMapScopedKvStore {
 ///
 /// Format: `[KEY_SCHEMA_VERSION][domain_byte][peer_id_bytes (32)]` = 34 bytes.
 fn build_prefix(peer_id: &PeerId, domain: KeyDomain) -> Vec<u8> {
-    let mut prefix = Vec::with_capacity(34);
+    let mut prefix = Vec::with_capacity(98);
     prefix.push(KEY_SCHEMA_VERSION);
     prefix.push(domain.to_u8());
     prefix.extend_from_slice(&peer_id.to_bytes());

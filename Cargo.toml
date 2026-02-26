@@ -114,6 +114,7 @@ foundationdb = { git = "https://github.com/foundationdb-rs/foundationdb-rs.git",
   "fdb-7_3",
 ] }
 futures = "0.3.31"
+hex = { version = "0.4.3", features = ["serde"] }
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
 jsonrpsee-types = "*" # constrained by jsonrpsee dep
 k256 = "0.13.4"
