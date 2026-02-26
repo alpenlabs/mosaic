@@ -150,7 +150,7 @@ pub(crate) async fn handle_send_commit_msg_header<SP: StorageProvider, TS: Table
     // with the header's ActionId.
     let id = ActionId::SendCommitMsgHeader;
     match ctx.net_client.send(*peer_id, header.clone()).await {
-        Ok(_ack) => completed(id, ActionResult::CommitMsgChunkAcked),
+        Ok(_ack) => completed(id, ActionResult::CommitMsgHeaderAcked),
         Err(e) => {
             tracing::warn!(%e, "send commit msg header failed, will retry");
             HandlerOutcome::Retry

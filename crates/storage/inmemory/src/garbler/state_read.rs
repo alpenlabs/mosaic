@@ -7,7 +7,7 @@ use mosaic_cac_types::{
     DepositInputs, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
     InputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WithdrawalAdaptors, WithdrawalInputs,
-    state_machine::garbler::{DepositState, GarblerState, StateRead},
+    state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
 
@@ -133,6 +133,24 @@ impl StateRead for StoredGarblerState {
         }
 
         Ok(Some(HeapArray::from_vec(commitments)))
+    }
+
+    async fn get_all_garbling_table_metadata(
+        &self,
+    ) -> Result<Option<Vec<GarblingMetadata>>, Self::Error> {
+        if self.gt_metadata.is_empty() {
+            return Ok(None);
+        }
+
+        let mut metadata = Vec::new();
+        for ckt_idx in 0..N_CIRCUITS {
+            let data = self.gt_metadata.get(&ckt_idx).cloned().ok_or_else(|| {
+                DbError::state_inconsistency("missing expected garbling table metadata")
+            })?;
+            metadata.push(data);
+        }
+
+        Ok(Some(metadata))
     }
 
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {

@@ -788,7 +788,7 @@ async fn worker_loop(
 
 /// Convert a borrowed chunk of blocks from the circuit reader into an owned
 /// [`OwnedChunk`] suitable for sharing across workers via [`Arc`].
-fn convert_chunk(
+pub(crate) fn convert_chunk(
     reader_chunk: &ckt_fmtv5_types::v5::c::Chunk<'_>,
     total_gates: u64,
     block_idx: &mut usize,

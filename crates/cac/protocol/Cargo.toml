@@ -23,6 +23,15 @@ tokio = { version = "1", features = ["rt", "macros"] }
 mosaic-storage-inmemory.workspace = true
 rand_chacha.workspace = true
 rand.workspace = true
+mosaic-job-executors.workspace = true
+mosaic-storage-api.workspace = true
+mosaic-job-api.workspace = true
+mosaic-net-svc-api.workspace = true 
+mosaic-net-svc.workspace = true
+mosaic-net-client.workspace = true 
+ed25519-dalek = "2.2"
+mosaic-cac-types.workspace = true
+ckt-fmtv5-types.workspace = true
 
 [lints]
 workspace = true

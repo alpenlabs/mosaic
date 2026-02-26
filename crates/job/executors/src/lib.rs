@@ -83,6 +83,11 @@ impl<SP: StorageProvider, TS: TableStore> MosaicExecutor<SP, TS> {
             circuit_path,
         }
     }
+
+    /// update state
+    pub fn update_state(&mut self, storage: SP) {
+        self.storage = storage;
+    }
 }
 
 impl<SP: StorageProvider, TS: TableStore> std::fmt::Debug for MosaicExecutor<SP, TS> {

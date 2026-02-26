@@ -1,6 +1,7 @@
 use std::{error::Error, fmt::Debug};
 
 use futures::Stream;
+use mosaic_heap_array::HeapArray;
 
 use super::{DepositState, GarblerState};
 use crate::{
@@ -9,6 +10,7 @@ use crate::{
     GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
     OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
+    state_machine::garbler::GarblingMetadata,
 };
 
 /// Read-only access to garbler state storage.
@@ -67,6 +69,11 @@ pub trait StateRead {
     fn get_all_garbling_table_commitments(
         &self,
     ) -> impl Future<Output = Result<Option<AllGarblingTableCommitments>, Self::Error>> + Send;
+
+    /// Retrieves all garbling table metadata.
+    fn get_all_garbling_table_metadata(
+        &self,
+    ) -> impl Future<Output = Result<Option<Vec<GarblingMetadata>>, Self::Error>> + Send;
 
     /// Retrieves the challenge indices used in verification.
     fn get_challenge_indices(
@@ -151,6 +158,13 @@ pub trait StateMut: StateRead {
         &mut self,
         index: Index,
         commitments: &GarblingTableCommitment,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Stores garbling metadata
+    fn pub_garbling_metadata(
+        &mut self,
+        index: Index,
+        data: &GarblingMetadata,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stores the challenge indices used in verification.

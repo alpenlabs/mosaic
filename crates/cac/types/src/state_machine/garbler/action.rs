@@ -1,5 +1,6 @@
 use fasm::actions::TrackedActionTypes;
 use mosaic_common::Byte32;
+use mosaic_heap_array::HeapArray;
 use mosaic_vs3::Index;
 
 use crate::{
@@ -68,7 +69,7 @@ impl PartialOrd for ActionId {
 ///
 /// Delivered to the STF via [`fasm::Input::TrackedActionCompleted`] alongside
 /// the corresponding [`ActionId`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ActionResult {
     /// Polynomial commitments were generated from the base seed.
@@ -78,6 +79,8 @@ pub enum ActionResult {
     /// Garbling table commitment was generated for a circuit, along with
     /// garbling metadata needed for [`CommitMsgHeader`] construction.
     TableCommitmentGenerated(Index, GarblingTableCommitment, GarblingMetadata),
+    /// Commit message chunk was sent and acknowledged by the evaluator.
+    CommitMsgHeaderAcked,
     /// Commit message chunk was sent and acknowledged by the evaluator.
     CommitMsgChunkAcked,
     /// Challenge response chunk was sent and acknowledged by the evaluator.
@@ -184,7 +187,7 @@ pub enum Wire {
 }
 
 /// Identifies an input or output wire.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GeneratedPolynomialCommitments {
     /// Polynomial commitments for all wide label values for an input wire.
     Input {

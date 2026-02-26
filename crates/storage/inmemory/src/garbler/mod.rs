@@ -9,7 +9,7 @@ use mosaic_cac_types::{
     Adaptor, ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures,
     DepositId, DepositInputs, GarblingTableCommitment, OutputPolynomialCommitment, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
-    state_machine::garbler::{DepositState, GarblerState},
+    state_machine::garbler::{DepositState, GarblerState, GarblingMetadata},
 };
 
 use crate::error::DbError;
@@ -29,6 +29,8 @@ pub struct StoredGarblerState {
     pub output_shares: BTreeMap<usize, CircuitOutputShare>,
     /// Garbling table commitments indexed by circuit.
     pub gt_commitments: BTreeMap<usize, GarblingTableCommitment>,
+    /// Garbling table commitments indexed by circuit.
+    pub gt_metadata: BTreeMap<usize, GarblingMetadata>,
     /// Challenge indices for verification using CaC.
     pub challenge_indices: Option<ChallengeIndices>,
     /// Per-deposit state indexed by `DepositId`.

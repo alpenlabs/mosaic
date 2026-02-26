@@ -57,6 +57,8 @@ pub enum Step {
     /// Got table commitments, sending commit msg chunks.
     /// Transitions to WaitingForChallenge when all chunks are acked.
     SendingCommit {
+        /// Track when commit header has been acked
+        header_acked: bool,
         /// Track which commit msg chunks have been acked.
         acked: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
     },

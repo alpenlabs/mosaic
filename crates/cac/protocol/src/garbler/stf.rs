@@ -4,9 +4,9 @@ use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices,
-    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments, InputShares,
-    OutputShares, Seed, SetupInputs, state_machine::garbler::*,
+    CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
+    EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
+    InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
 };
 use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES};
 
@@ -268,9 +268,24 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             )
             .await?;
         }
+        ActionResult::CommitMsgHeaderAcked => match &mut root_state.step {
+            Step::SendingCommit {
+                header_acked,
+                acked: _,
+            } => {
+                let ActionId::SendCommitMsgHeader = id else {
+                    return Err(SMError::invalid_input_data());
+                };
+                *header_acked = true;
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
         ActionResult::CommitMsgChunkAcked => {
             match &mut root_state.step {
-                Step::SendingCommit { acked } => {
+                Step::SendingCommit {
+                    header_acked,
+                    acked,
+                } => {
                     let ActionId::SendCommitMsgChunk(wire_index) = id else {
                         return Err(SMError::invalid_input_data());
                     };
@@ -282,7 +297,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     acked[idx] = true;
 
-                    if acked.all() {
+                    if acked.all() && *header_acked {
                         root_state.step = Step::WaitingForChallenge;
                     }
                 }
@@ -541,8 +556,8 @@ async fn handle_table_commitment_generated<S: StateMut>(
     state: &mut S,
     index: Index,
     commitment: GarblingTableCommitment,
-    _metadata: GarblingMetadata,
-    _actions: &mut ActionContainer,
+    metadata: GarblingMetadata,
+    actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::GeneratingTableCommitments { generated, .. } => {
@@ -562,19 +577,86 @@ async fn handle_table_commitment_generated<S: StateMut>(
                 .await
                 .map_err(SMError::storage)?;
 
+            state
+                .pub_garbling_metadata(index, &metadata)
+                .await
+                .map_err(SMError::storage)?;
+
             if !generated.all() {
                 // wait for all commitments to be generated.
                 return Ok(());
             }
             root_state.step = Step::SendingCommit {
+                header_acked: false,
                 acked: HeapArray::from_elem(false),
             };
 
-            // generate actions
-            // TODO(sapinb): populate CommitMsgHeader fields from garbling results
-            // (all_aes128_keys, all_public_s, all_constant_zero_labels, all_constant_one_labels)
-            // then emit SendCommitMsgHeader + SendCommitMsgChunk actions.
-            // See #72 for details.
+            let garbling_table_commitments = state
+                .get_all_garbling_table_commitments()
+                .await
+                .unwrap()
+                .unwrap();
+            let output_polynomial_commitment = state
+                .get_output_polynomial_commitment()
+                .await
+                .unwrap()
+                .unwrap();
+            let metadata = state
+                .get_all_garbling_table_metadata()
+                .await
+                .unwrap()
+                .unwrap();
+            let all_aes128_keys = HeapArray::from_vec(
+                metadata
+                    .iter()
+                    .map(|x| x.aes128_key)
+                    .collect::<Vec<[u8; 16]>>(),
+            );
+            let all_public_s = HeapArray::from_vec(
+                metadata
+                    .iter()
+                    .map(|x| x.public_s)
+                    .collect::<Vec<[u8; 16]>>(),
+            );
+            let all_constant_zero_labels = HeapArray::from_vec(
+                metadata
+                    .iter()
+                    .map(|x| x.constant_zero_label)
+                    .collect::<Vec<[u8; 16]>>(),
+            );
+            let all_constant_one_labels = HeapArray::from_vec(
+                metadata
+                    .iter()
+                    .map(|x| x.constant_one_label)
+                    .collect::<Vec<[u8; 16]>>(),
+            );
+
+            let commit_msg_header: CommitMsgHeader = CommitMsgHeader {
+                garbling_table_commitments,
+                output_polynomial_commitment,
+                all_aes128_keys,
+                all_public_s,
+                all_constant_zero_labels,
+                all_constant_one_labels,
+            };
+            emit(actions, Action::SendCommitMsgHeader(commit_msg_header));
+
+            // Create commit msg chunks
+            let input_poly_commits = state
+                .get_input_polynomial_commitments()
+                .await
+                .unwrap()
+                .unwrap();
+            input_poly_commits
+                .into_iter()
+                .enumerate()
+                .for_each(|(wire_index, commitments)| {
+                    let chunk = CommitMsgChunk {
+                        wire_index: wire_index as u16,
+                        commitments,
+                    };
+                    emit(actions, Action::SendCommitMsgChunk(chunk));
+                });
         }
         _ => return Err(SMError::unexpected_input()),
     };
@@ -688,7 +770,10 @@ pub(crate) async fn restore<S: StateRead>(
                 emit(actions, Action::GenerateTableCommitment(index, seed));
             }
         }
-        Step::SendingCommit { acked: _ } => {
+        Step::SendingCommit {
+            header_acked,
+            acked: _,
+        } => {
             // TODO(sapinb): restore SendCommitMsgHeader + SendCommitMsgChunk
             // emission once CommitMsgHeader fields are populated. See #72.
         }
