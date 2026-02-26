@@ -101,7 +101,7 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
         for idx in 0..N_OPEN_CIRCUITS {
             for wire in 0..N_INPUT_WIRES {
                 for val in 0..WIDE_LABEL_VALUE_COUNT {
-                    let share = shares[idx][wire][val].clone();
+                    let share = shares[idx][wire][val];
                     if commitments[wire][val].verify_share(share).is_err() {
                         return Some(format!(
                             "verify failed for circuit {}, wire {}, value {}",
@@ -547,7 +547,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .map(|i| {
             std::array::from_fn(|wire| {
                 let val = selected_input[wire] as usize;
-                opened_input_shares[i][wire][val].clone()
+                opened_input_shares[i][wire][val]
             })
         })
         .collect();
@@ -583,9 +583,9 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         // Combine opened + committed shares for this wire.
         let mut shares_for_wire: Vec<Share> = Vec::with_capacity(N_OPEN_CIRCUITS + 1);
         for opened_circuit in selected_opened.iter().take(N_OPEN_CIRCUITS) {
-            shares_for_wire.push(opened_circuit[wire].clone());
+            shares_for_wire.push(opened_circuit[wire]);
         }
-        shares_for_wire.push(committed[wire].clone());
+        shares_for_wire.push(committed[wire]);
 
         let missing = interpolate(&shares_for_wire).map_err(|_| {
             CircuitError::SetupFailed(format!("interpolation failed for wire {wire}"))
