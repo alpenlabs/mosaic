@@ -204,7 +204,7 @@ impl PackableKey for DepositChunkKey {
     }
 }
 
-macro_rules! impl_ark_serializable_value {
+macro_rules! impl_trusted_ark_serializable_value {
     ($ty:ty) => {
         impl SerializableValue for $ty {
             type SerializeError = ArkSerializationError;
@@ -220,6 +220,10 @@ macro_rules! impl_ark_serializable_value {
 
             fn deserialize(bytes: &[u8]) -> Result<Self, Self::DeserializeError> {
                 let mut reader = bytes;
+                // SAFETY: `deserialize_uncompressed_unchecked` skips costly curve-point
+                // validation checks. This is acceptable here because the data is read
+                // exclusively from a local database that was written by the same node,
+                // so the serialized points are already known to be well-formed.
                 let value = <$ty>::deserialize_uncompressed_unchecked(&mut reader)
                     .map_err(ArkSerializationError::from)?;
                 if !reader.is_empty() {
@@ -231,22 +235,22 @@ macro_rules! impl_ark_serializable_value {
     };
 }
 
-impl_ark_serializable_value!(WideLabelWirePolynomialCommitments);
-impl_ark_serializable_value!(OutputPolynomialCommitment);
-impl_ark_serializable_value!(CircuitInputShares);
-impl_ark_serializable_value!(CircuitOutputShare);
-impl_ark_serializable_value!(AllGarblingTableCommitments);
-impl_ark_serializable_value!(ChallengeIndices);
-impl_ark_serializable_value!(ReservedSetupInputShares);
-impl_ark_serializable_value!(OpenedOutputShares);
-impl_ark_serializable_value!(OpenedGarblingSeeds);
-impl_ark_serializable_value!(Sighashes);
-impl_ark_serializable_value!(DepositInputs);
-impl_ark_serializable_value!(WithdrawalInputs);
-impl_ark_serializable_value!(Adaptor);
-impl_ark_serializable_value!(DepositAdaptors);
-impl_ark_serializable_value!(WithdrawalAdaptorsChunk);
-impl_ark_serializable_value!(CompletedSignatures);
+impl_trusted_ark_serializable_value!(WideLabelWirePolynomialCommitments);
+impl_trusted_ark_serializable_value!(OutputPolynomialCommitment);
+impl_trusted_ark_serializable_value!(CircuitInputShares);
+impl_trusted_ark_serializable_value!(CircuitOutputShare);
+impl_trusted_ark_serializable_value!(AllGarblingTableCommitments);
+impl_trusted_ark_serializable_value!(ChallengeIndices);
+impl_trusted_ark_serializable_value!(ReservedSetupInputShares);
+impl_trusted_ark_serializable_value!(OpenedOutputShares);
+impl_trusted_ark_serializable_value!(OpenedGarblingSeeds);
+impl_trusted_ark_serializable_value!(Sighashes);
+impl_trusted_ark_serializable_value!(DepositInputs);
+impl_trusted_ark_serializable_value!(WithdrawalInputs);
+impl_trusted_ark_serializable_value!(Adaptor);
+impl_trusted_ark_serializable_value!(DepositAdaptors);
+impl_trusted_ark_serializable_value!(WithdrawalAdaptorsChunk);
+impl_trusted_ark_serializable_value!(CompletedSignatures);
 
 impl SerializableValue for [u8; 16] {
     type SerializeError = ArkSerializationError;
