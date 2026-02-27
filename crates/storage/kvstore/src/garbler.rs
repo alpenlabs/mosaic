@@ -10,10 +10,7 @@ use mosaic_cac_types::{
     DepositInputs, GarblingTableCommitment, HeapArray, InputPolynomialCommitments, InputShares,
     OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
-    state_machine::{
-        StateMachineId,
-        garbler::{DepositState, GarblerState, GarblingMetadata, StateMut, StateRead},
-    },
+    state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateMut, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
 use mosaic_vs3::Index;
@@ -42,17 +39,13 @@ use crate::{
 /// Garbler storage implementation backed by a generic [`KvStore`].
 #[derive(Debug)]
 pub struct KvStoreGarbler<KV: KvStore> {
-    statemachine_id: StateMachineId,
     store: KV,
 }
 
 impl<KV: KvStore> KvStoreGarbler<KV> {
-    /// Create a garbler storage handle bound to one state machine.
-    pub fn new(statemachine_id: StateMachineId, store: KV) -> Self {
-        Self {
-            statemachine_id,
-            store,
-        }
+    /// Create a garbler storage handle.
+    pub fn new(store: KV) -> Self {
+        Self { store }
     }
 
     fn bound_vec_to_slice(bound: &Bound<Vec<u8>>) -> Bound<&[u8]> {
@@ -67,8 +60,7 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
         &self,
         key: &R::Key,
     ) -> Result<Option<R::Value>, StorageError> {
-        let key_bytes =
-            keyspace::full_key::<R>(self.statemachine_id, key).map_err(StorageError::key_pack)?;
+        let key_bytes = keyspace::full_key::<R>(key).map_err(StorageError::key_pack)?;
         let Some(value_bytes) = self
             .store
             .get(key_bytes.as_ref())
@@ -87,8 +79,7 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
         key: &R::Key,
         value: &R::Value,
     ) -> Result<(), StorageError> {
-        let key_bytes =
-            keyspace::full_key::<R>(self.statemachine_id, key).map_err(StorageError::key_pack)?;
+        let key_bytes = keyspace::full_key::<R>(key).map_err(StorageError::key_pack)?;
         let value_bytes = value.serialize().map_err(StorageError::value_serialize)?;
 
         self.store
@@ -100,8 +91,7 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
     fn stream_row<R: KVRowSpec>(
         &self,
     ) -> impl Stream<Item = Result<(R::Key, R::Value), StorageError>> + Send + '_ {
-        let statemachine_id = self.statemachine_id;
-        let row_prefix = keyspace::row_prefix::<R>(statemachine_id);
+        let row_prefix = keyspace::row_prefix::<R>();
         let (start, end) = keyspace::prefix_range(&row_prefix);
         let kv_stream = self.store.range(
             Self::bound_vec_to_slice(&start),
@@ -112,7 +102,7 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
         stream::try_unfold(kv_stream, move |current| async move {
             match current.next().await.map_err(StorageError::kvstore)? {
                 Some((pair, next)) => {
-                    let key = keyspace::split_row_key::<R>(statemachine_id, &pair.key)
+                    let key = keyspace::split_row_key::<R>(&pair.key)
                         .map_err(StorageError::key_unpack)?;
                     let value = <R::Value as SerializableValue>::deserialize(&pair.value)
                         .map_err(StorageError::value_deserialize)?;
@@ -192,11 +182,6 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
             .ok_or(StorageError::UnexpectedZeroIndex)?;
         u16::try_from(zero_based)
             .map_err(|_| StorageError::state_inconsistency("index does not fit into u16"))
-    }
-
-    #[cfg(test)]
-    fn full_key<R: KVRowSpec>(&self, key: &R::Key) -> Result<Vec<u8>, StorageError> {
-        keyspace::full_key::<R>(self.statemachine_id, key).map_err(StorageError::key_pack)
     }
 }
 
@@ -593,11 +578,7 @@ mod tests {
     use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
 
     use super::*;
-    use crate::{btreemap::BTreeMapKvStore, row_spec::garbler::DepositStateRowSpec};
-
-    fn sm_id(byte: u8) -> StateMachineId {
-        StateMachineId::from([byte; 32])
-    }
+    use crate::btreemap::BTreeMapKvStore;
 
     fn dep_id(byte: u8) -> DepositId {
         let mut bytes = [0u8; 32];
@@ -698,8 +679,7 @@ mod tests {
 
     #[tokio::test]
     async fn root_and_deposit_roundtrip() {
-        let sm = sm_id(0x11);
-        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
 
         let root = GarblerState::default();
         storage.put_root_state(&root).await.expect("put root");
@@ -722,8 +702,7 @@ mod tests {
 
     #[tokio::test]
     async fn input_polynomial_commitment_roundtrip() {
-        let sm = sm_id(0x66);
-        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
 
         let expected_wire_commitments = input_polymonial_commitments(19);
 
@@ -747,8 +726,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_polynomial_commitment_roundtrip() {
-        let sm = sm_id(0x66);
-        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
 
         let expected_output_commitment = output_polynomial_commitment(29);
         storage
@@ -766,8 +744,7 @@ mod tests {
 
     #[tokio::test]
     async fn shares_roundtrip() {
-        let sm = sm_id(0x66);
-        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
         let mut expected_input_shares = Vec::with_capacity(N_CIRCUITS + 1);
         let mut expected_output_shares = Vec::with_capacity(N_CIRCUITS + 1);
         for ckt_idx in 0..=N_CIRCUITS {
@@ -811,8 +788,7 @@ mod tests {
 
     #[tokio::test]
     async fn gt_commitment_roundtrip() {
-        let sm = sm_id(0x66);
-        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
 
         let mut expected_gt_commitments = Vec::with_capacity(N_CIRCUITS);
         for ckt_idx in 1..=N_CIRCUITS {
@@ -844,8 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn protocol_state_roundtrip_all_pairs() {
-        let sm = sm_id(0x66);
-        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
 
         let expected_challenge_indices = challenge_indices();
         storage
@@ -863,8 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn deposit_scoped_roundtrip_all_pairs() {
-        let sm = sm_id(0x77);
-        let mut storage = KvStoreGarbler::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
 
         let deposit_id = dep_id(0xC1);
         storage
@@ -953,42 +927,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_all_deposits_scopes_to_row_and_state_machine() {
-        let sm = sm_id(0x22);
-        let other_sm = sm_id(0x33);
-
+    async fn stream_all_deposits_scopes_to_deposit_state_row() {
         let dep1_id = dep_id(0x01);
         let dep2_id = dep_id(0x02);
-        let dep3_id = dep_id(0x03);
         let dep1 = deposit_state(1);
         let dep2 = deposit_state(2);
-        let dep3 = deposit_state(3);
 
-        let kv = BTreeMapKvStore::new();
-
-        let mut storage = KvStoreGarbler::new(sm, kv.clone());
-        let mut other_storage = KvStoreGarbler::new(other_sm, kv.clone());
+        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
 
         storage.put_deposit(dep1_id, &dep1).await.unwrap();
         storage.put_deposit(dep2_id, &dep2).await.unwrap();
-        other_storage.put_deposit(dep3_id, &dep3).await.unwrap();
 
-        // ensure that all keys are in the same kvstore
-        let k1 = storage
-            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep1_id))
-            .unwrap();
-        let k2 = storage
-            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep2_id))
-            .unwrap();
-        let k3 = other_storage
-            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep3_id))
+        // also write a root state; stream_all_deposits must not return it
+        storage
+            .put_root_state(&GarblerState::default())
+            .await
             .unwrap();
 
-        assert!(kv.get(&k1).await.unwrap().is_some());
-        assert!(kv.get(&k2).await.unwrap().is_some());
-        assert!(kv.get(&k3).await.unwrap().is_some());
-
-        // ensure stream only returns deposits for correct statemachine
         let mut got = storage
             .stream_all_deposits()
             .collect::<Vec<_>>()

@@ -3,14 +3,11 @@ use mosaic_cac_types::{
     state_machine::evaluator::{DepositState, EvaluatorState},
 };
 
-use crate::{
-    keyspace::KeyDomain,
-    row_spec::{
-        KVRowSpec, PackableKey, SerializableValue,
-        common::{pack_deposit_id, unpack_deposit_id},
-        error::{ArkKeyUnpackError, ArkSerializationError},
-        evaluator::{ROW_TAG_DEPOSIT_STATE, ROW_TAG_ROOT_STATE},
-    },
+use crate::row_spec::{
+    KVRowSpec, PackableKey, SerializableValue,
+    common::{pack_deposit_id, unpack_deposit_id},
+    error::{ArkKeyUnpackError, ArkSerializationError},
+    evaluator::{ROW_TAG_DEPOSIT_STATE, ROW_TAG_ROOT_STATE},
 };
 
 /// Row-local key for evaluator root state.
@@ -57,7 +54,6 @@ impl SerializableValue for EvaluatorState {
 pub struct RootStateRowSpec;
 
 impl KVRowSpec for RootStateRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Evaluator;
     const ROW_TAG: u8 = ROW_TAG_ROOT_STATE;
 
     type Key = RootStateKey;
@@ -115,7 +111,6 @@ impl SerializableValue for DepositState {
 pub struct DepositStateRowSpec;
 
 impl KVRowSpec for DepositStateRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Evaluator;
     const ROW_TAG: u8 = ROW_TAG_DEPOSIT_STATE;
 
     type Key = DepositStateKey;

@@ -7,4 +7,3 @@ pub mod keyspace;
 pub mod kvstore;
 pub mod row_spec;
 pub mod storage_error;
-pub mod storage_provider;

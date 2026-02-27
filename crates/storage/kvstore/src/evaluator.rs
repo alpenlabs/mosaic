@@ -9,10 +9,7 @@ use mosaic_cac_types::{
     OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
     ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors,
     WithdrawalInputs,
-    state_machine::{
-        StateMachineId,
-        evaluator::{DepositState, EvaluatorState, StateMut, StateRead},
-    },
+    state_machine::evaluator::{DepositState, EvaluatorState, StateMut, StateRead},
 };
 use mosaic_common::{
     Byte32,
@@ -44,17 +41,13 @@ use crate::{
 /// Evaluator storage implementation backed by a generic [`KvStore`].
 #[derive(Debug)]
 pub struct KvStoreEvaluator<KV: KvStore> {
-    statemachine_id: StateMachineId,
     store: KV,
 }
 
 impl<KV: KvStore> KvStoreEvaluator<KV> {
-    /// Create an evaluator storage handle bound to one state machine.
-    pub fn new(statemachine_id: StateMachineId, store: KV) -> Self {
-        Self {
-            statemachine_id,
-            store,
-        }
+    /// Create an evaluator storage handle.
+    pub fn new(store: KV) -> Self {
+        Self { store }
     }
 
     fn bound_vec_to_slice(bound: &Bound<Vec<u8>>) -> Bound<&[u8]> {
@@ -69,8 +62,7 @@ impl<KV: KvStore> KvStoreEvaluator<KV> {
         &self,
         key: &R::Key,
     ) -> Result<Option<R::Value>, StorageError> {
-        let key_bytes =
-            keyspace::full_key::<R>(self.statemachine_id, key).map_err(StorageError::key_pack)?;
+        let key_bytes = keyspace::full_key::<R>(key).map_err(StorageError::key_pack)?;
         let Some(value_bytes) = self
             .store
             .get(key_bytes.as_ref())
@@ -89,8 +81,7 @@ impl<KV: KvStore> KvStoreEvaluator<KV> {
         key: &R::Key,
         value: &R::Value,
     ) -> Result<(), StorageError> {
-        let key_bytes =
-            keyspace::full_key::<R>(self.statemachine_id, key).map_err(StorageError::key_pack)?;
+        let key_bytes = keyspace::full_key::<R>(key).map_err(StorageError::key_pack)?;
         let value_bytes = value.serialize().map_err(StorageError::value_serialize)?;
 
         self.store
@@ -102,8 +93,7 @@ impl<KV: KvStore> KvStoreEvaluator<KV> {
     fn stream_row<R: KVRowSpec>(
         &self,
     ) -> impl Stream<Item = Result<(R::Key, R::Value), StorageError>> + Send + '_ {
-        let statemachine_id = self.statemachine_id;
-        let row_prefix = keyspace::row_prefix::<R>(statemachine_id);
+        let row_prefix = keyspace::row_prefix::<R>();
         let (start, end) = keyspace::prefix_range(&row_prefix);
         let kv_stream = self.store.range(
             Self::bound_vec_to_slice(&start),
@@ -114,7 +104,7 @@ impl<KV: KvStore> KvStoreEvaluator<KV> {
         stream::try_unfold(kv_stream, move |current| async move {
             match current.next().await.map_err(StorageError::kvstore)? {
                 Some((pair, next)) => {
-                    let key = keyspace::split_row_key::<R>(statemachine_id, &pair.key)
+                    let key = keyspace::split_row_key::<R>(&pair.key)
                         .map_err(StorageError::key_unpack)?;
                     let value = <R::Value as SerializableValue>::deserialize(&pair.value)
                         .map_err(StorageError::value_deserialize)?;
@@ -197,11 +187,6 @@ impl<KV: KvStore> KvStoreEvaluator<KV> {
     fn index_to_u16(index: mosaic_vs3::Index) -> Result<u16, StorageError> {
         u16::try_from(index.get())
             .map_err(|_| StorageError::state_inconsistency("index does not fit into u16"))
-    }
-
-    #[cfg(test)]
-    fn full_key<R: KVRowSpec>(&self, key: &R::Key) -> Result<Vec<u8>, StorageError> {
-        keyspace::full_key::<R>(self.statemachine_id, key).map_err(StorageError::key_pack)
     }
 }
 
@@ -642,11 +627,7 @@ mod tests {
     use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
 
     use super::*;
-    use crate::{btreemap::BTreeMapKvStore, row_spec::evaluator::DepositStateRowSpec};
-
-    fn sm_id(byte: u8) -> StateMachineId {
-        StateMachineId::from([byte; 32])
-    }
+    use crate::btreemap::BTreeMapKvStore;
 
     fn dep_id(byte: u8) -> DepositId {
         let mut bytes = [0u8; 32];
@@ -766,8 +747,7 @@ mod tests {
 
     #[tokio::test]
     async fn root_and_deposit_roundtrip() {
-        let sm = sm_id(0x10);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let root = EvaluatorState {
             config: None,
@@ -793,8 +773,7 @@ mod tests {
 
     #[tokio::test]
     async fn input_polynomial_commitment_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_wire_commitments = input_polynomial_commitments(19);
         for wire_idx in 0..N_INPUT_WIRES {
@@ -816,8 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_polynomial_commitment_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_output_commitment = output_polynomial_commitment(29);
         storage
@@ -835,8 +813,7 @@ mod tests {
 
     #[tokio::test]
     async fn garbling_table_commitments_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_gt_commitments =
             AllGarblingTableCommitments::new(|idx| byte32(0x50u8.wrapping_add(idx as u8)));
@@ -855,8 +832,7 @@ mod tests {
 
     #[tokio::test]
     async fn challenge_indices_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_challenge_indices = challenge_indices();
         storage
@@ -874,8 +850,7 @@ mod tests {
 
     #[tokio::test]
     async fn opened_input_shares_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_challenge_indices = challenge_indices();
         storage
@@ -905,8 +880,7 @@ mod tests {
 
     #[tokio::test]
     async fn reserved_setup_input_shares_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_reserved_setup = reserved_setup_input_shares(20_000);
         storage
@@ -924,8 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn opened_output_shares_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_opened_output = opened_output_shares(30_000);
         storage
@@ -943,8 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn opened_garbling_seeds_roundtrip() {
-        let sm = sm_id(0x33);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let expected_opened_seeds = opened_garbling_seeds(0x61);
         storage
@@ -962,8 +934,7 @@ mod tests {
 
     #[tokio::test]
     async fn deposit_scoped_roundtrip_all_pairs() {
-        let sm = sm_id(0x77);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let deposit_id = dep_id(0xC1);
         storage
@@ -1056,8 +1027,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_roundtrip_all_pairs() {
-        let sm = sm_id(0x99);
-        let mut storage = KvStoreEvaluator::new(sm, BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         let all_aes128_keys = mosaic_cac_types::HeapArray::new(|idx| indexed_value(0x01, idx));
         let all_public_s = mosaic_cac_types::HeapArray::new(|idx| indexed_value(0x11, idx));
@@ -1136,39 +1106,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_all_deposits_scopes_to_row_and_state_machine() {
-        let sm = sm_id(0x22);
-        let other_sm = sm_id(0x33);
-
+    async fn stream_all_deposits_scopes_to_deposit_state_row() {
         let dep1_id = dep_id(0x01);
         let dep2_id = dep_id(0x02);
-        let dep3_id = dep_id(0x03);
         let dep1 = deposit_state(1);
         let dep2 = deposit_state(2);
-        let dep3 = deposit_state(3);
 
-        let kv = BTreeMapKvStore::new();
-
-        let mut storage = KvStoreEvaluator::new(sm, kv.clone());
-        let mut other_storage = KvStoreEvaluator::new(other_sm, kv.clone());
+        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
 
         storage.put_deposit(&dep1_id, &dep1).await.unwrap();
         storage.put_deposit(&dep2_id, &dep2).await.unwrap();
-        other_storage.put_deposit(&dep3_id, &dep3).await.unwrap();
 
-        let k1 = storage
-            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep1_id))
+        // also write a root state; stream_all_deposits must not return it
+        storage
+            .put_root_state(&EvaluatorState {
+                config: None,
+                step: Step::SetupComplete,
+            })
+            .await
             .unwrap();
-        let k2 = storage
-            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep2_id))
-            .unwrap();
-        let k3 = other_storage
-            .full_key::<DepositStateRowSpec>(&DepositStateKey::new(dep3_id))
-            .unwrap();
-
-        assert!(kv.get(&k1).await.unwrap().is_some());
-        assert!(kv.get(&k2).await.unwrap().is_some());
-        assert!(kv.get(&k3).await.unwrap().is_some());
 
         let mut got = storage
             .stream_all_deposits()

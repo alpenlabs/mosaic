@@ -1,13 +1,10 @@
 use mosaic_cac_types::{DepositId, state_machine::garbler::DepositState};
 
-use crate::{
-    keyspace::KeyDomain,
-    row_spec::{
-        KVRowSpec, PackableKey, SerializableValue,
-        common::{pack_deposit_id, unpack_deposit_id},
-        error::{ArkKeyUnpackError, ArkSerializationError},
-        garbler::ROW_TAG_DEPOSIT_STATE,
-    },
+use crate::row_spec::{
+    KVRowSpec, PackableKey, SerializableValue,
+    common::{pack_deposit_id, unpack_deposit_id},
+    error::{ArkKeyUnpackError, ArkSerializationError},
+    garbler::ROW_TAG_DEPOSIT_STATE,
 };
 
 /// Row-local key for one garbler deposit state record.
@@ -61,7 +58,6 @@ impl SerializableValue for DepositState {
 pub struct DepositStateRowSpec;
 
 impl KVRowSpec for DepositStateRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_DEPOSIT_STATE;
 
     type Key = DepositStateKey;

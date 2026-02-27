@@ -34,27 +34,11 @@ impl From<SerializationError> for ArkSerializationError {
 }
 
 #[derive(Debug, Error)]
-/// Errors while validating and decoding a full keyspace envelope.
+/// Errors while validating and decoding a keyspace envelope.
 pub enum KeyspaceDecodeError<E: std::error::Error + Send + Sync + 'static> {
     /// Key was shorter than required or missing expected prefix bytes.
     #[error("key does not start with expected prefix")]
     MissingPrefix,
-    /// Schema version byte did not match.
-    #[error("bad key version: expected {expected}, got {found}")]
-    BadVersion {
-        /// Expected schema version.
-        expected: u8,
-        /// Actual schema version.
-        found: u8,
-    },
-    /// Domain byte did not match the row specification.
-    #[error("bad key domain: expected {expected}, got {found}")]
-    BadDomain {
-        /// Expected domain discriminator.
-        expected: u8,
-        /// Actual domain discriminator.
-        found: u8,
-    },
     /// Row tag byte did not match the row specification.
     #[error("bad row tag: expected {expected}, got {found}")]
     BadRowTag {

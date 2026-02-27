@@ -2,18 +2,14 @@
 
 use std::{error::Error, fmt::Debug};
 
-use crate::keyspace::KeyDomain;
-
 pub mod common;
 pub mod error;
 pub mod evaluator;
 pub mod garbler;
 
-/// Specification for one logical KV row (domain, row tag, key, and value).
+/// Specification for one logical KV row (row tag, key, and value).
 pub trait KVRowSpec {
-    /// Domain this row belongs to (garbler/evaluator).
-    const DOMAIN: KeyDomain;
-    /// Row tag unique within the domain.
+    /// Row tag unique within this store's keyspace.
     const ROW_TAG: u8;
 
     /// Type of the key.

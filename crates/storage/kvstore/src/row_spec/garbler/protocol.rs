@@ -5,21 +5,16 @@ use mosaic_cac_types::{
 };
 use mosaic_common::Byte32;
 
-use crate::{
-    keyspace::KeyDomain,
-    row_spec::{
-        KVRowSpec,
-        common::{
-            CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey,
-        },
-        garbler::{
-            ROW_TAG_AES128_KEY, ROW_TAG_CHALLENGE_INDICES, ROW_TAG_COMPLETED_SIGNATURES,
-            ROW_TAG_CONSTANT_ONE_LABEL, ROW_TAG_CONSTANT_ZERO_LABEL, ROW_TAG_DEPOSIT_ADAPTOR_CHUNK,
-            ROW_TAG_DEPOSIT_INPUTS, ROW_TAG_DEPOSIT_SIGHASHES, ROW_TAG_GARBLING_TABLE_COMMITMENT,
-            ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK, ROW_TAG_INPUT_SHARE, ROW_TAG_OUTPUT_LABEL_CT,
-            ROW_TAG_OUTPUT_POLY_COMMITMENT, ROW_TAG_OUTPUT_SHARE, ROW_TAG_PUBLIC_S,
-            ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK, ROW_TAG_WITHDRAWAL_INPUT,
-        },
+use crate::row_spec::{
+    KVRowSpec,
+    common::{CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey},
+    garbler::{
+        ROW_TAG_AES128_KEY, ROW_TAG_CHALLENGE_INDICES, ROW_TAG_COMPLETED_SIGNATURES,
+        ROW_TAG_CONSTANT_ONE_LABEL, ROW_TAG_CONSTANT_ZERO_LABEL, ROW_TAG_DEPOSIT_ADAPTOR_CHUNK,
+        ROW_TAG_DEPOSIT_INPUTS, ROW_TAG_DEPOSIT_SIGHASHES, ROW_TAG_GARBLING_TABLE_COMMITMENT,
+        ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK, ROW_TAG_INPUT_SHARE, ROW_TAG_OUTPUT_LABEL_CT,
+        ROW_TAG_OUTPUT_POLY_COMMITMENT, ROW_TAG_OUTPUT_SHARE, ROW_TAG_PUBLIC_S,
+        ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK, ROW_TAG_WITHDRAWAL_INPUT,
     },
 };
 
@@ -28,7 +23,6 @@ use crate::{
 pub struct InputPolynomialCommitmentChunkRowSpec;
 
 impl KVRowSpec for InputPolynomialCommitmentChunkRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK;
 
     type Key = WireIndexKey;
@@ -40,7 +34,6 @@ impl KVRowSpec for InputPolynomialCommitmentChunkRowSpec {
 pub struct OutputPolynomialCommitmentRowSpec;
 
 impl KVRowSpec for OutputPolynomialCommitmentRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_OUTPUT_POLY_COMMITMENT;
 
     type Key = ProtocolSingletonKey;
@@ -52,7 +45,6 @@ impl KVRowSpec for OutputPolynomialCommitmentRowSpec {
 pub struct InputShareRowSpec;
 
 impl KVRowSpec for InputShareRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_INPUT_SHARE;
 
     type Key = CircuitIndexKey;
@@ -64,7 +56,6 @@ impl KVRowSpec for InputShareRowSpec {
 pub struct OutputShareRowSpec;
 
 impl KVRowSpec for OutputShareRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_OUTPUT_SHARE;
 
     type Key = CircuitIndexKey;
@@ -76,7 +67,6 @@ impl KVRowSpec for OutputShareRowSpec {
 pub struct GarblingTableCommitmentRowSpec;
 
 impl KVRowSpec for GarblingTableCommitmentRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_GARBLING_TABLE_COMMITMENT;
 
     type Key = CircuitIndexKey;
@@ -88,7 +78,6 @@ impl KVRowSpec for GarblingTableCommitmentRowSpec {
 pub struct ChallengeIndicesRowSpec;
 
 impl KVRowSpec for ChallengeIndicesRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_CHALLENGE_INDICES;
 
     type Key = ProtocolSingletonKey;
@@ -100,7 +89,6 @@ impl KVRowSpec for ChallengeIndicesRowSpec {
 pub struct DepositSighashesRowSpec;
 
 impl KVRowSpec for DepositSighashesRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_DEPOSIT_SIGHASHES;
 
     type Key = DepositKey;
@@ -112,7 +100,6 @@ impl KVRowSpec for DepositSighashesRowSpec {
 pub struct DepositInputsRowSpec;
 
 impl KVRowSpec for DepositInputsRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_DEPOSIT_INPUTS;
 
     type Key = DepositKey;
@@ -124,7 +111,6 @@ impl KVRowSpec for DepositInputsRowSpec {
 pub struct WithdrawalInputRowSpec;
 
 impl KVRowSpec for WithdrawalInputRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_WITHDRAWAL_INPUT;
 
     type Key = DepositKey;
@@ -136,7 +122,6 @@ impl KVRowSpec for WithdrawalInputRowSpec {
 pub struct DepositAdaptorChunkRowSpec;
 
 impl KVRowSpec for DepositAdaptorChunkRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_DEPOSIT_ADAPTOR_CHUNK;
 
     type Key = DepositChunkKey;
@@ -148,7 +133,6 @@ impl KVRowSpec for DepositAdaptorChunkRowSpec {
 pub struct WithdrawalAdaptorChunkRowSpec;
 
 impl KVRowSpec for WithdrawalAdaptorChunkRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK;
 
     type Key = DepositChunkKey;
@@ -160,7 +144,6 @@ impl KVRowSpec for WithdrawalAdaptorChunkRowSpec {
 pub struct CompletedSignaturesRowSpec;
 
 impl KVRowSpec for CompletedSignaturesRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_COMPLETED_SIGNATURES;
 
     type Key = DepositKey;
@@ -172,7 +155,6 @@ impl KVRowSpec for CompletedSignaturesRowSpec {
 pub struct Aes128KeyRowSpec;
 
 impl KVRowSpec for Aes128KeyRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_AES128_KEY;
 
     type Key = CircuitIndexKey;
@@ -184,7 +166,6 @@ impl KVRowSpec for Aes128KeyRowSpec {
 pub struct PublicSRowSpec;
 
 impl KVRowSpec for PublicSRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_PUBLIC_S;
 
     type Key = CircuitIndexKey;
@@ -196,7 +177,6 @@ impl KVRowSpec for PublicSRowSpec {
 pub struct ConstantZeroLabelRowSpec;
 
 impl KVRowSpec for ConstantZeroLabelRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_CONSTANT_ZERO_LABEL;
 
     type Key = CircuitIndexKey;
@@ -208,7 +188,6 @@ impl KVRowSpec for ConstantZeroLabelRowSpec {
 pub struct ConstantOneLabelRowSpec;
 
 impl KVRowSpec for ConstantOneLabelRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_CONSTANT_ONE_LABEL;
 
     type Key = CircuitIndexKey;
@@ -220,7 +199,6 @@ impl KVRowSpec for ConstantOneLabelRowSpec {
 pub struct OutputLabelCtRowSpec;
 
 impl KVRowSpec for OutputLabelCtRowSpec {
-    const DOMAIN: KeyDomain = KeyDomain::Garbler;
     const ROW_TAG: u8 = ROW_TAG_OUTPUT_LABEL_CT;
 
     type Key = CircuitIndexKey;
