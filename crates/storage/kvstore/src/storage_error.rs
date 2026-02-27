@@ -29,7 +29,7 @@ pub enum StorageError {
     #[error("Received input for unknown deposit id: {0}")]
     UnknownDeposit(DepositId),
     /// Critical state inconsistency with expected invariants.
-    #[error("CRITICAL: State is inconsitent with expectations: {0}")]
+    #[error("CRITICAL: State is inconsistent with expectations: {0}")]
     StateInconsistency(String),
 }
 

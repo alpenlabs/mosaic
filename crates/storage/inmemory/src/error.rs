@@ -14,8 +14,8 @@ pub enum DbError {
     #[error("Received input for unknown deposit id: {0}")]
     UnknownDeposit(DepositId),
 
-    /// CRITICAL: State is inconsitent with expectations.
-    #[error("CRITICAL: State is inconsitent with expectations: {0}")]
+    /// CRITICAL: State is inconsistent with expectations.
+    #[error("CRITICAL: State is inconsistent with expectations: {0}")]
     StateInconsistency(String),
 }
 

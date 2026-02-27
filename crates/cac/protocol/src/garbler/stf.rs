@@ -328,7 +328,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     *header_acked = true;
 
                     if chunk_acked.all() {
-                        handle_post_sending_challenge_reponse(&mut root_state, state, actions)
+                        handle_post_sending_challenge_response(&mut root_state, state, actions)
                             .await?;
                     }
                 }
@@ -354,7 +354,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     chunk_acked[idx] = true;
 
                     if *header_acked && chunk_acked.all() {
-                        handle_post_sending_challenge_reponse(&mut root_state, state, actions)
+                        handle_post_sending_challenge_response(&mut root_state, state, actions)
                             .await?;
                     }
                 }
@@ -827,7 +827,7 @@ pub(crate) async fn restore<S: StateRead>(
     Ok(())
 }
 
-async fn handle_post_sending_challenge_reponse<S: StateMut>(
+async fn handle_post_sending_challenge_response<S: StateMut>(
     root_state: &mut GarblerState,
     state: &mut S,
     actions: &mut ActionContainer,
