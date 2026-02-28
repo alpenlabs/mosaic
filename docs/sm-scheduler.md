@@ -1,194 +1,167 @@
-# SM Scheduler & Executor
+# SM Scheduler Runtime & API
 
-The SM Scheduler runs garbler and evaluator state machines, routing protocol
-messages and job completions to the correct SM, and submitting emitted actions
-to the job system.
+This document defines the target architecture for state machine execution in Mosaic.
 
-The SM Executor is a set of stateless functions that wrap FASM's STF. The
-scheduler calls these to process inputs through the correct SM.
+The previous split between `state-machine/executor` and `state-machine/scheduler` is replaced by:
 
-## Architecture
+- one **runtime crate** that owns scheduling + STF execution logic
+- one **public API crate** with command/handle/config types
 
-```
-                    ┌──────────────────────────┐
-                    │      Bridge Core (RPC)    │
-                    └────────────┬─────────────┘
-                                 │ SmCommand (init, deposit, withdrawal)
-                                 ▼
-┌──────────────┐    ┌──────────────────────────┐    ┌──────────────────┐
-│   net-svc    │───►│      SmScheduler         │◄───│  JobScheduler    │
-│              │    │                          │───►│                  │
-│  protocol    │    │  Per-peer SM pairs:      │    │  JobBatch →      │
-│  streams     │    │    garbler + evaluator   │    │  JobCompletion ← │
-└──────────────┘    │                          │    └──────────────────┘
-                    │  For each input:         │
-                    │    executor::stf(state)   │
-                    │    → emit JobBatch        │
-                    └──────────┬───────────────┘
-                               │
-                               ▼
-                    ┌──────────────────────────┐
-                    │  Storage (StateMut impls) │
-                    │  FDB / InMemory          │
-                    └──────────────────────────┘
-```
+The runtime continues to use FASM state machines (`GarblerSM`, `EvaluatorSM`) and the existing job system for all heavy work.
+
+## Goals
+
+1. Keep per-peer SM execution deterministic and easy to reason about.
+2. Keep heavy computation out of STF execution.
+3. Keep a clean public boundary for Bridge Core / RPC code.
+4. Preserve at-least-once message handling semantics.
+5. Make startup restore and retry behavior explicit.
 
 ## Crate Structure
 
-```
+```text
 crates/state-machine/
-├── executor/    # Stateless STF wrapper functions (6 functions)
-└── scheduler/   # Event loop, per-peer SM management, input multiplexing
+├── scheduler-api/   # Public handle + command/config types (no runtime internals)
+└── scheduler/       # Runtime: event loop, routing, STF wrapper calls, restore
 ```
 
-**state-machine/executor** depends on:
+### Dependencies
+
+**`state-machine/scheduler-api`**
+- `mosaic-cac-types` (command payload types)
+- `mosaic-net-svc-api::PeerId`
+- `kanal`
+
+**`state-machine/scheduler`**
+- `state-machine/scheduler-api`
 - `mosaic-cac-protocol` (`GarblerSM`, `EvaluatorSM`)
-- `mosaic-cac-types` (`Input`, `Action`, `StateRead`, `StateMut`)
-- `fasm` (`StateMachine`, `Input`)
-
-**state-machine/scheduler** depends on:
-- `state-machine/executor`
+- `mosaic-cac-types` (SM inputs/action ids/results)
 - `mosaic-job-api` (`JobSchedulerHandle`, `JobBatch`, `JobCompletion`, `ActionCompletion`)
-- `mosaic-net-svc-api` (`NetServiceHandle`, `PeerId`, `Stream`)
-- `mosaic-cac-types` (garbler/evaluator `Input`, `StateMut`)
-- `kanal`, `monoio`
+- `mosaic-net-client` / `mosaic-net-svc-api` (incoming protocol streams)
+- `mosaic-storage-api` (mutable per-peer state handles)
+- `fasm`
+- `monoio`, `kanal`
 
-## SM Executor
+## Why Runtime + API Split
 
-Thin, stateless wrapper around FASM. Six functions — two per concern (event,
-completion, restore) × two roles (garbler, evaluator).
+### Why merge scheduler and executor runtime logic?
 
-The executor does not manage storage. The `StateMut` handle IS the storage —
-the executor just passes it to the STF. Whether the handle is in-memory
-(`StoredGarblerState`) or FDB-backed is invisible to the executor.
+The old `executor` crate provided thin wrappers (`stf` calls) and did not justify a separate runtime boundary.
 
-### Functions
+What matters operationally is one component that:
+
+- owns per-peer state handles
+- routes inbound events/completions
+- invokes STF in order
+- submits emitted actions
+
+Keeping these in one runtime crate removes indirection and stale abstractions.
+
+### Why add a separate API crate?
+
+Same reason as `net-svc-api` and `job-api`:
+
+- isolate cross-crate integration types from runtime internals
+- keep public surface small and stable
+- avoid pulling monoio/FASM/runtime internals into Bridge Core/RPC crates
+
+## High-Level Architecture
+
+```text
+                    ┌──────────────────────────┐
+                    │      Bridge Core (RPC)   │
+                    └────────────┬─────────────┘
+                                 │ SmCommand
+                                 ▼
+┌──────────────┐    ┌──────────────────────────┐    ┌──────────────────┐
+│   net-svc    │───►│     SM Scheduler Runtime │◄───│  JobScheduler    │
+│ protocol     │    │                          │───►│                  │
+│ streams      │    │ per-peer {garbler,eval} │    │ JobBatch submit  │
+└──────────────┘    │ STF call + emit actions │    │ JobCompletion recv│
+                    └──────────┬───────────────┘    └──────────────────┘
+                               │
+                               ▼
+                    ┌──────────────────────────┐
+                    │ Storage (StateMut impls) │
+                    │ InMemory / FDB-backed    │
+                    └──────────────────────────┘
+```
+
+## STF Execution Model
+
+The runtime executes STF directly inside the scheduler loop (per input/completion), then immediately submits emitted tracked actions to `JobScheduler`.
+
+Internal helper functions (in runtime crate, not public API):
 
 ```rust
-/// Process a garbler external event (protocol message, bridge command).
-pub async fn garbler_handle_event<S: garbler::StateMut>(
+async fn garbler_handle_event<S: garbler::StateMut>(
     state: &mut S,
     input: garbler::Input,
 ) -> Result<garbler::ActionContainer, SMError>;
 
-/// Process a garbler tracked action completion (job result).
-pub async fn garbler_handle_completion<S: garbler::StateMut>(
+async fn garbler_handle_completion<S: garbler::StateMut>(
     state: &mut S,
     id: garbler::ActionId,
     result: garbler::ActionResult,
 ) -> Result<garbler::ActionContainer, SMError>;
 
-/// Restore garbler pending actions from persisted state (after crash).
-pub async fn garbler_restore<S: garbler::StateMut>(
+async fn garbler_restore<S: garbler::StateMut>(
     state: &S,
 ) -> Result<garbler::ActionContainer, SMError>;
 
-/// Process an evaluator external event.
-pub async fn evaluator_handle_event<S: evaluator::StateMut>(
+async fn evaluator_handle_event<S: evaluator::StateMut>(
     state: &mut S,
     input: evaluator::Input,
 ) -> Result<evaluator::ActionContainer, SMError>;
 
-/// Process an evaluator tracked action completion.
-pub async fn evaluator_handle_completion<S: evaluator::StateMut>(
+async fn evaluator_handle_completion<S: evaluator::StateMut>(
     state: &mut S,
     id: evaluator::ActionId,
     result: evaluator::ActionResult,
 ) -> Result<evaluator::ActionContainer, SMError>;
 
-/// Restore evaluator pending actions from persisted state.
-pub async fn evaluator_restore<S: evaluator::StateMut>(
+async fn evaluator_restore<S: evaluator::StateMut>(
     state: &S,
 ) -> Result<evaluator::ActionContainer, SMError>;
 ```
 
-### Implementation
+These wrappers are intentionally minimal and internal.
 
-Each function is a thin wrapper around `GarblerSM::stf` / `EvaluatorSM::stf`:
+## Do We Need an STF Thread Pool?
+
+No, not for current design.
+
+### Why
+
+- STF work is mostly validation, state reads/writes, and action emission.
+- Heavy tasks are represented as actions and executed by job pools/coordinator:
+  - polynomial generation
+  - share generation/verification
+  - garbling table commitment/transfer/evaluation
+  - adaptor generation/verification/completion
+  - network send/receive/retry
+
+### Operational stance
+
+- Use one monoio scheduler thread for ordering and determinism.
+- Let job scheduler pools absorb heavy compute and I/O.
+- Revisit only if real metrics show STF becoming a hotspot after TODO helpers are implemented.
+
+## Public API Crate (`scheduler-api`)
+
+Public, stable boundary used by RPC/Bridge-side code.
+
+### Config
 
 ```rust
-pub async fn garbler_handle_event<S: garbler::StateMut>(
-    state: &mut S,
-    input: garbler::Input,
-) -> Result<garbler::ActionContainer, SMError> {
-    let mut actions = Vec::new();
-    GarblerSM::<S>::stf(state, FasmInput::Normal(input), &mut actions).await?;
-    Ok(actions)
-}
-
-pub async fn garbler_handle_completion<S: garbler::StateMut>(
-    state: &mut S,
-    id: garbler::ActionId,
-    result: garbler::ActionResult,
-) -> Result<garbler::ActionContainer, SMError> {
-    let mut actions = Vec::new();
-    GarblerSM::<S>::stf(
-        state,
-        FasmInput::TrackedActionCompleted { id, result },
-        &mut actions,
-    ).await?;
-    Ok(actions)
+pub struct SmSchedulerConfig {
+    pub command_queue_size: usize,
 }
 ```
 
-No `Db` trait, no `ArtifactStore` wrapper, no `todo!()`. The old executor
-pattern of load → STF → save is replaced by the `StateMut` impl handling
-persistence internally on each `get_*` / `put_*` call.
-
-## SM Scheduler
-
-### Input Sources
-
-The scheduler multiplexes three async input sources using `monoio::select!`:
-
-| Source | Channel | Produces |
-|--------|---------|----------|
-| **net-svc** | `NetServiceHandle::protocol_streams()` | Protocol messages from peers |
-| **Job system** | `JobSchedulerHandle::recv()` | Action completions (job results) |
-| **RPC / Bridge Core** | `SmSchedulerHandle` (kanal) | Init, deposit, withdrawal commands |
-
-### Types
+### Commands
 
 ```rust
-// ════════════════════════════════════════════════════════════════════
-// Config
-// ════════════════════════════════════════════════════════════════════
-
-pub struct SmSchedulerConfig {
-    /// Capacity of the command channel (from RPC).
-    pub command_queue_size: usize,
-}
-
-// ════════════════════════════════════════════════════════════════════
-// State factory — creates per-peer StateMut handles
-// ════════════════════════════════════════════════════════════════════
-
-/// Creates garbler/evaluator StateMut handles for a given peer.
-///
-/// For in-memory: returns StoredGarblerState / StoredEvaluatorState.
-/// For FDB: returns an FDB-backed handle keyed by peer_id.
-pub trait SmStateFactory: Send + Sync + 'static {
-    type GarblerState: garbler::StateMut + Send;
-    type EvaluatorState: evaluator::StateMut + Send;
-
-    fn garbler_state(&self, peer_id: &PeerId) -> Self::GarblerState;
-    fn evaluator_state(&self, peer_id: &PeerId) -> Self::EvaluatorState;
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Per-peer SM pair
-// ════════════════════════════════════════════════════════════════════
-
-/// One garbler SM + one evaluator SM for a single peer.
-struct PeerSm<GS, ES> {
-    garbler: GS,
-    evaluator: ES,
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Commands (from RPC / Bridge Core)
-// ════════════════════════════════════════════════════════════════════
-
 pub enum SmCommand {
     InitGarbler {
         peer_id: PeerId,
@@ -218,460 +191,24 @@ pub enum SmCommand {
         deposit_id: DepositId,
     },
 }
+```
 
-// ════════════════════════════════════════════════════════════════════
-// Handle (for RPC to send commands)
-// ════════════════════════════════════════════════════════════════════
+### Handle
 
+```rust
 #[derive(Clone)]
 pub struct SmSchedulerHandle {
     command_tx: kanal::AsyncSender<SmCommand>,
 }
 
 impl SmSchedulerHandle {
-    pub async fn send(&self, cmd: SmCommand) -> Result<(), SchedulerStopped> {
-        self.command_tx.send(cmd).await.map_err(|_| SchedulerStopped)
-    }
+    pub async fn send(&self, cmd: SmCommand) -> Result<(), SchedulerStopped>;
 }
 ```
 
-### Scheduler
+## Runtime Crate (`scheduler`)
 
-```rust
-pub struct SmScheduler<F: SmStateFactory> {
-    config: SmSchedulerConfig,
-    factory: F,
-    /// Per-peer SM state handles, keyed by PeerId.
-    peers: HashMap<PeerId, PeerSm<F::GarblerState, F::EvaluatorState>>,
-    /// Job system interface (submit batches, receive completions).
-    job_handle: JobSchedulerHandle,
-    /// net-svc interface (receive protocol streams).
-    net_handle: NetServiceHandle,
-    /// Command channel from RPC / Bridge Core.
-    command_rx: kanal::AsyncReceiver<SmCommand>,
-}
-
-impl<F: SmStateFactory> SmScheduler<F> {
-    pub fn new(
-        config: SmSchedulerConfig,
-        factory: F,
-        job_handle: JobSchedulerHandle,
-        net_handle: NetServiceHandle,
-    ) -> (Self, SmSchedulerHandle);
-
-    /// Run on a dedicated monoio thread.
-    pub fn run(self) -> std::thread::JoinHandle<()>;
-}
-```
-
-### Event Loop
-
-Uses `monoio::select!` to multiplex the three input sources:
-
-```rust
-async fn event_loop(mut self) {
-    // On startup: restore all existing SMs from storage.
-    self.restore_all().await;
-
-    loop {
-        monoio::select! {
-            // Job completion — route back to originating SM.
-            completion = self.job_handle.recv() => {
-                match completion {
-                    Ok(c) => self.handle_job_completion(c).await,
-                    Err(_) => break, // Job system shut down.
-                }
-            }
-
-            // Protocol message from a peer — route to correct SM.
-            stream = self.net_handle.protocol_streams().recv() => {
-                match stream {
-                    Ok(s) => self.handle_protocol_message(s).await,
-                    Err(_) => break, // net-svc shut down.
-                }
-            }
-
-            // Command from RPC — init, deposit, withdrawal.
-            cmd = self.command_rx.recv() => {
-                match cmd {
-                    Ok(c) => self.handle_command(c).await,
-                    Err(_) => break, // RPC shut down.
-                }
-            }
-        }
-    }
-
-    tracing::info!("SM scheduler shutting down");
-}
-```
-
-### Input Handlers
-
-#### Job Completion → SM
-
-When the job system completes an action, route the result back to the
-originating SM:
-
-```rust
-async fn handle_job_completion(&mut self, completion: JobCompletion) {
-    let peer_id = completion.peer_id;
-    let Some(peer) = self.peers.get_mut(&peer_id) else {
-        tracing::warn!(?peer_id, "completion for unknown peer");
-        return;
-    };
-
-    let batch = match completion.completion {
-        ActionCompletion::Garbler { id, result } => {
-            match executor::garbler_handle_completion(
-                &mut peer.garbler, id, result,
-            ).await {
-                Ok(actions) => JobBatch {
-                    peer_id,
-                    actions: JobActions::Garbler(actions),
-                },
-                Err(e) => {
-                    tracing::error!(?e, ?peer_id, "garbler STF error");
-                    return;
-                }
-            }
-        }
-        ActionCompletion::Evaluator { id, result } => {
-            match executor::evaluator_handle_completion(
-                &mut peer.evaluator, id, result,
-            ).await {
-                Ok(actions) => JobBatch {
-                    peer_id,
-                    actions: JobActions::Evaluator(actions),
-                },
-                Err(e) => {
-                    tracing::error!(?e, ?peer_id, "evaluator STF error");
-                    return;
-                }
-            }
-        }
-    };
-
-    // Submit emitted actions to job system.
-    if !batch.is_empty() {
-        if let Err(e) = self.job_handle.submit(batch).await {
-            tracing::error!(?e, "job submission failed");
-        }
-    }
-}
-```
-
-#### Protocol Message → SM
-
-When a protocol message arrives from a peer, deserialize it, build the
-appropriate SM `Input`, and route to the correct SM:
-
-```rust
-async fn handle_protocol_message(&mut self, mut stream: Stream) {
-    let peer_id = stream.peer;
-
-    // 1. Read and deserialize the protocol message.
-    let msg = match read_and_deserialize(&mut stream).await {
-        Ok(msg) => msg,
-        Err(e) => {
-            tracing::warn!(?e, ?peer_id, "failed to read protocol message");
-            return;
-        }
-    };
-
-    // 2. Ensure peer SM exists.
-    let Some(peer) = self.peers.get_mut(&peer_id) else {
-        tracing::warn!(?peer_id, "message from unknown peer");
-        return;
-    };
-
-    // 3. Route by message type to the correct SM.
-    //
-    // Garbler receives:  ChallengeMsg, AdaptorMsgChunk
-    // Evaluator receives: CommitMsgHeader, CommitMsgChunk,
-    //                     ChallengeResponseMsgHeader, ChallengeResponseMsgChunk
-    let batch = match msg {
-        Msg::ChallengeMsg(m) => {
-            let input = garbler::Input::RecvChallengeMsg(m);
-            match executor::garbler_handle_event(&mut peer.garbler, input).await {
-                Ok(actions) => JobBatch {
-                    peer_id,
-                    actions: JobActions::Garbler(actions),
-                },
-                Err(e) => {
-                    tracing::error!(?e, ?peer_id, "garbler STF error");
-                    return;
-                }
-            }
-        }
-        Msg::CommitMsgHeader(m) => {
-            let input = evaluator::Input::RecvCommitMsgHeader(m);
-            match executor::evaluator_handle_event(&mut peer.evaluator, input).await {
-                Ok(actions) => JobBatch {
-                    peer_id,
-                    actions: JobActions::Evaluator(actions),
-                },
-                Err(e) => {
-                    tracing::error!(?e, ?peer_id, "evaluator STF error");
-                    return;
-                }
-            }
-        }
-        // ... CommitMsgChunk, ChallengeResponseMsgHeader,
-        //     ChallengeResponseMsgChunk, AdaptorMsgChunk
-    };
-
-    // 4. Ack the message (protocol streams require explicit ack).
-    if let Err(e) = ack_stream(&mut stream).await {
-        tracing::warn!(?e, ?peer_id, "failed to ack protocol message");
-    }
-
-    // 5. Submit emitted actions to job system.
-    if !batch.is_empty() {
-        if let Err(e) = self.job_handle.submit(batch).await {
-            tracing::error!(?e, "job submission failed");
-        }
-    }
-}
-```
-
-#### RPC Command → SM
-
-When Bridge Core sends a command (init, deposit, withdrawal), create or
-look up the peer SM and process:
-
-```rust
-async fn handle_command(&mut self, cmd: SmCommand) {
-    match cmd {
-        SmCommand::InitGarbler { peer_id, data } => {
-            // Create fresh state handle from factory.
-            let mut garbler_state = self.factory.garbler_state(&peer_id);
-            let evaluator_state = self.factory.evaluator_state(&peer_id);
-
-            match executor::garbler_handle_event(
-                &mut garbler_state,
-                garbler::Input::Init(data),
-            ).await {
-                Ok(actions) => {
-                    self.peers.insert(peer_id, PeerSm {
-                        garbler: garbler_state,
-                        evaluator: evaluator_state,
-                    });
-                    let _ = self.job_handle.submit(JobBatch {
-                        peer_id,
-                        actions: JobActions::Garbler(actions),
-                    }).await;
-                }
-                Err(e) => tracing::error!(?e, "garbler init failed"),
-            }
-        }
-
-        SmCommand::InitEvaluator { peer_id, data } => {
-            // Similar to InitGarbler but for evaluator.
-            let garbler_state = self.factory.garbler_state(&peer_id);
-            let mut evaluator_state = self.factory.evaluator_state(&peer_id);
-
-            match executor::evaluator_handle_event(
-                &mut evaluator_state,
-                evaluator::Input::Init(data),
-            ).await {
-                Ok(actions) => {
-                    self.peers.insert(peer_id, PeerSm {
-                        garbler: garbler_state,
-                        evaluator: evaluator_state,
-                    });
-                    let _ = self.job_handle.submit(JobBatch {
-                        peer_id,
-                        actions: JobActions::Evaluator(actions),
-                    }).await;
-                }
-                Err(e) => tracing::error!(?e, "evaluator init failed"),
-            }
-        }
-
-        SmCommand::DepositInitGarbler { peer_id, deposit_id, data } => {
-            let Some(peer) = self.peers.get_mut(&peer_id) else {
-                tracing::error!(?peer_id, "deposit init for unknown peer");
-                return;
-            };
-            let input = garbler::Input::DepositInit(deposit_id, data);
-            match executor::garbler_handle_event(&mut peer.garbler, input).await {
-                Ok(actions) => {
-                    let _ = self.job_handle.submit(JobBatch {
-                        peer_id,
-                        actions: JobActions::Garbler(actions),
-                    }).await;
-                }
-                Err(e) => tracing::error!(?e, "garbler deposit init failed"),
-            }
-        }
-
-        SmCommand::DisputedWithdrawal { peer_id, deposit_id, withdrawal_input } => {
-            let Some(peer) = self.peers.get_mut(&peer_id) else {
-                tracing::error!(?peer_id, "disputed withdrawal for unknown peer");
-                return;
-            };
-            let input = garbler::Input::DisputedWithdrawal(deposit_id, withdrawal_input);
-            match executor::garbler_handle_event(&mut peer.garbler, input).await {
-                Ok(actions) => {
-                    let _ = self.job_handle.submit(JobBatch {
-                        peer_id,
-                        actions: JobActions::Garbler(actions),
-                    }).await;
-                }
-                Err(e) => tracing::error!(?e, "disputed withdrawal failed"),
-            }
-        }
-
-        // ... UndisputedWithdrawal, DepositInitEvaluator
-    }
-}
-```
-
-### Restore on Startup
-
-On startup, the scheduler loads all existing peer SMs from storage and
-restores their pending actions:
-
-```rust
-async fn restore_all(&mut self) {
-    // The state factory provides a way to enumerate known peers.
-    // For each peer, create state handles, call restore, and submit actions.
-    //
-    // Note: the exact mechanism for enumerating peers depends on the storage
-    // backend. For FDB, this might be a range scan on the peer key prefix.
-    // For in-memory, it's the HashMap keys.
-
-    for peer_id in self.factory.known_peers().await {
-        let mut garbler_state = self.factory.garbler_state(&peer_id);
-        let evaluator_state = self.factory.evaluator_state(&peer_id);
-
-        // Restore garbler.
-        match executor::garbler_restore(&garbler_state).await {
-            Ok(actions) if !actions.is_empty() => {
-                let _ = self.job_handle.submit(JobBatch {
-                    peer_id,
-                    actions: JobActions::Garbler(actions),
-                }).await;
-            }
-            Err(e) => tracing::error!(?e, ?peer_id, "garbler restore failed"),
-            _ => {}
-        }
-
-        // Restore evaluator.
-        match executor::evaluator_restore(&evaluator_state).await {
-            Ok(actions) if !actions.is_empty() => {
-                let _ = self.job_handle.submit(JobBatch {
-                    peer_id,
-                    actions: JobActions::Evaluator(actions),
-                }).await;
-            }
-            Err(e) => tracing::error!(?e, ?peer_id, "evaluator restore failed"),
-            _ => {}
-        }
-
-        self.peers.insert(peer_id, PeerSm {
-            garbler: garbler_state,
-            evaluator: evaluator_state,
-        });
-    }
-}
-```
-
-## Message Routing
-
-Protocol messages are routed to the correct SM based on message type:
-
-| Message | Recipient SM | SM Input variant |
-|---------|-------------|-----------------|
-| `CommitMsgHeader` | Evaluator | `Input::RecvCommitMsgHeader` |
-| `CommitMsgChunk` | Evaluator | `Input::RecvCommitMsgChunk` |
-| `ChallengeMsg` | Garbler | `Input::RecvChallengeMsg` |
-| `ChallengeResponseMsgHeader` | Evaluator | `Input::RecvChallengeResponseMsgHeader` |
-| `ChallengeResponseMsgChunk` | Evaluator | `Input::RecvChallengeResponseMsgChunk` |
-| `AdaptorMsgChunk` | Garbler | `Input::DepositRecvAdaptorMsgChunk` |
-
-Bridge Core commands are routed by the `SmCommand` variant which specifies
-the role explicitly.
-
-## Data Flow
-
-### Setup Phase (per peer)
-
-```
-Bridge Core                SM Scheduler              Job System
-    │                          │                          │
-    ├─ InitGarbler ───────────►│                          │
-    │                          ├─ garbler STF(Init)       │
-    │                          ├─ JobBatch(G1×165) ──────►│  generate poly commitments
-    │                          │                          │
-    │                          │◄─ JobCompletion(G1) ─────┤
-    │                          ├─ garbler STF(Complete)    │
-    │                          │  ... (164 more G1s) ...  │
-    │                          │                          │
-    │                          ├─ JobBatch(G2×182) ──────►│  generate shares
-    │                          │  ... completions ...     │
-    │                          │                          │
-    │                          ├─ JobBatch(G3×181) ──────►│  generate table commitments
-    │                          │  ... completions ...     │
-    │                          │                          │
-    │                          ├─ JobBatch(G4,G5×164)───►│  send commit msg
-    │                          │  ... acks ...            │
-    │                          │                          │
-    │              Evaluator receives CommitMsg from net   │
-    │                          ├─ evaluator STF(Recv)     │
-    │                          ├─ JobBatch(E1) ──────────►│  send challenge
-    │                          │                          │
-    │              Garbler receives ChallengeMsg from net  │
-    │                          ├─ garbler STF(Recv)       │
-    │                          ├─ JobBatch(G6,G7×174) ──►│  send challenge response
-    │                          │  ... acks ...            │
-    │                          │                          │
-    │                          ├─ JobBatch(G8×7) ────────►│  transfer garbling tables
-    │                          │                          │
-```
-
-### Deposit Phase
-
-```
-Bridge Core                SM Scheduler              Job System
-    │                          │                          │
-    ├─ DepositInitEvaluator ──►│                          │
-    │                          ├─ evaluator STF(Deposit)  │
-    │                          ├─ JobBatch(E5,E6×4) ────►│  generate adaptors
-    │                          │  ... completions ...     │
-    │                          ├─ JobBatch(E7×4) ────────►│  send adaptor chunks
-    │                          │                          │
-    │              Garbler receives AdaptorMsgChunks       │
-    │                          ├─ garbler STF(Recv×4)     │
-    │                          ├─ JobBatch(G9) ──────────►│  verify adaptors
-    │                          │                          │
-```
-
-## Threading Model
-
-| Component | Thread | Runtime |
-|-----------|--------|---------|
-| SM Scheduler event loop | 1 dedicated thread | monoio |
-| SM STF execution | On scheduler thread (sequential per-SM, interleaved at await points) | monoio |
-| Job light pool | 1 thread, 32 concurrency | monoio |
-| Job heavy pool | 2 threads, 8 concurrency | monoio |
-| Job garbling coordinator | 1 + N worker threads | monoio |
-| net-svc | 1 dedicated thread | tokio |
-| S3 TableStore | 1 dedicated thread | tokio |
-| RPC server | Shared with net-svc or separate | tokio |
-
-The SM Scheduler runs on a single monoio thread. SMs are sequential per-peer
-(FASM requires exclusive `&mut State`), but multiple peers interleave at await
-points. The STF itself is CPU-light (validation, state updates, action
-emission). Heavy work (crypto, garbling, network I/O) is delegated to the job
-system.
-
-## Storage
-
-### SmStateFactory
-
-The scheduler needs `StateMut` handles for each peer. The `SmStateFactory`
-trait abstracts over the storage backend:
+### Core Types
 
 ```rust
 pub trait SmStateFactory: Send + Sync + 'static {
@@ -681,61 +218,172 @@ pub trait SmStateFactory: Send + Sync + 'static {
     fn garbler_state(&self, peer_id: &PeerId) -> Self::GarblerState;
     fn evaluator_state(&self, peer_id: &PeerId) -> Self::EvaluatorState;
 
-    /// List all peers with persisted state (for restore on startup).
     fn known_peers(&self) -> impl Future<Output = Vec<PeerId>> + Send;
 }
-```
 
-### In-Memory (Testing)
+struct PeerSm<GS, ES> {
+    garbler: GS,
+    evaluator: ES,
+}
 
-```rust
-impl SmStateFactory for InMemoryStateFactory {
-    type GarblerState = StoredGarblerState;       // from storage/inmemory
-    type EvaluatorState = StoredEvaluatorState;   // from storage/inmemory
-    // ...
+pub struct SmScheduler<F: SmStateFactory> {
+    config: SmSchedulerConfig,
+    factory: F,
+    peers: HashMap<PeerId, PeerSm<F::GarblerState, F::EvaluatorState>>,
+    job_handle: JobSchedulerHandle,
+    net_client: NetClient,
+    command_rx: kanal::AsyncReceiver<SmCommand>,
 }
 ```
 
-### FDB (Production)
+### Event Loop
+
+Single-loop input multiplexing:
+
+1. `job_handle.recv()` (tracked completion -> STF completion input)
+2. `net_client.recv()` (protocol message -> STF event input)
+3. `command_rx.recv()` (RPC command -> STF event input)
+
+If any input source shuts down, scheduler exits cleanly.
+
+### Input Routing
+
+#### Protocol message -> role/input
+
+| Message | Role | Input |
+|---|---|---|
+| `CommitHeader` | Evaluator | `RecvCommitMsgHeader` |
+| `CommitChunk` | Evaluator | `RecvCommitMsgChunk` |
+| `Challenge` | Garbler | `RecvChallengeMsg` |
+| `ChallengeResponseHeader` | Evaluator | `RecvChallengeResponseMsgHeader` |
+| `ChallengeResponseChunk` | Evaluator | `RecvChallengeResponseMsgChunk` |
+| `AdaptorChunk` | Garbler | `DepositRecvAdaptorMsgChunk` |
+
+#### Job completion -> role/completion
+
+| Completion variant | Role | STF input |
+|---|---|---|
+| `ActionCompletion::Garbler` | Garbler | `TrackedActionCompleted { id, result }` |
+| `ActionCompletion::Evaluator` | Evaluator | `TrackedActionCompleted { id, result }` |
+
+### Action Submission
+
+Every successful STF call emits zero or more tracked actions.
+
+Runtime immediately submits them as:
 
 ```rust
-impl SmStateFactory for FdbStateFactory {
-    type GarblerState = FdbGarblerState;
-    type EvaluatorState = FdbEvaluatorState;
-
-    fn garbler_state(&self, peer_id: &PeerId) -> FdbGarblerState {
-        FdbGarblerState::new(self.db.clone(), *peer_id)
-    }
-    // ...
+JobBatch {
+    peer_id,
+    actions: JobActions::{Garbler|Evaluator}(container),
 }
 ```
 
-Where `FdbGarblerState` implements `garbler::StateMut` with each `get_*` /
-`put_*` call performing an FDB read/write. This is Sapin's deliverable
-(KvStore layer).
+No local action buffering across STF calls.
+
+## Protocol Ack Semantics
+
+For incoming protocol requests:
+
+1. receive stream + decode message
+2. apply STF and persist state mutations
+3. submit emitted actions
+4. ack stream
+
+Ack happens after successful STF application and state write path.
+
+This gives at-least-once delivery semantics under crash/restart.
+
+## Restore on Startup
+
+On startup, runtime:
+
+1. calls `factory.known_peers()`
+2. creates per-peer garbler/evaluator handles
+3. invokes `garbler_restore` + `evaluator_restore`
+4. submits restored actions to job scheduler
+5. inserts peer into active map
+
+Restore failures are logged per peer; scheduler continues processing others.
+
+## Storage Integration
+
+The scheduler runtime is storage-backend agnostic behind `SmStateFactory`.
+
+### In-memory (tests)
+
+Factory returns in-memory `StoredGarblerState` / `StoredEvaluatorState` handles and peer enumeration from in-memory index.
+
+### FDB/production
+
+Factory returns FDB-backed `StateMut` handles scoped by peer and enumerates peer IDs from persisted prefixes.
 
 ## Atomicity
 
-FASM requires that the STF is atomic: if it returns `Err`, state must be
-unchanged. Two approaches:
+FASM requires STF atomicity.
 
-**Transactional (FDB)**: Each STF call runs within an FDB transaction. All
-`put_*` calls are buffered. On success, the transaction commits atomically.
-On error, it aborts and all writes are discarded.
+- **Transactional storage (preferred production path):** one STF call scoped to one storage transaction.
+- **In-memory test storage:** acceptable for tests/dev; failures should not partially commit externally visible state.
 
-**In-memory**: The `StoredGarblerState` / `StoredEvaluatorState` mutate
-in-place. If the STF returns `Err`, the caller must discard the state and
-reload. For testing this is fine; for production, the FDB transactional model
-is preferred.
+## Threading Model
 
-## Design Decisions
+| Component | Threading | Runtime |
+|---|---|---|
+| SM scheduler runtime | 1 thread | monoio |
+| STF calls | on scheduler thread | monoio |
+| Job scheduler | dedicated thread + worker pools | monoio |
+| net-svc | dedicated thread | tokio |
+| RPC server | service thread(s) | tokio |
 
-| Decision | Rationale |
-|----------|-----------|
-| Executor is stateless functions, not a trait | No abstraction needed — just 6 wrapper functions. Testing uses in-memory `StateMut`. |
-| Scheduler owns state handles in `HashMap<PeerId, PeerSm>` | SMs are sequential per-peer. Scheduler is the single owner. No concurrent access. |
-| `SmStateFactory` for storage abstraction | Decouples scheduler from FDB specifics. Tests use in-memory. |
-| Single monoio thread | STF is CPU-light. Heavy work goes to job system. One thread handles all peers. |
-| `monoio::select!` for input multiplexing | Native async multiplexing — no polling, no busy loops. |
-| Protocol message ack AFTER STF + state commit | Ensures at-least-once delivery. If the scheduler crashes before acking, the peer retransmits. |
-| Actions submitted immediately after STF | No buffering. Each STF call emits actions that go straight to the job system. |
+Per-peer execution remains sequential because STF requires exclusive mutable state.
+
+## Backpressure and Failure Behavior
+
+### Backpressure
+
+- Command channel bounded by `SmSchedulerConfig.command_queue_size`.
+- Job submission channel bounded in `JobSchedulerConfig`.
+- If job system slows, action submission awaits and naturally backpressures STF intake.
+
+### Failure handling
+
+- STF errors are logged with peer + role + input context; scheduler continues.
+- Unknown peer completions/messages are logged and dropped.
+- Job scheduler guarantees internal retries for transient execution failures.
+
+## Testing Strategy
+
+### Unit tests (runtime)
+
+- message->role routing correctness
+- completion->role routing correctness
+- command handling and peer lifecycle
+- restore path and action submission
+
+### Integration tests
+
+- end-to-end: protocol stream -> STF -> job batch -> completion -> STF
+- scheduler restart with restore replay
+- bounded-channel backpressure behavior
+
+### Property/simulation tests (recommended)
+
+- random event/completion ordering per peer
+- invariant checks (no duplicate role routing, no cross-peer contamination)
+
+## Migration Notes
+
+1. Remove legacy `state-machine/executor` runtime role.
+2. Move STF wrappers into `state-machine/scheduler` internal module.
+3. Introduce `state-machine/scheduler-api` for public handle/command/config.
+4. Update workspace members and crate deps accordingly.
+5. Update references in docs/comments that still mention `StateMachineId`-based executor submission path.
+
+## Deliverable Checklist (This Week)
+
+1. `scheduler-api` crate created and integrated.
+2. `scheduler` runtime crate created and integrated.
+3. Internal STF wrappers implemented in runtime.
+4. Startup restore implemented with `known_peers`.
+5. Protocol + completion routing fully wired.
+6. Lints/tests green in CI-equivalent local run.
