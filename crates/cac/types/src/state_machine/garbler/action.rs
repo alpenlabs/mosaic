@@ -83,6 +83,8 @@ pub enum ActionResult {
     CommitMsgHeaderAcked,
     /// Commit message chunk was sent and acknowledged by the evaluator.
     CommitMsgChunkAcked,
+    /// Challenge response header was sent and acknowledged by the evaluator.
+    ChallengeResponseHeaderAcked,
     /// Challenge response chunk was sent and acknowledged by the evaluator.
     ChallengeResponseChunkAcked,
     /// Garbling table was transferred to the evaluator.

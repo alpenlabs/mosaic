@@ -67,6 +67,8 @@ pub enum Step {
     /// Sending challenge response chunks. Transitions to
     /// TransferringGarblingTables when all chunks are acked.
     SendingChallengeResponse {
+        /// Track when challenge response header has been acked.
+        header_acked: bool,
         /// Track which challenge response chunks have been acked.
         acked: HeapArray<bool, N_CHALLENGE_RESPONSE_CHUNKS>,
     },

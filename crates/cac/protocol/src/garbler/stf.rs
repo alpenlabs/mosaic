@@ -94,6 +94,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                             .map_err(SMError::storage)?;
 
                         root_state.step = Step::SendingChallengeResponse {
+                            header_acked: false,
                             acked: HeapArray::from_elem(false),
                         };
 
@@ -304,10 +305,24 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
-
+        ActionResult::ChallengeResponseHeaderAcked => match &mut root_state.step {
+            Step::SendingChallengeResponse {
+                header_acked,
+                acked: _,
+            } => {
+                let ActionId::SendChallengeResponseMsgHeader = id else {
+                    return Err(SMError::invalid_input_data());
+                };
+                *header_acked = true;
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
         ActionResult::ChallengeResponseChunkAcked => {
             match &mut root_state.step {
-                Step::SendingChallengeResponse { acked } => {
+                Step::SendingChallengeResponse {
+                    header_acked,
+                    acked,
+                } => {
                     let ActionId::SendChallengeResponseMsgChunk(circuit_index) = id else {
                         return Err(SMError::invalid_input_data());
                     };
@@ -319,7 +334,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     acked[idx] = true;
 
-                    if acked.all() {
+                    if *header_acked && acked.all() {
                         let challenge_indices = state
                             .get_challenge_indices()
                             .await
@@ -774,11 +789,15 @@ pub(crate) async fn restore<S: StateRead>(
             header_acked,
             acked: _,
         } => {
+            todo!()
             // TODO(sapinb): restore SendCommitMsgHeader + SendCommitMsgChunk
             // emission once CommitMsgHeader fields are populated. See #72.
         }
         Step::WaitingForChallenge => {}
-        Step::SendingChallengeResponse { acked } => {
+        Step::SendingChallengeResponse {
+            header_acked,
+            acked,
+        } => {
             let challenge_indices = state
                 .get_challenge_indices()
                 .await
@@ -800,7 +819,9 @@ pub(crate) async fn restore<S: StateRead>(
                 seeds,
                 config.setup_inputs,
             );
-            emit(actions, Action::SendChallengeResponseMsgHeader(header));
+            if !*header_acked {
+                emit(actions, Action::SendChallengeResponseMsgHeader(header));
+            }
             for chunk in chunks {
                 if !acked[chunk.circuit_index as usize] {
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
