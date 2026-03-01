@@ -1084,10 +1084,21 @@ fn is_sorted<T: Ord>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] <= w[1])
 }
 
-#[expect(unused_variables)]
 fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
-    todo!()
+    let challenged_indices: Vec<usize> = challenge_indices
+        .iter()
+        .map(|x| x.get())
+        .collect::<Vec<usize>>();
+    let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
+        .into_iter()
+        .filter(|id| !challenged_indices.contains(id))
+        .map(|id| Index::new(id).unwrap())
+        .collect::<Vec<Index>>()
+        .try_into()
+        .expect("unchallenge length");
+    unchallenged_indices
 }
+
 
 fn get_eval_commitments(
     eval_indices: &EvaluationIndices,

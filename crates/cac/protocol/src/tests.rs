@@ -503,8 +503,8 @@ async fn test_e2e() {
         garb_state: garb_state.clone(),
         eval_state: eval_state.clone(),
     });
-    let results = mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await;
-    assert_eq!(results.len(), N_OPEN_CIRCUITS); // ActionResult::TableCommitmentGenerated
+    let mut eval_results = mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await;
+    assert_eq!(eval_results.len(), N_OPEN_CIRCUITS); // ActionResult::TableCommitmentGenerated
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
         let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
