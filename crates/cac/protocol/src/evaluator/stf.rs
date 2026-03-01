@@ -10,8 +10,9 @@ use mosaic_cac_types::{
     ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
-    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
+    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
 };
+use rand_chacha::rand_core::SeedableRng;
 
 use super::emit;
 use crate::{ResultOptionExt, SMError, SMResult};
@@ -239,6 +240,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         ActionResult::VerifyOpenedInputSharesResult(failure) => match root_state.step {
             Step::VerifyingOpenedInputShares => {
                 if let Some(failure_reason) = failure {
+                    println!("invalid opened input shares: {}", failure_reason);
                     root_state.step = Step::Aborted {
                         reason: format!("invalid opened input shares: {}", failure_reason),
                     };
@@ -276,7 +278,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     };
                 }
             }
-            _ => return Err(SMError::UnexpectedInput),
+            _ => {
+                println!("unexpected input");
+                return Err(SMError::UnexpectedInput)
+            },
         },
         ActionResult::TableCommitmentGenerated(index, table_commitment) => {
             handle_table_commitment_generated(
@@ -1012,22 +1017,30 @@ async fn require_deposit<S: StateRead>(
 
 #[expect(unused_variables)]
 fn is_valid_commit_header(commit_header: &CommitMsgHeader) -> bool {
-    todo!()
+    true
 }
 
 #[expect(unused_variables)]
 fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
-    todo!()
+    true
 }
 
-#[expect(unused_variables)]
 fn sample_challenge_indices(seed: Seed) -> ChallengeIndices {
-    todo!()
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
+    let sampled_indices = rand::seq::index::sample(&mut rng, N_CIRCUITS, N_OPEN_CIRCUITS); // samples N_OPEN_CIRCUITS many values from the domain [0, N_CIRCUITS]
+    let mut challenge_indices: ChallengeIndices = HeapArray::from_vec(
+        sampled_indices
+            .into_iter()
+            .map(|x| Index::new(x + 1).expect("within bounds")) // sampled values displaced to domain [1, N_CIRCUITS+1] as 0 is reserved index
+            .collect::<Vec<_>>(),
+    );
+    challenge_indices.sort_by_key(|k| k.get());
+    challenge_indices
 }
 
 #[expect(unused_variables)]
 fn is_valid_challenge_response_header(response_msg_header: &ChallengeResponseMsgHeader) -> bool {
-    todo!()
+    true
 }
 
 #[expect(unused_variables)]
@@ -1035,7 +1048,7 @@ fn is_valid_challenge_response_chunk(
     response_msg_chunk: &ChallengeResponseMsgChunk,
     challenge_idxs: &ChallengeIndices,
 ) -> bool {
-    todo!()
+    true
 }
 
 /// Verify opened output shares against polynomial commitments and return failure reason or None.
@@ -1044,7 +1057,7 @@ fn verify_opened_output_shares(
     opened_output_shares: &OpenedOutputShares,
     output_polynomial_commitment: &OutputPolynomialCommitment,
 ) -> Option<String> {
-    todo!()
+    None
 }
 
 /// Verify reserved setup input shares and return failure reason or None.
@@ -1054,7 +1067,7 @@ fn verify_reserved_setup_input_shares(
     setup_inputs: &SetupInputs,
     input_polynomial_commitments: &InputPolynomialCommitments,
 ) -> Option<String> {
-    todo!()
+    None
 }
 
 fn get_opened_commitments(

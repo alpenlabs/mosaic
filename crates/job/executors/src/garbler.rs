@@ -181,7 +181,7 @@ pub(crate) async fn handle_send_challenge_response_header<SP: StorageProvider, T
     // NOTE: Same situation as commit header — STF reuses ChallengeResponseChunkAcked.
     let id = ActionId::SendChallengeResponseMsgHeader;
     match ctx.net_client.send(*peer_id, header.clone()).await {
-        Ok(_ack) => completed(id, ActionResult::ChallengeResponseChunkAcked),
+        Ok(_ack) => completed(id, ActionResult::ChallengeResponseHeaderAcked),
         Err(e) => {
             tracing::warn!(%e, "send challenge response header failed, will retry");
             HandlerOutcome::Retry

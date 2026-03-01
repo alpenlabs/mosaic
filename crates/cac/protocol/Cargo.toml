@@ -13,7 +13,8 @@ keywords.workspace = true
 [dependencies]
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
-
+rand.workspace = true
+rand_chacha.workspace = true
 fasm.workspace = true
 futures.workspace = true
 thiserror.workspace = true
@@ -21,8 +22,6 @@ thiserror.workspace = true
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 mosaic-storage-inmemory.workspace = true
-rand_chacha.workspace = true
-rand.workspace = true
 mosaic-job-executors.workspace = true
 mosaic-storage-api.workspace = true
 mosaic-job-api.workspace = true

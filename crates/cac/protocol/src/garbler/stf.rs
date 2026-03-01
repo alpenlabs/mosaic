@@ -6,9 +6,21 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
     CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
     EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
+    InputShares, OpenedGarblingSeeds, OpenedOutputShares, OutputShares, ReservedInputShares,
+    ReservedSetupInputShares, Seed, SetupInputs, Share, WideLabelWireShares,
+    state_machine::garbler::*,
 };
-use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES};
+use mosaic_common::{
+    Byte32,
+    constants::{
+        N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
+        WIDE_LABEL_VALUE_COUNT,
+    },
+};
+use rand_chacha::{
+    ChaCha20Rng,
+    rand_core::{RngCore, SeedableRng},
+};
 
 use super::emit;
 use crate::{ResultOptionExt, SMError, SMResult};
@@ -81,12 +93,25 @@ pub(crate) async fn handle_event<S: StateMut>(
                             .require("expected output shares")?;
                         let config = require_config(&root_state)?;
                         let seeds = generate_garbling_table_seeds(config.seed);
+                        let garbling_table_meta: Vec<Byte32> = state
+                            .get_all_garbling_table_metadata()
+                            .await
+                            .require("expected garbling table metadata")?
+                            .iter()
+                            .map(|x| x.output_label_ct)
+                            .collect();
+                        let eval_indices = get_eval_indices(&challenge_msg.challenge_indices);
+                        let garbling_table_meta_unchallenged: Vec<Byte32> = eval_indices
+                            .iter()
+                            .map(|i| garbling_table_meta[i.get()])
+                            .collect();
                         let (header, chunks) = create_challenge_response_msgs(
                             &challenge_msg.challenge_indices,
                             input_shares,
                             output_shares,
                             seeds,
                             config.setup_inputs,
+                            garbling_table_meta_unchallenged,
                         );
                         state
                             .put_challenge_indices(&challenge_msg.challenge_indices)
@@ -272,12 +297,15 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         ActionResult::CommitMsgHeaderAcked => match &mut root_state.step {
             Step::SendingCommit {
                 header_acked,
-                acked: _,
+                acked,
             } => {
                 let ActionId::SendCommitMsgHeader = id else {
                     return Err(SMError::invalid_input_data());
                 };
                 *header_acked = true;
+                if acked.all() && *header_acked {
+                    root_state.step = Step::WaitingForChallenge;
+                }
             }
             _ => return Err(SMError::unexpected_input()),
         },
@@ -326,19 +354,22 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     let ActionId::SendChallengeResponseMsgChunk(circuit_index) = id else {
                         return Err(SMError::invalid_input_data());
                     };
-                    let idx = circuit_index as usize;
-                    if acked[idx] {
+                    let challenge_indices = state
+                        .get_challenge_indices()
+                        .await
+                        .require("expected challenge indices")?;
+                    let challenge_index_pos = challenge_indices
+                        .iter()
+                        .position(|x| x.get() == circuit_index as usize)
+                        .unwrap();
+                    if acked[challenge_index_pos] {
                         // already acked this chunk
                         return Err(SMError::invalid_input_data());
                     }
 
-                    acked[idx] = true;
+                    acked[challenge_index_pos] = true;
 
                     if *header_acked && acked.all() {
-                        let challenge_indices = state
-                            .get_challenge_indices()
-                            .await
-                            .require("expected challenge indices")?;
                         let eval_indices = get_eval_indices(&challenge_indices);
 
                         let garbling_table_commitments = state
@@ -486,6 +517,7 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
                         // already seen
                         return Err(SMError::duplicate_action());
                     }
+                    *output = true;
                     state
                         .put_output_polynomial_commitment(&output_commitment)
                         .await
@@ -818,6 +850,7 @@ pub(crate) async fn restore<S: StateRead>(
                 output_shares,
                 seeds,
                 config.setup_inputs,
+                todo!(),
             );
             if !*header_acked {
                 emit(actions, Action::SendChallengeResponseMsgHeader(header));
@@ -899,38 +932,143 @@ async fn require_deposit<S: StateRead>(
         .ok_or_else(|| SMError::unknown_deposit(*deposit_id))
 }
 
-#[expect(unused_variables)]
 fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
-    todo!()
+    let mut rng = ChaCha20Rng::from_seed(base_seed.into()); // modify base seed ?
+    let garbling_seeds = (0..N_CIRCUITS)
+        .into_iter()
+        .map(|_| {
+            let mut bytes: [u8; 32] = [0; 32];
+            rng.fill_bytes(&mut bytes);
+            Byte32::from(bytes)
+        })
+        .collect::<Vec<Byte32>>();
+    HeapArray::from_vec(garbling_seeds)
 }
 
 #[expect(unused_variables)]
 fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
     // challenge indices must be in range, must not include 0, etc
-    todo!()
+    true
 }
 
-#[expect(unused_variables, dead_code)]
-fn create_commit_msg_chunks(
-    polynomial_commitments: InputPolynomialCommitments,
-) -> Vec<CommitMsgChunk> {
-    todo!()
-}
-
-#[expect(unused_variables)]
 fn create_challenge_response_msgs(
     challenge_idxs: &ChallengeIndices,
     input_shares: InputShares,
     output_shares: OutputShares,
     garbling_seeds: AllGarblingSeeds,
     setup_inputs: SetupInputs,
+    output_cts: Vec<Byte32>,
 ) -> (ChallengeResponseMsgHeader, Vec<ChallengeResponseMsgChunk>) {
-    todo!()
+    let (header, _) = create_challenge_response_msg_header(
+        challenge_idxs,
+        &input_shares,
+        &output_shares,
+        garbling_seeds,
+        setup_inputs,
+        HeapArray::from_vec(output_cts),
+    );
+    let chunks = create_challenge_response_msg_chunks(challenge_idxs, &input_shares);
+    (header, chunks)
 }
 
-#[expect(unused_variables)]
+fn create_challenge_response_msg_chunks(
+    challenge_indices: &ChallengeIndices,
+    input_shares: &InputShares,
+) -> Vec<ChallengeResponseMsgChunk> {
+    let mut open_input_shares: Vec<ChallengeResponseMsgChunk> = Vec::with_capacity(N_OPEN_CIRCUITS);
+    for i in 0..N_OPEN_CIRCUITS {
+        let idx = challenge_indices[i].get();
+        let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
+        for j in 0..N_INPUT_WIRES {
+            let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+            for k in 0..WIDE_LABEL_VALUE_COUNT {
+                wide_shares.push(input_shares[idx][j][k].clone());
+            }
+            selected_input_shares.push(HeapArray::from_vec(wide_shares));
+        }
+        open_input_shares.push(ChallengeResponseMsgChunk {
+            circuit_index: idx as u16,
+            shares: HeapArray::from_vec(selected_input_shares),
+        });
+    }
+    open_input_shares
+}
+
+fn create_challenge_response_msg_header(
+    challenge_idxs: &ChallengeIndices,
+    all_input_shares: &InputShares,
+    all_output_shares: &OutputShares,
+    garbling_seeds: AllGarblingSeeds,
+    setup_input: SetupInputs,
+    unchallenged_output_label_cts: HeapArray<Byte32, N_EVAL_CIRCUITS>,
+) -> (ChallengeResponseMsgHeader, ReservedInputShares) {
+    fn get_reserved_input_shares(input_shares: &InputShares) -> Box<ReservedInputShares> {
+        let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
+        for i in 0..N_INPUT_WIRES {
+            let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+            for j in 0..WIDE_LABEL_VALUE_COUNT {
+                wide_shares.push(input_shares[0][i][j].clone());
+            }
+            selected_input_shares.push(HeapArray::from_vec(wide_shares));
+        }
+        let input_shares: CircuitInputShares = HeapArray::from_vec(selected_input_shares);
+        Box::new(input_shares)
+    }
+
+    // evaluate the output false polynomial at the challenge indices
+    let opened_output_shares: OpenedOutputShares = HeapArray::from_vec(
+        challenge_idxs
+            .map(|idx| all_output_shares[idx.get()].clone())
+            .to_vec(),
+    );
+
+    // evaluate each input polynomial at the reserved i=0 index
+    let reserved_input_shares: Box<ReservedInputShares> =
+        get_reserved_input_shares(&all_input_shares);
+
+    // take 0..N_SETUP_INPUT_WIRES indices and
+    let reserved_setup_input_shares: ReservedSetupInputShares = HeapArray::from_vec(
+        (0..N_SETUP_INPUT_WIRES)
+            .into_iter()
+            .map(|i| reserved_input_shares[i][setup_input[i] as usize].clone())
+            .collect(),
+    );
+
+    // opened garbling seeds
+    let opened_garbling_seeds: OpenedGarblingSeeds = HeapArray::from_vec(
+        challenge_idxs
+            // challenge index i+1 corresponds to i_th entry in self.garbling_seeds
+            // therefore subtract by 1 here; better way ? maybe GC tables should be stored as map
+            // from Index to Value as the data structure can not be indexed in the
+            // conventional array sense
+            .map(|idx| garbling_seeds[idx.get() - 1])
+            .to_vec(),
+    );
+
+    (
+        ChallengeResponseMsgHeader {
+            reserved_setup_input_shares,
+            opened_output_shares,
+            opened_garbling_seeds,
+            unchallenged_output_label_cts,
+        },
+        *reserved_input_shares,
+    )
+}
+
 fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
-    todo!()
+    let challenged_indices: Vec<usize> = challenge_indices
+        .iter()
+        .map(|x| x.get())
+        .collect::<Vec<usize>>();
+    let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
+        .into_iter()
+        .filter(|id| !challenged_indices.contains(id))
+        .map(|id| Index::new(id).unwrap())
+        .collect::<Vec<Index>>()
+        .try_into()
+        .expect("unchallenge length");
+    unchallenged_indices
 }
 
 fn get_eval_seeds(
