@@ -532,20 +532,21 @@ async fn test_e2e() {
         garb_state: garb_state.clone(),
         eval_state: eval_state.clone(),
     });
-    println!("evaluator waits to receive table");
-    let rx = tokio::spawn(async move {
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await
-    });
-
-    garbler_exec.update_state(DummyStorageProvider {
+        garbler_exec.update_state(DummyStorageProvider {
         garb_state: garb_state.clone(),
         eval_state: eval_state.clone(),
     });
+
     println!("garbler sends table");
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &peer_id_b).await;
+    let tx = tokio::spawn(async move {
+        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &peer_id_b).await
+    });
+
+     let eval_inputs = 
+        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await;
+
+    let garb_results = tx.await.unwrap();
     println!("garb_results len {}", garb_results.len());
-    let mut eval_inputs = rx.await.unwrap();
     println!("eval_inputs len {}", eval_inputs.len());
 }
 
@@ -639,7 +640,7 @@ impl TableWriter for FileTableWriter {
         &mut self,
         data: &[u8],
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { self.ct.write_all(data) }
+        async { self.ct.write_all(data).unwrap(); self.ct.flush().unwrap(); Ok(()) }
     }
 
     fn finish(
@@ -778,7 +779,7 @@ async fn mock_dispatch_garbler(
                                 .await
                                 .unwrap();
                         if let GarblerCircuitSession::Commitment(session) = session {
-                            garb_coord_do_your_thing(&exec.circuit_path, *session).await
+                            garb_coordinator(&exec.circuit_path, *session).await
                         } else {
                             panic!()
                         }
@@ -798,8 +799,10 @@ async fn mock_dispatch_garbler(
                     GarblerAction::TransferGarblingTable(seed) => {
                         let session = ExecuteGarblerJob::begin_table_transfer(exec, peer_id, *seed)
                             .await.unwrap();
+                        println!("finished fn begin_table_transfer");
                         if let GarblerCircuitSession::Transfer(session) = session {
-                            garb_coord_do_your_thing(&exec.circuit_path, *session).await // GarblerActionResult::GarblingTableTransferred(self.seed, self.commitment)
+                            let m = garb_coordinator(&exec.circuit_path, *session).await; // GarblerActionResult::GarblingTableTransferred(self.seed, self.commitment)
+                            m
                         } else {
                             panic!()
                         }
@@ -858,7 +861,7 @@ async fn mock_dispatch_evaluator(
                         .await
                         .unwrap();
                         if let EvaluatorCircuitSession::Commitment(session) = session {
-                            let res = garb_coord_do_your_thing(&exec.circuit_path, *session).await;
+                            let res = garb_coordinator(&exec.circuit_path, *session).await;
                             res
                         } else {
                             panic!()
@@ -886,7 +889,7 @@ async fn mock_dispatch_evaluator(
 
 use mosaic_job_api::CircuitSession;
 
-async fn garb_coord_do_your_thing<S: CircuitSession>(
+async fn garb_coordinator<S: CircuitSession>(
     circuit_path: &PathBuf,
     mut session: S,
 ) -> HandlerOutcome {

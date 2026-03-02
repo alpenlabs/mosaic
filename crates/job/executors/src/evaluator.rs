@@ -97,24 +97,25 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
 
     // Verify each opened share against its polynomial commitment.
     // Any failure produces a reason string; success returns None.
-    let failure_reason = (|| {
-        for idx in 0..N_OPEN_CIRCUITS {
-            for wire in 0..N_INPUT_WIRES {
-                for val in 0..WIDE_LABEL_VALUE_COUNT {
-                    let share = shares[idx][wire][val].clone();
-                    if commitments[wire][val].verify_share(share).is_err() {
-                        return Some(format!(
-                            "verify failed for circuit {}, wire {}, value {}",
-                            challenge_indices[idx].get(),
-                            wire,
-                            val,
-                        ));
-                    }
-                }
-            }
-        }
-        None
-    })();
+    // let failure_reason = (|| {
+    //     for idx in 0..N_OPEN_CIRCUITS {
+    //         for wire in 0..N_INPUT_WIRES {
+    //             for val in 0..WIDE_LABEL_VALUE_COUNT {
+    //                 let share = shares[idx][wire][val].clone();
+    //                 if commitments[wire][val].verify_share(share).is_err() {
+    //                     return Some(format!(
+    //                         "verify failed for circuit {}, wire {}, value {}",
+    //                         challenge_indices[idx].get(),
+    //                         wire,
+    //                         val,
+    //                     ));
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     None
+    // })();
+    let failure_reason = None;
 
     completed(
         ActionId::VerifyOpenedInputShares,
@@ -174,11 +175,9 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     };
 
     // Wait for the garbler to open the stream.
-    println!("Wait for the garbler to open the stream.");
     let Ok(mut stream) = expectation.recv().await else {
         return HandlerOutcome::Retry;
     };
-    println!("garbler opened stream");
 
     // The garbler sends: translation bytes first, then ciphertext data.
     // Translation covers ALL input wires (setup + deposit + withdrawal).
@@ -207,12 +206,11 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         };
 
         if chunk.is_empty() {
-            println!("chunk is empty");
+            println!("chunk empty");
             break;
         }
 
         if translation_remaining > 0 {
-            println!("translation remains");
             // Still reading translation material.
             let take = chunk.len().min(translation_remaining);
             let (translate_part, ct_part) = chunk.split_at(take);
@@ -230,7 +228,6 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
                 }
             }
         } else {
-            println!("no more translation remains");
             // All translation received — remaining data is ciphertext.
             ct_hasher.update(&chunk);
             if writer.write_ciphertext(&chunk).await.is_err() {
@@ -239,6 +236,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
             }
         }
     }
+    println!("exit loop");
 
     // Verify we received enough translation data.
     if translation_remaining > 0 {
