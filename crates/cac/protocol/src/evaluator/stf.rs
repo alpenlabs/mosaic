@@ -280,8 +280,8 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             }
             _ => {
                 println!("unexpected input");
-                return Err(SMError::UnexpectedInput)
-            },
+                return Err(SMError::UnexpectedInput);
+            }
         },
         ActionResult::TableCommitmentGenerated(index, table_commitment) => {
             handle_table_commitment_generated(
@@ -1098,7 +1098,6 @@ fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
         .expect("unchallenge length");
     unchallenged_indices
 }
-
 
 fn get_eval_commitments(
     eval_indices: &EvaluationIndices,

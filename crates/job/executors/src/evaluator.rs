@@ -174,9 +174,11 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     };
 
     // Wait for the garbler to open the stream.
+    println!("Wait for the garbler to open the stream.");
     let Ok(mut stream) = expectation.recv().await else {
         return HandlerOutcome::Retry;
     };
+    println!("garbler opened stream");
 
     // The garbler sends: translation bytes first, then ciphertext data.
     // Translation covers ALL input wires (setup + deposit + withdrawal).
@@ -205,10 +207,12 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         };
 
         if chunk.is_empty() {
+            println!("chunk is empty");
             break;
         }
 
         if translation_remaining > 0 {
+            println!("translation remains");
             // Still reading translation material.
             let take = chunk.len().min(translation_remaining);
             let (translate_part, ct_part) = chunk.split_at(take);
@@ -226,6 +230,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
                 }
             }
         } else {
+            println!("no more translation remains");
             // All translation received — remaining data is ciphertext.
             ct_hasher.update(&chunk);
             if writer.write_ciphertext(&chunk).await.is_err() {
@@ -652,7 +657,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         peer_id: *peer_id,
         index,
     };
-    let table_reader = ctx
+    let mut table_reader = ctx
         .table_store
         .open(&table_id)
         .await

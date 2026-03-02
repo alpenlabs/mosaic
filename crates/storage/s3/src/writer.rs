@@ -72,14 +72,14 @@ impl TableWriter for S3TableWriter {
     }
 
     fn finish(
-        self,
+        &mut self,
         translation: &[u8],
         metadata: TableMetadata,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         let translation = translation.to_vec();
         let metadata_bytes = serialize_metadata(&metadata);
-        let cmd_tx = self.cmd_tx;
-        let result_rx = self.result_rx;
+        let cmd_tx = self.cmd_tx.clone();
+        let result_rx = self.result_rx.clone();
         async move {
             cmd_tx
                 .send(WriterCmd::Finish {

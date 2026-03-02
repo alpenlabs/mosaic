@@ -1,4 +1,10 @@
-use std::{fs::File, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    fs::File,
+    io::{Read, Write},
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc, time::Duration,
+};
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use fasm::actions;
@@ -12,14 +18,16 @@ use mosaic_cac_types::state_machine::{
         Input as GarbInput,
     },
 };
-use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS};
+use mosaic_common::constants::{
+    N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_WITHDRAWAL_INPUT_WIRES,
+};
 use mosaic_job_api::{ActionCompletion, ExecuteGarblerJob, HandlerOutcome, OwnedBlock, OwnedChunk};
 use mosaic_job_executors::{
     MosaicExecutor,
     circuit_sessions::{EvaluatorCircuitSession, GarblerCircuitSession},
 };
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::{StorageProvider, TableReader, TableStore, TableWriter};
+use mosaic_storage_api::{StorageProvider, TableMetadata, TableReader, TableStore, TableWriter};
 use mosaic_storage_inmemory::{evaluator::StoredEvaluatorState, garbler::StoredGarblerState};
 use rand_chacha::{ChaCha20Rng, ChaChaRng, rand_core::SeedableRng};
 
@@ -520,6 +528,25 @@ async fn test_e2e() {
 
     // Garbler wants to transfer tables and evaluator wants to verify them
     // Ensure evaluator has handles to receive them
+    eval_exec.update_state(DummyStorageProvider {
+        garb_state: garb_state.clone(),
+        eval_state: eval_state.clone(),
+    });
+    println!("evaluator waits to receive table");
+    let rx = tokio::spawn(async move {
+        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await
+    });
+
+    garbler_exec.update_state(DummyStorageProvider {
+        garb_state: garb_state.clone(),
+        eval_state: eval_state.clone(),
+    });
+    println!("garbler sends table");
+    let mut garb_results =
+        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &peer_id_b).await;
+    println!("garb_results len {}", garb_results.len());
+    let mut eval_inputs = rx.await.unwrap();
+    println!("eval_inputs len {}", eval_inputs.len());
 }
 
 struct DummyStorageProvider {
@@ -553,8 +580,10 @@ impl TableStore for DummyTableStore {
     ) -> impl Future<Output = Result<Self::Writer, Self::Error>> + Send {
         async {
             let id = id.index.get();
-            File::create(format!("gc_{id}.bin")).unwrap();
-            Ok(FileTableWriter {})
+            let ct = File::create(format!("ct_{id}.bin")).unwrap();
+            let meta = File::create(format!("meta_{id}.bin")).unwrap();
+            let trans = File::create(format!("trans_{id}.bin")).unwrap();
+            Ok(FileTableWriter { ct, meta, trans })
         }
     }
 
@@ -564,8 +593,10 @@ impl TableStore for DummyTableStore {
     ) -> impl Future<Output = Result<Self::Reader, Self::Error>> + Send {
         async {
             let id = id.index.get();
-            File::open(format!("gc_{id}.bin")).unwrap();
-            Ok(FileTableReader {})
+            let ct = File::create(format!("ct_{id}.bin")).unwrap();
+            let meta = File::create(format!("meta_{id}.bin")).unwrap();
+            let trans = File::create(format!("trans_{id}.bin")).unwrap();
+            Ok(FileTableReader { ct, meta, trans })
         }
     }
 
@@ -575,8 +606,10 @@ impl TableStore for DummyTableStore {
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         async {
             let id = id.index.get();
-            let exists = std::fs::exists(format!("gc_{id}.bin")).unwrap();
-            Ok(exists)
+            let ct = std::fs::exists(format!("ct_{id}.bin")).unwrap();
+            let meta = std::fs::exists(format!("meta_{id}.bin")).unwrap();
+            let trans = std::fs::exists(format!("trans_{id}.bin")).unwrap();
+            Ok(ct && meta && trans)
         }
     }
 
@@ -586,13 +619,18 @@ impl TableStore for DummyTableStore {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async {
             let id = id.index.get();
-            std::fs::remove_file(format!("gc_{id}.bin")).unwrap();
+            println!("deleting file gc_{id}.bin");
+            //std::fs::remove_file(format!("gc_{id}.bin")).unwrap();
             Ok(())
         }
     }
 }
 
-struct FileTableWriter {}
+struct FileTableWriter {
+    ct: std::fs::File,
+    meta: std::fs::File,
+    trans: std::fs::File,
+}
 
 impl TableWriter for FileTableWriter {
     type Error = std::io::Error;
@@ -601,38 +639,109 @@ impl TableWriter for FileTableWriter {
         &mut self,
         data: &[u8],
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { todo!() }
+        async { self.ct.write_all(data) }
     }
 
     fn finish(
-        self,
+        &mut self,
         translation: &[u8],
         metadata: mosaic_storage_api::TableMetadata,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { todo!() }
+        fn serialize_metadata(meta: &mosaic_storage_api::TableMetadata) -> Vec<u8> {
+            let mut buf = Vec::with_capacity(64);
+            buf.extend_from_slice(meta.output_label_ct.as_ref());
+            buf.extend_from_slice(&meta.aes_key);
+            buf.extend_from_slice(&meta.public_s);
+            buf
+        }
+        async move {
+            self.ct.flush().unwrap();
+            self.trans.write_all(translation).unwrap();
+            self.trans.flush().unwrap();
+            self.meta.write_all(&serialize_metadata(&metadata)).unwrap();
+            self.meta.flush().unwrap();
+            Ok(())
+        }
     }
 }
 
-struct FileTableReader {}
+struct FileTableReader {
+    ct: std::fs::File,
+    meta: std::fs::File,
+    trans: std::fs::File,
+}
 
 impl TableReader for FileTableReader {
     type Error = std::io::Error;
 
     fn metadata(
-        &self,
+        &mut self,
     ) -> impl Future<Output = Result<mosaic_storage_api::TableMetadata, Self::Error>> + Send {
-        async { todo!() }
+        async {
+            let mut bytes = [0; 64];
+            self.meta.read(&mut bytes).unwrap();
+
+            let mut output_label_ct = [0u8; 32];
+            output_label_ct.copy_from_slice(&bytes[..32]);
+
+            let mut aes_key = [0u8; 16];
+            aes_key.copy_from_slice(&bytes[32..48]);
+
+            let mut public_s = [0u8; 16];
+            public_s.copy_from_slice(&bytes[48..64]);
+
+            Ok(TableMetadata {
+                output_label_ct: output_label_ct.into(),
+                aes_key,
+                public_s,
+            })
+        }
     }
 
-    fn read_translation(&self) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + Send {
-        async { todo!() }
+    fn read_translation(&mut self) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + Send {
+        async {
+            let mut translation_material: Vec<[[[u8; 16]; 8]; 256]> = Vec::new();
+
+            for _ in 0..N_WITHDRAWAL_INPUT_WIRES {
+                let mut material = [[[0; 16]; 8]; 256];
+                for byte_row in &mut material {
+                    for ciphertext in byte_row {
+                        let mut ct_bytes = [0u8; 16];
+                        self.trans
+                            .read_exact(&mut ct_bytes)
+                            .expect("Failed to read translation material");
+                        *ciphertext = ct_bytes;
+                    }
+                }
+                translation_material.push(material);
+            }
+            let flat: Vec<u8> = translation_material
+                .into_iter()
+                .flat_map(|lvl1| lvl1.into_iter())
+                .flat_map(|lvl2| lvl2.into_iter())
+                .flat_map(|arr16| arr16.into_iter())
+                .collect();
+            Ok(flat)
+        }
     }
 
     fn read_ciphertext(
         &mut self,
         buf: &mut [u8],
-    ) -> impl Future<Output = Result<usize, Self::Error>> + Send {
-        async { todo!() }
+    ) -> impl std::future::Future<Output = Result<usize, Self::Error>> + Send {
+        async move {
+            let mut total = 0;
+
+            while total < buf.len() {
+                let n = self.ct.read(&mut buf[total..]).unwrap(); // <-- async read
+                if n == 0 {
+                    break; // EOF
+                }
+                total += n;
+            }
+
+            Ok(total)
+        }
     }
 }
 
@@ -688,8 +797,7 @@ async fn mock_dispatch_garbler(
                     }
                     GarblerAction::TransferGarblingTable(seed) => {
                         let session = ExecuteGarblerJob::begin_table_transfer(exec, peer_id, *seed)
-                            .await
-                            .unwrap();
+                            .await.unwrap();
                         if let GarblerCircuitSession::Transfer(session) = session {
                             garb_coord_do_your_thing(&exec.circuit_path, *session).await // GarblerActionResult::GarblingTableTransferred(self.seed, self.commitment)
                         } else {
@@ -755,6 +863,9 @@ async fn mock_dispatch_evaluator(
                         } else {
                             panic!()
                         }
+                    }
+                    EvaluatorAction::ReceiveGarblingTable(commitment) => {
+                        exec.receive_garbling_table(peer_id, *commitment).await
                     }
                     _ => {
                         panic!("unhandled evaluator action variant");
