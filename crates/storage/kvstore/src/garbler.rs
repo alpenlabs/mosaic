@@ -651,7 +651,7 @@ mod tests {
     use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
 
     use super::*;
-    use crate::btreemap::BTreeMapKvStore;
+    use crate::{btreemap::BTreeMapKvStore, kvstore::test_utils::FdbSizeGuardedKvStore};
 
     fn dep_id(byte: u8) -> DepositId {
         let mut bytes = [0u8; 32];
@@ -752,7 +752,7 @@ mod tests {
 
     #[tokio::test]
     async fn root_and_deposit_roundtrip() {
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let root = GarblerState::default();
         storage.put_root_state(&root).await.expect("put root");
@@ -775,7 +775,7 @@ mod tests {
 
     #[tokio::test]
     async fn input_polynomial_commitment_roundtrip() {
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_wire_commitments = input_polymonial_commitments(19);
 
@@ -799,7 +799,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_polynomial_commitment_roundtrip() {
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_output_commitment = output_polynomial_commitment(29);
         storage
@@ -817,7 +817,7 @@ mod tests {
 
     #[tokio::test]
     async fn shares_roundtrip() {
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
         let mut expected_input_shares = Vec::with_capacity(N_CIRCUITS + 1);
         let mut expected_output_shares = Vec::with_capacity(N_CIRCUITS + 1);
         for ckt_idx in 0..=N_CIRCUITS {
@@ -861,7 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn gt_commitment_roundtrip() {
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let mut expected_gt_commitments = Vec::with_capacity(N_CIRCUITS);
         for ckt_idx in 1..=N_CIRCUITS {
@@ -893,7 +893,7 @@ mod tests {
 
     #[tokio::test]
     async fn protocol_state_roundtrip_all_pairs() {
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_challenge_indices = challenge_indices();
         storage
@@ -911,7 +911,7 @@ mod tests {
 
     #[tokio::test]
     async fn deposit_scoped_roundtrip_all_pairs() {
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let deposit_id = dep_id(0xC1);
         storage
@@ -1006,7 +1006,7 @@ mod tests {
         let dep1 = deposit_state(1);
         let dep2 = deposit_state(2);
 
-        let mut storage = KvStoreGarbler::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         storage.put_deposit(dep1_id, &dep1).await.unwrap();
         storage.put_deposit(dep2_id, &dep2).await.unwrap();

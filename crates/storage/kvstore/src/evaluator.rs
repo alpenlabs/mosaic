@@ -677,7 +677,7 @@ mod tests {
     use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
 
     use super::*;
-    use crate::btreemap::BTreeMapKvStore;
+    use crate::{btreemap::BTreeMapKvStore, kvstore::test_utils::FdbSizeGuardedKvStore};
 
     fn dep_id(byte: u8) -> DepositId {
         let mut bytes = [0u8; 32];
@@ -797,7 +797,7 @@ mod tests {
 
     #[tokio::test]
     async fn root_and_deposit_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let root = EvaluatorState {
             config: None,
@@ -823,7 +823,7 @@ mod tests {
 
     #[tokio::test]
     async fn input_polynomial_commitment_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_wire_commitments = input_polynomial_commitments(19);
         for wire_idx in 0..N_INPUT_WIRES {
@@ -845,7 +845,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_polynomial_commitment_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_output_commitment = output_polynomial_commitment(29);
         storage
@@ -863,7 +863,7 @@ mod tests {
 
     #[tokio::test]
     async fn garbling_table_commitments_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_gt_commitments =
             AllGarblingTableCommitments::new(|idx| byte32(0x50u8.wrapping_add(idx as u8)));
@@ -882,7 +882,7 @@ mod tests {
 
     #[tokio::test]
     async fn challenge_indices_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_challenge_indices = challenge_indices();
         storage
@@ -900,7 +900,7 @@ mod tests {
 
     #[tokio::test]
     async fn opened_input_shares_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_challenge_indices = challenge_indices();
         storage
@@ -930,7 +930,7 @@ mod tests {
 
     #[tokio::test]
     async fn reserved_setup_input_shares_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_reserved_setup = reserved_setup_input_shares(20_000);
         storage
@@ -948,7 +948,7 @@ mod tests {
 
     #[tokio::test]
     async fn opened_output_shares_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_opened_output = opened_output_shares(30_000);
         storage
@@ -966,7 +966,7 @@ mod tests {
 
     #[tokio::test]
     async fn opened_garbling_seeds_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let expected_opened_seeds = opened_garbling_seeds(0x61);
         storage
@@ -984,7 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn deposit_scoped_roundtrip_all_pairs() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let deposit_id = dep_id(0xC1);
         storage
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_roundtrip_all_pairs() {
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         let all_aes128_keys = mosaic_cac_types::HeapArray::new(|idx| indexed_value(0x01, idx));
         let all_public_s = mosaic_cac_types::HeapArray::new(|idx| indexed_value(0x11, idx));
@@ -1162,7 +1162,7 @@ mod tests {
         let dep1 = deposit_state(1);
         let dep2 = deposit_state(2);
 
-        let mut storage = KvStoreEvaluator::new(BTreeMapKvStore::new());
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
         storage.put_deposit(&dep1_id, &dep1).await.unwrap();
         storage.put_deposit(&dep2_id, &dep2).await.unwrap();
