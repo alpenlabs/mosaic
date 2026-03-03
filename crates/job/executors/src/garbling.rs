@@ -159,7 +159,7 @@ impl GarblingSession {
         let byte_labels: Vec<ByteLabel> = (0..n_input_wires)
             .map(|wire| {
                 ByteLabel::new(std::array::from_fn(|val| {
-                    Label::from(share_to_label_bytes(&input_shares[wire][val]))
+                    input_shares[wire][val].truncate()
                 }))
             })
             .collect();
@@ -392,12 +392,4 @@ fn scalar_to_le_bytes(scalar: &mosaic_vs3::Scalar) -> [u8; 32] {
         .to_bytes_le()
         .try_into()
         .expect("scalar encodes to exactly 32 bytes")
-}
-
-/// Truncate a share's scalar to 16 bytes for use as a garbling label.
-///
-/// Takes the low 128 bits of the little-endian representation.
-fn share_to_label_bytes(share: &Share) -> [u8; 16] {
-    let full = scalar_to_le_bytes(&share.value());
-    full[..16].try_into().expect("truncate to 16 bytes")
 }

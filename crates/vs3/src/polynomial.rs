@@ -117,8 +117,9 @@ impl Share {
             .to_bytes_le()
             .try_into()
             .expect("encode 32 bytes");
-        let x: [u8; 16] = x[0..16].try_into().unwrap();
-        Label::from(x)
+        let hash = *blake3::hash(&x).as_bytes();
+        let small_hash: [u8; 16] = hash[0..16].try_into().unwrap();
+        Label::from(small_hash)
     }
 }
 

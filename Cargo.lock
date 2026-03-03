@@ -2189,6 +2189,7 @@ dependencies = [
  "ark-ff",
  "ark-secp256k1",
  "ark-serialize",
+ "blake3",
  "ckt-gobble",
  "mosaic-common",
  "rand 0.8.5",
