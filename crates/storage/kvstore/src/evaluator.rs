@@ -7,13 +7,16 @@ use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, HeapArray, InputPolynomialCommitments,
     OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors,
-    WithdrawalInputs,
+    PolynomialCommitment, ReservedSetupInputShares, Sighashes, WideLabelWireAdaptors,
+    WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut, StateRead},
 };
 use mosaic_common::{
     Byte32,
-    constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES},
+    constants::{
+        N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
+        WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+    },
 };
 
 use crate::{
@@ -22,17 +25,18 @@ use crate::{
     row_spec::{
         KVRowSpec, SerializableValue,
         common::{
-            CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey,
+            CircuitIndexKey, CircuitSubChunkKey, DepositDoubleChunkKey, DepositKey,
+            ProtocolSingletonKey, WireSubChunkKey,
         },
         evaluator::{
             Aes128KeyRowSpec, ChallengeIndicesRowSpec, CompletedSignaturesRowSpec,
             ConstantOneLabelRowSpec, ConstantZeroLabelRowSpec, DepositAdaptorsRowSpec,
             DepositInputsRowSpec, DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
-            GarblingTableCommitmentsRowSpec, InputPolynomialCommitmentChunkRowSpec,
-            OpenedGarblingSeedsRowSpec, OpenedInputShareChunkRowSpec, OpenedOutputSharesRowSpec,
+            GarblingTableCommitmentsRowSpec, InputPolynomialCommitmentRowSpec,
+            OpenedGarblingSeedsRowSpec, OpenedInputShareRowSpec, OpenedOutputSharesRowSpec,
             OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec, PublicSRowSpec,
             ReservedSetupInputSharesRowSpec, RootStateKey, RootStateRowSpec,
-            WithdrawalAdaptorChunkRowSpec, WithdrawalInputsRowSpec,
+            WithdrawalAdaptorRowSpec, WithdrawalInputsRowSpec,
         },
     },
     storage_error::StorageError,
@@ -215,16 +219,34 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
     async fn get_input_polynomial_commitments(
         &self,
     ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        self.collect_fixed_array_row::<
-            InputPolynomialCommitmentChunkRowSpec,
-            WideLabelWirePolynomialCommitments,
-            _,
-            N_INPUT_WIRES,
-        >(
-            |idx| WireIndexKey::new(idx as u16),
-            "missing expected input commitment",
-        )
-        .await
+        // Check presence via the first sub-chunk of the first wire.
+        if self
+            .get_value::<InputPolynomialCommitmentRowSpec>(&WireSubChunkKey::new(0, 0))
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+
+        let mut wires = Vec::with_capacity(N_INPUT_WIRES);
+        for wire_idx in 0..N_INPUT_WIRES {
+            let commitments = self
+                .collect_fixed_array_row::<
+                    InputPolynomialCommitmentRowSpec,
+                    PolynomialCommitment,
+                    _,
+                    WIDE_LABEL_VALUE_COUNT,
+                >(
+                    |pc_idx| WireSubChunkKey::new(wire_idx as u16, pc_idx as u8),
+                    "missing expected input poly commitment sub-chunk",
+                )
+                .await?
+                .ok_or_else(|| {
+                    StorageError::state_inconsistency("partial input polynomial commitments")
+                })?;
+            wires.push(commitments);
+        }
+        Ok(Some(HeapArray::from_vec(wires)))
     }
 
     async fn get_output_polynomial_commitment(
@@ -247,7 +269,7 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
     }
 
     async fn get_opened_input_shares(&self) -> Result<Option<OpenedInputShares>, Self::Error> {
-        if !self.row_has_any::<OpenedInputShareChunkRowSpec>().await? {
+        if !self.row_has_any::<OpenedInputShareRowSpec>().await? {
             return Ok(None);
         }
 
@@ -260,9 +282,19 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
         for index in challenge_indices {
             let ckt_idx = Self::index_to_u16(index)?;
             let input_shares = self
-                .get_value::<OpenedInputShareChunkRowSpec>(&CircuitIndexKey::new(ckt_idx))
+                .collect_fixed_array_row::<
+                    OpenedInputShareRowSpec,
+                    WideLabelWireShares,
+                    _,
+                    N_INPUT_WIRES,
+                >(
+                    |wire_idx| CircuitSubChunkKey::new(ckt_idx, wire_idx as u8),
+                    "missing expected opened input share sub-chunk",
+                )
                 .await?
-                .ok_or_else(|| StorageError::state_inconsistency("expected opened input share"))?;
+                .ok_or_else(|| {
+                    StorageError::state_inconsistency("expected opened input share")
+                })?;
             opened_input_shares.push(input_shares);
         }
 
@@ -324,28 +356,37 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
     ) -> Result<Option<WithdrawalAdaptors>, Self::Error> {
         self.ensure_deposit_exists(deposit_id).await?;
 
-        let chunks = self
-            .collect_fixed_array_row::<
-                WithdrawalAdaptorChunkRowSpec,
-                mosaic_cac_types::WithdrawalAdaptorsChunk,
-                _,
-                N_ADAPTOR_MSG_CHUNKS,
-            >(
-                |idx| DepositChunkKey::new(*deposit_id, idx as u8),
-                "expected withdrawal adaptor chunk",
-            )
-            .await?;
-
-        let Some(chunks) = chunks else {
+        // Check presence via the first sub-chunk.
+        if self
+            .get_value::<WithdrawalAdaptorRowSpec>(&DepositDoubleChunkKey::new(*deposit_id, 0, 0))
+            .await?
+            .is_none()
+        {
             return Ok(None);
-        };
-
-        let mut withdrawal_adaptors = Vec::new();
-        for chunk in chunks {
-            withdrawal_adaptors.extend(chunk.to_vec());
         }
 
-        Ok(Some(HeapArray::from_vec(withdrawal_adaptors)))
+        let mut all_wire_adaptors = Vec::new();
+        for chunk_idx in 0..N_ADAPTOR_MSG_CHUNKS {
+            let chunk = self
+                .collect_fixed_array_row::<
+                    WithdrawalAdaptorRowSpec,
+                    WideLabelWireAdaptors,
+                    _,
+                    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+                >(
+                    |wire_idx| {
+                        DepositDoubleChunkKey::new(*deposit_id, chunk_idx as u8, wire_idx as u8)
+                    },
+                    "missing withdrawal adaptor sub-chunk",
+                )
+                .await?
+                .ok_or_else(|| {
+                    StorageError::state_inconsistency("partial withdrawal adaptor sub-chunks")
+                })?;
+            all_wire_adaptors.extend(chunk.to_vec());
+        }
+
+        Ok(Some(HeapArray::from_vec(all_wire_adaptors)))
     }
 
     async fn get_completed_signatures(
@@ -422,11 +463,14 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         wire_idx: u16,
         commitments: &WideLabelWirePolynomialCommitments,
     ) -> Result<(), Self::Error> {
-        self.put_value::<InputPolynomialCommitmentChunkRowSpec>(
-            &WireIndexKey::new(wire_idx),
-            commitments,
-        )
-        .await
+        for (pc_idx, commitment) in commitments.iter().enumerate() {
+            self.put_value::<InputPolynomialCommitmentRowSpec>(
+                &WireSubChunkKey::new(wire_idx, pc_idx as u8),
+                commitment,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn put_output_polynomial_commitment(
@@ -458,11 +502,14 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         opened_ckt_idx: u16,
         input_shares: &CircuitInputShares,
     ) -> Result<(), Self::Error> {
-        self.put_value::<OpenedInputShareChunkRowSpec>(
-            &CircuitIndexKey::new(opened_ckt_idx),
-            input_shares,
-        )
-        .await
+        for (wire_idx, wire_shares) in input_shares.iter().enumerate() {
+            self.put_value::<OpenedInputShareRowSpec>(
+                &CircuitSubChunkKey::new(opened_ckt_idx, wire_idx as u8),
+                wire_shares,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn put_reserved_setup_input_shares(
@@ -525,11 +572,14 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         chunk_idx: u8,
         withdrawal_adaptors: &mosaic_cac_types::WithdrawalAdaptorsChunk,
     ) -> Result<(), Self::Error> {
-        self.put_value::<WithdrawalAdaptorChunkRowSpec>(
-            &DepositChunkKey::new(*deposit_id, chunk_idx),
-            withdrawal_adaptors,
-        )
-        .await
+        for (wire_idx, wire_adaptors) in withdrawal_adaptors.iter().enumerate() {
+            self.put_value::<WithdrawalAdaptorRowSpec>(
+                &DepositDoubleChunkKey::new(*deposit_id, chunk_idx, wire_idx as u8),
+                wire_adaptors,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn put_withdrawal_inputs(

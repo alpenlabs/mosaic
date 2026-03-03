@@ -4,8 +4,9 @@ use ark_serialize::{CanonicalDeserialize as _, CanonicalSerialize as _, Serializ
 use mosaic_cac_types::{
     Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CircuitOutputShare,
     CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, OpenedGarblingSeeds,
-    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    OpenedOutputShares, OutputPolynomialCommitment, PolynomialCommitment, ReservedSetupInputShares,
+    Sighashes, WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+    WithdrawalAdaptorsChunk, WithdrawalInputs,
 };
 use mosaic_common::Byte32;
 
@@ -204,6 +205,144 @@ impl PackableKey for DepositChunkKey {
     }
 }
 
+/// Row-local key for protocol rows keyed by wire index and sub-chunk index.
+#[derive(Debug, Clone, Copy)]
+pub struct WireSubChunkKey {
+    pub(crate) wire_idx: u16,
+    pub(crate) sub_chunk_idx: u8,
+}
+
+impl WireSubChunkKey {
+    /// Create a key for a given wire index and sub-chunk index.
+    pub fn new(wire_idx: u16, sub_chunk_idx: u8) -> Self {
+        Self {
+            wire_idx,
+            sub_chunk_idx,
+        }
+    }
+}
+
+impl PackableKey for WireSubChunkKey {
+    type PackingError = ArkSerializationError;
+
+    type UnpackingError = ArkKeyUnpackError;
+
+    type Packed = [u8; 3];
+
+    fn pack(&self) -> Result<Self::Packed, Self::PackingError> {
+        let [a, b] = self.wire_idx.to_be_bytes();
+        Ok([a, b, self.sub_chunk_idx])
+    }
+
+    fn unpack(bytes: &[u8]) -> Result<Self, Self::UnpackingError> {
+        if bytes.len() != 3 {
+            return Err(ArkKeyUnpackError::InvalidLength {
+                expected: 3,
+                found: bytes.len(),
+            });
+        }
+        Ok(Self {
+            wire_idx: u16::from_be_bytes([bytes[0], bytes[1]]),
+            sub_chunk_idx: bytes[2],
+        })
+    }
+}
+
+/// Row-local key for protocol rows keyed by circuit index and sub-chunk index.
+#[derive(Debug, Clone, Copy)]
+pub struct CircuitSubChunkKey {
+    pub(crate) ckt_idx: u16,
+    pub(crate) sub_chunk_idx: u8,
+}
+
+impl CircuitSubChunkKey {
+    /// Create a key for a given circuit index and sub-chunk index.
+    pub fn new(ckt_idx: u16, sub_chunk_idx: u8) -> Self {
+        Self {
+            ckt_idx,
+            sub_chunk_idx,
+        }
+    }
+}
+
+impl PackableKey for CircuitSubChunkKey {
+    type PackingError = ArkSerializationError;
+
+    type UnpackingError = ArkKeyUnpackError;
+
+    type Packed = [u8; 3];
+
+    fn pack(&self) -> Result<Self::Packed, Self::PackingError> {
+        let [a, b] = self.ckt_idx.to_be_bytes();
+        Ok([a, b, self.sub_chunk_idx])
+    }
+
+    fn unpack(bytes: &[u8]) -> Result<Self, Self::UnpackingError> {
+        if bytes.len() != 3 {
+            return Err(ArkKeyUnpackError::InvalidLength {
+                expected: 3,
+                found: bytes.len(),
+            });
+        }
+        Ok(Self {
+            ckt_idx: u16::from_be_bytes([bytes[0], bytes[1]]),
+            sub_chunk_idx: bytes[2],
+        })
+    }
+}
+
+/// Row-local key for deposit-scoped double-chunk records (e.g. sub-chunked withdrawal adaptors).
+#[derive(Debug, Clone, Copy)]
+pub struct DepositDoubleChunkKey {
+    pub(crate) deposit_id: DepositId,
+    pub(crate) chunk_idx: u8,
+    pub(crate) sub_chunk_idx: u8,
+}
+
+impl DepositDoubleChunkKey {
+    /// Create a row key from deposit id, chunk index, and sub-chunk index.
+    pub fn new(deposit_id: DepositId, chunk_idx: u8, sub_chunk_idx: u8) -> Self {
+        Self {
+            deposit_id,
+            chunk_idx,
+            sub_chunk_idx,
+        }
+    }
+}
+
+impl PackableKey for DepositDoubleChunkKey {
+    type PackingError = ArkSerializationError;
+
+    type UnpackingError = ArkKeyUnpackError;
+
+    type Packed = Vec<u8>;
+
+    fn pack(&self) -> Result<Self::Packed, Self::PackingError> {
+        let mut key = pack_deposit_id(&self.deposit_id)?;
+        key.push(self.chunk_idx);
+        key.push(self.sub_chunk_idx);
+        Ok(key)
+    }
+
+    fn unpack(bytes: &[u8]) -> Result<Self, Self::UnpackingError> {
+        if bytes.len() < 2 {
+            return Err(ArkKeyUnpackError::InvalidLength {
+                expected: 2,
+                found: bytes.len(),
+            });
+        }
+        let sub_chunk_idx = bytes[bytes.len() - 1];
+        let chunk_idx = bytes[bytes.len() - 2];
+        let deposit_bytes = &bytes[..bytes.len() - 2];
+        let deposit_id = unpack_deposit_id(deposit_bytes)?;
+        Ok(Self {
+            deposit_id,
+            chunk_idx,
+            sub_chunk_idx,
+        })
+    }
+}
+
 macro_rules! impl_trusted_ark_serializable_value {
     ($ty:ty) => {
         impl SerializableValue for $ty {
@@ -236,8 +375,10 @@ macro_rules! impl_trusted_ark_serializable_value {
 }
 
 impl_trusted_ark_serializable_value!(WideLabelWirePolynomialCommitments);
+impl_trusted_ark_serializable_value!(PolynomialCommitment);
 impl_trusted_ark_serializable_value!(OutputPolynomialCommitment);
 impl_trusted_ark_serializable_value!(CircuitInputShares);
+impl_trusted_ark_serializable_value!(WideLabelWireShares);
 impl_trusted_ark_serializable_value!(CircuitOutputShare);
 impl_trusted_ark_serializable_value!(AllGarblingTableCommitments);
 impl_trusted_ark_serializable_value!(ChallengeIndices);
@@ -249,6 +390,7 @@ impl_trusted_ark_serializable_value!(DepositInputs);
 impl_trusted_ark_serializable_value!(WithdrawalInputs);
 impl_trusted_ark_serializable_value!(Adaptor);
 impl_trusted_ark_serializable_value!(DepositAdaptors);
+impl_trusted_ark_serializable_value!(WideLabelWireAdaptors);
 impl_trusted_ark_serializable_value!(WithdrawalAdaptorsChunk);
 impl_trusted_ark_serializable_value!(CompletedSignatures);
 

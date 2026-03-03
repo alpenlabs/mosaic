@@ -8,11 +8,15 @@ use mosaic_cac_types::{
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
     DepositInputs, GarblingTableCommitment, HeapArray, InputPolynomialCommitments, InputShares,
-    OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
+    OutputPolynomialCommitment, OutputShares, PolynomialCommitment, ReservedInputShares, Sighashes,
+    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+    WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateMut, StateRead},
 };
-use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
+use mosaic_common::constants::{
+    N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
+    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+};
 use mosaic_vs3::Index;
 
 use crate::{
@@ -21,16 +25,17 @@ use crate::{
     row_spec::{
         KVRowSpec, SerializableValue,
         common::{
-            CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey,
+            CircuitIndexKey, CircuitSubChunkKey, DepositChunkKey, DepositDoubleChunkKey,
+            DepositKey, ProtocolSingletonKey, WireSubChunkKey,
         },
         garbler::{
             Aes128KeyRowSpec, ChallengeIndicesRowSpec, CompletedSignaturesRowSpec,
             ConstantOneLabelRowSpec, ConstantZeroLabelRowSpec, DepositAdaptorChunkRowSpec,
             DepositInputsRowSpec, DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
-            GarblingTableCommitmentRowSpec, InputPolynomialCommitmentChunkRowSpec,
-            InputShareRowSpec, OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec,
-            OutputShareRowSpec, PublicSRowSpec, RootStateKey, RootStateRowSpec,
-            WithdrawalAdaptorChunkRowSpec, WithdrawalInputRowSpec,
+            GarblingTableCommitmentRowSpec, InputPolynomialCommitmentRowSpec, InputShareRowSpec,
+            OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec, OutputShareRowSpec,
+            PublicSRowSpec, RootStateKey, RootStateRowSpec, WithdrawalAdaptorRowSpec,
+            WithdrawalInputRowSpec,
         },
     },
     storage_error::StorageError,
@@ -210,16 +215,34 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     async fn get_input_polynomial_commitments(
         &self,
     ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        self.collect_fixed_array_row::<
-            InputPolynomialCommitmentChunkRowSpec,
-            WideLabelWirePolynomialCommitments,
-            _,
-            N_INPUT_WIRES,
-        >(
-            |idx| WireIndexKey::new(idx as u16),
-            "missing expected input commitment",
-        )
-        .await
+        // Check presence via the first sub-chunk of the first wire.
+        if self
+            .get_value::<InputPolynomialCommitmentRowSpec>(&WireSubChunkKey::new(0, 0))
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+
+        let mut wires = Vec::with_capacity(N_INPUT_WIRES);
+        for wire_idx in 0..N_INPUT_WIRES {
+            let commitments = self
+                .collect_fixed_array_row::<
+                    InputPolynomialCommitmentRowSpec,
+                    PolynomialCommitment,
+                    _,
+                    WIDE_LABEL_VALUE_COUNT,
+                >(
+                    |pc_idx| WireSubChunkKey::new(wire_idx as u16, pc_idx as u8),
+                    "missing expected input poly commitment sub-chunk",
+                )
+                .await?
+                .ok_or_else(|| {
+                    StorageError::state_inconsistency("partial input polynomial commitments")
+                })?;
+            wires.push(commitments);
+        }
+        Ok(Some(HeapArray::from_vec(wires)))
     }
 
     async fn get_output_polynomial_commitment(
@@ -230,11 +253,32 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     }
 
     async fn get_input_shares(&self) -> Result<Option<InputShares>, Self::Error> {
-        self.collect_fixed_array_row::<InputShareRowSpec, CircuitInputShares, _, { N_CIRCUITS + 1 }>(
-            |idx| CircuitIndexKey::new(idx as u16),
-            "missing expected input share",
-        )
-        .await
+        // Check presence via the first sub-chunk of the first circuit.
+        if self
+            .get_value::<InputShareRowSpec>(&CircuitSubChunkKey::new(0, 0))
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+
+        let mut circuits = Vec::with_capacity(N_CIRCUITS + 1);
+        for ckt_idx in 0..=(N_CIRCUITS as u16) {
+            let wire_shares = self
+                .collect_fixed_array_row::<
+                    InputShareRowSpec,
+                    WideLabelWireShares,
+                    _,
+                    N_INPUT_WIRES,
+                >(
+                    |wire_idx| CircuitSubChunkKey::new(ckt_idx, wire_idx as u8),
+                    "missing expected input share sub-chunk",
+                )
+                .await?
+                .ok_or_else(|| StorageError::state_inconsistency("partial input shares"))?;
+            circuits.push(wire_shares);
+        }
+        Ok(Some(HeapArray::from_vec(circuits)))
     }
 
     async fn get_output_shares(&self) -> Result<Option<OutputShares>, Self::Error> {
@@ -250,8 +294,11 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
         circuit_idx: &Index,
     ) -> Result<Option<CircuitInputShares>, Self::Error> {
         let ckt_idx = Self::index_to_u16(*circuit_idx)?;
-        self.get_value::<InputShareRowSpec>(&CircuitIndexKey::new(ckt_idx))
-            .await
+        self.collect_fixed_array_row::<InputShareRowSpec, WideLabelWireShares, _, N_INPUT_WIRES>(
+            |wire_idx| CircuitSubChunkKey::new(ckt_idx, wire_idx as u8),
+            "missing expected input share sub-chunk",
+        )
+        .await
     }
 
     async fn get_output_share_for_circuit(
@@ -264,8 +311,11 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     }
 
     async fn get_reserved_input_shares(&self) -> Result<Option<ReservedInputShares>, Self::Error> {
-        self.get_value::<InputShareRowSpec>(&CircuitIndexKey::new(0))
-            .await
+        self.collect_fixed_array_row::<InputShareRowSpec, WideLabelWireShares, _, N_INPUT_WIRES>(
+            |wire_idx| CircuitSubChunkKey::new(0, wire_idx as u8),
+            "missing expected reserved input share sub-chunk",
+        )
+        .await
     }
 
     async fn get_garbling_table_commitment(
@@ -385,28 +435,37 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     ) -> Result<Option<WithdrawalAdaptors>, Self::Error> {
         self.ensure_deposit_exists(deposit_id).await?;
 
-        let chunks = self
-            .collect_fixed_array_row::<
-                WithdrawalAdaptorChunkRowSpec,
-                mosaic_cac_types::WithdrawalAdaptorsChunk,
-                _,
-                N_ADAPTOR_MSG_CHUNKS,
-            >(
-                |idx| DepositChunkKey::new(*deposit_id, idx as u8),
-                "expected withdrawal adaptor chunk",
-            )
-            .await?;
-
-        let Some(chunks) = chunks else {
+        // Check presence via the first sub-chunk.
+        if self
+            .get_value::<WithdrawalAdaptorRowSpec>(&DepositDoubleChunkKey::new(*deposit_id, 0, 0))
+            .await?
+            .is_none()
+        {
             return Ok(None);
-        };
-
-        let mut withdrawal_adaptors = Vec::new();
-        for chunk in chunks {
-            withdrawal_adaptors.extend(chunk.to_vec());
         }
 
-        Ok(Some(HeapArray::from_vec(withdrawal_adaptors)))
+        let mut all_wire_adaptors = Vec::new();
+        for chunk_idx in 0..N_ADAPTOR_MSG_CHUNKS {
+            let chunk = self
+                .collect_fixed_array_row::<
+                    WithdrawalAdaptorRowSpec,
+                    WideLabelWireAdaptors,
+                    _,
+                    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+                >(
+                    |wire_idx| {
+                        DepositDoubleChunkKey::new(*deposit_id, chunk_idx as u8, wire_idx as u8)
+                    },
+                    "missing withdrawal adaptor sub-chunk",
+                )
+                .await?
+                .ok_or_else(|| {
+                    StorageError::state_inconsistency("partial withdrawal adaptor sub-chunks")
+                })?;
+            all_wire_adaptors.extend(chunk.to_vec());
+        }
+
+        Ok(Some(HeapArray::from_vec(all_wire_adaptors)))
     }
 
     async fn get_completed_signatures(
@@ -440,11 +499,14 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         wire_idx: u16,
         commitments: &WideLabelWirePolynomialCommitments,
     ) -> Result<(), Self::Error> {
-        self.put_value::<InputPolynomialCommitmentChunkRowSpec>(
-            &WireIndexKey::new(wire_idx),
-            commitments,
-        )
-        .await
+        for (pc_idx, commitment) in commitments.iter().enumerate() {
+            self.put_value::<InputPolynomialCommitmentRowSpec>(
+                &WireSubChunkKey::new(wire_idx, pc_idx as u8),
+                commitment,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn put_output_polynomial_commitment(
@@ -462,8 +524,13 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         output_share: &CircuitOutputShare,
     ) -> Result<(), Self::Error> {
         let ckt_idx = Self::index_to_u16(index)?;
-        self.put_value::<InputShareRowSpec>(&CircuitIndexKey::new(ckt_idx), input_shares)
+        for (wire_idx, wire_shares) in input_shares.iter().enumerate() {
+            self.put_value::<InputShareRowSpec>(
+                &CircuitSubChunkKey::new(ckt_idx, wire_idx as u8),
+                wire_shares,
+            )
             .await?;
+        }
         self.put_value::<OutputShareRowSpec>(&CircuitIndexKey::new(ckt_idx), output_share)
             .await
     }
@@ -534,8 +601,14 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
         let key = DepositChunkKey::new(*deposit_id, adaptor_chunk.chunk_index);
         self.put_value::<DepositAdaptorChunkRowSpec>(&key, &adaptor_chunk.deposit_adaptor)
             .await?;
-        self.put_value::<WithdrawalAdaptorChunkRowSpec>(&key, &adaptor_chunk.withdrawal_adaptors)
-            .await
+        for (wire_idx, wire_adaptors) in adaptor_chunk.withdrawal_adaptors.iter().enumerate() {
+            self.put_value::<WithdrawalAdaptorRowSpec>(
+                &DepositDoubleChunkKey::new(*deposit_id, adaptor_chunk.chunk_index, wire_idx as u8),
+                wire_adaptors,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn put_withdrawal_input(

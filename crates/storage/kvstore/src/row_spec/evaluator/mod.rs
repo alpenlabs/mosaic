@@ -10,7 +10,7 @@ mod state;
 pub const ROW_TAG_ROOT_STATE: u8 = 0x01;
 /// Row tag for per-deposit evaluator state.
 pub const ROW_TAG_DEPOSIT_STATE: u8 = 0x02;
-/// Row tag for input polynomial commitment chunk by wire index.
+/// Row tag for sub-chunked input polynomial commitment by wire index and value index.
 pub const ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK: u8 = 0x03;
 /// Row tag for output polynomial commitment singleton.
 pub const ROW_TAG_OUTPUT_POLY_COMMITMENT: u8 = 0x04;
@@ -18,7 +18,7 @@ pub const ROW_TAG_OUTPUT_POLY_COMMITMENT: u8 = 0x04;
 pub const ROW_TAG_GARBLING_TABLE_COMMITMENTS: u8 = 0x05;
 /// Row tag for challenge indices singleton.
 pub const ROW_TAG_CHALLENGE_INDICES: u8 = 0x06;
-/// Row tag for opened input shares by challenged circuit index.
+/// Row tag for sub-chunked opened input shares by challenged circuit index and wire index.
 pub const ROW_TAG_OPENED_INPUT_SHARE_CHUNK: u8 = 0x07;
 /// Row tag for reserved setup input shares singleton.
 pub const ROW_TAG_RESERVED_SETUP_INPUT_SHARES: u8 = 0x08;
@@ -34,7 +34,7 @@ pub const ROW_TAG_DEPOSIT_INPUTS: u8 = 0x0C;
 pub const ROW_TAG_WITHDRAWAL_INPUTS: u8 = 0x0D;
 /// Row tag for deposit adaptors by deposit id.
 pub const ROW_TAG_DEPOSIT_ADAPTORS: u8 = 0x0E;
-/// Row tag for withdrawal adaptor chunks by deposit id and chunk idx.
+/// Row tag for sub-chunked withdrawal adaptors by deposit id, chunk index, and wire index.
 pub const ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK: u8 = 0x0F;
 /// Row tag for completed signatures by deposit id.
 pub const ROW_TAG_COMPLETED_SIGNATURES: u8 = 0x10;

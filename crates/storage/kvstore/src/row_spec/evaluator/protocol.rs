@@ -1,14 +1,17 @@
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositInputs, OpenedGarblingSeeds, OpenedOutputShares,
-    OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors,
+    DepositInputs, OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment,
+    PolynomialCommitment, ReservedSetupInputShares, Sighashes, WideLabelWireAdaptors,
+    WideLabelWireShares, WithdrawalInputs,
 };
 use mosaic_common::Byte32;
 
 use crate::row_spec::{
     KVRowSpec,
-    common::{CircuitIndexKey, DepositChunkKey, DepositKey, ProtocolSingletonKey, WireIndexKey},
+    common::{
+        CircuitIndexKey, CircuitSubChunkKey, DepositDoubleChunkKey, DepositKey,
+        ProtocolSingletonKey, WireSubChunkKey,
+    },
     evaluator::{
         ROW_TAG_AES128_KEY, ROW_TAG_CHALLENGE_INDICES, ROW_TAG_COMPLETED_SIGNATURES,
         ROW_TAG_CONSTANT_ONE_LABEL, ROW_TAG_CONSTANT_ZERO_LABEL, ROW_TAG_DEPOSIT_ADAPTORS,
@@ -20,15 +23,16 @@ use crate::row_spec::{
     },
 };
 
-/// Row spec for input polynomial commitment chunks.
+/// Row spec for sub-chunked input polynomial commitments.
+/// Stores one `PolynomialCommitment` per (wire_idx, value_idx) pair.
 #[derive(Debug)]
-pub struct InputPolynomialCommitmentChunkRowSpec;
+pub struct InputPolynomialCommitmentRowSpec;
 
-impl KVRowSpec for InputPolynomialCommitmentChunkRowSpec {
+impl KVRowSpec for InputPolynomialCommitmentRowSpec {
     const ROW_TAG: u8 = ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK;
 
-    type Key = WireIndexKey;
-    type Value = WideLabelWirePolynomialCommitments;
+    type Key = WireSubChunkKey;
+    type Value = PolynomialCommitment;
 }
 
 /// Row spec for output polynomial commitment singleton.
@@ -64,15 +68,16 @@ impl KVRowSpec for ChallengeIndicesRowSpec {
     type Value = ChallengeIndices;
 }
 
-/// Row spec for opened input shares keyed by opened circuit index.
+/// Row spec for sub-chunked opened input shares.
+/// Stores one `WideLabelWireShares` per (circuit_idx, wire_idx) pair.
 #[derive(Debug)]
-pub struct OpenedInputShareChunkRowSpec;
+pub struct OpenedInputShareRowSpec;
 
-impl KVRowSpec for OpenedInputShareChunkRowSpec {
+impl KVRowSpec for OpenedInputShareRowSpec {
     const ROW_TAG: u8 = ROW_TAG_OPENED_INPUT_SHARE_CHUNK;
 
-    type Key = CircuitIndexKey;
-    type Value = CircuitInputShares;
+    type Key = CircuitSubChunkKey;
+    type Value = WideLabelWireShares;
 }
 
 /// Row spec for reserved setup input shares singleton.
@@ -152,15 +157,16 @@ impl KVRowSpec for DepositAdaptorsRowSpec {
     type Value = DepositAdaptors;
 }
 
-/// Row spec for per-deposit withdrawal adaptor chunks.
+/// Row spec for sub-chunked per-deposit withdrawal adaptors.
+/// Stores one `WideLabelWireAdaptors` per (deposit_id, chunk_idx, wire_idx) triple.
 #[derive(Debug)]
-pub struct WithdrawalAdaptorChunkRowSpec;
+pub struct WithdrawalAdaptorRowSpec;
 
-impl KVRowSpec for WithdrawalAdaptorChunkRowSpec {
+impl KVRowSpec for WithdrawalAdaptorRowSpec {
     const ROW_TAG: u8 = ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK;
 
-    type Key = DepositChunkKey;
-    type Value = WithdrawalAdaptorsChunk;
+    type Key = DepositDoubleChunkKey;
+    type Value = WideLabelWireAdaptors;
 }
 
 /// Row spec for per-deposit completed signatures.
