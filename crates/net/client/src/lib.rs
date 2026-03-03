@@ -56,7 +56,10 @@ pub mod bulk;
 pub mod error;
 pub mod protocol;
 
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 pub use bulk::{BulkExpectation, BulkReceiver, BulkSender};
@@ -181,7 +184,7 @@ impl NetClient {
         let msg: Msg = msg.into();
 
         // Open protocol stream with normal priority
-        let mut stream = match tokio::time::timeout(
+        let mut stream = match timeout_if_tokio_runtime(
             self.config.open_timeout,
             self.handle
                 .open_protocol_stream(peer, StreamPriority::Normal.as_i32()),
@@ -190,7 +193,7 @@ impl NetClient {
         {
             Ok(Ok(stream)) => stream,
             Ok(Err(err)) => return Err(SendError::Open(err)),
-            Err(_) => {
+            Err(TimeoutElapsed) => {
                 return Err(SendError::Open(
                     mosaic_net_svc::api::OpenStreamError::ConnectionFailed(
                         "open stream timed out".to_string(),
@@ -218,10 +221,10 @@ impl NetClient {
         let written_at = started.elapsed();
 
         // Wait for ack (empty response)
-        let _ack = match tokio::time::timeout(self.config.ack_timeout, stream.read()).await {
+        let _ack = match timeout_if_tokio_runtime(self.config.ack_timeout, stream.read()).await {
             Ok(Ok(ack)) => ack,
             Ok(Err(err)) => return Err(SendError::NoAck(err)),
-            Err(_) => {
+            Err(TimeoutElapsed) => {
                 // Timeout waiting for ack - reset stream and surface as NoAck.
                 stream.reset(0).await;
                 return Err(SendError::NoAck(mosaic_net_svc::StreamClosed::Disconnected));
@@ -275,12 +278,16 @@ impl NetClient {
             .recv()
             .await
             .map_err(|_| RecvError::Closed)?;
+        let peer_id = stream.peer;
 
         // Read message bytes
-        let bytes = stream.read().await.map_err(RecvError::Read)?;
+        let bytes = stream
+            .read()
+            .await
+            .map_err(|source| RecvError::Read { peer_id, source })?;
 
         // Deserialize message (uncompressed, with validation)
-        let msg = deserialize(&bytes).map_err(RecvError::Deserialize)?;
+        let msg = deserialize(&bytes).map_err(|error| RecvError::Deserialize { peer_id, error })?;
 
         Ok(InboundRequest::new(msg, stream))
     }
@@ -296,6 +303,26 @@ fn serialize(msg: &Msg) -> Result<Vec<u8>, ark_serialize::SerializationError> {
 /// Deserialize a message from bytes using uncompressed mode with validation.
 fn deserialize(bytes: &[u8]) -> Result<Msg, ark_serialize::SerializationError> {
     Msg::deserialize_with_mode(&mut &bytes[..], Compress::No, Validate::Yes)
+}
+
+/// Marker error used when a tokio timeout elapses.
+struct TimeoutElapsed;
+
+/// Apply a timeout when running inside a tokio runtime.
+///
+/// When no tokio runtime is present (for example, monoio worker threads),
+/// this awaits the future directly without enforcing a timeout.
+async fn timeout_if_tokio_runtime<T>(
+    duration: Duration,
+    fut: impl Future<Output = T>,
+) -> Result<T, TimeoutElapsed> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::time::timeout(duration, fut)
+            .await
+            .map_err(|_| TimeoutElapsed)
+    } else {
+        Ok(fut.await)
+    }
 }
 
 #[cfg(test)]

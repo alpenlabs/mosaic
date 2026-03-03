@@ -2,6 +2,7 @@
 
 use ark_serialize::SerializationError;
 use mosaic_net_svc::{ExpectError, StreamClosed, api::OpenStreamError};
+use mosaic_net_svc_api::PeerId;
 
 /// Error sending a protocol message.
 #[derive(Debug, thiserror::Error)]
@@ -40,12 +41,23 @@ pub enum RecvError {
     Closed,
 
     /// Failed to read from stream.
-    #[error("read failed: {0}")]
-    Read(#[source] StreamClosed),
+    #[error("read failed for peer={peer_id:?}: {source}")]
+    Read {
+        /// Peer that sent the stream.
+        peer_id: PeerId,
+        /// Underlying stream error.
+        #[source]
+        source: StreamClosed,
+    },
 
     /// Failed to deserialize the message.
-    #[error("deserialization failed: {0:?}")]
-    Deserialize(SerializationError),
+    #[error("deserialization failed for peer={peer_id:?}: {error:?}")]
+    Deserialize {
+        /// Peer that sent the stream.
+        peer_id: PeerId,
+        /// Underlying deserialization error.
+        error: SerializationError,
+    },
 }
 
 /// Error sending an acknowledgment.

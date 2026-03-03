@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-state-machine-executor"
+name = "mosaic-sm-executor-api"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,13 +11,9 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-# mosaic-cac-proto-types.workspace = true
-mosaic-cac-protocol.workspace = true
 mosaic-cac-types.workspace = true
-# mosaic-storage-api.workspace = true
-
-# tracing.workspace = true
-fasm.workspace = true
+mosaic-net-svc-api.workspace = true
+kanal = "0.1.1"
 
 [lints]
 workspace = true

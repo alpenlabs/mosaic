@@ -6,7 +6,7 @@
 //!   Handlers can inspect state machine data but **cannot** mutate it. This is enforced at the type
 //!   level.
 //!
-//! - [`StorageProviderMut`] — returns mutable handles ([`StateMut`]) for the SM Scheduler, which
+//! - [`StorageProviderMut`] — returns mutable handles ([`StateMut`]) for the SM Executor, which
 //!   needs write access to run the STF.
 //!
 //! # Garbling Table Storage
@@ -20,6 +20,7 @@
 
 pub mod table_store;
 
+use core::future::Future;
 use mosaic_cac_types::state_machine::{evaluator, garbler};
 use mosaic_net_svc_api::PeerId;
 pub use table_store::{TableId, TableMetadata, TableReader, TableStore, TableWriter};
@@ -38,6 +39,19 @@ pub enum StorageError {
 
 /// Storage Result
 pub type StorageResult<T> = Result<T, StorageError>;
+
+/// Commit hook for mutable storage sessions/handles.
+///
+/// This is intended for transactional backends where all writes performed via
+/// a mutable state handle should be atomically finalized at the end of one STF
+/// call. In-memory backends may implement this as a no-op.
+pub trait Commit {
+    /// Error type produced by commit.
+    type Error: std::fmt::Debug;
+
+    /// Finalize writes performed through this mutable handle.
+    fn commit(self) -> impl Future<Output = Result<(), Self::Error>>;
+}
 
 /// Read-only provider of per-peer storage handles.
 ///
@@ -74,7 +88,7 @@ pub trait StorageProvider: Send + Sync + 'static {
 
 /// Read-write provider of per-peer storage handles.
 ///
-/// Used by the **SM Scheduler** which needs mutable access to run the STF
+/// Used by the **SM Executor** which needs mutable access to run the STF
 /// (`handle_event` and `handle_action_result` take `&mut S: StateMut`).
 ///
 /// A concrete backend should implement both [`StorageProvider`] (for
@@ -82,12 +96,12 @@ pub trait StorageProvider: Send + Sync + 'static {
 /// execution). The two traits intentionally have separate associated types
 /// so that an implementation can return different handle types for read vs.
 /// write if needed (e.g. a read-snapshot vs. a transactional write handle).
-pub trait StorageProviderMut: Send + Sync + 'static {
+pub trait StorageProviderMut: 'static {
     /// Mutable garbler state handle.
-    type GarblerState: garbler::StateMut + Send + Sync;
+    type GarblerState: garbler::StateMut + Commit;
 
     /// Mutable evaluator state handle.
-    type EvaluatorState: evaluator::StateMut + Send + Sync;
+    type EvaluatorState: evaluator::StateMut + Commit;
 
     /// Get a mutable storage handle for a peer's garbler state machine.
     ///

@@ -11,8 +11,8 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use mosaic_cac_types::{
     Adaptor, AdaptorMsgChunk, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk,
-    CircuitInputShares, CommitMsgChunk, WideLabelWireAdaptors, WideLabelWirePolynomialCommitments,
-    WideLabelWireShares, WithdrawalAdaptorsChunk,
+    CircuitInputShares, CommitMsgChunk, DepositId, WideLabelWireAdaptors,
+    WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptorsChunk,
 };
 use mosaic_common::constants::{N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_OPEN_CIRCUITS};
 use mosaic_vs3::{Index, Point, Polynomial, Scalar, Share};
@@ -224,6 +224,7 @@ fn bench_adaptor_msg_chunk(c: &mut Criterion) {
     };
 
     let chunk = AdaptorMsgChunk {
+        deposit_id: DepositId::from([7; 32]),
         chunk_index: 0,
         deposit_adaptor: single_adaptor,
         withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {
@@ -343,6 +344,7 @@ fn bench_full_messages(c: &mut Criterion) {
     };
     let adaptor_chunks: Vec<AdaptorMsgChunk> = (0..N_DEPOSIT_INPUT_WIRES)
         .map(|i| AdaptorMsgChunk {
+            deposit_id: DepositId::from([9; 32]),
             chunk_index: i as u8,
             deposit_adaptor: single_adaptor,
             withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {

@@ -145,12 +145,9 @@ pub(crate) async fn handle_send_commit_msg_header<SP: StorageProvider, TS: Table
     peer_id: &PeerId,
     header: &mosaic_cac_types::CommitMsgHeader,
 ) -> HandlerOutcome {
-    // NOTE: The garbler STF currently reuses CommitMsgChunkAcked for header acks.
-    // The STF may need a dedicated result variant; for now we use the chunk ack
-    // with the header's ActionId.
     let id = ActionId::SendCommitMsgHeader;
     match ctx.net_client.send(*peer_id, header.clone()).await {
-        Ok(_ack) => completed(id, ActionResult::CommitMsgChunkAcked),
+        Ok(_ack) => completed(id, ActionResult::CommitMsgHeaderAcked),
         Err(e) => {
             tracing::warn!(%e, "send commit msg header failed, will retry");
             HandlerOutcome::Retry
@@ -178,10 +175,9 @@ pub(crate) async fn handle_send_challenge_response_header<SP: StorageProvider, T
     peer_id: &PeerId,
     header: &mosaic_cac_types::ChallengeResponseMsgHeader,
 ) -> HandlerOutcome {
-    // NOTE: Same situation as commit header — STF reuses ChallengeResponseChunkAcked.
     let id = ActionId::SendChallengeResponseMsgHeader;
     match ctx.net_client.send(*peer_id, header.clone()).await {
-        Ok(_ack) => completed(id, ActionResult::ChallengeResponseChunkAcked),
+        Ok(_ack) => completed(id, ActionResult::ChallengeResponseHeaderAcked),
         Err(e) => {
             tracing::warn!(%e, "send challenge response header failed, will retry");
             HandlerOutcome::Retry

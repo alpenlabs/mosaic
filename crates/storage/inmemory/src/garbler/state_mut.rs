@@ -4,6 +4,7 @@ use mosaic_cac_types::{
     Sighashes, WideLabelWirePolynomialCommitments, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateMut},
 };
+use mosaic_storage_api::Commit;
 
 use super::StoredGarblerState;
 use crate::error::DbError;
@@ -150,5 +151,13 @@ impl StateMut for StoredGarblerState {
         let deposit_data = self.get_deposit_mut_or_default(deposit_id);
         deposit_data.completed_sigs = Some(signatures.clone());
         Ok(())
+    }
+}
+
+impl Commit for StoredGarblerState {
+    type Error = DbError;
+
+    fn commit(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+        core::future::ready(Ok(()))
     }
 }

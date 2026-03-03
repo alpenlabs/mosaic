@@ -21,6 +21,8 @@ members = [
   "crates/rpc/provider",
   "crates/rpc/server",
   "crates/rpc/types",
+  "crates/sm-executor",
+  "crates/sm-executor-api",
   # "crates/state-machine/executor",
   "crates/storage/api",
   "crates/storage/inmemory",
@@ -75,6 +77,9 @@ mosaic-net-wire = { path = "crates/net/wire" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
+# SM executor
+mosaic-sm-executor = { path = "crates/sm-executor" }
+mosaic-sm-executor-api = { path = "crates/sm-executor-api" }
 # mosaic-state-machine-executor = { path = "crates/state-machine/executor" }
 mosaic-storage-api = { path = "crates/storage/api" }
 mosaic-storage-inmemory = { path = "crates/storage/inmemory" }
@@ -100,6 +105,7 @@ ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
 criterion = "0.5"
 fasm = "0.3.0"
 futures = "0.3.31"
+monoio = "0.2.4"
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
 jsonrpsee-types = "*"                                                             # constrained by jsonrpsee dep
 k256 = "0.13.4"

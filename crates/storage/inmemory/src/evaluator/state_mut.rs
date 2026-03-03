@@ -5,8 +5,10 @@ use mosaic_cac_types::{
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut},
 };
+use mosaic_storage_api::Commit;
 
 use super::StoredEvaluatorState;
+use crate::error::DbError;
 
 impl StateMut for StoredEvaluatorState {
     async fn put_root_state(&mut self, state: &EvaluatorState) -> Result<(), Self::Error> {
@@ -227,5 +229,13 @@ impl StateMut for StoredEvaluatorState {
             self.output_label_cts.insert(i, *ct);
         }
         Ok(())
+    }
+}
+
+impl Commit for StoredEvaluatorState {
+    type Error = DbError;
+
+    fn commit(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+        core::future::ready(Ok(()))
     }
 }
