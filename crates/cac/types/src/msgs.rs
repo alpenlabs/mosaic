@@ -155,6 +155,7 @@ pub struct AdaptorMsgChunk {
 /// Note: Acknowledgments are handled at the network layer, not here.
 /// Note: Garbling tables are transferred via bulk streams, not protocol messages.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Msg {
     /// Commitment header (Garbler -> Evaluator)
     CommitHeader(CommitMsgHeader),
