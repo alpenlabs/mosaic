@@ -7,7 +7,7 @@ use crate::row_spec::{KVRowSpec, PackableKey, error::KeyspaceDecodeError};
 /// Key schema version encoded as the first byte of every namespacing prefix.
 pub const KEY_SCHEMA_VERSION: u8 = 1;
 
-/// Top-level key domain, used by concrete [`StorageProvider`] implementations
+/// Top-level key domain, used by concrete `StorageProvider` implementations
 /// to build namespacing prefixes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
