@@ -43,7 +43,7 @@ pub const N_CHALLENGE_RESPONSE_CHUNKS: usize = N_OPEN_CIRCUITS;
 pub const N_ADAPTOR_MSG_CHUNKS: usize = N_DEPOSIT_INPUT_WIRES;
 
 /// Number of withdrawal wires per AdaptorMsgChunk.
-/// This divides evenly: 164 / 4 = 41 wires per chunk.
+/// This divides evenly: 128 / 4 = 32 wires per chunk.
 pub const WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK: usize =
     N_WITHDRAWAL_INPUT_WIRES / N_DEPOSIT_INPUT_WIRES;
 
