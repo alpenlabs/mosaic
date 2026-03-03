@@ -1,6 +1,5 @@
 //! Executors for evaluator state machine actions.
 
-use ark_ff::{BigInteger, PrimeField};
 use bitvec::vec::BitVec;
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use ckt_gobble::{
@@ -101,7 +100,7 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
         for idx in 0..N_OPEN_CIRCUITS {
             for wire in 0..N_INPUT_WIRES {
                 for val in 0..WIDE_LABEL_VALUE_COUNT {
-                    let share = shares[idx][wire][val].clone();
+                    let share = shares[idx][wire][val];
                     if commitments[wire][val].verify_share(share).is_err() {
                         return Some(format!(
                             "verify failed for circuit {}, wire {}, value {}",
@@ -547,7 +546,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .map(|i| {
             std::array::from_fn(|wire| {
                 let val = selected_input[wire] as usize;
-                opened_input_shares[i][wire][val].clone()
+                opened_input_shares[i][wire][val]
             })
         })
         .collect();
@@ -577,15 +576,15 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         ));
     }
 
-    let mut input_labels: Vec<[u8; 16]> = Vec::with_capacity(N_INPUT_WIRES);
+    let mut input_labels: Vec<Label> = Vec::with_capacity(N_INPUT_WIRES);
 
     for wire in 0..N_INPUT_WIRES {
         // Combine opened + committed shares for this wire.
         let mut shares_for_wire: Vec<Share> = Vec::with_capacity(N_OPEN_CIRCUITS + 1);
         for opened_circuit in selected_opened.iter().take(N_OPEN_CIRCUITS) {
-            shares_for_wire.push(opened_circuit[wire].clone());
+            shares_for_wire.push(opened_circuit[wire]);
         }
-        shares_for_wire.push(committed[wire].clone());
+        shares_for_wire.push(committed[wire]);
 
         let missing = interpolate(&shares_for_wire).map_err(|_| {
             CircuitError::SetupFailed(format!("interpolation failed for wire {wire}"))
@@ -602,10 +601,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
                 )))?;
 
         // Truncate share scalar to 16-byte label for all input wires.
-        let full: Vec<u8> = share.value().into_bigint().to_bytes_le();
-        let mut label = [0u8; 16];
-        label.copy_from_slice(&full[..16]);
-        input_labels.push(label);
+        input_labels.push(share.truncate());
     }
 
     // ── Load evaluation parameters from state ───────────────────────────
@@ -690,7 +686,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     let mut bit_count = 0;
 
     for byte_pos in 0..N_INPUT_WIRES {
-        let byte_label = Label::from(input_labels[byte_pos]);
+        let byte_label = input_labels[byte_pos];
         let byte_value = selected_input[byte_pos];
 
         let translated = translate_input(

@@ -349,7 +349,7 @@ fn make_challenge_response_chunk(circuit_index: u16) -> ChallengeResponseMsgChun
 
     ChallengeResponseMsgChunk {
         circuit_index,
-        shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| share.clone())),
+        shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| share)),
     }
 }
 

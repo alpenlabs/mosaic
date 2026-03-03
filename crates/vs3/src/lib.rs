@@ -8,8 +8,7 @@ mod interpolate;
 mod polynomial;
 mod psm;
 
-// Re-export all constants
-pub use constants::*;
+pub(crate) use constants::*;
 // Re-export error types
 pub use error::Error;
 // Re-export interpolation function

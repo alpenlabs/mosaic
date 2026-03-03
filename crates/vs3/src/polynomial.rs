@@ -1,12 +1,13 @@
 //! Polynomial arithmetic over the secp256k1 curve for the VS3 protocol.
 
-use ark_ff::{UniformRand, Zero};
+use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
-use rand_core::{CryptoRng, RngCore};
+use ckt_gobble::Label;
+use rand_chacha::rand_core::{CryptoRng, RngCore};
 
 use crate::{
-    constants::{N_CIRCUITS, N_COEFFICIENTS},
+    N_COEFFICIENTS, N_DOMAIN_UPPER_BOUND,
     error::Error,
     psm::{gen_batch_mul, gen_mul},
 };
@@ -56,7 +57,7 @@ impl Index {
     /// Minimum index, we reserve index 0.
     pub const MIN: usize = 1;
     /// Maximum index.
-    pub const MAX: usize = N_CIRCUITS;
+    pub const MAX: usize = N_DOMAIN_UPPER_BOUND;
 
     /// Check the index is within bounds.
     pub const fn new(value: usize) -> Option<Self> {
@@ -84,7 +85,7 @@ impl Index {
 }
 
 /// A share of a polynomial, representing an index and an evaluation value at that index.
-#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Share(Index, Scalar);
 
 impl Share {
@@ -107,10 +108,23 @@ impl Share {
     pub fn commit(&self) -> ShareCommitment {
         ShareCommitment(self.0, gen_mul(&self.1))
     }
+
+    /// truncate: conversion from Share to ckt_gobble::Label
+    pub fn truncate(&self) -> Label {
+        let x: [u8; 32] = self
+            .1
+            .into_bigint()
+            .to_bytes_le()
+            .try_into()
+            .expect("encode 32 bytes");
+        let hash = *blake3::hash(&x).as_bytes();
+        let small_hash: [u8; 16] = hash[0..16].try_into().unwrap();
+        Label::from(small_hash)
+    }
 }
 
 /// A commitment to a share of a polynomial.
-#[derive(Debug, Clone, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct ShareCommitment(Index, Point);
 
 impl ShareCommitment {

@@ -95,7 +95,7 @@ fn bench_challenge_response_msg_chunk(c: &mut Criterion) {
 
     let chunk = ChallengeResponseMsgChunk {
         circuit_index: 0,
-        shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| single_share.clone())),
+        shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| single_share)),
     };
 
     // Pre-serialize for deserialization benchmarks
@@ -320,7 +320,7 @@ fn bench_full_messages(c: &mut Criterion) {
     let response_chunks: Vec<ChallengeResponseMsgChunk> = (0..N_OPEN_CIRCUITS)
         .map(|i| ChallengeResponseMsgChunk {
             circuit_index: i as u16,
-            shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| single_share.clone())),
+            shares: CircuitInputShares::new(|_| WideLabelWireShares::new(|_| single_share)),
         })
         .collect();
 

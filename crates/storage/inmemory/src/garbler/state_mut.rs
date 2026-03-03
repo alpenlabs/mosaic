@@ -49,7 +49,7 @@ impl StateMut for StoredGarblerState {
         output_share: &CircuitOutputShare,
     ) -> Result<(), Self::Error> {
         self.input_shares.insert(index.get(), input_shares.clone());
-        self.output_shares.insert(index.get(), output_share.clone());
+        self.output_shares.insert(index.get(), *output_share);
         Ok(())
     }
 
