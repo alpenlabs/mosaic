@@ -4,6 +4,7 @@ use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
 use ckt_gobble::Label;
+use mosaic_common::impl_serde_ark;
 use rand_chacha::rand_core::{CryptoRng, RngCore};
 
 use crate::{
@@ -15,6 +16,8 @@ use crate::{
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Index(usize);
+
+impl_serde_ark!(Index);
 
 impl CanonicalSerialize for Index {
     fn serialize_with_mode<W: ark_serialize::Write>(

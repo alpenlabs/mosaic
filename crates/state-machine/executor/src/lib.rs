@@ -57,7 +57,7 @@ pub enum ActionContainer {
     Evaluator(EvaluatorActionContainer),
 }
 
-/// State machien action with additional metadata sent to action runner.
+/// State machine action with additional metadata sent to action runner.
 #[derive(Debug)]
 pub struct ExecutorAction {
     /// Id of statemachine that dispatched this action.

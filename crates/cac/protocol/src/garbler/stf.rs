@@ -4,9 +4,9 @@ use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, EvaluationIndices,
-    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments, InputShares,
-    OutputShares, Seed, SetupInputs, state_machine::garbler::*,
+    CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
+    EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
+    InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
 };
 use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES};
 
@@ -94,7 +94,8 @@ pub(crate) async fn handle_event<S: StateMut>(
                             .map_err(SMError::storage)?;
 
                         root_state.step = Step::SendingChallengeResponse {
-                            acked: HeapArray::from_elem(false),
+                            header_acked: false,
+                            chunk_acked: HeapArray::from_elem(false),
                         };
 
                         emit(actions, Action::SendChallengeResponseMsgHeader(header));
@@ -268,9 +269,32 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             )
             .await?;
         }
+        ActionResult::CommitMsgHeaderAcked => {
+            match &mut root_state.step {
+                Step::SendingCommit {
+                    chunk_acked,
+                    header_acked: header,
+                } => {
+                    if *header {
+                        // already acked header
+                        return Err(SMError::duplicate_action());
+                    }
+
+                    *header = true;
+
+                    if chunk_acked.all() {
+                        root_state.step = Step::WaitingForChallenge;
+                    }
+                }
+                _ => return Err(SMError::unexpected_input()),
+            }
+        }
         ActionResult::CommitMsgChunkAcked => {
             match &mut root_state.step {
-                Step::SendingCommit { acked } => {
+                Step::SendingCommit {
+                    chunk_acked: acked,
+                    header_acked: header,
+                } => {
                     let ActionId::SendCommitMsgChunk(wire_index) = id else {
                         return Err(SMError::invalid_input_data());
                     };
@@ -282,8 +306,30 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     acked[idx] = true;
 
-                    if acked.all() {
+                    if *header && acked.all() {
                         root_state.step = Step::WaitingForChallenge;
+                    }
+                }
+                _ => return Err(SMError::unexpected_input()),
+            }
+        }
+
+        ActionResult::ChallengeResponseHeaderAcked => {
+            match &mut root_state.step {
+                Step::SendingChallengeResponse {
+                    chunk_acked,
+                    header_acked,
+                } => {
+                    if *header_acked {
+                        // already acked this chunk
+                        return Err(SMError::invalid_input_data());
+                    }
+
+                    *header_acked = true;
+
+                    if chunk_acked.all() {
+                        handle_post_sending_challenge_response(&mut root_state, state, actions)
+                            .await?;
                     }
                 }
                 _ => return Err(SMError::unexpected_input()),
@@ -292,46 +338,24 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
         ActionResult::ChallengeResponseChunkAcked => {
             match &mut root_state.step {
-                Step::SendingChallengeResponse { acked } => {
+                Step::SendingChallengeResponse {
+                    chunk_acked,
+                    header_acked,
+                } => {
                     let ActionId::SendChallengeResponseMsgChunk(circuit_index) = id else {
                         return Err(SMError::invalid_input_data());
                     };
                     let idx = circuit_index as usize;
-                    if acked[idx] {
+                    if chunk_acked[idx] {
                         // already acked this chunk
                         return Err(SMError::invalid_input_data());
                     }
 
-                    acked[idx] = true;
+                    chunk_acked[idx] = true;
 
-                    if acked.all() {
-                        let challenge_indices = state
-                            .get_challenge_indices()
-                            .await
-                            .require("expected challenge indices")?;
-                        let eval_indices = get_eval_indices(&challenge_indices);
-
-                        let garbling_table_commitments = state
-                            .get_all_garbling_table_commitments()
-                            .await
-                            .require("expected garbling table commitments")?;
-
-                        let eval_commitments =
-                            get_eval_commitments(&eval_indices, &garbling_table_commitments);
-
-                        let config = require_config(&root_state)?;
-                        let garbling_seeds = generate_garbling_table_seeds(config.seed);
-                        let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
-
-                        for seed in &eval_seeds {
-                            emit(actions, Action::TransferGarblingTable(*seed));
-                        }
-
-                        root_state.step = Step::TransferringGarblingTables {
-                            eval_seeds,
-                            eval_commitments,
-                            transferred: HeapArray::from_elem(false),
-                        };
+                    if *header_acked && chunk_acked.all() {
+                        handle_post_sending_challenge_response(&mut root_state, state, actions)
+                            .await?;
                     }
                 }
                 _ => return Err(SMError::unexpected_input()),
@@ -541,8 +565,8 @@ async fn handle_table_commitment_generated<S: StateMut>(
     state: &mut S,
     index: Index,
     commitment: GarblingTableCommitment,
-    _metadata: GarblingMetadata,
-    _actions: &mut ActionContainer,
+    metadata: GarblingMetadata,
+    actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::GeneratingTableCommitments { generated, .. } => {
@@ -561,20 +585,31 @@ async fn handle_table_commitment_generated<S: StateMut>(
                 .put_garbling_table_commitment(index, &commitment)
                 .await
                 .map_err(SMError::storage)?;
+            state
+                .put_garbling_table_metadata(index, &metadata)
+                .await
+                .map_err(SMError::storage)?;
 
             if !generated.all() {
                 // wait for all commitments to be generated.
                 return Ok(());
             }
             root_state.step = Step::SendingCommit {
-                acked: HeapArray::from_elem(false),
+                header_acked: false,
+                chunk_acked: HeapArray::from_elem(false),
             };
 
             // generate actions
-            // TODO(sapinb): populate CommitMsgHeader fields from garbling results
-            // (all_aes128_keys, all_public_s, all_constant_zero_labels, all_constant_one_labels)
-            // then emit SendCommitMsgHeader + SendCommitMsgChunk actions.
-            // See #72 for details.
+            let header = build_commit_msg_header(state).await?;
+            emit(actions, Action::SendCommitMsgHeader(header));
+
+            let input_polynomial_commitments = state
+                .get_input_polynomial_commitments()
+                .await
+                .require("expected input polynomial commitments")?;
+            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
+                emit(actions, Action::SendCommitMsgChunk(chunk));
+            }
         }
         _ => return Err(SMError::unexpected_input()),
     };
@@ -688,12 +723,30 @@ pub(crate) async fn restore<S: StateRead>(
                 emit(actions, Action::GenerateTableCommitment(index, seed));
             }
         }
-        Step::SendingCommit { acked: _ } => {
-            // TODO(sapinb): restore SendCommitMsgHeader + SendCommitMsgChunk
-            // emission once CommitMsgHeader fields are populated. See #72.
+        Step::SendingCommit {
+            chunk_acked,
+            header_acked,
+        } => {
+            if !header_acked {
+                let header = build_commit_msg_header(state).await?;
+                emit(actions, Action::SendCommitMsgHeader(header));
+            }
+            let input_polynomial_commitments = state
+                .get_input_polynomial_commitments()
+                .await
+                .require("expected input polynomial commitments")?;
+
+            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
+                if !chunk_acked[chunk.wire_index as usize] {
+                    emit(actions, Action::SendCommitMsgChunk(chunk));
+                }
+            }
         }
         Step::WaitingForChallenge => {}
-        Step::SendingChallengeResponse { acked } => {
+        Step::SendingChallengeResponse {
+            chunk_acked,
+            header_acked,
+        } => {
             let challenge_indices = state
                 .get_challenge_indices()
                 .await
@@ -715,9 +768,12 @@ pub(crate) async fn restore<S: StateRead>(
                 seeds,
                 config.setup_inputs,
             );
-            emit(actions, Action::SendChallengeResponseMsgHeader(header));
+
+            if !*header_acked {
+                emit(actions, Action::SendChallengeResponseMsgHeader(header));
+            }
             for chunk in chunks {
-                if !acked[chunk.circuit_index as usize] {
+                if !chunk_acked[chunk.circuit_index as usize] {
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                 }
             }
@@ -771,6 +827,41 @@ pub(crate) async fn restore<S: StateRead>(
     Ok(())
 }
 
+async fn handle_post_sending_challenge_response<S: StateMut>(
+    root_state: &mut GarblerState,
+    state: &mut S,
+    actions: &mut ActionContainer,
+) -> SMResult<()> {
+    let challenge_indices = state
+        .get_challenge_indices()
+        .await
+        .require("expected challenge indices")?;
+    let eval_indices = get_eval_indices(&challenge_indices);
+
+    let garbling_table_commitments = state
+        .get_all_garbling_table_commitments()
+        .await
+        .require("expected garbling table commitments")?;
+
+    let eval_commitments = get_eval_commitments(&eval_indices, &garbling_table_commitments);
+
+    let config = require_config(root_state)?;
+    let garbling_seeds = generate_garbling_table_seeds(config.seed);
+    let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
+
+    for seed in &eval_seeds {
+        emit(actions, Action::TransferGarblingTable(*seed));
+    }
+
+    root_state.step = Step::TransferringGarblingTables {
+        eval_seeds,
+        eval_commitments,
+        transferred: HeapArray::from_elem(false),
+    };
+
+    Ok(())
+}
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -783,7 +874,7 @@ fn require_config(state: &GarblerState) -> SMResult<&Config> {
 }
 
 async fn require_deposit<S: StateRead>(
-    state: &mut S,
+    state: &S,
     deposit_id: &DepositId,
 ) -> SMResult<DepositState> {
     state
@@ -791,6 +882,42 @@ async fn require_deposit<S: StateRead>(
         .await
         .map_err(SMError::storage)?
         .ok_or_else(|| SMError::unknown_deposit(*deposit_id))
+}
+
+async fn build_commit_msg_header<S: StateRead>(state: &S) -> SMResult<CommitMsgHeader> {
+    let output_polynomial_commitment = state
+        .get_output_polynomial_commitment()
+        .await
+        .require("expected output polynomial commitment")?;
+    let garbling_table_commitments = state
+        .get_all_garbling_table_commitments()
+        .await
+        .require("expected garbling table commitments")?;
+    let all_aes128_keys = state
+        .get_all_aes128_keys()
+        .await
+        .require("expected all aes128 keys")?;
+    let all_public_s = state
+        .get_all_public_s_values()
+        .await
+        .require("expected all public_s values")?;
+    let all_constant_zero_labels = state
+        .get_all_constant_zero_labels()
+        .await
+        .require("expected all constant zero labels")?;
+    let all_constant_one_labels = state
+        .get_all_constant_one_labels()
+        .await
+        .require("expected all constant one labels")?;
+
+    Ok(CommitMsgHeader {
+        garbling_table_commitments,
+        output_polynomial_commitment,
+        all_aes128_keys,
+        all_public_s,
+        all_constant_zero_labels,
+        all_constant_one_labels,
+    })
 }
 
 #[expect(unused_variables)]
@@ -804,7 +931,7 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
     todo!()
 }
 
-#[expect(unused_variables, dead_code)]
+#[expect(unused_variables)]
 fn create_commit_msg_chunks(
     polynomial_commitments: InputPolynomialCommitments,
 ) -> Vec<CommitMsgChunk> {

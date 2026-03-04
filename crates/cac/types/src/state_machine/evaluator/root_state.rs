@@ -1,4 +1,5 @@
 use mosaic_common::constants::{N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices, HeapArray,
@@ -6,7 +7,7 @@ use crate::{
 };
 
 /// Evaluator state machine root state.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvaluatorState {
     /// Immutable evaluator config set at init.
     pub config: Option<Config>,
@@ -15,7 +16,7 @@ pub struct EvaluatorState {
 }
 
 /// Immutable state that is set during init and never updated
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     /// Base seed for all deterministic rngs used in this statemachine.
     pub seed: Seed,
@@ -24,7 +25,7 @@ pub struct Config {
 }
 
 /// Valid states.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Step {
     #[default]

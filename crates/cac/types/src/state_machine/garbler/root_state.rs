@@ -1,6 +1,7 @@
 use mosaic_common::constants::{
     N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS, N_INPUT_WIRES,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AllGarblingSeeds, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments, HeapArray, Seed,
@@ -10,7 +11,7 @@ use crate::{
 /// Root state for the garbler in the setup protocol.
 ///
 /// Contains the configuration and current step in the protocol state machine.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GarblerState {
     /// Immutable garbler config set at init.
     pub config: Option<Config>,
@@ -19,7 +20,7 @@ pub struct GarblerState {
 }
 
 /// Immutable state that is set during init and never updated
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     /// Seed for deterministic rng.
     pub seed: Seed,
@@ -28,7 +29,7 @@ pub struct Config {
 }
 
 /// Valid states.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Step {
     #[default]
@@ -57,16 +58,20 @@ pub enum Step {
     /// Got table commitments, sending commit msg chunks.
     /// Transitions to WaitingForChallenge when all chunks are acked.
     SendingCommit {
+        /// Track ack of commit msg header.
+        header_acked: bool,
         /// Track which commit msg chunks have been acked.
-        acked: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
+        chunk_acked: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
     },
     /// All commit chunks acked, waiting for challenge msg from evaluator.
     WaitingForChallenge,
     /// Sending challenge response chunks. Transitions to
     /// TransferringGarblingTables when all chunks are acked.
     SendingChallengeResponse {
+        /// Track ack of challenge response header.
+        header_acked: bool,
         /// Track which challenge response chunks have been acked.
-        acked: HeapArray<bool, N_CHALLENGE_RESPONSE_CHUNKS>,
+        chunk_acked: HeapArray<bool, N_CHALLENGE_RESPONSE_CHUNKS>,
     },
     /// Challenge response msg ack received, send garbling tables
     TransferringGarblingTables {

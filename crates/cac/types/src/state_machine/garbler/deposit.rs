@@ -1,9 +1,10 @@
 use mosaic_common::constants::N_ADAPTOR_MSG_CHUNKS;
+use serde::{Deserialize, Serialize};
 
 use crate::{HeapArray, PubKey};
 
 /// State machine steps for processing a deposit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DepositStep {
     /// Waiting for adaptor signature message chunks.
     WaitingForAdaptors {
@@ -32,7 +33,7 @@ impl Default for DepositStep {
 }
 
 /// State for tracking an individual deposit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DepositState {
     /// Current step in the deposit state machine.
     pub step: DepositStep,

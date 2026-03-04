@@ -729,7 +729,7 @@ async fn post_handle_challenge_response<S: StateMut>(
     let output_polynomial_commitment = state
         .get_output_polynomial_commitment()
         .await
-        .require("expected ouptut polynomial commitment")?;
+        .require("expected output polynomial commitment")?;
 
     if let Some(failure_reason) =
         verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)

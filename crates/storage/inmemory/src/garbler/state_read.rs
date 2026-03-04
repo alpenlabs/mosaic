@@ -3,10 +3,11 @@ use futures::{
     stream::{self, StreamExt},
 };
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    InputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
-    WithdrawalAdaptors, WithdrawalInputs,
+    AllAes128Keys, AllConstOneLabels, AllConstZeroLabels, AllGarblingTableCommitments,
+    AllOutputLabelCts, AllPublicSValues, ChallengeIndices, CircuitInputShares, CircuitOutputShare,
+    CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, GarblingTableCommitment,
+    HeapArray, Index, InputPolynomialCommitments, InputShares, OutputPolynomialCommitment,
+    OutputShares, ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
@@ -106,6 +107,20 @@ impl StateRead for StoredGarblerState {
         Ok(Some(HeapArray::from_vec(output_shares_vec)))
     }
 
+    async fn get_input_shares_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        Ok(self.input_shares.get(&circuit_idx.get()).cloned())
+    }
+
+    async fn get_output_share_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitOutputShare>, Self::Error> {
+        Ok(self.output_shares.get(&circuit_idx.get()).cloned())
+    }
+
     async fn get_reserved_input_shares(&self) -> Result<Option<ReservedInputShares>, Self::Error> {
         Ok(self.input_shares.get(&0).cloned())
     }
@@ -133,6 +148,106 @@ impl StateRead for StoredGarblerState {
         }
 
         Ok(Some(HeapArray::from_vec(commitments)))
+    }
+
+    async fn get_all_aes128_keys(&self) -> Result<Option<AllAes128Keys>, Self::Error> {
+        if self.aes128_keys.is_empty() {
+            return Ok(None);
+        }
+
+        let mut values = Vec::new();
+        for ckt_idx in 0..N_CIRCUITS {
+            let value = self.aes128_keys.get(&ckt_idx).cloned().ok_or_else(|| {
+                DbError::state_inconsistency("missing expected garbling table commitment")
+            })?;
+            values.push(value);
+        }
+
+        Ok(Some(HeapArray::from_vec(values)))
+    }
+
+    async fn get_all_public_s_values(&self) -> Result<Option<AllPublicSValues>, Self::Error> {
+        if self.public_s_values.is_empty() {
+            return Ok(None);
+        }
+
+        let mut values = Vec::new();
+        for ckt_idx in 0..N_CIRCUITS {
+            let value = self.public_s_values.get(&ckt_idx).cloned().ok_or_else(|| {
+                DbError::state_inconsistency("missing expected garbling metadata public S value")
+            })?;
+            values.push(value);
+        }
+
+        Ok(Some(HeapArray::from_vec(values)))
+    }
+
+    async fn get_all_constant_zero_labels(
+        &self,
+    ) -> Result<Option<AllConstZeroLabels>, Self::Error> {
+        if self.constant_zero_labels.is_empty() {
+            return Ok(None);
+        }
+
+        let mut values = Vec::new();
+        for ckt_idx in 0..N_CIRCUITS {
+            let value = self
+                .constant_zero_labels
+                .get(&ckt_idx)
+                .cloned()
+                .ok_or_else(|| {
+                    DbError::state_inconsistency(
+                        "missing expected garbling metadata constant zero label",
+                    )
+                })?;
+            values.push(value);
+        }
+
+        Ok(Some(HeapArray::from_vec(values)))
+    }
+
+    async fn get_all_constant_one_labels(&self) -> Result<Option<AllConstOneLabels>, Self::Error> {
+        if self.constant_one_labels.is_empty() {
+            return Ok(None);
+        }
+
+        let mut values = Vec::new();
+        for ckt_idx in 0..N_CIRCUITS {
+            let value = self
+                .constant_one_labels
+                .get(&ckt_idx)
+                .cloned()
+                .ok_or_else(|| {
+                    DbError::state_inconsistency(
+                        "missing expected garbling metadata constant one label",
+                    )
+                })?;
+            values.push(value);
+        }
+
+        Ok(Some(HeapArray::from_vec(values)))
+    }
+
+    async fn get_all_output_label_cts(&self) -> Result<Option<AllOutputLabelCts>, Self::Error> {
+        if self.output_label_cts.is_empty() {
+            return Ok(None);
+        }
+
+        let mut values = Vec::new();
+        for ckt_idx in 0..N_CIRCUITS {
+            let value = self
+                .output_label_cts
+                .get(&ckt_idx)
+                .cloned()
+                .ok_or_else(|| {
+                    DbError::state_inconsistency(
+                        "missing expected garbling metadata output label ciphertext",
+                    )
+                })?;
+            values.push(value);
+        }
+
+        Ok(Some(HeapArray::from_vec(values)))
     }
 
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {

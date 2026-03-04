@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-vs3"
+name = "mosaic-storage-kvstore"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,19 +11,21 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
+mosaic-storage-api.workspace = true
+mosaic-vs3.workspace = true
 
-ark-ec.workspace = true
-ark-ff.workspace = true
-ark-secp256k1.workspace = true
 ark-serialize.workspace = true
-blake3.workspace = true
-ckt-gobble.workspace = true
-rand_chacha.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+postcard.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-rand.workspace = true
+tokio = { version = "1", features = ["rt", "macros"] }
+rand_chacha.workspace = true
 
 [lints]
 workspace = true

@@ -3,5 +3,6 @@
 pub mod codec;
 pub mod constants;
 mod primitives;
+pub mod serde_ark;
 
 pub use primitives::*;

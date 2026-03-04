@@ -23,8 +23,8 @@ pub enum SMError {
     /// Received duplicate action.
     #[error("Received duplicate action")]
     DuplicateAction,
-    /// CRITICAL: State is inconsitent with expectations.
-    #[error("CRITICAL: State is inconsitent with expectations: {0}")]
+    /// CRITICAL: State is inconsistent with expectations.
+    #[error("CRITICAL: State is inconsistent with expectations: {0}")]
     StateInconsistency(String),
     /// Error while accessing storage.
     #[error("Error while accessing storage: {0}")]
