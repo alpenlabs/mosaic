@@ -827,7 +827,10 @@ async fn handle_table_commitment_generated<S: StateMut>(
                 let eval_commitments = get_eval_commitments(&eval_indices, &garbling_commitments);
 
                 for i in 0..eval_commitments.len() {
-                    emit(actions, Action::ReceiveGarblingTable(eval_indices[i], eval_commitments[i]));
+                    emit(
+                        actions,
+                        Action::ReceiveGarblingTable(eval_indices[i], eval_commitments[i]),
+                    );
                 }
                 root_state.step = Step::ReceivingGarblingTables {
                     eval_indices,

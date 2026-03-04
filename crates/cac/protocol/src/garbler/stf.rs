@@ -385,7 +385,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
 
                         for i in 0..eval_seeds.len() {
-                            emit(actions, Action::TransferGarblingTable(eval_seeds[i], eval_commitments[i]));
+                            emit(
+                                actions,
+                                Action::TransferGarblingTable(eval_seeds[i], eval_commitments[i]),
+                            );
                         }
 
                         root_state.step = Step::TransferringGarblingTables {
@@ -871,7 +874,10 @@ pub(crate) async fn restore<S: StateRead>(
                 if transferred[index] {
                     continue;
                 }
-                emit(actions, Action::TransferGarblingTable(*seed, eval_commitments[index]));
+                emit(
+                    actions,
+                    Action::TransferGarblingTable(*seed, eval_commitments[index]),
+                );
             }
         }
         Step::SetupComplete => {

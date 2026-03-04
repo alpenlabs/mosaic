@@ -119,7 +119,9 @@ impl Action {
             Self::SendChallengeMsg(_) => ActionId::SendChallengeMsg,
             Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
-            Self::ReceiveGarblingTable(_, commitment) => ActionId::ReceiveGarblingTable(*commitment),
+            Self::ReceiveGarblingTable(_, commitment) => {
+                ActionId::ReceiveGarblingTable(*commitment)
+            }
             Self::GenerateDepositAdaptors(id) => ActionId::GenerateDepositAdaptors(*id),
             Self::GenerateWithdrawalAdaptorsChunk(id, chunk_index) => {
                 ActionId::GenerateWithdrawalAdaptorsChunk(*id, chunk_index.0)
