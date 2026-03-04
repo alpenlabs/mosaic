@@ -2,10 +2,17 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use mosaic_cac_types::{
-    state_machine::evaluator::*, AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader, DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, WithdrawalAdaptorsChunk
+    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
+    DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
+    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
+    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
+    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
-    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK
+    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
+    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
 use rand_chacha::rand_core::SeedableRng;
 
@@ -819,8 +826,8 @@ async fn handle_table_commitment_generated<S: StateMut>(
 
                 let eval_commitments = get_eval_commitments(&eval_indices, &garbling_commitments);
 
-                for commitment in &eval_commitments {
-                    emit(actions, Action::ReceiveGarblingTable(*commitment));
+                for i in 0..eval_commitments.len() {
+                    emit(actions, Action::ReceiveGarblingTable(eval_indices[i], eval_commitments[i]));
                 }
                 root_state.step = Step::ReceivingGarblingTables {
                     eval_indices,
@@ -918,6 +925,7 @@ pub(crate) async fn restore<S: StateRead>(
             }
         }
         Step::ReceivingGarblingTables {
+            eval_indices,
             eval_commitments,
             received,
             ..
@@ -926,7 +934,7 @@ pub(crate) async fn restore<S: StateRead>(
                 if *received {
                     continue;
                 }
-                emit(actions, Action::ReceiveGarblingTable(*commitment));
+                emit(actions, Action::ReceiveGarblingTable(todo!(), *commitment));
             }
         }
         Step::SetupComplete => {
@@ -1014,8 +1022,9 @@ async fn require_deposit<S: StateRead>(
 /// validates polynomial commitments only
 fn is_valid_commit_header(commit_header: &CommitMsgHeader) -> bool {
     // zeroth polynomial coefficient corresponds to share commitment at reserved index
-    // since this Point corresponds to verifying key, we need to validate that it is a proper schnorr pubkey
-    // let poly = commit_header.output_polynomial_commitment[0].get_zeroth_coefficient();
+    // since this Point corresponds to verifying key, we need to validate that it is a proper
+    // schnorr pubkey let poly =
+    // commit_header.output_polynomial_commitment[0].get_zeroth_coefficient();
     // let is_valid_signing_key = PubKey(poly).valid();
     // is_valid_signing_key
     true
@@ -1048,7 +1057,10 @@ fn is_valid_challenge_response_chunk(
     response_msg_chunk: &ChallengeResponseMsgChunk,
     challenge_idxs: &ChallengeIndices,
 ) -> bool {
-    challenge_idxs.iter().find(|x| x.get() == response_msg_chunk.circuit_index as usize).is_some()
+    challenge_idxs
+        .iter()
+        .find(|x| x.get() == response_msg_chunk.circuit_index as usize)
+        .is_some()
 }
 
 /// Verify opened output shares against polynomial commitments and return failure reason or None.
@@ -1124,7 +1136,7 @@ fn create_adaptor_message_chunks(
     deposit_adaptors: DepositAdaptors,
     withdrawal_adaptors: WithdrawalAdaptors,
 ) -> Vec<AdaptorMsgChunk> {
-     // take 1 deposit adaptor wire and N withdrawal adaptor wires
+    // take 1 deposit adaptor wire and N withdrawal adaptor wires
     let mut adaptor_msg_chunks = vec![];
     for chunk_index in 0..N_DEPOSIT_INPUT_WIRES {
         let withdrawal_adaptors: WithdrawalAdaptorsChunk = HeapArray::from_vec(

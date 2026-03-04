@@ -3,7 +3,8 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     str::FromStr,
-    sync::Arc, time::Duration,
+    sync::Arc,
+    time::Duration,
 };
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
@@ -532,7 +533,7 @@ async fn test_e2e() {
         garb_state: garb_state.clone(),
         eval_state: eval_state.clone(),
     });
-        garbler_exec.update_state(DummyStorageProvider {
+    garbler_exec.update_state(DummyStorageProvider {
         garb_state: garb_state.clone(),
         eval_state: eval_state.clone(),
     });
@@ -542,8 +543,7 @@ async fn test_e2e() {
         mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &peer_id_b).await
     });
 
-     let eval_inputs = 
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await;
+    let eval_inputs = mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await;
 
     let garb_results = tx.await.unwrap();
     println!("garb_results len {}", garb_results.len());
@@ -640,7 +640,11 @@ impl TableWriter for FileTableWriter {
         &mut self,
         data: &[u8],
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { self.ct.write_all(data).unwrap(); self.ct.flush().unwrap(); Ok(()) }
+        async {
+            self.ct.write_all(data).unwrap();
+            self.ct.flush().unwrap();
+            Ok(())
+        }
     }
 
     fn finish(
@@ -796,16 +800,18 @@ async fn mock_dispatch_garbler(
                     GarblerAction::SendChallengeResponseMsgChunk(chunk) => {
                         exec.send_challenge_response_chunk(peer_id, chunk).await
                     }
-                    GarblerAction::TransferGarblingTable(seed) => {
-                        let session = ExecuteGarblerJob::begin_table_transfer(exec, peer_id, *seed)
-                            .await.unwrap();
-                        println!("finished fn begin_table_transfer");
-                        if let GarblerCircuitSession::Transfer(session) = session {
-                            let m = garb_coordinator(&exec.circuit_path, *session).await; // GarblerActionResult::GarblingTableTransferred(self.seed, self.commitment)
-                            m
-                        } else {
-                            panic!()
-                        }
+                    GarblerAction::TransferGarblingTable(seed, commitment) => {
+                        // let session = ExecuteGarblerJob::begin_table_transfer(exec, peer_id,
+                        // *seed)     .await.unwrap();
+                        // if let GarblerCircuitSession::Transfer(session) = session {
+                        //     // let m = garb_coordinator(&exec.circuit_path, *session).await; 
+                        // } else {
+                        //     panic!()
+                        // }
+                        HandlerOutcome::Done(ActionCompletion::Garbler {
+                            id: action.id(),
+                            result: GarbActionResult::GarblingTableTransferred(*seed, *commitment),
+                        })
                     }
                     GarblerAction::DepositVerifyAdaptors(deposit_id) => {
                         exec.deposit_verify_adaptors(peer_id, *deposit_id).await
@@ -867,8 +873,12 @@ async fn mock_dispatch_evaluator(
                             panic!()
                         }
                     }
-                    EvaluatorAction::ReceiveGarblingTable(commitment) => {
-                        exec.receive_garbling_table(peer_id, *commitment).await
+                    EvaluatorAction::ReceiveGarblingTable(index, commitment) => {
+                        // exec.receive_garbling_table(peer_id, *commitment).await
+                        HandlerOutcome::Done(ActionCompletion::Evaluator  {
+                                id: action.id(),
+                                result: EvalActionResult::GarblingTableReceived(*index, *commitment),
+                            })
                     }
                     _ => {
                         panic!("unhandled evaluator action variant");

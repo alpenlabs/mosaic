@@ -324,7 +324,7 @@ pub struct TransferSession {
     /// The garbling seed (for the completion's ActionId).
     seed: GarblingSeed,
     /// Pre-computed commitment from G3 (for the completion's ActionResult).
-    commitment: GarblingTableCommitment,
+    pub commitment: GarblingTableCommitment,
     /// Output wire IDs from the circuit file.
     output_wire_ids: Vec<u32>,
     /// Reusable buffer for ciphertext bytes per block.

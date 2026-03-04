@@ -122,7 +122,7 @@ pub enum Action {
     /// Send challenge response chunk with revealed shares for a single circuit.
     SendChallengeResponseMsgChunk(ChallengeResponseMsgChunk),
     /// Transfer a garbling table to the evaluator.
-    TransferGarblingTable(GarblingSeed),
+    TransferGarblingTable(GarblingSeed, Byte32),
 
     /// Verify adaptor signatures received from evaluator.
     DepositVerifyAdaptors(DepositId),
@@ -147,7 +147,7 @@ impl Action {
             Self::SendChallengeResponseMsgChunk(chunk) => {
                 ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index)
             }
-            Self::TransferGarblingTable(seed) => ActionId::TransferGarblingTable(*seed),
+            Self::TransferGarblingTable(seed, _) => ActionId::TransferGarblingTable(*seed),
             Self::DepositVerifyAdaptors(id) => ActionId::DepositVerifyAdaptors(*id),
             Self::CompleteAdaptorSignatures(id) => ActionId::CompleteAdaptorSignatures(*id),
         }

@@ -237,7 +237,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                     seed: *seed,
                 }
             }
-            GarblerAction::TransferGarblingTable(seed) => {
+            GarblerAction::TransferGarblingTable(seed, _) => {
                 CircuitAction::GarblerTransfer { seed: *seed }
             }
             _ => {
@@ -275,7 +275,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             }
             // E4 is a pool action (Light), not a circuit action — should never
             // reach here. If it does, routing logic has a bug.
-            EvaluatorAction::ReceiveGarblingTable(_) => {
+            EvaluatorAction::ReceiveGarblingTable(_, _) => {
                 tracing::error!(
                     "ReceiveGarblingTable routed to circuit dispatch — should go to light pool"
                 );
@@ -363,7 +363,7 @@ impl Classify for GarblerAction {
             | Self::SendChallengeResponseMsgChunk(_) => ActionCategory::Light,
 
             // Garbling (coordinated disk I/O)
-            Self::GenerateTableCommitment(..) | Self::TransferGarblingTable(_) => {
+            Self::GenerateTableCommitment(..) | Self::TransferGarblingTable(_, _) => {
                 ActionCategory::Garbling
             }
 
@@ -398,7 +398,7 @@ impl Classify for EvaluatorAction {
             // Light (outbound protocol sends + network receive)
             Self::SendChallengeMsg(_)
             | Self::DepositSendAdaptorMsgChunk(..)
-            | Self::ReceiveGarblingTable(_) => ActionCategory::Light,
+            | Self::ReceiveGarblingTable(_, _) => ActionCategory::Light,
 
             // Garbling (coordinated disk I/O — shared circuit reader)
             Self::GenerateTableCommitment(..) | Self::EvaluateGarblingTable(..) => {

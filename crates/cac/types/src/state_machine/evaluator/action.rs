@@ -100,7 +100,7 @@ pub enum Action {
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
-    ReceiveGarblingTable(GarblingTableCommitment),
+    ReceiveGarblingTable(Index, GarblingTableCommitment),
     /// Generate adaptors of deposit wires for a deposit.
     GenerateDepositAdaptors(DepositId),
     /// Generate adaptors of a portion of withdrawal wires for a deposit.
@@ -119,7 +119,7 @@ impl Action {
             Self::SendChallengeMsg(_) => ActionId::SendChallengeMsg,
             Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
-            Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
+            Self::ReceiveGarblingTable(_, commitment) => ActionId::ReceiveGarblingTable(*commitment),
             Self::GenerateDepositAdaptors(id) => ActionId::GenerateDepositAdaptors(*id),
             Self::GenerateWithdrawalAdaptorsChunk(id, chunk_index) => {
                 ActionId::GenerateWithdrawalAdaptorsChunk(*id, chunk_index.0)

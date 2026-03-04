@@ -329,7 +329,7 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
                 .await
         }
         // E4: Pool action — receives from network, no circuit reader needed.
-        EvaluatorAction::ReceiveGarblingTable(commitment) => {
+        EvaluatorAction::ReceiveGarblingTable(_, commitment) => {
             exec.receive_garbling_table(peer_id, *commitment).await
         }
         // Circuit actions should be routed to the garbling coordinator.
