@@ -5,12 +5,14 @@ use std::{
 
 use futures::Stream;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares,
-    CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs,
-    GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares, OpenedGarblingSeeds,
-    OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, OutputShares,
-    ReservedInputShares, ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
-    WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
+    AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
+    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
+    OutputShares, ReservedInputShares, ReservedSetupInputShares, Sighashes,
+    WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs,
     state_machine::{evaluator, garbler},
 };
 use mosaic_net_svc_api::PeerId;
@@ -154,6 +156,20 @@ impl garbler::StateRead for InMemoryGarblerSession {
         self.inner.get_output_shares().await
     }
 
+    async fn get_input_shares_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        self.inner.get_input_shares_for_circuit(circuit_idx).await
+    }
+
+    async fn get_output_share_for_circuit(
+        &self,
+        circuit_idx: &Index,
+    ) -> Result<Option<CircuitOutputShare>, Self::Error> {
+        self.inner.get_output_share_for_circuit(circuit_idx).await
+    }
+
     async fn get_reserved_input_shares(&self) -> Result<Option<ReservedInputShares>, Self::Error> {
         self.inner.get_reserved_input_shares().await
     }
@@ -169,6 +185,28 @@ impl garbler::StateRead for InMemoryGarblerSession {
         &self,
     ) -> Result<Option<AllGarblingTableCommitments>, Self::Error> {
         self.inner.get_all_garbling_table_commitments().await
+    }
+
+    async fn get_all_aes128_keys(&self) -> Result<Option<AllAes128Keys>, Self::Error> {
+        self.inner.get_all_aes128_keys().await
+    }
+
+    async fn get_all_public_s_values(&self) -> Result<Option<AllPublicSValues>, Self::Error> {
+        self.inner.get_all_public_s_values().await
+    }
+
+    async fn get_all_constant_zero_labels(
+        &self,
+    ) -> Result<Option<AllConstZeroLabels>, Self::Error> {
+        self.inner.get_all_constant_zero_labels().await
+    }
+
+    async fn get_all_constant_one_labels(&self) -> Result<Option<AllConstOneLabels>, Self::Error> {
+        self.inner.get_all_constant_one_labels().await
+    }
+
+    async fn get_all_output_label_cts(&self) -> Result<Option<AllOutputLabelCts>, Self::Error> {
+        self.inner.get_all_output_label_cts().await
     }
 
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {
@@ -268,6 +306,16 @@ impl garbler::StateMut for InMemoryGarblerSession {
     ) -> Result<(), Self::Error> {
         self.inner
             .put_garbling_table_commitment(index, commitments)
+            .await
+    }
+
+    async fn put_garbling_table_metadata(
+        &mut self,
+        index: Index,
+        metadata: &garbler::GarblingMetadata,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .put_garbling_table_metadata(index, metadata)
             .await
     }
 

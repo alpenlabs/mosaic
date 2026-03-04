@@ -791,7 +791,10 @@ fn test_concurrent_sends_from_same_peer() {
                     request.ack().await.expect("ack failed");
                     received += 1;
                 }
-                Err(RecvError::Read(mosaic_net_svc::StreamClosed::PeerFinished)) => continue,
+                Err(RecvError::Read {
+                    source: mosaic_net_svc::StreamClosed::PeerFinished,
+                    ..
+                }) => continue,
                 Err(err) => panic!("recv failed: {:?}", err),
             }
         }

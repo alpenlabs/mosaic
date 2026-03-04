@@ -18,6 +18,7 @@ use mosaic_common::{
         WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
     },
 };
+use mosaic_storage_api::Commit;
 
 use crate::{
     keyspace,
@@ -653,6 +654,14 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
                 .await?;
         }
         Ok(())
+    }
+}
+
+impl<KV: KvStore> Commit for KvStoreEvaluator<KV> {
+    type Error = StorageError;
+
+    fn commit(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+        core::future::ready(Ok(()))
     }
 }
 

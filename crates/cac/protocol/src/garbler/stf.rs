@@ -626,6 +626,10 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
 ) -> SMResult<()> {
     match root_state.step {
         Step::SetupComplete => {
+            if adaptor_msg_chunk.deposit_id != deposit_id {
+                return Err(SMError::invalid_input_data());
+            }
+
             let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
             if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
@@ -931,11 +935,17 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
     todo!()
 }
 
-#[expect(unused_variables)]
 fn create_commit_msg_chunks(
     polynomial_commitments: InputPolynomialCommitments,
 ) -> Vec<CommitMsgChunk> {
-    todo!()
+    polynomial_commitments
+        .iter()
+        .enumerate()
+        .map(|(wire_index, commitments)| CommitMsgChunk {
+            wire_index: wire_index as u16,
+            commitments: commitments.clone(),
+        })
+        .collect()
 }
 
 #[expect(unused_variables)]

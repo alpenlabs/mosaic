@@ -17,6 +17,7 @@ use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
     WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
+use mosaic_storage_api::Commit;
 use mosaic_vs3::Index;
 
 use crate::{
@@ -630,6 +631,14 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
     }
 }
 
+impl<KV: KvStore> Commit for KvStoreGarbler<KV> {
+    type Error = StorageError;
+
+    fn commit(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+        core::future::ready(Ok(()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::StreamExt as _;
@@ -727,6 +736,7 @@ mod tests {
 
     fn adaptor_msg_chunk(chunk_index: u8, seed: u64) -> AdaptorMsgChunk {
         AdaptorMsgChunk {
+            deposit_id: DepositId::from([0; 32]),
             chunk_index,
             deposit_adaptor: adaptor(seed + chunk_index as u64),
             withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|wire_idx| {

@@ -4,7 +4,7 @@ use mosaic_cac_types::{
     state_machine::garbler::Action,
     state_machine::garbler::{
         ActionId, ActionResult, Config, DepositStep, GarblerDepositInitData, GarblerInitData,
-        GarblerState, Input, StateMut, StateRead, Step,
+        GarblerState, GarblingMetadata, Input, StateMut, StateRead, Step,
     },
 };
 use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES};
@@ -180,6 +180,19 @@ async fn restore_sending_commit_replays_only_unacked_header_and_chunks() {
             .put_garbling_table_commitment(index, &[ii as u8; 32].into())
             .await
             .expect("store garbling table commitment");
+        state
+            .put_garbling_table_metadata(
+                index,
+                &GarblingMetadata {
+                    aes128_key: [ii as u8; 16],
+                    public_s: [ii as u8 + 1; 16],
+                    constant_zero_label: [ii as u8 + 2; 16],
+                    constant_one_label: [ii as u8 + 3; 16],
+                    output_label_ct: [ii as u8; 32].into(),
+                },
+            )
+            .await
+            .expect("store garbling metadata");
     }
 
     let mut acked = HeapArray::from_elem(false);
@@ -190,11 +203,7 @@ async fn restore_sending_commit_replays_only_unacked_header_and_chunks() {
             config: None,
             step: Step::SendingCommit {
                 header_acked: false,
-                acked: acked.clone(),
-                all_aes128_keys: HeapArray::from_elem([1; 16]),
-                all_public_s: HeapArray::from_elem([2; 16]),
-                all_constant_zero_labels: HeapArray::from_elem([3; 16]),
-                all_constant_one_labels: HeapArray::from_elem([4; 16]),
+                chunk_acked: acked.clone(),
             },
         })
         .await
@@ -237,11 +246,7 @@ async fn sending_commit_requires_header_and_chunks_acked_before_transition() {
             config: None,
             step: Step::SendingCommit {
                 header_acked: false,
-                acked,
-                all_aes128_keys: HeapArray::from_elem([0; 16]),
-                all_public_s: HeapArray::from_elem([0; 16]),
-                all_constant_zero_labels: HeapArray::from_elem([0; 16]),
-                all_constant_one_labels: HeapArray::from_elem([0; 16]),
+                chunk_acked: acked,
             },
         })
         .await

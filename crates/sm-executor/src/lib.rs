@@ -1170,11 +1170,7 @@ mod tests {
                         // Missing commit artifacts on purpose to force garbler restore failure.
                         step: garbler::Step::SendingCommit {
                             header_acked: false,
-                            acked: HeapArray::from_elem(false),
-                            all_aes128_keys: HeapArray::from_elem([0; 16]),
-                            all_public_s: HeapArray::from_elem([0; 16]),
-                            all_constant_zero_labels: HeapArray::from_elem([0; 16]),
-                            all_constant_one_labels: HeapArray::from_elem([0; 16]),
+                            chunk_acked: HeapArray::from_elem(false),
                         },
                     })
                     .await
