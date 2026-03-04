@@ -4,7 +4,6 @@ use std::{
     path::PathBuf,
     str::FromStr,
     sync::Arc,
-    time::Duration,
 };
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
@@ -12,11 +11,11 @@ use fasm::actions;
 use mosaic_cac_types::state_machine::{
     evaluator::{
         ActionResult as EvalActionResult, EvaluatorInitData, EvaluatorTrackedActionTypes,
-        Input as EvalInput,
+        Input as EvalInput, Step as EvalStep,
     },
     garbler::{
         ActionResult as GarbActionResult, GarblerInitData, GarblerTrackedActionTypes,
-        Input as GarbInput,
+        Input as GarbInput, Step as GarbStep,
     },
 };
 use mosaic_common::constants::{
@@ -538,16 +537,44 @@ async fn test_e2e() {
         eval_state: eval_state.clone(),
     });
 
-    println!("garbler sends table");
-    let tx = tokio::spawn(async move {
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &peer_id_b).await
-    });
+    // garbler sends table
+    let mut garb_results = 
+        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &peer_id_b).await;
+    assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
+    while let Some(completion) = garb_results.pop() {
+        let (action_id, action_result) = completion.as_garbler().unwrap();
+        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+            fasm::Input::TrackedActionCompleted {
+                id: action_id.clone(),
+                result: action_result.clone(),
+            };
+        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+            .await
+            .unwrap();
+    }
+    assert_eq!(garb_actions.len(), 0);
+    assert_eq!(garb_state.state.step, GarbStep::SetupComplete);
 
-    let eval_inputs = mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await;
+    // evaluator receives table
+    let mut eval_results = mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &peer_id_a).await;
+    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
+    while let Some(completion) = eval_results.pop() {
+        let (action_id, action_result) = completion.as_evaluator().unwrap();
+        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+            fasm::Input::TrackedActionCompleted {
+                id: action_id.clone(),
+                result: action_result.clone(),
+            };
+        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+            .await
+            .unwrap();
+    }
+    assert_eq!(eval_actions.len(), 0);
+    assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
 
-    let garb_results = tx.await.unwrap();
-    println!("garb_results len {}", garb_results.len());
-    println!("eval_inputs len {}", eval_inputs.len());
+    println!("setup complete");
+
+    
 }
 
 struct DummyStorageProvider {
