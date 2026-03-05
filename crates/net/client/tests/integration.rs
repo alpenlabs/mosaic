@@ -106,13 +106,13 @@ struct TestPeer {
 fn shutdown_controller_with_timeout(
     controller: mosaic_net_svc::svc::NetServiceController,
     timeout: Duration,
-) {
+) -> bool {
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = controller.shutdown();
         let _ = done_tx.send(());
     });
-    let _ = done_rx.recv_timeout(timeout);
+    done_rx.recv_timeout(timeout).is_ok()
 }
 
 impl TestPeer {
@@ -122,7 +122,17 @@ impl TestPeer {
 
     fn shutdown(&mut self) {
         if let Some(ctrl) = self.controller.take() {
-            shutdown_controller_with_timeout(ctrl, Duration::from_secs(2));
+            let _ = shutdown_controller_with_timeout(ctrl, Duration::from_secs(2));
+        }
+    }
+
+    fn shutdown_and_wait(&mut self, timeout: Duration) {
+        if let Some(ctrl) = self.controller.take() {
+            assert!(
+                shutdown_controller_with_timeout(ctrl, timeout),
+                "service shutdown did not complete within {:?}",
+                timeout
+            );
         }
     }
 }
@@ -573,7 +583,7 @@ fn test_recv_closed_when_service_shuts_down() {
     // Get the client before shutting down peer B's service.
     let client_b = peer_b.client.clone();
 
-    peer_b.shutdown();
+    peer_b.shutdown_and_wait(Duration::from_secs(10));
 
     run_async(async {
         let result = tokio::time::timeout(Duration::from_secs(5), client_b.recv())
@@ -842,5 +852,130 @@ fn test_large_challenge_response_roundtrip() {
             },
         )
         .await;
+    });
+}
+
+// ============================================================================
+// Bulk Transfer Wrapper Tests
+// ============================================================================
+
+#[test]
+fn test_bulk_wrapper_large_transfer_no_stall() {
+    let (peer_a, peer_b) = create_client_pair();
+
+    run_async(async {
+        stabilize_stream_path(&peer_a, &peer_b).await;
+
+        let mut identifier = [0xabu8; 32];
+        let tag = next_key_tag();
+        identifier[..8].copy_from_slice(&tag.to_le_bytes());
+
+        let expectation = peer_b
+            .client
+            .expect_bulk_receiver(peer_a.peer_id, identifier)
+            .await
+            .expect("register bulk expectation");
+
+        let recv_task = tokio::spawn(async move {
+            let mut receiver = expectation.recv().await.expect("receive bulk stream");
+            let mut total = 0usize;
+            loop {
+                match tokio::time::timeout(Duration::from_secs(10), receiver.read()).await {
+                    Ok(Ok(chunk)) => total += chunk.len(),
+                    Ok(Err(mosaic_net_svc::StreamClosed::PeerFinished)) => break,
+                    Ok(Err(err)) => panic!("bulk read failed: {err}"),
+                    Err(_) => panic!("timed out waiting for bulk payload"),
+                }
+            }
+            total
+        });
+
+        tokio::task::yield_now().await;
+
+        let mut sender = peer_a
+            .client
+            .open_bulk_sender(peer_b.peer_id, identifier, StreamPriority::Bulk.as_i32())
+            .await
+            .expect("open bulk sender");
+
+        let total_bytes = 2 * 1024 * 1024 + 97;
+        let chunk_size = 64 * 1024;
+        let mut sent = 0usize;
+        let mut buf = Vec::with_capacity(chunk_size);
+
+        while sent < total_bytes {
+            let take = (total_bytes - sent).min(chunk_size);
+            buf.clear();
+            buf.resize(take, (sent as u8).wrapping_mul(31).wrapping_add(7));
+            buf = sender.write(buf).await.expect("bulk write");
+            sent += take;
+        }
+        drop(sender);
+
+        let received = with_timeout(CI_TIMEOUT, recv_task)
+            .await
+            .expect("receiver task panicked");
+        assert_eq!(received, total_bytes);
+    });
+}
+
+#[test]
+fn test_bulk_wrapper_pipelined_write_no_reclaim() {
+    let (peer_a, peer_b) = create_client_pair();
+
+    run_async(async {
+        stabilize_stream_path(&peer_a, &peer_b).await;
+
+        let mut identifier = [0x42u8; 32];
+        let tag = next_key_tag();
+        identifier[..8].copy_from_slice(&tag.to_le_bytes());
+
+        let expectation = peer_b
+            .client
+            .expect_bulk_receiver(peer_a.peer_id, identifier)
+            .await
+            .expect("register bulk expectation");
+
+        let recv_task = tokio::spawn(async move {
+            let mut receiver = expectation.recv().await.expect("receive bulk stream");
+            let mut data = Vec::new();
+            loop {
+                match tokio::time::timeout(Duration::from_secs(10), receiver.read()).await {
+                    Ok(Ok(chunk)) => data.extend_from_slice(&chunk),
+                    Ok(Err(mosaic_net_svc::StreamClosed::PeerFinished)) => break,
+                    Ok(Err(err)) => panic!("bulk read failed: {err}"),
+                    Err(_) => panic!("timed out waiting for bulk payload"),
+                }
+            }
+            data
+        });
+
+        tokio::task::yield_now().await;
+
+        let mut sender = peer_a
+            .client
+            .open_bulk_sender(peer_b.peer_id, identifier, StreamPriority::Bulk.as_i32())
+            .await
+            .expect("open bulk sender");
+
+        let chunks = [vec![1u8; 8192], vec![2u8; 8192], vec![3u8; 8192]];
+        for chunk in &chunks {
+            sender
+                .write_no_reclaim(chunk.clone())
+                .await
+                .expect("queue bulk write");
+        }
+
+        for _ in 0..chunks.len() {
+            let reclaimed = sender.recv_buffer().await.expect("reclaimed buffer");
+            assert!(reclaimed.is_empty(), "returned buffer should be cleared");
+        }
+        drop(sender);
+
+        let received = with_timeout(CI_TIMEOUT, recv_task)
+            .await
+            .expect("receiver task panicked");
+        let expected = chunks.concat();
+        assert_eq!(received, expected);
     });
 }

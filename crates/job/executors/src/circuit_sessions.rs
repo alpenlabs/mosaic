@@ -40,7 +40,7 @@ use mosaic_cac_types::{
 use mosaic_job_api::{
     ActionCompletion, CircuitError, CircuitSession, HandlerOutcome, OwnedBlock, OwnedChunk,
 };
-use mosaic_net_svc_api::Stream;
+use mosaic_net_client::BulkSender;
 use mosaic_storage_api::table_store::TableReader;
 use mosaic_vs3::{Index, Scalar, Share};
 
@@ -320,7 +320,7 @@ pub struct TransferSession {
     /// The garbling session that processes blocks.
     session: GarblingSession,
     /// Bulk transfer stream to the evaluator peer.
-    stream: Stream,
+    stream: BulkSender,
     /// The garbling seed (for the completion's ActionId).
     seed: GarblingSeed,
     /// Pre-computed commitment from G3 (for the completion's ActionResult).
@@ -346,7 +346,7 @@ impl TransferSession {
     /// `stream` is an open bulk transfer stream to the evaluator.
     pub fn new(
         session: GarblingSession,
-        stream: Stream,
+        stream: BulkSender,
         seed: GarblingSeed,
         commitment: GarblingTableCommitment,
         output_wire_ids: Vec<u32>,
@@ -376,10 +376,11 @@ impl CircuitSession for TransferSession {
                 self.ct_buffer.clear();
                 process_owned_block_garble(&mut self.session.instance, block, &mut self.ct_buffer);
                 if !self.ct_buffer.is_empty() {
-                    self.stream
-                        .write(self.ct_buffer.clone())
-                        .await
-                        .map_err(|e| CircuitError::ChunkFailed(format!("stream write: {e:?}")))?;
+                    let out = std::mem::take(&mut self.ct_buffer);
+                    self.ct_buffer =
+                        self.stream.write(out).await.map_err(|e| {
+                            CircuitError::ChunkFailed(format!("stream write: {e:?}"))
+                        })?;
                 }
             }
             Ok(())

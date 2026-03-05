@@ -117,7 +117,8 @@ impl Responder {
             .map_err(AckError::Priority)?;
 
         // Send empty payload as ack
-        self.stream
+        let _ = self
+            .stream
             .write(Vec::new())
             .await
             .map_err(AckError::Write)?;

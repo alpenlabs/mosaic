@@ -75,17 +75,17 @@ impl std::error::Error for StreamClosed {}
 /// loop {
 ///     buf.clear();
 ///     fill_buffer(&mut buf);
-///     stream.write(buf).await?;
-///     buf = stream.recv_buffer().await.unwrap_or_else(|| Vec::with_capacity(CHUNK_SIZE));
+///     buf = stream.write(buf).await?;
 /// }
 /// ```
 ///
-/// For pipelined writes, send multiple buffers before reclaiming:
+/// For pipelined writes, use [`write_no_reclaim`](Self::write_no_reclaim)
+/// and reclaim with [`recv_buffer`](Self::recv_buffer):
 ///
 /// ```ignore
-/// stream.write(buf1).await?;
-/// stream.write(buf2).await?;
-/// stream.write(buf3).await?;
+/// stream.write_no_reclaim(buf1).await?;
+/// stream.write_no_reclaim(buf2).await?;
+/// stream.write_no_reclaim(buf3).await?;
 /// // Reclaim buffers as they complete
 /// let buf1 = stream.recv_buffer().await;
 /// let buf2 = stream.recv_buffer().await;
@@ -199,24 +199,46 @@ impl Stream {
         }
     }
 
-    /// Write a buffer to the stream.
+    /// Queue a buffer for writing without waiting for reclaim.
     ///
     /// Ownership of the buffer transfers to net-svc. After the data is written
     /// to the QUIC stream, the buffer is returned via [`recv_buffer`](Self::recv_buffer).
     ///
-    /// This method returns as soon as the buffer is queued, not when the data
-    /// is actually sent. Use multiple writes for pipelining.
+    /// This method returns as soon as the buffer is queued. It is intended for
+    /// pipelined writers that reclaim buffers separately via [`recv_buffer`](Self::recv_buffer).
     ///
     /// # Errors
     ///
     /// Returns `Err(StreamClosed)` if the stream has closed.
-    pub async fn write(&mut self, buf: PayloadBuf) -> Result<(), StreamClosed> {
+    pub async fn write_no_reclaim(&mut self, buf: PayloadBuf) -> Result<(), StreamClosed> {
         // Early check - don't bother sending if already closed
         if let Some(reason) = self.close_reason() {
             return Err(reason);
         }
 
         self.send_request(StreamRequest::Write { buf }).await
+    }
+
+    /// Write a buffer and wait for it to be reclaimed.
+    ///
+    /// This is the safe default for bulk-transfer callers: it ensures the
+    /// internal return channel is drained and prevents backpressure stalls from
+    /// unclaimed buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StreamClosed)` if the stream closes before the write is
+    /// accepted or before the buffer is reclaimed.
+    pub async fn write(&mut self, buf: PayloadBuf) -> Result<PayloadBuf, StreamClosed> {
+        self.write_no_reclaim(buf).await?;
+
+        match self.recv_buffer().await {
+            Some(buf) => Ok(buf),
+            None => {
+                self.poll_close_reason();
+                Err(self.close_reason.unwrap_or(StreamClosed::Disconnected))
+            }
+        }
     }
 
     /// Receive a buffer back after a write completes.

@@ -1,7 +1,7 @@
 //! Error types for net-client operations.
 
 use ark_serialize::SerializationError;
-use mosaic_net_svc::{StreamClosed, api::OpenStreamError};
+use mosaic_net_svc::{ExpectError, StreamClosed, api::OpenStreamError};
 
 /// Error sending a protocol message.
 #[derive(Debug, thiserror::Error)]
@@ -58,4 +58,28 @@ pub enum AckError {
     /// Failed to write ack to stream.
     #[error("failed to send ack: {0}")]
     Write(#[source] StreamClosed),
+}
+
+/// Error opening a bulk sender stream.
+#[derive(Debug, thiserror::Error)]
+pub enum BulkOpenError {
+    /// Failed to open bulk stream to peer.
+    #[error("failed to open bulk stream: {0}")]
+    Open(#[from] OpenStreamError),
+}
+
+/// Error registering a bulk receiver expectation.
+#[derive(Debug, thiserror::Error)]
+pub enum BulkExpectError {
+    /// Failed to register expectation.
+    #[error("failed to register bulk expectation: {0}")]
+    Expect(#[from] ExpectError),
+}
+
+/// Error receiving an expected bulk stream.
+#[derive(Debug, thiserror::Error)]
+pub enum BulkReceiveError {
+    /// Bulk expectation channel closed before stream arrival.
+    #[error("failed to receive bulk stream from service")]
+    Closed,
 }

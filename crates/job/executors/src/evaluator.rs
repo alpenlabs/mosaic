@@ -164,8 +164,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 
     let expectation = ctx
         .net_client
-        .handle()
-        .expect_bulk_transfer(*peer_id, identifier)
+        .expect_bulk_receiver(*peer_id, identifier)
         .await;
 
     let Ok(expectation) = expectation else {

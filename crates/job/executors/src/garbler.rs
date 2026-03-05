@@ -444,8 +444,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
 
     let mut stream = ctx
         .net_client
-        .handle()
-        .open_bulk_stream(*peer_id, identifier, -1)
+        .open_bulk_sender(*peer_id, identifier, -1)
         .await
         .map_err(|e| CircuitError::SetupFailed(format!("bulk stream open: {e:?}")))?;
 
@@ -459,7 +458,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
 
     const MAX_CHUNK: usize = 2 * 1024 * 1024; // 2 MiB — well under 4 MiB frame limit
     for chunk in translation_bytes.chunks(MAX_CHUNK) {
-        stream
+        let _ = stream
             .write(chunk.to_vec())
             .await
             .map_err(|e| CircuitError::SetupFailed(format!("translation send: {e:?}")))?;
