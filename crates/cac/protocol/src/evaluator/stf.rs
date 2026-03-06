@@ -1096,7 +1096,7 @@ fn verify_reserved_setup_input_shares(
 ) -> Option<String> {
     for wire in 0..N_SETUP_INPUT_WIRES {
         let val = setup_inputs[wire];
-        let reserved_share = reserved_setup_input_shares[wire].clone();
+        let reserved_share = reserved_setup_input_shares[wire];
         if input_polynomial_commitments[wire][val as usize]
             .verify_share(reserved_share)
             .is_err()
@@ -1129,7 +1129,6 @@ fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
         .map(|x| x.get())
         .collect::<Vec<usize>>();
     let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
-        .into_iter()
         .filter(|id| !challenged_indices.contains(id))
         .map(|id| Index::new(id).unwrap())
         .collect::<Vec<Index>>()

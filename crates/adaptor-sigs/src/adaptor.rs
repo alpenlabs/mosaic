@@ -19,6 +19,8 @@
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{AdditiveGroup, BigInteger, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+#[cfg(test)]
+use k256::schnorr::CryptoRngCore;
 use rand::{CryptoRng, Rng};
 use sha2::{Digest, Sha256};
 
@@ -80,6 +82,29 @@ impl Signature {
             return Err(Error::Deserialization("signature.s can not be zero"));
         }
         Ok(Signature { s, r: rx })
+    }
+
+    #[cfg(test)]
+    /// Generates a secp256k1 keypair where the public key has an even Y coordinate.
+    pub fn keypair<R: CryptoRng + CryptoRngCore>(
+        rng: &mut R,
+    ) -> (ark_secp256k1::Fr, ark_secp256k1::Projective) {
+        loop {
+            let mut sk = ark_secp256k1::Fr::rand(rng);
+            if sk == ark_secp256k1::Fr::ZERO {
+                continue;
+            }
+
+            let mut pk = gen_mul(&sk);
+            let pk_affine = pk.into_affine();
+            let y_is_odd = pk_affine.y.into_bigint().is_odd();
+
+            if y_is_odd {
+                sk.neg_in_place();
+                pk.neg_in_place();
+            }
+            return (sk, pk);
+        }
     }
 }
 

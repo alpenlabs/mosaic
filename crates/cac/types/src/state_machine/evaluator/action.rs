@@ -61,7 +61,7 @@ impl PartialOrd for ActionId {
 ///
 /// Delivered to the STF via [`fasm::Input::TrackedActionCompleted`] alongside
 /// the corresponding [`ActionId`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ActionResult {
     /// Challenge message was sent and acknowledged by the garbler.
@@ -137,7 +137,7 @@ impl Action {
 // ============================================================================
 
 /// Index a chunk.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkIndex(pub u8);
 impl ChunkIndex {
     /// Get inner chunk index.

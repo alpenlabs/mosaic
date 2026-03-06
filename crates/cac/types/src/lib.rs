@@ -106,7 +106,7 @@ impl PubKey {
             return false;
         }
 
-        aff.y().map_or(false, |y| y.into_bigint().is_even())
+        aff.y().is_some_and(|y| y.into_bigint().is_even())
     }
 }
 

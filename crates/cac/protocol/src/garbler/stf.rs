@@ -973,7 +973,6 @@ async fn build_commit_msg_header<S: StateRead>(state: &S) -> SMResult<CommitMsgH
 fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
     let mut rng = ChaCha20Rng::from_seed(base_seed.into()); // modify base seed ?
     let garbling_seeds = (0..N_CIRCUITS)
-        .into_iter()
         .map(|_| {
             let mut bytes: [u8; 32] = [0; 32];
             rng.fill_bytes(&mut bytes);
@@ -1033,7 +1032,7 @@ fn create_challenge_response_msg_chunks(
         for j in 0..N_INPUT_WIRES {
             let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
             for k in 0..WIDE_LABEL_VALUE_COUNT {
-                wide_shares.push(input_shares[idx][j][k].clone());
+                wide_shares.push(input_shares[idx][j][k]);
             }
             selected_input_shares.push(HeapArray::from_vec(wide_shares));
         }
@@ -1058,7 +1057,7 @@ fn create_challenge_response_msg_header(
         for i in 0..N_INPUT_WIRES {
             let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
             for j in 0..WIDE_LABEL_VALUE_COUNT {
-                wide_shares.push(input_shares[0][i][j].clone());
+                wide_shares.push(input_shares[0][i][j]);
             }
             selected_input_shares.push(HeapArray::from_vec(wide_shares));
         }
@@ -1069,19 +1068,18 @@ fn create_challenge_response_msg_header(
     // evaluate the output false polynomial at the challenge indices
     let opened_output_shares: OpenedOutputShares = HeapArray::from_vec(
         challenge_idxs
-            .map(|idx| all_output_shares[idx.get()].clone())
+            .map(|idx| all_output_shares[idx.get()])
             .to_vec(),
     );
 
     // evaluate each input polynomial at the reserved i=0 index
     let reserved_input_shares: Box<ReservedInputShares> =
-        get_reserved_input_shares(&all_input_shares);
+        get_reserved_input_shares(all_input_shares);
 
     // take 0..N_SETUP_INPUT_WIRES indices and
     let reserved_setup_input_shares: ReservedSetupInputShares = HeapArray::from_vec(
         (0..N_SETUP_INPUT_WIRES)
-            .into_iter()
-            .map(|i| reserved_input_shares[i][setup_input[i] as usize].clone())
+            .map(|i| reserved_input_shares[i][setup_input[i] as usize])
             .collect(),
     );
 
@@ -1110,7 +1108,6 @@ fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
         .map(|x| x.get())
         .collect::<Vec<usize>>();
     let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
-        .into_iter()
         .filter(|id| !challenged_indices.contains(id))
         .map(|id| Index::new(id).unwrap())
         .collect::<Vec<Index>>()
