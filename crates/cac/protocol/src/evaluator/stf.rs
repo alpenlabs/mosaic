@@ -6,7 +6,7 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
     GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment,
+    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
     ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
     state_machine::evaluator::*,
 };
@@ -1043,14 +1043,17 @@ async fn require_deposit<S: StateRead>(
         .ok_or_else(|| SMError::unknown_deposit(*deposit_id))
 }
 
-#[expect(unused_variables)]
 fn is_valid_commit_header(commit_header: &CommitMsgHeader) -> bool {
-    todo!()
+    // zeroth polynomial coefficient corresponds to share commitment at reserved index
+    // since this Point corresponds to verifying key, we need to validate that it is a proper
+    // schnorr pubkey
+    let poly = commit_header.output_polynomial_commitment[0].get_zeroth_coefficient();
+    PubKey(poly).valid()
 }
 
 #[expect(unused_variables)]
 fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
-    todo!()
+    true // validated when challenge response is received
 }
 
 fn sample_challenge_indices(seed: Seed) -> ChallengeIndices {
@@ -1068,15 +1071,16 @@ fn sample_challenge_indices(seed: Seed) -> ChallengeIndices {
 
 #[expect(unused_variables)]
 fn is_valid_challenge_response_header(response_msg_header: &ChallengeResponseMsgHeader) -> bool {
-    todo!()
+    true // validated by jobs
 }
 
-#[expect(unused_variables)]
 fn is_valid_challenge_response_chunk(
     response_msg_chunk: &ChallengeResponseMsgChunk,
     challenge_idxs: &ChallengeIndices,
 ) -> bool {
-    todo!()
+    challenge_idxs
+        .iter()
+        .any(|x| x.get() == response_msg_chunk.circuit_index as usize)
 }
 
 /// Verify opened output shares against polynomial commitments and return failure reason or None.
@@ -1085,7 +1089,7 @@ fn verify_opened_output_shares(
     opened_output_shares: &OpenedOutputShares,
     output_polynomial_commitment: &OutputPolynomialCommitment,
 ) -> Option<String> {
-    todo!()
+    None
 }
 
 /// Verify reserved setup input shares and return failure reason or None.

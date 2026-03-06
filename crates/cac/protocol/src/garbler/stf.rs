@@ -299,6 +299,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     chunk_acked,
                     header_acked: header,
                 } => {
+                    let ActionId::SendCommitMsgHeader = id else {
+                        return Err(SMError::invalid_input_data());
+                    };
+
                     if *header {
                         // already acked header
                         return Err(SMError::duplicate_action());
@@ -982,10 +986,15 @@ fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
     HeapArray::from_vec(garbling_seeds)
 }
 
-#[expect(unused_variables)]
+/// challenge indices must be in range, must not include 0, etc
 fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
-    // challenge indices must be in range, must not include 0, etc
-    todo!()
+    !challenge
+        .challenge_indices
+        .iter()
+        .any(|x| *x == Index::reserved())
+    // does not include reserved index
+    // ChallengeMsg in itself includes `Index` struct which can only be initialized within valid
+    // bounds so the range check is done during deserialization itself
 }
 
 fn create_commit_msg_chunks(
