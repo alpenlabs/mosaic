@@ -17,6 +17,8 @@ mosaic-common.workspace = true
 fasm.workspace = true
 futures.workspace = true
 thiserror.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

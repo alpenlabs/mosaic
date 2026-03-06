@@ -7,11 +7,14 @@ use mosaic_cac_types::{
     DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
     GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
     OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, state_machine::evaluator::*,
+    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
-    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
+    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
+    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
+use rand::SeedableRng;
 
 use super::emit;
 use crate::{ResultOptionExt, SMError, SMResult};
@@ -1050,9 +1053,17 @@ fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
     todo!()
 }
 
-#[expect(unused_variables)]
 fn sample_challenge_indices(seed: Seed) -> ChallengeIndices {
-    todo!()
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
+    let sampled_indices = rand::seq::index::sample(&mut rng, N_CIRCUITS, N_OPEN_CIRCUITS); // samples N_OPEN_CIRCUITS many values from the domain [0, N_CIRCUITS]
+    let mut challenge_indices: ChallengeIndices = HeapArray::from_vec(
+        sampled_indices
+            .into_iter()
+            .map(|x| Index::new(x + 1).expect("within bounds")) // sampled values displaced to domain [1, N_CIRCUITS+1] as 0 is reserved index
+            .collect::<Vec<_>>(),
+    );
+    challenge_indices.sort_by_key(|k| k.get());
+    challenge_indices
 }
 
 #[expect(unused_variables)]
@@ -1078,13 +1089,24 @@ fn verify_opened_output_shares(
 }
 
 /// Verify reserved setup input shares and return failure reason or None.
-#[expect(unused_variables)]
 fn verify_reserved_setup_input_shares(
     reserved_setup_input_shares: &ReservedSetupInputShares,
     setup_inputs: &SetupInputs,
     input_polynomial_commitments: &InputPolynomialCommitments,
 ) -> Option<String> {
-    todo!()
+    for wire in 0..N_SETUP_INPUT_WIRES {
+        let val = setup_inputs[wire];
+        let reserved_share = reserved_setup_input_shares[wire].clone();
+        if input_polynomial_commitments[wire][val as usize]
+            .verify_share(reserved_share)
+            .is_err()
+        {
+            return Some(String::from(
+                "verify reserved setup shares failed for wire {wire}",
+            ));
+        }
+    }
+    None
 }
 
 fn get_opened_commitments(
@@ -1101,9 +1123,19 @@ fn is_sorted<T: Ord>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] <= w[1])
 }
 
-#[expect(unused_variables)]
 fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
-    todo!()
+    let challenged_indices: Vec<usize> = challenge_indices
+        .iter()
+        .map(|x| x.get())
+        .collect::<Vec<usize>>();
+    let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
+        .into_iter()
+        .filter(|id| !challenged_indices.contains(id))
+        .map(|id| Index::new(id).unwrap())
+        .collect::<Vec<Index>>()
+        .try_into()
+        .expect("unchallenge length");
+    unchallenged_indices
 }
 
 fn get_eval_commitments(
@@ -1121,18 +1153,20 @@ fn create_adaptor_message_chunks(
     deposit_adaptors: DepositAdaptors,
     withdrawal_adaptors: WithdrawalAdaptors,
 ) -> Vec<AdaptorMsgChunk> {
-    let withdrawal_wires_per_chunk = withdrawal_adaptors.len() / N_ADAPTOR_MSG_CHUNKS;
-    (0..N_ADAPTOR_MSG_CHUNKS)
-        .map(|chunk_index| {
-            let start = chunk_index * withdrawal_wires_per_chunk;
-            AdaptorMsgChunk {
-                deposit_id,
-                chunk_index: chunk_index as u8,
-                deposit_adaptor: deposit_adaptors[chunk_index],
-                withdrawal_adaptors: HeapArray::new(|wire_offset| {
-                    withdrawal_adaptors[start + wire_offset].clone()
-                }),
-            }
-        })
-        .collect()
+    // take 1 deposit adaptor wire and N withdrawal adaptor wires
+    let mut adaptor_msg_chunks = vec![];
+    for chunk_index in 0..N_DEPOSIT_INPUT_WIRES {
+        let withdrawal_adaptors: WithdrawalAdaptorsChunk = HeapArray::from_vec(
+            withdrawal_adaptors[chunk_index * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK
+                ..(chunk_index + 1) * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK]
+                .to_vec(),
+        );
+        adaptor_msg_chunks.push(AdaptorMsgChunk {
+            deposit_id,
+            chunk_index: chunk_index as u8,
+            deposit_adaptor: deposit_adaptors[chunk_index],
+            withdrawal_adaptors,
+        });
+    }
+    adaptor_msg_chunks
 }
