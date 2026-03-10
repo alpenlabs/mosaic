@@ -227,7 +227,19 @@ mod netcl {
 
 use fasm::StateMachine;
 
+#[ignore = "does not include g16.v5c file, so test will crash in CI"]
 #[tokio::test]
+// Steps:
+// 1. clone: g16 repo and switch to branch test/simple_circuit_postaudit
+// test/simple_circuit_postaudit branch generates small ckt file that does input validation
+// only; not the actually groth16 verification afterwards; Meant for test purposes only]
+// 2. generate v5a ckt file: cd g16gen && cargo run generate 6 && cargo run write-input-bits 6
+// 3. clone: ckt repo
+// 4. move g16gen/g16.ckt file to ckt/lvl/
+// 5. generate v5c file: cd crates/lvl && cargo run prealloc g16.ckt g16.v5c
+// 6. move lvl/g16.v5c to mosaic/cac/protocol/
+// 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
+//    --exact --show-output --nocapture
 async fn test_e2e() {
     let mut garb_state = StoredGarblerState::default();
     let mut garb_rng = ChaChaRng::seed_from_u64(42);

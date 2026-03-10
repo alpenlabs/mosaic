@@ -60,15 +60,19 @@ pub(crate) async fn handle_event<S: StateMut>(
                         output: false,
                     };
 
+                    // All input and output polynomials are generated from
+                    // mutating rng initialized with stage seed
+                    let stage_seed = generate_polynomaial_seed(data.seed);
+
                     emit(
                         actions,
-                        Action::GeneratePolynomialCommitments(data.seed, Wire::Output),
+                        Action::GeneratePolynomialCommitments(stage_seed, Wire::Output),
                     );
                     for wire_idx in 0..N_INPUT_WIRES {
                         emit(
                             actions,
                             Action::GeneratePolynomialCommitments(
-                                data.seed,
+                                stage_seed,
                                 Wire::Input(wire_idx as u16),
                             ),
                         );
@@ -100,7 +104,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                             let eval_indices = get_eval_indices(&challenge_msg.challenge_indices);
                             eval_indices
                                 .iter()
-                                .map(|i| all_output_label_cts[i.get()])
+                                .map(|i| all_output_label_cts[i.get() - 1])
                                 .collect()
                         };
 
@@ -380,7 +384,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     let challenge_index_pos = challenge_indices
                         .iter()
                         .position(|x| x.get() == circuit_index as usize)
-                        .unwrap();
+                        .ok_or(SMError::StateInconsistency(format!("Circuit index differs from one present in current state {circuit_index}")))?;
                     if chunk_acked[challenge_index_pos] {
                         // already acked this chunk
                         return Err(SMError::invalid_input_data());
@@ -529,15 +533,15 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
             }
             // all commitments generated; go to next step
             let config = require_config(root_state)?;
-
+            let stage_seed = generate_polynomaial_seed(config.seed);
             // NOTE: 0 is reserved index
             emit(
                 actions,
-                Action::GenerateShares(config.seed, Index::reserved()),
+                Action::GenerateShares(stage_seed, Index::reserved()),
             );
             for idx in 1..N_CIRCUITS + 1 {
                 let index = Index::new(idx).expect("valid ckt index");
-                emit(actions, Action::GenerateShares(config.seed, index));
+                emit(actions, Action::GenerateShares(stage_seed, index));
             }
             root_state.step = Step::GeneratingShares {
                 generated: HeapArray::from_elem(false),
@@ -723,11 +727,11 @@ pub(crate) async fn restore<S: StateRead>(
         Step::Uninit => {}
         Step::GeneratingPolynomialCommitments { inputs, output } => {
             let config = require_config(&root_state)?;
-
+            let stage_seed = generate_polynomaial_seed(config.seed);
             if !output {
                 emit(
                     actions,
-                    Action::GeneratePolynomialCommitments(config.seed, Wire::Output),
+                    Action::GeneratePolynomialCommitments(stage_seed, Wire::Output),
                 );
             }
             for (wire_idx, generated) in inputs.iter().enumerate() {
@@ -736,21 +740,19 @@ pub(crate) async fn restore<S: StateRead>(
                 }
                 emit(
                     actions,
-                    Action::GeneratePolynomialCommitments(
-                        config.seed,
-                        Wire::Input(wire_idx as u16),
-                    ),
+                    Action::GeneratePolynomialCommitments(stage_seed, Wire::Input(wire_idx as u16)),
                 );
             }
         }
         Step::GeneratingShares { generated } => {
             let config = require_config(&root_state)?;
+            let stage_seed = generate_polynomaial_seed(config.seed);
             for idx in 0..N_CIRCUITS {
                 if generated[idx] {
                     continue;
                 }
                 let index = Index::new(idx + 1).expect("valid index");
-                emit(actions, Action::GenerateShares(config.seed, index));
+                emit(actions, Action::GenerateShares(stage_seed, index));
             }
         }
         Step::GeneratingTableCommitments { seeds, generated } => {
@@ -810,7 +812,7 @@ pub(crate) async fn restore<S: StateRead>(
                 let eval_indices = get_eval_indices(&challenge_indices);
                 eval_indices
                     .iter()
-                    .map(|i| all_output_label_cts[i.get()])
+                    .map(|i| all_output_label_cts[i.get() - 1])
                     .collect()
             };
 
@@ -974,8 +976,20 @@ async fn build_commit_msg_header<S: StateRead>(state: &S) -> SMResult<CommitMsgH
     })
 }
 
+// derive stage seed
+fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
+    let base_seed: [u8; 32] = base_seed.into();
+    let hash = blake3::keyed_hash(&base_seed, stage.as_bytes());
+    Seed::from(*hash.as_bytes())
+}
+
+fn generate_polynomaial_seed(base_seed: Seed) -> Seed {
+    derive_stage_seed(base_seed, "generate_polynomial")
+}
+
 fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
-    let mut rng = ChaCha20Rng::from_seed(base_seed.into()); // modify base seed ?
+    let stage_seed = derive_stage_seed(base_seed, "generate_garbling_table_seeds");
+    let mut rng = ChaCha20Rng::from_seed(stage_seed.into()); // modify base seed ?
     let garbling_seeds = (0..N_CIRCUITS)
         .map(|_| {
             let mut bytes: [u8; 32] = [0; 32];
@@ -1118,7 +1132,7 @@ fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
         .collect::<Vec<usize>>();
     let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
         .filter(|id| !challenged_indices.contains(id))
-        .map(|id| Index::new(id).unwrap())
+        .map(|id| Index::new(id).expect("indices in valid range"))
         .collect::<Vec<Index>>()
         .try_into()
         .expect("unchallenge length");

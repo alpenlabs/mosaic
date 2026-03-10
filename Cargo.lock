@@ -2196,6 +2196,7 @@ dependencies = [
 name = "mosaic-cac-protocol"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "ckt-fmtv5-types",
  "ed25519-dalek",
  "fasm",

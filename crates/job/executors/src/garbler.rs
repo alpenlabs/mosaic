@@ -2,8 +2,8 @@
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::{
-    AllPolynomials, CompletedSignatures, GarblingSeed, InputPolynomials, OutputPolynomial, Seed,
-    WideLabelWireShares,
+    AllPolynomials, CompletedSignatures, GarblingSeed, InputPolynomials, OutputPolynomial, PubKey,
+    Seed, WideLabelWireShares,
     state_machine::garbler::{
         ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Step, Wire,
     },
@@ -84,7 +84,19 @@ fn generate_polynomials_from_seed(seed: Seed) -> AllPolynomials {
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
     let input_polys: InputPolynomials =
         HeapArray::new(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
-    let output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
+
+    // ensure output polynomial has a valid schnorr public key at reserved index
+    // this public key will be used for slashing condition
+    // half of the points in the domain are valid public key
+    let mut output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
+    loop {
+        let output_poly_commit = output_poly.commit().get_zeroth_coefficient();
+        if PubKey(output_poly_commit).valid() {
+            break;
+        }
+        output_poly = Polynomial::rand(&mut rng);
+    }
+
     (input_polys, output_poly)
 }
 

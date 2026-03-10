@@ -1056,7 +1056,8 @@ fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
     true // validated when challenge response is received
 }
 
-fn sample_challenge_indices(seed: Seed) -> ChallengeIndices {
+fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
+    let seed = derive_stage_seed(base_seed, "sample_challenge_indices");
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
     let sampled_indices = rand::seq::index::sample(&mut rng, N_CIRCUITS, N_OPEN_CIRCUITS); // samples N_OPEN_CIRCUITS many values from the domain [0, N_CIRCUITS]
     let mut challenge_indices: ChallengeIndices = HeapArray::from_vec(
@@ -1105,7 +1106,7 @@ fn verify_reserved_setup_input_shares(
             .verify_share(reserved_share)
             .is_err()
         {
-            return Some(String::from(
+            return Some(format!(
                 "verify reserved setup shares failed for wire {wire}",
             ));
         }
@@ -1127,6 +1128,15 @@ fn is_sorted<T: Ord>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] <= w[1])
 }
 
+// derive stage seed
+// only called to sample challenge indices
+// adaptor generation right now initializes its adaptors internally
+fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
+    let base_seed: [u8; 32] = base_seed.into();
+    let hash = blake3::keyed_hash(&base_seed, stage.as_bytes());
+    Seed::from(*hash.as_bytes())
+}
+
 fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
     let challenged_indices: Vec<usize> = challenge_indices
         .iter()
@@ -1134,7 +1144,7 @@ fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
         .collect::<Vec<usize>>();
     let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
         .filter(|id| !challenged_indices.contains(id))
-        .map(|id| Index::new(id).unwrap())
+        .map(|id| Index::new(id).expect("indices in valid range"))
         .collect::<Vec<Index>>()
         .try_into()
         .expect("unchallenge length");
