@@ -76,7 +76,10 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
 ) -> HandlerOutcome {
     use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS, WIDE_LABEL_VALUE_COUNT};
 
-    let eval_state = ctx.storage.evaluator_state(peer_id);
+    let eval_state = match ctx.storage.evaluator_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
 
     // Load all three data sets from storage. Retry if any are not yet available.
     let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
@@ -132,7 +135,10 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 ) -> HandlerOutcome {
     use mosaic_storage_api::table_store::{TableId, TableMetadata};
 
-    let eval_state = ctx.storage.evaluator_state(peer_id);
+    let eval_state = match ctx.storage.evaluator_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
 
     // Resolve the commitment → circuit index from the evaluator root state.
     let Some(root_state) = eval_state.get_root_state().await.ok().flatten() else {
@@ -310,7 +316,10 @@ pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: Ta
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
-    let eval_state = ctx.storage.evaluator_state(peer_id);
+    let eval_state = match ctx.storage.evaluator_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
 
     // Load required data. Retry if any reads return None (data not yet written by STF).
     let Some(deposit_state) = eval_state.get_deposit(&deposit_id).await.ok().flatten() else {
@@ -375,7 +384,10 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
     deposit_id: mosaic_cac_types::DepositId,
     chunk_idx: &ChunkIndex,
 ) -> HandlerOutcome {
-    let eval_state = ctx.storage.evaluator_state(peer_id);
+    let eval_state = match ctx.storage.evaluator_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
 
     // Load required data. Retry if any reads return None.
     let Some(deposit_state) = eval_state.get_deposit(&deposit_id).await.ok().flatten() else {
@@ -462,7 +474,11 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     index: Index,
     commitment: GarblingTableCommitment,
 ) -> Result<EvaluationSession, CircuitError> {
-    let eval_state = ctx.storage.evaluator_state(peer_id);
+    let eval_state = ctx
+        .storage
+        .evaluator_state(peer_id)
+        .await
+        .map_err(|_| CircuitError::StorageUnavailable)?;
 
     // ── Resolve deposit_id from root state ──────────────────────────────
     let root_state = eval_state

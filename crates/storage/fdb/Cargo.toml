@@ -1,0 +1,23 @@
+[package]
+name = "mosaic-storage-fdb"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-net-svc-api.workspace = true
+mosaic-storage-api.workspace = true
+mosaic-storage-kvstore.workspace = true
+
+async-trait.workspace = true
+foundationdb.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

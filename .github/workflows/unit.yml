@@ -43,6 +43,9 @@ jobs:
         with:
           cache-on-failure: true
 
+      - name: Install FoundationDB client library
+        uses: ./.github/actions/setup-foundationdb-client
+
       - name: Run tests
         run: |
           cargo --locked nextest run --all-features --workspace --release
@@ -68,6 +71,9 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
+
+      - name: Install FoundationDB client library
+        uses: ./.github/actions/setup-foundationdb-client
 
       - name: Run doctests
         run: cargo test --doc --all-features

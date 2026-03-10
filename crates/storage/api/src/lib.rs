@@ -77,13 +77,19 @@ pub trait StorageProvider: Send + Sync + 'static {
     ///
     /// If the peer has no existing state, the returned handle should represent
     /// empty / default state and reads should return `Ok(None)`.
-    fn garbler_state(&self, peer_id: &PeerId) -> Self::GarblerState;
+    fn garbler_state(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = StorageResult<Self::GarblerState>> + Send;
 
     /// Get a read-only storage handle for a peer's evaluator state machine.
     ///
     /// If the peer has no existing state, the returned handle should represent
     /// empty / default state and reads should return `Ok(None)`.
-    fn evaluator_state(&self, peer_id: &PeerId) -> Self::EvaluatorState;
+    fn evaluator_state(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = StorageResult<Self::EvaluatorState>> + Send;
 }
 
 /// Read-write provider of per-peer storage handles.
@@ -108,12 +114,18 @@ pub trait StorageProviderMut: 'static {
     /// If the peer has no existing state, the returned handle should represent
     /// empty / default state. Writes via [`garbler::StateMut`] will create
     /// data on first access.
-    fn garbler_state_mut(&self, peer_id: &PeerId) -> Self::GarblerState;
+    fn garbler_state_mut(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = StorageResult<Self::GarblerState>>;
 
     /// Get a mutable storage handle for a peer's evaluator state machine.
     ///
     /// If the peer has no existing state, the returned handle should represent
     /// empty / default state. Writes via [`evaluator::StateMut`] will create
     /// data on first access.
-    fn evaluator_state_mut(&self, peer_id: &PeerId) -> Self::EvaluatorState;
+    fn evaluator_state_mut(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = StorageResult<Self::EvaluatorState>>;
 }
