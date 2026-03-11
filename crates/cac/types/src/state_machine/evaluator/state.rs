@@ -7,10 +7,10 @@ use mosaic_vs3::Index;
 use super::{DepositState, EvaluatorState};
 use crate::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, InputPolynomialCommitments, OpenedGarblingSeeds,
-    OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
-    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
-    WithdrawalInputs,
+    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, InputPolynomialCommitments,
+    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
+    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors,
+    WithdrawalAdaptorsChunk, WithdrawalInputs,
 };
 
 /// Read-only access to evaluator state storage.
@@ -276,6 +276,7 @@ pub trait StateMut: StateRead {
     /// Stores output label ciphertexts for the unopened (evaluation) circuits.
     fn put_unchallenged_output_label_cts(
         &mut self,
+        indices: &EvaluationIndices,
         cts: &crate::HeapArray<Byte32, { mosaic_common::constants::N_EVAL_CIRCUITS }>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

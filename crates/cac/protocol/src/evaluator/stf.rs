@@ -641,6 +641,11 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 };
                 return Ok(());
             }
+            let challenge_idxs = state
+                .get_challenge_indices()
+                .await
+                .require("expected challenge indices")?;
+            let eval_indices = get_eval_indices(&challenge_idxs);
 
             let ChallengeResponseMsgHeader {
                 reserved_setup_input_shares,
@@ -662,7 +667,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 .await
                 .map_err(SMError::storage)?;
             state
-                .put_unchallenged_output_label_cts(&unchallenged_output_label_cts)
+                .put_unchallenged_output_label_cts(&eval_indices, &unchallenged_output_label_cts)
                 .await
                 .map_err(SMError::storage)?;
 

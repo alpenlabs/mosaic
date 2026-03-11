@@ -1,7 +1,7 @@
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, OpenedGarblingSeeds, OpenedOutputShares,
-    OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
     WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut},
 };
@@ -183,7 +183,8 @@ impl StateMut for StoredEvaluatorState {
         labels: &mosaic_cac_types::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (i, label) in labels.iter().enumerate() {
-            self.constant_zero_labels.insert(i, *label);
+            let pos = i.checked_add(1).unwrap();
+            self.constant_zero_labels.insert(pos, *label);
         }
         Ok(())
     }
@@ -193,7 +194,8 @@ impl StateMut for StoredEvaluatorState {
         labels: &mosaic_cac_types::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (i, label) in labels.iter().enumerate() {
-            self.constant_one_labels.insert(i, *label);
+            let pos = i.checked_add(1).unwrap();
+            self.constant_one_labels.insert(pos, *label);
         }
         Ok(())
     }
@@ -203,7 +205,8 @@ impl StateMut for StoredEvaluatorState {
         keys: &mosaic_cac_types::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (i, key) in keys.iter().enumerate() {
-            self.aes128_keys.insert(i, *key);
+            let pos = i.checked_add(1).unwrap();
+            self.aes128_keys.insert(pos, *key);
         }
         Ok(())
     }
@@ -213,20 +216,22 @@ impl StateMut for StoredEvaluatorState {
         values: &mosaic_cac_types::HeapArray<[u8; 16], { mosaic_common::constants::N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (i, val) in values.iter().enumerate() {
-            self.public_s_values.insert(i, *val);
+            let pos = i.checked_add(1).unwrap();
+            self.public_s_values.insert(pos, *val);
         }
         Ok(())
     }
 
     async fn put_unchallenged_output_label_cts(
         &mut self,
+        indices: &EvaluationIndices,
         cts: &mosaic_cac_types::HeapArray<
             mosaic_common::Byte32,
             { mosaic_common::constants::N_EVAL_CIRCUITS },
         >,
     ) -> Result<(), Self::Error> {
-        for (i, ct) in cts.iter().enumerate() {
-            self.output_label_cts.insert(i, *ct);
+        for (i, ct) in indices.iter().zip(cts) {
+            self.output_label_cts.insert(i.get(), *ct);
         }
         Ok(())
     }
