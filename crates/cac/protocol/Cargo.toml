@@ -20,6 +20,7 @@ futures.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 thiserror.workspace = true
+mosaic-vs3.workspace = true
 
 [dev-dependencies]
 mosaic-cac-types = { workspace = true, features = ["test-utils"] }

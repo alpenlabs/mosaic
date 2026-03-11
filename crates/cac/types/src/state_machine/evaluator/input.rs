@@ -12,7 +12,6 @@
 use crate::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositId, DepositInputs, SecretKey, Seed, SetupInputs, Sighashes,
-    WithdrawalInputs,
 };
 
 /// Evaluator state machine external event inputs.
@@ -85,8 +84,6 @@ pub struct EvaluatorDepositInitData {
 /// Data required to initiate a disputed withdrawal process.
 #[derive(Debug)]
 pub struct EvaluatorDisputedWithdrawalData {
-    /// Withdrawal input wire values.
-    pub withdrawal_inputs: WithdrawalInputs,
     /// Completed adaptor signatures extracted from on-chain transaction.
     pub signatures: CompletedSignatures,
 }

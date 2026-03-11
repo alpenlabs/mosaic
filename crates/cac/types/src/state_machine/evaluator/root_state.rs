@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices, HeapArray,
-    OpenedGarblingSeeds, OpenedGarblingTableCommitments, Seed, SetupInputs,
+    OpenedGarblingSeeds, OpenedGarblingTableCommitments, SecretKey, Seed, SetupInputs,
 };
 
 /// Evaluator state machine root state.
@@ -84,8 +84,8 @@ pub enum Step {
     SetupConsumed {
         /// Disputed withdrawal for deposit
         deposit_id: DepositId,
-        /// if final secret was extracted and can be used to sign transaction
-        success: bool,
+        /// Little-Endian encoding of scalar
+        slash: Option<SecretKey>,
     },
     /// Setup was aborted due to a protocol violation.
     Aborted {

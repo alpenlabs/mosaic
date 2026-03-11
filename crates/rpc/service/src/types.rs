@@ -175,12 +175,9 @@ impl From<&evaluator::Step> for TablesetStatus {
             EvaluatingTables { deposit_id, .. } => TablesetStatus::Contest {
                 deposit_id: *deposit_id,
             },
-            SetupConsumed {
-                deposit_id,
-                success,
-            } => TablesetStatus::Consumed {
+            SetupConsumed { deposit_id, slash } => TablesetStatus::Consumed {
                 deposit_id: *deposit_id,
-                success: *success,
+                success: slash.is_none(),
             },
             Aborted { reason } => TablesetStatus::Aborted {
                 reason: reason.clone(),

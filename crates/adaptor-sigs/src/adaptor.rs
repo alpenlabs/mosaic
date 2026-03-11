@@ -359,7 +359,7 @@ mod tests {
             S,
             x,
             P,
-            sighash,
+            sighash: sighash.to_vec(),
             adaptor,
         }
     }

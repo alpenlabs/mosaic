@@ -642,10 +642,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             ServiceError::InvalidArgument("invalid completed signatures length".into())
         })?;
 
-        let withdrawal_data = EvaluatorDisputedWithdrawalData {
-            withdrawal_inputs: data.withdrawal_inputs,
-            signatures,
-        };
+        let withdrawal_data = EvaluatorDisputedWithdrawalData { signatures };
 
         let input = StateMachineInput::Evaluator(evaluator::Input::DisputedWithdrawal(
             *deposit_id,
@@ -675,12 +672,13 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             .map_err(ServiceError::storage)?
             .ok_or(ServiceError::StateMachineNotFound(*sm_id))?;
 
-        let evaluator::Step::SetupConsumed { success, .. } = &statemachine.step else {
+        let evaluator::Step::SetupConsumed { slash, .. } = &statemachine.step else {
             return Err(ServiceError::InvalidInputForState(
                 statemachine.step.step_name().into(),
             ));
         };
 
+        let success = slash.is_none();
         if !success {
             return Ok(None);
         }
