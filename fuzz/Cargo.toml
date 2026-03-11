@@ -8,9 +8,9 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-mosaic-adaptor-sigs = { path = "../crates/adaptor-sigs" }
-libfuzzer-sys = "0.4"
 k256 = "0.13.4"
+libfuzzer-sys = "0.4"
+mosaic-adaptor-sigs = { path = "../crates/adaptor-sigs" }
 
 [[bin]]
 name = "adaptor_signature_from_bytes"

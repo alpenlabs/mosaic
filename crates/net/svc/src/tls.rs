@@ -5,6 +5,16 @@
 //! - PeerId is the 32-byte public key
 //! - Self-signed certificates wrap the keypair (required by TLS)
 //! - Custom verifier ignores CA chains, only checks if public key is in allowed set
+//!
+//! # Security model
+//!
+//! Trust is based on explicit peer-key pinning (`PeerId` allowlist), not PKI.
+//! As a result, certificate CA roots, DNS name checks, and validity dates are
+//! intentionally not used as trust inputs in this module.
+//!
+//! Operationally, key rotation or revocation is done by updating the configured
+//! peer allowlist (and corresponding key material) and restarting services so
+//! both sides converge on the new trust set.
 
 use std::{collections::HashSet, fmt, sync::Arc};
 
@@ -79,6 +89,8 @@ impl std::error::Error for CertGenError {}
 ///
 /// Ignores CA chains and certificate validity periods - only checks if the
 /// certificate's public key is in the allowed peer set.
+///
+/// This is intentional for key-pinned, closed-peer deployments.
 #[derive(Debug)]
 pub struct PeerVerifier {
     allowed_peers: HashSet<PeerId>,

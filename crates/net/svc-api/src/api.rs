@@ -4,7 +4,10 @@
 //! network service. The service runs on a dedicated tokio thread, and these
 //! types use channels to communicate across the runtime boundary.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use kanal::{AsyncReceiver, AsyncSender};
 
@@ -72,17 +75,17 @@ impl std::error::Error for StreamClosed {}
 /// loop {
 ///     buf.clear();
 ///     fill_buffer(&mut buf);
-///     stream.write(buf).await?;
-///     buf = stream.recv_buffer().await.unwrap_or_else(|| Vec::with_capacity(CHUNK_SIZE));
+///     buf = stream.write(buf).await?;
 /// }
 /// ```
 ///
-/// For pipelined writes, send multiple buffers before reclaiming:
+/// For pipelined writes, use [`write_no_reclaim`](Self::write_no_reclaim)
+/// and reclaim with [`recv_buffer`](Self::recv_buffer):
 ///
 /// ```ignore
-/// stream.write(buf1).await?;
-/// stream.write(buf2).await?;
-/// stream.write(buf3).await?;
+/// stream.write_no_reclaim(buf1).await?;
+/// stream.write_no_reclaim(buf2).await?;
+/// stream.write_no_reclaim(buf3).await?;
 /// // Reclaim buffers as they complete
 /// let buf1 = stream.recv_buffer().await;
 /// let buf2 = stream.recv_buffer().await;
@@ -196,24 +199,46 @@ impl Stream {
         }
     }
 
-    /// Write a buffer to the stream.
+    /// Queue a buffer for writing without waiting for reclaim.
     ///
     /// Ownership of the buffer transfers to net-svc. After the data is written
     /// to the QUIC stream, the buffer is returned via [`recv_buffer`](Self::recv_buffer).
     ///
-    /// This method returns as soon as the buffer is queued, not when the data
-    /// is actually sent. Use multiple writes for pipelining.
+    /// This method returns as soon as the buffer is queued. It is intended for
+    /// pipelined writers that reclaim buffers separately via [`recv_buffer`](Self::recv_buffer).
     ///
     /// # Errors
     ///
     /// Returns `Err(StreamClosed)` if the stream has closed.
-    pub async fn write(&mut self, buf: PayloadBuf) -> Result<(), StreamClosed> {
+    pub async fn write_no_reclaim(&mut self, buf: PayloadBuf) -> Result<(), StreamClosed> {
         // Early check - don't bother sending if already closed
         if let Some(reason) = self.close_reason() {
             return Err(reason);
         }
 
         self.send_request(StreamRequest::Write { buf }).await
+    }
+
+    /// Write a buffer and wait for it to be reclaimed.
+    ///
+    /// This is the safe default for bulk-transfer callers: it ensures the
+    /// internal return channel is drained and prevents backpressure stalls from
+    /// unclaimed buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StreamClosed)` if the stream closes before the write is
+    /// accepted or before the buffer is reclaimed.
+    pub async fn write(&mut self, buf: PayloadBuf) -> Result<PayloadBuf, StreamClosed> {
+        self.write_no_reclaim(buf).await?;
+
+        match self.recv_buffer().await {
+            Some(buf) => Ok(buf),
+            None => {
+                self.poll_close_reason();
+                Err(self.close_reason.unwrap_or(StreamClosed::Disconnected))
+            }
+        }
     }
 
     /// Receive a buffer back after a write completes.
@@ -282,6 +307,8 @@ pub struct NetServiceHandle {
     command_tx: AsyncSender<NetCommand>,
     /// Incoming protocol streams (shared receiver).
     protocol_stream_rx: AsyncReceiver<Stream>,
+    /// Monotonic request ID generator for explicit stream-open cancellation.
+    next_open_request_id: Arc<AtomicU64>,
 }
 
 impl NetServiceHandle {
@@ -298,6 +325,17 @@ impl NetServiceHandle {
             config,
             command_tx,
             protocol_stream_rx,
+            next_open_request_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    fn allocate_open_request_id(&self) -> u64 {
+        let id = self.next_open_request_id.fetch_add(1, Ordering::Relaxed);
+        if id == 0 {
+            self.next_open_request_id.store(1, Ordering::Relaxed);
+            1
+        } else {
+            id
         }
     }
 
@@ -324,6 +362,11 @@ impl NetServiceHandle {
     /// * `peer` - The peer to open the stream to (must be in config).
     /// * `priority` - Stream priority. Higher = more important. Use 0 for normal, 1 for high
     ///   (ACKs), -1 for low.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping this future sends an explicit cancel command for this open request.
+    /// Cancellation is still best-effort if the stream is already visible on the wire.
     pub async fn open_protocol_stream(
         &self,
         peer: PeerId,
@@ -333,20 +376,31 @@ impl NetServiceHandle {
             return Err(OpenStreamError::PeerNotFound);
         }
 
+        let request_id = self.allocate_open_request_id();
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let mut cancel_guard =
+            OpenCancelOnDrop::new(request_id, self.command_tx.clone(), cancel_token.clone());
         let (resp_tx, resp_rx) = kanal::bounded_async(1);
         self.command_tx
             .send(NetCommand::OpenProtocolStream {
+                request_id,
                 peer,
                 priority,
+                cancel_token,
                 respond_to: resp_tx,
             })
             .await
-            .map_err(|_| OpenStreamError::ServiceDown)?;
+            .map_err(|_| {
+                cancel_guard.disarm();
+                OpenStreamError::ServiceDown
+            })?;
 
-        resp_rx
+        let result = resp_rx
             .recv()
             .await
-            .map_err(|_| OpenStreamError::ServiceDown)?
+            .map_err(|_| OpenStreamError::ServiceDown)?;
+        cancel_guard.disarm();
+        result
     }
 
     /// Open a bulk transfer stream to a peer.
@@ -360,6 +414,11 @@ impl NetServiceHandle {
     /// * `peer` - The peer to open the stream to (must be in config).
     /// * `identifier` - 32-byte identifier for routing (typically a commitment hash).
     /// * `priority` - Stream priority. Typically -1 (low) for bulk transfers.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping this future sends an explicit cancel command for this open request.
+    /// Cancellation is still best-effort if the stream is already visible on the wire.
     pub async fn open_bulk_stream(
         &self,
         peer: PeerId,
@@ -370,21 +429,32 @@ impl NetServiceHandle {
             return Err(OpenStreamError::PeerNotFound);
         }
 
+        let request_id = self.allocate_open_request_id();
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let mut cancel_guard =
+            OpenCancelOnDrop::new(request_id, self.command_tx.clone(), cancel_token.clone());
         let (resp_tx, resp_rx) = kanal::bounded_async(1);
         self.command_tx
             .send(NetCommand::OpenBulkStream {
+                request_id,
                 peer,
                 identifier,
                 priority,
+                cancel_token,
                 respond_to: resp_tx,
             })
             .await
-            .map_err(|_| OpenStreamError::ServiceDown)?;
+            .map_err(|_| {
+                cancel_guard.disarm();
+                OpenStreamError::ServiceDown
+            })?;
 
-        resp_rx
+        let result = resp_rx
             .recv()
             .await
-            .map_err(|_| OpenStreamError::ServiceDown)?
+            .map_err(|_| OpenStreamError::ServiceDown)?;
+        cancel_guard.disarm();
+        result
     }
 
     /// Register to receive a specific bulk transfer.
@@ -429,6 +499,50 @@ impl NetServiceHandle {
             command_tx: self.command_tx.clone(),
             rx,
         })
+    }
+}
+
+struct OpenCancelOnDrop {
+    request_id: u64,
+    command_tx: AsyncSender<NetCommand>,
+    cancel_token: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl OpenCancelOnDrop {
+    fn new(
+        request_id: u64,
+        command_tx: AsyncSender<NetCommand>,
+        cancel_token: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            request_id,
+            command_tx,
+            cancel_token,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OpenCancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        self.cancel_token.store(true, Ordering::Release);
+
+        let _ = self
+            .command_tx
+            .clone()
+            .to_sync()
+            .try_send(NetCommand::CancelOpen {
+                request_id: self.request_id,
+            });
     }
 }
 
@@ -479,21 +593,29 @@ impl Drop for BulkTransferExpectation {
 pub enum NetCommand {
     /// Open a protocol stream to a peer.
     OpenProtocolStream {
+        /// Unique request ID for explicit cancellation.
+        request_id: u64,
         /// Target peer.
         peer: PeerId,
         /// Stream priority.
         priority: i32,
+        /// Shared cancel token set on caller drop.
+        cancel_token: Arc<AtomicBool>,
         /// Channel to send the result back on.
         respond_to: AsyncSender<Result<Stream, OpenStreamError>>,
     },
     /// Open a bulk transfer stream to a peer.
     OpenBulkStream {
+        /// Unique request ID for explicit cancellation.
+        request_id: u64,
         /// Target peer.
         peer: PeerId,
         /// 32-byte routing identifier.
         identifier: [u8; 32],
         /// Stream priority.
         priority: i32,
+        /// Shared cancel token set on caller drop.
+        cancel_token: Arc<AtomicBool>,
         /// Channel to send the result back on.
         respond_to: AsyncSender<Result<Stream, OpenStreamError>>,
     },
@@ -512,6 +634,11 @@ pub enum NetCommand {
         peer: PeerId,
         /// 32-byte routing identifier.
         identifier: [u8; 32],
+    },
+    /// Cancel a previously requested protocol/bulk stream open.
+    CancelOpen {
+        /// Request ID assigned when the open request was submitted.
+        request_id: u64,
     },
 }
 

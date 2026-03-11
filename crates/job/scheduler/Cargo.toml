@@ -11,8 +11,8 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-mosaic-job-api.workspace = true
 mosaic-cac-types.workspace = true
+mosaic-job-api.workspace = true
 mosaic-net-svc-api.workspace = true
 
 ckt-fmtv5-types.workspace = true

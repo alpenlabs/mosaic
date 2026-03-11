@@ -52,13 +52,15 @@
 //! }
 //! ```
 
+pub mod bulk;
 pub mod error;
 pub mod protocol;
 
 use std::time::{Duration, Instant};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
-pub use error::{AckError, RecvError, SendError};
+pub use bulk::{BulkExpectation, BulkReceiver, BulkSender};
+pub use error::{AckError, BulkExpectError, BulkOpenError, BulkReceiveError, RecvError, SendError};
 use mosaic_cac_types::Msg;
 use mosaic_net_svc::{FrameLimits, NetServiceHandle};
 pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
@@ -120,6 +122,30 @@ impl NetClient {
     /// Get a reference to the underlying service handle.
     pub fn handle(&self) -> &NetServiceHandle {
         &self.handle
+    }
+
+    /// Open a bulk-transfer sender stream to a peer.
+    pub async fn open_bulk_sender(
+        &self,
+        peer: PeerId,
+        identifier: [u8; 32],
+        priority: i32,
+    ) -> Result<BulkSender, BulkOpenError> {
+        let stream = self
+            .handle
+            .open_bulk_stream(peer, identifier, priority)
+            .await?;
+        Ok(BulkSender::new(stream))
+    }
+
+    /// Register to receive a bulk transfer stream from a peer.
+    pub async fn expect_bulk_receiver(
+        &self,
+        peer: PeerId,
+        identifier: [u8; 32],
+    ) -> Result<BulkExpectation, BulkExpectError> {
+        let expectation = self.handle.expect_bulk_transfer(peer, identifier).await?;
+        Ok(BulkExpectation::new(expectation))
     }
 
     /// Send a protocol message to a peer and wait for acknowledgment.
@@ -188,7 +214,7 @@ impl NetClient {
         }
 
         // Write to stream
-        stream.write(bytes).await.map_err(SendError::Write)?;
+        let _ = stream.write(bytes).await.map_err(SendError::Write)?;
         let written_at = started.elapsed();
 
         // Wait for ack (empty response)
