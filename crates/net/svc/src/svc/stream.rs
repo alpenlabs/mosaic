@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use kanal::{AsyncReceiver, AsyncSender, bounded_async};
 use quinn::{RecvStream, SendStream};
+use tracing::Instrument;
 
 use crate::{
     api::{PayloadBuf, Stream, StreamClosed, StreamRequest},
@@ -64,14 +65,23 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
     let close_state = Arc::new(CloseState::new());
 
     // Spawn bridge tasks
-    tokio::spawn(write_task(
-        send,
-        request_rx,
-        buf_return_tx,
-        close_tx.clone(),
-        close_state.clone(),
-    ));
-    tokio::spawn(read_task(recv, payload_tx, close_tx, close_state));
+    tokio::spawn(
+        write_task(
+            send,
+            request_rx,
+            buf_return_tx,
+            close_tx.clone(),
+            close_state.clone(),
+        )
+        .instrument(tracing::debug_span!(
+            "net_svc.stream_write",
+            peer = %peer
+        )),
+    );
+    tokio::spawn(
+        read_task(recv, payload_tx, close_tx, close_state)
+            .instrument(tracing::debug_span!("net_svc.stream_read", peer = %peer)),
+    );
 
     Stream::new(peer, payload_rx, request_tx, buf_return_rx, close_rx)
 }

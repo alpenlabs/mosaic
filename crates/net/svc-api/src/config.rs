@@ -40,6 +40,8 @@ pub struct NetServiceConfig {
     pub peers: Vec<PeerConfig>,
     /// Keep-alive interval for connections (default: 5 seconds).
     pub keep_alive_interval: std::time::Duration,
+    /// Maximum idle time before QUIC declares the connection dead (default: 30 seconds).
+    pub idle_timeout: std::time::Duration,
     /// Backoff duration between reconnection attempts (default: 1 second).
     pub reconnect_backoff: std::time::Duration,
 }
@@ -47,6 +49,9 @@ pub struct NetServiceConfig {
 impl NetServiceConfig {
     /// Default keep-alive interval (5 seconds).
     pub const DEFAULT_KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Default idle timeout (30 seconds).
+    pub const DEFAULT_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// Default reconnection backoff (1 second).
     pub const DEFAULT_RECONNECT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
@@ -58,6 +63,7 @@ impl NetServiceConfig {
             bind_addr,
             peers,
             keep_alive_interval: Self::DEFAULT_KEEP_ALIVE_INTERVAL,
+            idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             reconnect_backoff: Self::DEFAULT_RECONNECT_BACKOFF,
         }
     }
@@ -65,6 +71,12 @@ impl NetServiceConfig {
     /// Set the keep-alive interval.
     pub fn with_keep_alive_interval(mut self, interval: std::time::Duration) -> Self {
         self.keep_alive_interval = interval;
+        self
+    }
+
+    /// Set the idle timeout.
+    pub fn with_idle_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.idle_timeout = timeout;
         self
     }
 
@@ -107,6 +119,7 @@ impl std::fmt::Debug for NetServiceConfig {
             .field("bind_addr", &self.bind_addr)
             .field("peers", &self.peers.len())
             .field("keep_alive_interval", &self.keep_alive_interval)
+            .field("idle_timeout", &self.idle_timeout)
             .finish()
     }
 }

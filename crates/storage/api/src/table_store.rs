@@ -13,11 +13,10 @@
 //!
 //! # Commitment verification
 //!
-//! Writers hash all data (ciphertexts + translation + output label ct) as it
-//! flows through, producing a blake3 commitment. On [`finish`](TableWriter::finish),
-//! the computed commitment is compared against the expected value provided at
-//! creation time. If they don't match, the partially-written data is deleted
-//! and an error is returned.
+//! Implementations must ensure partially-written tables are not externally
+//! visible. A typical approach is to write under staging or versioned object
+//! paths and publish a final commit marker only after all table components are
+//! durable.
 //!
 //! # Runtime bridging
 //!
@@ -139,9 +138,9 @@ pub trait TableStore: Send + Sync + 'static {
 /// ```
 ///
 /// The writer is consumed by [`finish`](Self::finish), which also persists
-/// the translation material and metadata atomically with the ciphertext
-/// stream. Dropping the writer without calling `finish` discards any
-/// partially written data.
+/// the translation material and metadata and publishes the table for readers.
+/// Dropping the writer without calling `finish` must leave the table
+/// invisible to [`TableStore::open`] and [`TableStore::exists`].
 pub trait TableWriter {
     /// Error type (must match the parent [`TableStore::Error`]).
     type Error: std::error::Error + Debug + Send + 'static;
@@ -158,7 +157,8 @@ pub trait TableWriter {
     /// Finalise the table: persist translation material and metadata, then
     /// commit the ciphertext stream.
     ///
-    /// After this call the table is durable and can be opened for reading.
+    /// After this call returns successfully the table is durable and visible
+    /// to readers.
     fn finish(
         self,
         translation: &[u8],

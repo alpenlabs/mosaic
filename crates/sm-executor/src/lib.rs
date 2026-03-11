@@ -1,6 +1,6 @@
 //! SM executor implementation.
 
-use std::panic::AssertUnwindSafe;
+use std::{panic::AssertUnwindSafe, thread::JoinHandle};
 
 use fasm::{Input as FasmInput, StateMachine};
 use futures::FutureExt;
@@ -101,6 +101,43 @@ pub enum SmExecutorError {
     },
 }
 
+/// Controller for a spawned SM executor thread.
+#[derive(Debug)]
+pub struct SmExecutorController {
+    thread_handle: Option<JoinHandle<()>>,
+    shutdown_tx: kanal::AsyncSender<()>,
+}
+
+impl SmExecutorController {
+    /// Request graceful shutdown and wait for the executor thread to exit.
+    pub fn shutdown(mut self) -> Result<(), std::io::Error> {
+        let _ = self.shutdown_tx.clone().to_sync().send(());
+
+        if let Some(handle) = self.thread_handle.take() {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("sm executor thread panicked"))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for SmExecutorController {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.clone().to_sync().try_send(());
+    }
+}
+
+async fn recv_shutdown(
+    shutdown_rx: Option<&kanal::AsyncReceiver<()>>,
+) -> Option<Result<(), kanal::ReceiveError>> {
+    match shutdown_rx {
+        Some(rx) => Some(rx.recv().await),
+        None => std::future::pending().await,
+    }
+}
+
 /// SM executor.
 #[derive(Debug)]
 pub struct SmExecutor<S>
@@ -146,33 +183,74 @@ where
 
     /// Run executor loop.
     pub async fn run(self) -> Result<(), SmExecutorError> {
+        self.run_inner(None).await
+    }
+
+    /// Spawn the executor on a dedicated monoio thread and return a shutdown controller.
+    pub fn spawn(self) -> Result<SmExecutorController, std::io::Error>
+    where
+        S: Send,
+    {
+        let (shutdown_tx, shutdown_rx) = kanal::bounded_async(1);
+        let thread_handle = std::thread::Builder::new()
+            .name("sm-executor".to_string())
+            .spawn(move || {
+                let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .build()
+                    .expect("failed to build sm-executor monoio runtime");
+                let result = runtime.block_on(self.run_inner(Some(shutdown_rx)));
+                if let Err(error) = result {
+                    tracing::error!(error = ?error, "sm executor exited with error");
+                }
+            })?;
+
+        Ok(SmExecutorController {
+            thread_handle: Some(thread_handle),
+            shutdown_tx,
+        })
+    }
+
+    async fn run_inner(
+        self,
+        shutdown_rx: Option<kanal::AsyncReceiver<()>>,
+    ) -> Result<(), SmExecutorError> {
         let span = tracing::info_span!(
             "sm_executor.run",
             known_peers = self.config.known_peers.len(),
             command_queue_size = self.config.command_queue_size
         );
         async move {
+            let shutdown_rx = shutdown_rx;
             tracing::info!("sm executor starting");
             self.restore_known_peers().await?;
             tracing::info!("sm executor restore completed; entering main loop");
 
             loop {
                 monoio::select! {
+                    shutdown = recv_shutdown(shutdown_rx.as_ref()) => {
+                        match shutdown {
+                            Some(Ok(())) | Some(Err(_)) => {
+                                tracing::info!("sm executor shutdown requested");
+                                return Ok(());
+                            }
+                            None => unreachable!("shutdown receiver helper never returns None"),
+                        }
+                    }
                     completion = self.job_handle.recv() => {
                         match completion {
                             Ok(c) => {
                                 let role = completion_role(&c.completion);
-                                tracing::debug!(peer = ?c.peer_id, role = ?role, "received job completion");
+                                tracing::debug!(source = "job_completion", peer = ?c.peer_id, role = ?role, "received job completion");
                                 if let Err(err) = self.handle_job_completion(c).await {
                                     if Self::is_fatal_processing_error(&err) {
-                                        tracing::error!(error = ?err, "fatal completion handling error; stopping sm executor");
+                                        tracing::error!(source = "job_completion", error = ?err, "fatal completion handling error; stopping sm executor");
                                         return Err(err);
                                     }
-                                    tracing::warn!(error = ?err, "job completion handling failed; dropping completion");
+                                    tracing::warn!(source = "job_completion", error = ?err, "job completion handling failed; dropping completion");
                                 }
                             }
                             Err(_) => {
-                                tracing::error!("job completion channel closed; stopping sm executor");
+                                tracing::error!(source = "job_completion", "job completion channel closed; stopping sm executor");
                                 return Err(SmExecutorError::SourceClosed("job completion channel"));
                             }
                         }
@@ -181,20 +259,21 @@ where
                         match inbound {
                             Ok(req) => {
                                 tracing::debug!(
+                                    source = "network",
                                     peer = ?req.peer(),
                                     msg_kind = msg_kind(&req.message),
                                     "received inbound protocol request"
                                 );
                                 if let Err(err) = self.handle_inbound_request(req).await {
-                                    tracing::warn!(error = ?err, "inbound protocol handling failed; leaving stream unacked");
+                                    tracing::warn!(source = "network", error = ?err, "inbound protocol handling failed; leaving stream unacked");
                                 }
                             }
                             Err(err) => {
                                 if let Some(fatal) = Self::fatal_net_recv_error(&err) {
-                                    tracing::error!(error = ?err, "network receive failed; stopping sm executor");
+                                    tracing::error!(source = "network", error = ?err, "network receive failed; stopping sm executor");
                                     return Err(fatal);
                                 }
-                                tracing::warn!(error = ?err, "network receive failed for one inbound stream; continuing executor loop");
+                                tracing::warn!(source = "network", error = ?err, "network receive failed for one inbound stream; continuing executor loop");
                             }
                         }
                     }
@@ -202,6 +281,7 @@ where
                         match command {
                             Ok(cmd) => {
                                 tracing::debug!(
+                                    source = "command",
                                     peer = ?cmd.peer_id(),
                                     role = ?cmd.role(),
                                     kind = command_kind(&cmd.kind),
@@ -209,14 +289,14 @@ where
                                 );
                                 if let Err(err) = self.handle_command(cmd).await {
                                     if Self::is_fatal_processing_error(&err) {
-                                        tracing::error!(error = ?err, "fatal command handling error; stopping sm executor");
+                                        tracing::error!(source = "command", error = ?err, "fatal command handling error; stopping sm executor");
                                         return Err(err);
                                     }
-                                    tracing::warn!(error = ?err, "executor command handling failed; command dropped");
+                                    tracing::warn!(source = "command", error = ?err, "executor command handling failed; command dropped");
                                 }
                             }
                             Err(_) => {
-                                tracing::error!("executor command channel closed; stopping sm executor");
+                                tracing::error!(source = "command", "executor command channel closed; stopping sm executor");
                                 return Err(SmExecutorError::SourceClosed("executor command channel"));
                             }
                         }

@@ -55,6 +55,7 @@ use mosaic_job_api::{
     PendingCircuitJob, SessionFactory,
 };
 use mosaic_net_svc_api::PeerId;
+use tracing::Instrument;
 
 /// Size of each v5c gate record in bytes (3 × u32).
 const GATE_SIZE: usize = 12;
@@ -324,124 +325,145 @@ async fn coordinator_loop(
     submit_rx: kanal::AsyncReceiver<PendingCircuitJob>,
     completion_tx: kanal::AsyncSender<JobCompletion>,
 ) {
-    // Spawn persistent worker threads.
-    let n_workers = config.worker_threads.max(1);
-    let mut workers: Vec<WorkerHandle> = (0..n_workers)
-        .map(|id| WorkerHandle::spawn(id, config.chunk_timeout, completion_tx.clone()))
-        .collect();
-
-    tracing::info!(
-        worker_threads = n_workers,
+    let span = tracing::info_span!(
+        "job_scheduler.garbling_coordinator",
+        worker_threads = config.worker_threads.max(1),
         max_concurrent = config.max_concurrent,
-        "garbling coordinator started"
+        circuit_path = %config.circuit_path.display()
     );
+    async move {
+        // Spawn persistent worker threads.
+        let n_workers = config.worker_threads.max(1);
+        let mut workers: Vec<WorkerHandle> = (0..n_workers)
+            .map(|id| WorkerHandle::spawn(id, config.chunk_timeout, completion_tx.clone()))
+            .collect();
 
-    // Jobs whose session creation failed with StorageUnavailable or that were
-    // evicted mid-pass. They are retried on the next pass.
-    let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
-
-    loop {
-        // ── 1. Collect a batch of jobs ───────────────────────────────
-        let mut jobs: Vec<PendingCircuitJob> = Vec::with_capacity(config.max_concurrent);
-
-        // Drain retry list first (bounded by max_concurrent).
-        let retry_take = pending_retry.len().min(config.max_concurrent);
-        jobs.extend(pending_retry.drain(..retry_take));
-
-        // If no retries, block until at least one new job arrives.
-        if jobs.is_empty() {
-            match submit_rx.recv().await {
-                Ok(job) => jobs.push(job),
-                Err(_) => break, // Channel closed — shut down.
-            }
-        }
-
-        // Try to collect more jobs up to max_concurrent, with a timeout.
-        let deadline = monoio::time::Instant::now() + config.batch_timeout;
-        while jobs.len() < config.max_concurrent {
-            let remaining = deadline.saturating_duration_since(monoio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match monoio::time::timeout(remaining, submit_rx.recv()).await {
-                Ok(Ok(job)) => jobs.push(job),
-                Ok(Err(_)) => break, // Channel closed.
-                Err(_) => break,     // Timeout — start pass with what we have.
-            }
-        }
-
-        if jobs.is_empty() {
-            continue;
-        }
-
-        // ── 2. Create sessions from collected jobs ───────────────────
-        let mut sessions: Vec<ActiveSession> = Vec::with_capacity(jobs.len());
-
-        for job in jobs {
-            match factory.create_session(&job).await {
-                Ok(session) => {
-                    sessions.push(ActiveSession {
-                        peer_id: job.peer_id,
-                        job: PendingCircuitJob {
-                            peer_id: job.peer_id,
-                            action: job.action.clone(),
-                        },
-                        session,
-                    });
-                }
-                Err(CircuitError::StorageUnavailable) => {
-                    // Transient — data not yet written by STF. Keep for retry.
-                    tracing::debug!(
-                        peer = ?job.peer_id,
-                        action = ?job.action,
-                        "session storage unavailable — will retry next pass"
-                    );
-                    pending_retry.push(job);
-                }
-                Err(e) => {
-                    // Permanent failure (SetupFailed, ChunkFailed during setup).
-                    // This is a programming error — the action cannot be retried.
-                    tracing::error!(
-                        ?e,
-                        peer = ?job.peer_id,
-                        action = ?job.action,
-                        "permanent session creation failure — action dropped"
-                    );
-                }
-            }
-        }
-
-        if sessions.is_empty() {
-            if !pending_retry.is_empty() {
-                // All jobs failed this round — sleep before retrying.
-                tracing::debug!(
-                    pending = pending_retry.len(),
-                    "no sessions created — sleeping before retry"
-                );
-                monoio::time::sleep(Duration::from_millis(500)).await;
-            }
-            continue;
-        }
-
-        // ── 3. Run the pass ──────────────────────────────────────────
-        tracing::info!(sessions = sessions.len(), "starting garbling pass");
-        run_pass(&config, sessions, &mut workers, &mut pending_retry).await;
-        tracing::info!("garbling pass complete");
-    }
-
-    // ── Shutdown workers ─────────────────────────────────────────────
-    for worker in &mut workers {
-        worker.shutdown();
-    }
-
-    if !pending_retry.is_empty() {
-        tracing::warn!(
-            count = pending_retry.len(),
-            "garbling coordinator shutting down with pending retry jobs"
+        tracing::info!(
+            worker_threads = n_workers,
+            max_concurrent = config.max_concurrent,
+            circuit_path = %config.circuit_path.display(),
+            "garbling coordinator started"
         );
-    }
 
-    tracing::info!("garbling coordinator shut down");
+        // Jobs whose session creation failed with StorageUnavailable or that were
+        // evicted mid-pass. They are retried on the next pass.
+        let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
+
+        loop {
+            // ── 1. Collect a batch of jobs ───────────────────────────────
+            let mut jobs: Vec<PendingCircuitJob> = Vec::with_capacity(config.max_concurrent);
+
+            // Drain retry list first (bounded by max_concurrent).
+            let retry_take = pending_retry.len().min(config.max_concurrent);
+            jobs.extend(pending_retry.drain(..retry_take));
+
+            // If no retries, block until at least one new job arrives.
+            if jobs.is_empty() {
+                match submit_rx.recv().await {
+                    Ok(job) => jobs.push(job),
+                    Err(_) => break, // Channel closed — shut down.
+                }
+            }
+
+            // Try to collect more jobs up to max_concurrent, with a timeout.
+            let deadline = monoio::time::Instant::now() + config.batch_timeout;
+            while jobs.len() < config.max_concurrent {
+                let remaining = deadline.saturating_duration_since(monoio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match monoio::time::timeout(remaining, submit_rx.recv()).await {
+                    Ok(Ok(job)) => jobs.push(job),
+                    Ok(Err(_)) => break, // Channel closed.
+                    Err(_) => break,     // Timeout — start pass with what we have.
+                }
+            }
+
+            if jobs.is_empty() {
+                continue;
+            }
+
+            tracing::debug!(
+                jobs = jobs.len(),
+                retry_backlog = pending_retry.len(),
+                "garbling coordinator collected pass batch"
+            );
+
+            // ── 2. Create sessions from collected jobs ───────────────────
+            let mut sessions: Vec<ActiveSession> = Vec::with_capacity(jobs.len());
+
+            for job in jobs {
+                match factory.create_session(&job).await {
+                    Ok(session) => {
+                        sessions.push(ActiveSession {
+                            peer_id: job.peer_id,
+                            job: PendingCircuitJob {
+                                peer_id: job.peer_id,
+                                action: job.action.clone(),
+                            },
+                            session,
+                        });
+                    }
+                    Err(CircuitError::StorageUnavailable) => {
+                        // Transient — data not yet written by STF. Keep for retry.
+                        tracing::debug!(
+                            peer = ?job.peer_id,
+                            action = ?job.action,
+                            "session storage unavailable — will retry next pass"
+                        );
+                        pending_retry.push(job);
+                    }
+                    Err(e) => {
+                        // Permanent failure (SetupFailed, ChunkFailed during setup).
+                        // This is a programming error — the action cannot be retried.
+                        tracing::error!(
+                            ?e,
+                            peer = ?job.peer_id,
+                            action = ?job.action,
+                            "permanent session creation failure — action dropped"
+                        );
+                    }
+                }
+            }
+
+            if sessions.is_empty() {
+                if !pending_retry.is_empty() {
+                    // All jobs failed this round — sleep before retrying.
+                    tracing::debug!(
+                        pending = pending_retry.len(),
+                        "no sessions created — sleeping before retry"
+                    );
+                    monoio::time::sleep(Duration::from_millis(500)).await;
+                }
+                continue;
+            }
+
+            // ── 3. Run the pass ──────────────────────────────────────────
+            let session_count = sessions.len();
+            run_pass(&config, sessions, &mut workers, &mut pending_retry)
+                .instrument(tracing::info_span!(
+                    "job_scheduler.garbling_pass",
+                    sessions = session_count
+                ))
+                .await;
+        }
+
+        // ── Shutdown workers ─────────────────────────────────────────────
+        for worker in &mut workers {
+            worker.shutdown();
+        }
+
+        if !pending_retry.is_empty() {
+            tracing::warn!(
+                count = pending_retry.len(),
+                "garbling coordinator shutting down with pending retry jobs"
+            );
+        }
+
+        tracing::info!("garbling coordinator shut down");
+    }
+    .instrument(span)
+    .await;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -646,140 +668,152 @@ async fn worker_loop(
     report_tx: kanal::AsyncSender<WorkerReport>,
     completion_tx: kanal::AsyncSender<JobCompletion>,
 ) {
-    tracing::debug!(worker = id, "garbling worker started");
+    async move {
+        tracing::debug!(
+            chunk_timeout_ms = chunk_timeout.as_millis(),
+            "garbling worker started"
+        );
 
-    let mut sessions: Vec<ActiveSession> = Vec::new();
+        let mut sessions: Vec<ActiveSession> = Vec::new();
 
-    loop {
-        let command = match command_rx.recv().await {
-            Ok(cmd) => cmd,
-            Err(_) => break, // Channel closed — coordinator shutting down.
-        };
+        loop {
+            let command = match command_rx.recv().await {
+                Ok(cmd) => cmd,
+                Err(_) => break, // Channel closed — coordinator shutting down.
+            };
 
-        match command {
-            WorkerCommand::AssignSessions(new_sessions) => {
-                tracing::debug!(
-                    worker = id,
-                    count = new_sessions.len(),
-                    "received session assignment"
-                );
-                sessions = new_sessions;
-            }
-
-            WorkerCommand::ProcessChunk(chunk) => {
-                let mut evicted_indices: Vec<usize> = Vec::new();
-
-                for (i, active) in sessions.iter_mut().enumerate() {
-                    let result =
-                        monoio::time::timeout(chunk_timeout, active.session.process_chunk(&chunk))
-                            .await;
-
-                    match result {
-                        Ok(Ok(())) => { /* session keeping up */ }
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                worker = id,
-                                ?e,
-                                peer = ?active.peer_id,
-                                "session error — evicting for retry"
-                            );
-                            evicted_indices.push(i);
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                worker = id,
-                                peer = ?active.peer_id,
-                                "session timed out on chunk — evicting for retry"
-                            );
-                            evicted_indices.push(i);
-                        }
-                    }
+            match command {
+                WorkerCommand::AssignSessions(new_sessions) => {
+                    tracing::debug!(
+                        worker = id,
+                        count = new_sessions.len(),
+                        "received session assignment"
+                    );
+                    sessions = new_sessions;
                 }
 
-                // Remove evicted sessions (reverse order for stable indices)
-                // and collect their jobs for retry.
-                let mut evicted_jobs: Vec<PendingCircuitJob> =
-                    Vec::with_capacity(evicted_indices.len());
-                for &idx in evicted_indices.iter().rev() {
-                    let evicted = sessions.remove(idx);
-                    evicted_jobs.push(evicted.job);
-                }
+                WorkerCommand::ProcessChunk(chunk) => {
+                    let mut evicted_indices: Vec<usize> = Vec::new();
 
-                let report = WorkerReport::ChunkDone(ChunkReport {
-                    evicted_jobs,
-                    remaining_sessions: sessions.len(),
-                });
-                if report_tx.send(report).await.is_err() {
-                    tracing::error!(worker = id, "report channel closed — exiting");
-                    break;
-                }
-            }
+                    for (i, active) in sessions.iter_mut().enumerate() {
+                        let result = monoio::time::timeout(
+                            chunk_timeout,
+                            active.session.process_chunk(&chunk),
+                        )
+                        .await;
 
-            WorkerCommand::FinishPass => {
-                let mut retry_jobs: Vec<PendingCircuitJob> = Vec::new();
-
-                for active in sessions.drain(..) {
-                    let ActiveSession {
-                        peer_id,
-                        job,
-                        session,
-                    } = active;
-
-                    let outcome = session.finish().await;
-
-                    match outcome {
-                        HandlerOutcome::Done(completion) => {
-                            if completion_tx
-                                .send(JobCompletion {
-                                    peer_id,
-                                    completion,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                tracing::error!(
+                        match result {
+                            Ok(Ok(())) => { /* session keeping up */ }
+                            Ok(Err(e)) => {
+                                tracing::warn!(
                                     worker = id,
-                                    ?peer_id,
-                                    "completion channel closed — completion lost"
+                                    ?e,
+                                    peer = ?active.peer_id,
+                                    "session error — evicting for retry"
                                 );
+                                evicted_indices.push(i);
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    worker = id,
+                                    peer = ?active.peer_id,
+                                    "session timed out on chunk — evicting for retry"
+                                );
+                                evicted_indices.push(i);
                             }
                         }
-                        HandlerOutcome::Retry => {
-                            tracing::debug!(
-                                worker = id,
-                                ?peer_id,
-                                "session finished with Retry — requeueing"
-                            );
-                            retry_jobs.push(job);
-                        }
+                    }
+
+                    // Remove evicted sessions (reverse order for stable indices)
+                    // and collect their jobs for retry.
+                    let mut evicted_jobs: Vec<PendingCircuitJob> =
+                        Vec::with_capacity(evicted_indices.len());
+                    for &idx in evicted_indices.iter().rev() {
+                        let evicted = sessions.remove(idx);
+                        evicted_jobs.push(evicted.job);
+                    }
+
+                    let report = WorkerReport::ChunkDone(ChunkReport {
+                        evicted_jobs,
+                        remaining_sessions: sessions.len(),
+                    });
+                    if report_tx.send(report).await.is_err() {
+                        tracing::error!(worker = id, "report channel closed — exiting");
+                        break;
                     }
                 }
 
-                let report = WorkerReport::FinishDone(FinishReport { retry_jobs });
-                if report_tx.send(report).await.is_err() {
-                    tracing::error!(worker = id, "report channel closed — exiting");
+                WorkerCommand::FinishPass => {
+                    let mut retry_jobs: Vec<PendingCircuitJob> = Vec::new();
+
+                    for active in sessions.drain(..) {
+                        let ActiveSession {
+                            peer_id,
+                            job,
+                            session,
+                        } = active;
+
+                        let outcome = session.finish().await;
+
+                        match outcome {
+                            HandlerOutcome::Done(completion) => {
+                                if completion_tx
+                                    .send(JobCompletion {
+                                        peer_id,
+                                        completion,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    tracing::error!(
+                                        worker = id,
+                                        ?peer_id,
+                                        "completion channel closed — completion lost"
+                                    );
+                                }
+                            }
+                            HandlerOutcome::Retry => {
+                                tracing::debug!(
+                                    worker = id,
+                                    ?peer_id,
+                                    "session finished with Retry — requeueing"
+                                );
+                                retry_jobs.push(job);
+                            }
+                        }
+                    }
+
+                    let report = WorkerReport::FinishDone(FinishReport { retry_jobs });
+                    if report_tx.send(report).await.is_err() {
+                        tracing::error!(worker = id, "report channel closed — exiting");
+                        break;
+                    }
+                }
+
+                WorkerCommand::Shutdown => {
+                    tracing::debug!(worker = id, "received shutdown command");
                     break;
                 }
             }
-
-            WorkerCommand::Shutdown => {
-                tracing::debug!(worker = id, "received shutdown command");
-                break;
-            }
         }
-    }
 
-    // If we exit with sessions still assigned (e.g. channel closed mid-pass),
-    // they are dropped. The coordinator logs a warning about lost sessions.
-    if !sessions.is_empty() {
-        tracing::warn!(
-            worker = id,
-            count = sessions.len(),
-            "worker exiting with active sessions — these sessions are lost"
-        );
-    }
+        // If we exit with sessions still assigned (e.g. channel closed mid-pass),
+        // they are dropped. The coordinator logs a warning about lost sessions.
+        if !sessions.is_empty() {
+            tracing::warn!(
+                worker = id,
+                count = sessions.len(),
+                "worker exiting with active sessions — these sessions are lost"
+            );
+        }
 
-    tracing::debug!(worker = id, "garbling worker shut down");
+        tracing::debug!("garbling worker shut down");
+    }
+    .instrument(tracing::debug_span!(
+        "job_scheduler.garbling_worker",
+        worker = id
+    ))
+    .await;
 }
 
 // ════════════════════════════════════════════════════════════════════════════

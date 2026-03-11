@@ -47,7 +47,6 @@ use crate::{
 /// Transport-level limits and timeouts.
 const MAX_CONCURRENT_BIDI_STREAMS: u32 = 100;
 const MAX_CONCURRENT_UNI_STREAMS: u32 = 0;
-const MAX_IDLE_TIMEOUT_MS: u32 = 30_000;
 
 /// Handle to control the network service.
 pub struct NetServiceController {
@@ -407,16 +406,22 @@ async fn run_service_async(
 
             // Deadline-driven reconnect housekeeping.
             _ = &mut reconnect_sleep => {
+                tracing::trace!(
+                    pending_reconnects = state.pending_reconnects.len(),
+                    "running reconnect housekeeping"
+                );
                 handlers::process_pending_reconnects(&mut state);
             }
 
             // Handle commands from handles - dispatches to tasks, never blocks
             Ok(cmd) = command_rx.recv() => {
+                tracing::trace!("received network service command");
                 handlers::handle_command(cmd, &mut state);
             }
 
             // Handle events from spawned tasks - just updates state, never blocks
             Some(event) = event_rx.recv() => {
+                tracing::trace!("received network service task event");
                 handlers::handle_event(event, &mut state);
             }
         }
@@ -483,8 +488,9 @@ fn build_transport_config(config: &NetServiceConfig) -> quinn::TransportConfig {
     transport.keep_alive_interval(Some(config.keep_alive_interval));
     transport.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
     transport.max_concurrent_uni_streams(MAX_CONCURRENT_UNI_STREAMS.into());
-    transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(
-        MAX_IDLE_TIMEOUT_MS,
-    ))));
+    transport.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(config.idle_timeout)
+            .expect("validated net service idle timeout must fit within quinn idle-timeout bounds"),
+    ));
     transport
 }

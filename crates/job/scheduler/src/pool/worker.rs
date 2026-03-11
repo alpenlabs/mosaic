@@ -17,6 +17,7 @@ use mosaic_cac_types::state_machine::{
 };
 use mosaic_job_api::{ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome, JobCompletion};
 use mosaic_net_svc_api::PeerId;
+use tracing::Instrument;
 
 use super::{PoolJob, queue::JobQueue};
 
@@ -164,51 +165,71 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
     }
     let permit_rx = permit_rx.to_async();
 
-    tracing::info!(worker = id, concurrency, "worker started");
+    async move {
+        tracing::info!(concurrency, "worker started");
 
-    loop {
-        // 1. Wait for capacity — blocks if all permits are held by in-flight tasks.
-        if permit_rx.recv().await.is_err() {
-            break;
+        loop {
+            // 1. Wait for capacity — blocks if all permits are held by in-flight tasks.
+            if permit_rx.recv().await.is_err() {
+                tracing::debug!("permit channel closed; worker exiting");
+                break;
+            }
+
+            // 2. Pull next job — we only reach here when we have capacity.
+            let Some(pool_job) = queue.pop().await else {
+                tracing::debug!("job queue closed and drained; worker exiting");
+                break;
+            };
+
+            let (peer_id, role) = job_identity(&pool_job.job);
+            let attempts = pool_job.attempts;
+
+            let dispatcher = Arc::clone(&dispatcher);
+            let queue = Arc::clone(&queue);
+            let completion_tx = completion_tx.clone();
+            let permit_tx = permit_tx.clone();
+
+            // 3. Spawn local task. The permit is returned when the task completes, regardless of
+            //    whether it succeeded or was requeued for retry.
+            monoio::spawn(
+                async move {
+                    tracing::trace!("executing worker job");
+                    let result = execute_job(dispatcher.as_ref(), &pool_job).await;
+                    match result {
+                        ExecuteResult::Complete(completion) => {
+                            tracing::debug!("worker job completed");
+                            let _ = completion_tx.send(*completion).await;
+                        }
+                        ExecuteResult::Retry => {
+                            let mut job = pool_job;
+                            job.attempts += 1;
+                            let backoff = retry_backoff(job.attempts);
+                            tracing::debug!(
+                                attempts = job.attempts,
+                                backoff_ms = backoff.as_millis(),
+                                "worker job requested retry"
+                            );
+                            monoio::time::sleep(backoff).await;
+                            queue.requeue(job);
+                        }
+                    }
+                    // Release permit back to the pool.
+                    let _ = permit_tx.send(());
+                }
+                .instrument(tracing::debug_span!(
+                    "job_scheduler.worker_job",
+                    worker = id,
+                    peer = ?peer_id,
+                    role,
+                    attempts
+                )),
+            );
         }
 
-        // 2. Pull next job — we only reach here when we have capacity.
-        let Some(pool_job) = queue.pop().await else {
-            break;
-        };
-
-        let dispatcher = Arc::clone(&dispatcher);
-        let queue = Arc::clone(&queue);
-        let completion_tx = completion_tx.clone();
-        let permit_tx = permit_tx.clone();
-
-        // 3. Spawn local task. The permit is returned when the task completes, regardless of
-        //    whether it succeeded or was requeued for retry.
-        monoio::spawn(async move {
-            let result = execute_job(dispatcher.as_ref(), &pool_job).await;
-            match result {
-                ExecuteResult::Complete(completion) => {
-                    let _ = completion_tx.send(*completion).await;
-                }
-                ExecuteResult::Retry => {
-                    let mut job = pool_job;
-                    job.attempts += 1;
-                    let backoff = retry_backoff(job.attempts);
-                    tracing::trace!(
-                        attempts = job.attempts,
-                        backoff_ms = backoff.as_millis(),
-                        "retrying job with exponential backoff"
-                    );
-                    monoio::time::sleep(backoff).await;
-                    queue.requeue(job);
-                }
-            }
-            // Release permit back to the pool.
-            let _ = permit_tx.send(());
-        });
+        tracing::info!("worker shutting down");
     }
-
-    tracing::info!(worker = id, "worker shutting down");
+    .instrument(tracing::info_span!("job_scheduler.worker", worker = id))
+    .await;
 }
 
 /// Result of executing a job.
@@ -250,6 +271,13 @@ async fn execute_job<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
             completion,
         })),
         HandlerOutcome::Retry => ExecuteResult::Retry,
+    }
+}
+
+fn job_identity(job: &WorkerJob) -> (PeerId, &'static str) {
+    match job {
+        WorkerJob::Garbler { peer_id, .. } => (*peer_id, "garbler"),
+        WorkerJob::Evaluator { peer_id, .. } => (*peer_id, "evaluator"),
     }
 }
 

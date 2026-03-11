@@ -1,0 +1,22 @@
+[package]
+name = "mosaic-peer-id"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+mosaic-net-svc.workspace = true
+
+ed25519-dalek = "2.2"
+hex = "0.4"
+rand.workspace = true
+
+[lints]
+workspace = true

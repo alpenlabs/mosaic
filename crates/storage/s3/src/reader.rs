@@ -12,7 +12,7 @@ use mosaic_common::Byte32;
 use mosaic_storage_api::table_store::{TableMetadata, TableReader};
 use object_store::ObjectStore;
 
-use crate::{error::S3Error, paths::TablePaths};
+use crate::{error::S3Error, paths::TableRootPaths};
 
 /// Reads a garbling table from object storage.
 ///
@@ -44,8 +44,11 @@ impl S3TableReader {
     pub(crate) async fn new(
         store: Arc<dyn ObjectStore>,
         rt_handle: tokio::runtime::Handle,
-        paths: TablePaths,
+        root_paths: TableRootPaths,
     ) -> Result<Self, S3Error> {
+        let version = fetch_committed_version(&store, &root_paths.committed).await?;
+        let paths = root_paths.version_paths(version);
+
         // Fetch metadata and translation eagerly via the tokio runtime.
         let (meta_tx, meta_rx) = kanal::bounded_async(1);
         let (trans_tx, trans_rx) = kanal::bounded_async(1);
@@ -155,6 +158,33 @@ impl S3TableReader {
             }
         }
     }
+}
+
+/// Read the currently committed table version from the live marker.
+async fn fetch_committed_version(
+    store: &Arc<dyn ObjectStore>,
+    path: &object_store::path::Path,
+) -> Result<String, S3Error> {
+    let result = store.get(path).await.map_err(|e| match e {
+        object_store::Error::NotFound { path, .. } => S3Error::NotFound {
+            path: path.to_string(),
+        },
+        other => S3Error::ObjectStore(other),
+    })?;
+
+    let bytes = result.bytes().await.map_err(S3Error::ObjectStore)?;
+    let version = std::str::from_utf8(bytes.as_ref())
+        .map_err(|e| S3Error::InvalidMetadata(format!("commit marker was not valid utf-8: {e}")))?
+        .trim()
+        .to_owned();
+
+    if version.is_empty() || version.contains('/') {
+        return Err(S3Error::InvalidMetadata(format!(
+            "commit marker contained invalid version id: {version:?}"
+        )));
+    }
+
+    Ok(version)
 }
 
 /// Fetch and deserialize metadata from object storage.

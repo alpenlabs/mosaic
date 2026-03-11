@@ -6,10 +6,14 @@
 //! # Storage layout
 //!
 //! ```text
-//! {prefix}/{peer_id_hex}/{index}/ciphertexts
-//! {prefix}/{peer_id_hex}/{index}/translation
-//! {prefix}/{peer_id_hex}/{index}/metadata
+//! {prefix}/{peer_id_hex}/{index}/committed
+//! {prefix}/{peer_id_hex}/{index}/versions/{version}/ciphertexts
+//! {prefix}/{peer_id_hex}/{index}/versions/{version}/translation
+//! {prefix}/{peer_id_hex}/{index}/versions/{version}/metadata
 //! ```
+//!
+//! Readers trust only the `committed` marker. A partially-written version is
+//! never visible unless that marker is successfully updated.
 //!
 //! # Usage
 //!
@@ -26,6 +30,7 @@ mod writer;
 use std::{future::Future, sync::Arc};
 
 pub use error::S3Error;
+use futures::StreamExt;
 use mosaic_storage_api::table_store::{TableId, TableStore};
 use object_store::ObjectStore;
 
@@ -137,21 +142,21 @@ impl TableStore for S3TableStore {
         &self,
         id: &TableId,
     ) -> impl Future<Output = Result<Self::Writer, Self::Error>> + Send {
-        let paths = paths::TablePaths::new(&self.prefix, id);
+        let root_paths = paths::TableRootPaths::new(&self.prefix, id);
         let store = Arc::clone(&self.store);
         let rt_handle = self.rt_handle.clone();
-        async move { writer::S3TableWriter::new(store, rt_handle, paths).await }
+        async move { writer::S3TableWriter::new(store, rt_handle, root_paths).await }
     }
 
     fn open(&self, id: &TableId) -> impl Future<Output = Result<Self::Reader, Self::Error>> + Send {
-        let paths = paths::TablePaths::new(&self.prefix, id);
+        let root_paths = paths::TableRootPaths::new(&self.prefix, id);
         let store = Arc::clone(&self.store);
         let rt_handle = self.rt_handle.clone();
-        async move { reader::S3TableReader::new(store, rt_handle, paths).await }
+        async move { reader::S3TableReader::new(store, rt_handle, root_paths).await }
     }
 
     fn exists(&self, id: &TableId) -> impl Future<Output = Result<bool, Self::Error>> + Send {
-        let path = paths::TablePaths::new(&self.prefix, id).metadata;
+        let path = paths::TableRootPaths::new(&self.prefix, id).committed;
         self.dispatch(move |store| {
             Box::pin(async move {
                 match store.head(&path).await {
@@ -164,12 +169,13 @@ impl TableStore for S3TableStore {
     }
 
     fn delete(&self, id: &TableId) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let paths = paths::TablePaths::new(&self.prefix, id);
+        let root_paths = paths::TableRootPaths::new(&self.prefix, id);
         self.dispatch(move |store| {
             Box::pin(async move {
-                // Delete all three components. Ignore NotFound errors.
-                for path in [&paths.ciphertexts, &paths.translation, &paths.metadata] {
-                    match store.delete(path).await {
+                let mut objects = store.list(Some(&root_paths.prefix));
+                while let Some(entry) = objects.next().await {
+                    let path = entry.map_err(S3Error::ObjectStore)?.location;
+                    match store.delete(&path).await {
                         Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
                         Err(e) => return Err(S3Error::ObjectStore(e)),
                     }
@@ -177,5 +183,86 @@ impl TableStore for S3TableStore {
                 Ok(())
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use mosaic_common::Byte32;
+    use mosaic_net_svc_api::PeerId;
+    use mosaic_storage_api::table_store::{TableMetadata, TableReader, TableStore, TableWriter};
+    use mosaic_vs3::Index;
+    use object_store::memory::InMemory;
+
+    use super::*;
+
+    fn table_id() -> TableId {
+        TableId {
+            peer_id: PeerId::from_bytes([0x11; 32]),
+            index: Index::new(7).unwrap(),
+        }
+    }
+
+    fn metadata(tag: u8) -> TableMetadata {
+        TableMetadata {
+            output_label_ct: Byte32::from([tag; 32]),
+            aes_key: [tag; 16],
+            public_s: [tag.wrapping_add(1); 16],
+        }
+    }
+
+    async fn read_all_ciphertexts<R: TableReader>(reader: &mut R) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 3];
+        loop {
+            let n = reader.read_ciphertext(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn dropped_writer_is_not_visible() {
+        let store = S3TableStore::new(Arc::new(InMemory::new()), "tables");
+        let id = table_id();
+
+        let mut writer = store.create(&id).await.unwrap();
+        writer.write_ciphertext(b"partial").await.unwrap();
+        drop(writer);
+
+        assert!(!store.exists(&id).await.unwrap());
+        assert!(matches!(
+            store.open(&id).await,
+            Err(S3Error::NotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn committed_marker_controls_visible_version() {
+        let store = S3TableStore::new(Arc::new(InMemory::new()), "tables");
+        let id = table_id();
+
+        let mut first = store.create(&id).await.unwrap();
+        first.write_ciphertext(b"abc").await.unwrap();
+        first.finish(b"translation-a", metadata(1)).await.unwrap();
+
+        let mut second = store.create(&id).await.unwrap();
+        second.write_ciphertext(b"xyz").await.unwrap();
+        second.finish(b"translation-b", metadata(2)).await.unwrap();
+
+        assert!(store.exists(&id).await.unwrap());
+
+        let mut reader = store.open(&id).await.unwrap();
+        assert_eq!(reader.metadata().await.unwrap(), metadata(2));
+        assert_eq!(reader.read_translation().await.unwrap(), b"translation-b");
+        assert_eq!(read_all_ciphertexts(&mut reader).await, b"xyz");
+
+        store.delete(&id).await.unwrap();
+        assert!(!store.exists(&id).await.unwrap());
     }
 }
