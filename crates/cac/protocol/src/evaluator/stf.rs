@@ -2,17 +2,13 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
-    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
-    DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
-    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
-    OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, Seed, SetupInputs,
-    WithdrawalAdaptors, WithdrawalAdaptorsChunk, state_machine::evaluator::*,
+    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, SecretKey, Seed, SetupInputs, WithdrawalAdaptors, WithdrawalAdaptorsChunk, state_machine::evaluator::*
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
     N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
+use mosaic_vs3::interpolate;
 use rand::SeedableRng;
 
 use super::emit;
@@ -465,20 +461,56 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     evaluated[idx] = true;
 
-                    if output_share.is_some() {
-                        // Found the fault secret — evaluation complete.
-                        // TODO: store output_share, interpolate to recover secret
+                    let can_slash = if let Some(output_share) = output_share {
+                        // output_share is Some only if the evaluation yielded False value as result
+                        // Now interpolate to find share corresponding to reserved index of output
+                        // wire
+                        let mut opened_output_shares = state
+                            .get_opened_output_shares()
+                            .await
+                            .require("expected opened output shares")?
+                            .to_vec();
+                        opened_output_shares.push(output_share);
+
+                        let evals_at_missing_indices =
+                            interpolate(&opened_output_shares).expect("should interpolate");
+                        let evals_at_zeroth_index = evals_at_missing_indices
+                            .iter()
+                            .find(|x| x.index() == Index::reserved())
+                            .expect("should include zeroth index evaluation");
+                        let calc_commitment = evals_at_zeroth_index.commit().point();
+
+                        let output_poly_commit = state
+                            .get_output_polynomial_commitment()
+                            .await
+                            .require("expected output poly commit")?[0]
+                            .get_zeroth_coefficient();
+
+                        calc_commitment == output_poly_commit
+                    } else {
+                        false
+                    };
+
+                    if can_slash {
+                        let ops = output_share.unwrap().value();
+                        let ops = SecretKey(ops);
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
+                            slash: Some(ops),
                         };
                     } else if evaluated.all() {
                         // All tables evaluated, no fault found.
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
+                            slash: None,
                         };
                     }
                     // else stay on same step and wait for more evaluations
                 }
+                Step::SetupConsumed {
+                    deposit_id: _,
+                    slash: _,
+                } => {}
                 _ => return Err(SMError::UnexpectedInput),
             }
         }

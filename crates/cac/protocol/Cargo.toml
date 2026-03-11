@@ -19,6 +19,7 @@ futures.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
+mosaic-vs3.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

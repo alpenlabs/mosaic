@@ -33,7 +33,7 @@ use mosaic_common::{
 use mosaic_job_api::{ActionCompletion, ExecuteGarblerJob, HandlerOutcome, OwnedBlock, OwnedChunk};
 use mosaic_job_executors::{
     MosaicExecutor,
-    circuit_sessions::{EvaluatorCircuitSession, GarblerCircuitSession},
+    circuit_sessions::{EvaluationSession, EvaluatorCircuitSession, GarblerCircuitSession},
 };
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableMetadata, TableReader, TableStore, TableWriter};
@@ -922,6 +922,37 @@ async fn test_e2e() {
     .await
     .unwrap();
     assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Action::EvaluateGarblingTable
+
+    println!("evaluate garbling table");
+    eval_exec.storage = DummyStorageProvider {
+        garb_state: garb_state.clone(),
+        eval_state: eval_state.clone(),
+    };
+    let mut eval_results = mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
+    while let Some(completion) = eval_results.pop() {
+        let (action_id, action_result) = completion.as_evaluator().unwrap();
+        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+            fasm::Input::TrackedActionCompleted {
+                id: action_id.clone(),
+                result: action_result.clone(),
+            };
+        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+            .await
+            .unwrap();
+    }
+    assert_eq!(eval_actions.len(), 0);
+
+    match eval_state.state.step {
+        EvalStep::SetupConsumed {
+            deposit_id: deposit_idx,
+            slash,
+        } => {
+            assert_eq!(deposit_id, deposit_idx);
+            assert!(slash.is_some(), "should have found slashing condition");
+        }
+        _ => panic!(),
+    };
 }
 
 struct DummyStorageProvider {
@@ -1074,7 +1105,7 @@ impl TableReader for FileTableReader {
     async fn read_translation(&mut self) -> Result<Vec<u8>, Self::Error> {
         let mut translation_material: Vec<[[[u8; 16]; 8]; 256]> = Vec::new();
 
-        for _ in 0..N_WITHDRAWAL_INPUT_WIRES {
+        for _ in 0..N_INPUT_WIRES {
             let mut material = [[[0; 16]; 8]; 256];
             for byte_row in &mut material {
                 for ciphertext in byte_row {
@@ -1087,6 +1118,7 @@ impl TableReader for FileTableReader {
             }
             translation_material.push(material);
         }
+
         let flat: Vec<u8> = translation_material
             .into_iter()
             .flat_map(|lvl1| lvl1.into_iter())
@@ -1248,6 +1280,22 @@ async fn mock_dispatch_evaluator(
                     EvaluatorAction::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
                         exec.deposit_send_adaptor_msg_chunk(peer_id, *deposit_id, chunk)
                             .await
+                    }
+                    EvaluatorAction::EvaluateGarblingTable(circuit_index, commitment) => {
+                        let session = ExecuteEvaluatorJob::begin_evaluation(
+                            exec,
+                            peer_id,
+                            *circuit_index,
+                            *commitment,
+                        )
+                        .await
+                        .unwrap();
+                        if let EvaluatorCircuitSession::Evaluation(session) = session {
+                            let session: EvaluationSession = *session;
+                            garb_coordinator(&exec.circuit_path, session).await
+                        } else {
+                            panic!()
+                        }
                     }
                     _ => {
                         panic!("unhandled evaluator action variant");

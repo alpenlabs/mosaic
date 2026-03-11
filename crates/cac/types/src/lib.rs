@@ -74,9 +74,34 @@ pub struct SecretKey(pub Scalar);
 impl_serde_ark!(SecretKey);
 
 impl SecretKey {
+    /// Helpers to serialize and deserialize field as per BIP340
+    pub fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
+        // `Fq` modulus is 256 bits, so its big-endian encoding always fits in 32 bytes.
+        x.into_bigint()
+            .to_bytes_be()
+            .try_into()
+            .expect("Fq encodes to exactly 32 bytes")
+    }
+
+    fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, String> {
+        fn bytes_be_to_bits_be(bytes: &[u8]) -> Vec<bool> {
+            let mut bits = Vec::with_capacity(bytes.len() * 8);
+            for &b in bytes {
+                for i in (0..8).rev() {
+                    bits.push(((b >> i) & 1) == 1);
+                }
+            }
+            bits
+        }
+        let rint = F::BigInt::from_bits_be(&bytes_be_to_bits_be(&bytes));
+        F::from_bigint(rint).ok_or(String::from(
+            "conversion from bigint to field element",
+        ))
+    }
+
     /// Create a secret key from bytes for tests.
     pub fn from_raw_bytes(bytes: &[u8; 32]) -> Self {
-        let scalar = Scalar::from_le_bytes_mod_order(bytes);
+        let scalar = Self::deserialize_field(*bytes).unwrap();
         Self(scalar)
     }
 

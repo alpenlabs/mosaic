@@ -2210,6 +2210,7 @@ dependencies = [
  "mosaic-net-svc-api",
  "mosaic-storage-api",
  "mosaic-storage-inmemory",
+ "mosaic-vs3",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "thiserror 2.0.18",
