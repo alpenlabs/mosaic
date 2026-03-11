@@ -19,9 +19,7 @@
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{AdditiveGroup, BigInteger, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-#[cfg(test)]
-use k256::schnorr::CryptoRngCore;
-use rand::{CryptoRng, Rng};
+use rand::{CryptoRng, Rng, RngCore};
 use sha2::{Digest, Sha256};
 
 use crate::{error::Error, fixed_base::gen_mul};
@@ -84,9 +82,8 @@ impl Signature {
         Ok(Signature { s, r: rx })
     }
 
-    #[cfg(test)]
     /// Generates a secp256k1 keypair where the public key has an even Y coordinate.
-    pub fn keypair<R: CryptoRng + CryptoRngCore>(
+    pub fn keypair<R: CryptoRng + RngCore>(
         rng: &mut R,
     ) -> (ark_secp256k1::Fr, ark_secp256k1::Projective) {
         loop {

@@ -439,7 +439,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             match root_state.step {
                 Step::SetupComplete => {
                     let mut deposit_state = require_deposit(state, &deposit_id).await?;
-                    match deposit_state.step {
+                    match &mut deposit_state.step {
                         DepositStep::VerifyingAdaptors => {
                             if verification_success {
                                 deposit_state.step = DepositStep::DepositReady;
@@ -666,7 +666,7 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
     adaptor_msg_chunk: AdaptorMsgChunk,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match root_state.step {
+    match &mut root_state.step {
         Step::SetupComplete => {
             if adaptor_msg_chunk.deposit_id != deposit_id {
                 return Err(SMError::invalid_input_data());
@@ -674,29 +674,28 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
 
             let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
-            if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
-                let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
+            let all_chunks_received =
+                if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
+                    let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
-                if chunks[chunk_idx] {
-                    // message for this chunk already seen
-                    return Err(SMError::invalid_input_data());
-                }
+                    if chunks[chunk_idx] {
+                        return Err(SMError::invalid_input_data());
+                    }
 
-                state
-                    .put_adaptor_msg_chunk_for_deposit(&deposit_id, &adaptor_msg_chunk)
-                    .await
-                    .map_err(SMError::storage)?;
+                    state
+                        .put_adaptor_msg_chunk_for_deposit(&deposit_id, &adaptor_msg_chunk)
+                        .await
+                        .map_err(SMError::storage)?;
 
-                chunks[chunk_idx] = true;
+                    chunks[chunk_idx] = true;
 
-                if !chunks.all() {
-                    // Not all chunks received, wait for more
-                    return Ok(());
-                }
+                    chunks.all()
+                } else {
+                    false
+                };
 
-                // all chunks received
+            if all_chunks_received {
                 deposit_state.step = DepositStep::VerifyingAdaptors;
-
                 emit(actions, Action::DepositVerifyAdaptors(deposit_id));
             }
 
@@ -704,6 +703,10 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
                 .put_deposit(deposit_id, &deposit_state)
                 .await
                 .map_err(SMError::storage)?;
+
+            if !all_chunks_received {
+                return Ok(());
+            }
         }
         _ => return Err(SMError::unexpected_input()),
     };

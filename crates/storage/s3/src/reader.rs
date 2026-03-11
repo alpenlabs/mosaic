@@ -100,12 +100,12 @@ impl S3TableReader {
 impl TableReader for S3TableReader {
     type Error = S3Error;
 
-    fn metadata(&self) -> impl Future<Output = Result<TableMetadata, Self::Error>> + Send {
+    fn metadata(&mut self) -> impl Future<Output = Result<TableMetadata, Self::Error>> + Send {
         let meta = self.meta;
         async move { Ok(meta) }
     }
 
-    fn read_translation(&self) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + Send {
+    fn read_translation(&mut self) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + Send {
         let translation = self.translation.clone();
         async move { Ok(translation) }
     }

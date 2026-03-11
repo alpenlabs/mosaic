@@ -5,10 +5,11 @@ use std::ops::Bound;
 use futures::{Stream, StreamExt, TryFutureExt, stream};
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, HeapArray, InputPolynomialCommitments,
-    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    PolynomialCommitment, ReservedSetupInputShares, Sighashes, WideLabelWireAdaptors,
-    WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors, WithdrawalInputs,
+    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, HeapArray,
+    InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
+    OutputPolynomialCommitment, PolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+    WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut, StateRead},
 };
 use mosaic_common::{
@@ -606,7 +607,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         keys: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, key) in keys.iter().enumerate() {
-            self.put_value::<Aes128KeyRowSpec>(&CircuitIndexKey::new(idx as u16), key)
+            let pos = idx.checked_sub(1).unwrap();
+            self.put_value::<Aes128KeyRowSpec>(&CircuitIndexKey::new(pos as u16), key)
                 .await?;
         }
         Ok(())
@@ -617,7 +619,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         values: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, value) in values.iter().enumerate() {
-            self.put_value::<PublicSRowSpec>(&CircuitIndexKey::new(idx as u16), value)
+            let pos = idx.checked_sub(1).unwrap();
+            self.put_value::<PublicSRowSpec>(&CircuitIndexKey::new(pos as u16), value)
                 .await?;
         }
         Ok(())
@@ -628,7 +631,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         labels: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, label) in labels.iter().enumerate() {
-            self.put_value::<ConstantZeroLabelRowSpec>(&CircuitIndexKey::new(idx as u16), label)
+            let pos = idx.checked_sub(1).unwrap();
+            self.put_value::<ConstantZeroLabelRowSpec>(&CircuitIndexKey::new(pos as u16), label)
                 .await?;
         }
         Ok(())
@@ -639,7 +643,8 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         labels: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, label) in labels.iter().enumerate() {
-            self.put_value::<ConstantOneLabelRowSpec>(&CircuitIndexKey::new(idx as u16), label)
+            let pos = idx.checked_sub(1).unwrap();
+            self.put_value::<ConstantOneLabelRowSpec>(&CircuitIndexKey::new(pos as u16), label)
                 .await?;
         }
         Ok(())
@@ -647,10 +652,12 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
 
     async fn put_unchallenged_output_label_cts(
         &mut self,
+        indices: &EvaluationIndices,
         cts: &mosaic_cac_types::HeapArray<Byte32, { N_EVAL_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
-        for (idx, ct) in cts.iter().enumerate() {
-            self.put_value::<OutputLabelCtRowSpec>(&CircuitIndexKey::new(idx as u16), ct)
+        for (idx, ct) in indices.iter().zip(cts) {
+            let pos = idx.get();
+            self.put_value::<OutputLabelCtRowSpec>(&CircuitIndexKey::new(pos as u16), ct)
                 .await?;
         }
         Ok(())
@@ -1099,7 +1106,13 @@ mod tests {
             mosaic_cac_types::HeapArray::new(|idx| indexed_value(0x31, idx));
         let output_label_cts =
             mosaic_cac_types::HeapArray::new(|idx| byte32(0x41u8.wrapping_add(idx as u8)));
-
+        let indices = std::array::from_fn(|idx| {
+            if idx == 0 {
+                Index::reserved()
+            } else {
+                Index::new(idx).expect("valid index")
+            }
+        });
         storage
             .put_all_aes128_keys(&all_aes128_keys)
             .await
@@ -1117,7 +1130,7 @@ mod tests {
             .await
             .expect("put constant one labels");
         storage
-            .put_unchallenged_output_label_cts(&output_label_cts)
+            .put_unchallenged_output_label_cts(&indices, &output_label_cts)
             .await
             .expect("put output label cts");
 
