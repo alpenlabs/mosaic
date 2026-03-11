@@ -645,7 +645,7 @@ async fn test_e2e() {
     let deposit_input: EvaluatorDepositInitData = EvaluatorDepositInitData {
         sk: SecretKey(eval_keypair.0),
         sighashes: HeapArray::from_vec(sighashes.to_vec()),
-        deposit_inputs: deposit_inputs.clone(),
+        deposit_inputs,
     };
 
     evaluator::EvaluatorSM::stf(
@@ -660,7 +660,7 @@ async fn test_e2e() {
     let deposit_input: GarblerDepositInitData = GarblerDepositInitData {
         pk: PubKey(eval_keypair.1),
         sighashes: HeapArray::from_vec(sighashes.to_vec()),
-        deposit_inputs: deposit_inputs.clone(),
+        deposit_inputs,
     };
     garbler::GarblerSM::stf(
         &mut garb_state,
@@ -954,6 +954,7 @@ struct FileTableReader {
 impl TableReader for FileTableReader {
     type Error = std::io::Error;
 
+    #[allow(clippy::unused_io_amount)]
     async fn metadata(&mut self) -> Result<mosaic_storage_api::TableMetadata, Self::Error> {
         let mut bytes = [0; 64];
         self.meta.read(&mut bytes).unwrap();
@@ -1070,8 +1071,7 @@ async fn mock_dispatch_garbler(
                             .unwrap();
                         if let GarblerCircuitSession::Transfer(session) = session {
                             let r = garb_coordinator(&exec.circuit_path, *session).await;
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-
+                            tokio::time::sleep(Duration::from_secs(1)).await; // added sleep to give time for transfer; else we get PeerFinished Error
                             r
                         } else {
                             panic!()
@@ -1137,8 +1137,7 @@ async fn mock_dispatch_evaluator(
                         }
                     }
                     EvaluatorAction::ReceiveGarblingTable(commitment) => {
-                        let r = exec.receive_garbling_table(peer_id, *commitment).await;
-                        r
+                        exec.receive_garbling_table(peer_id, *commitment).await
                     }
                     EvaluatorAction::GenerateDepositAdaptors(deposit_id) => {
                         exec.generate_deposit_adaptors(peer_id, *deposit_id).await
