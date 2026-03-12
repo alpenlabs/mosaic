@@ -55,7 +55,7 @@ pub(crate) async fn handle_send_table_transfer_receipt<SP: StorageProvider, TS: 
     peer_id: &PeerId,
     msg: &Index,
 ) -> HandlerOutcome {
-    match ctx.net_client.send(*peer_id, msg.clone()).await {
+    match ctx.net_client.send(*peer_id, *msg).await {
         Ok(_ack) => completed(
             ActionId::SendTableTransferReceipt(*msg),
             ActionResult::GarblingTableTransferReceiptAcked(*msg),
