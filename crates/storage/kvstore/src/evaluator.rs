@@ -607,7 +607,7 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         keys: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, key) in keys.iter().enumerate() {
-            let pos = idx.checked_sub(1).unwrap();
+            let pos = idx.checked_add(1).unwrap();
             self.put_value::<Aes128KeyRowSpec>(&CircuitIndexKey::new(pos as u16), key)
                 .await?;
         }
@@ -619,7 +619,7 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         values: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, value) in values.iter().enumerate() {
-            let pos = idx.checked_sub(1).unwrap();
+            let pos = idx.checked_add(1).unwrap();
             self.put_value::<PublicSRowSpec>(&CircuitIndexKey::new(pos as u16), value)
                 .await?;
         }
@@ -631,7 +631,7 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         labels: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, label) in labels.iter().enumerate() {
-            let pos = idx.checked_sub(1).unwrap();
+            let pos = idx.checked_add(1).unwrap();
             self.put_value::<ConstantZeroLabelRowSpec>(&CircuitIndexKey::new(pos as u16), label)
                 .await?;
         }
@@ -643,7 +643,7 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
         labels: &mosaic_cac_types::HeapArray<[u8; 16], { N_CIRCUITS }>,
     ) -> Result<(), Self::Error> {
         for (idx, label) in labels.iter().enumerate() {
-            let pos = idx.checked_sub(1).unwrap();
+            let pos = idx.checked_add(1).unwrap();
             self.put_value::<ConstantOneLabelRowSpec>(&CircuitIndexKey::new(pos as u16), label)
                 .await?;
         }
@@ -1135,11 +1135,7 @@ mod tests {
             .expect("put output label cts");
 
         for idx in 0..N_CIRCUITS {
-            let index = if idx == 0 {
-                Index::reserved()
-            } else {
-                Index::new(idx).expect("valid index")
-            };
+            let index = Index::new(idx + 1).expect("valid index");
             assert_eq!(
                 storage.get_aes128_key(index).await.expect("get aes key"),
                 Some(all_aes128_keys[idx])
