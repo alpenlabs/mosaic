@@ -31,6 +31,8 @@ pub enum ActionId {
     GenerateTableCommitment(Index),
     /// Identifies a [`Action::ReceiveGarblingTable`] action by garbling table commitment.
     ReceiveGarblingTable(GarblingTableCommitment),
+    /// Identifies a [`Action::SendTableTransferReceipt`] action by circuit index
+    SendTableTransferReceipt(Index),
     /// Identifies a [`Action::GenerateDepositAdaptors`] action by deposit.
     GenerateDepositAdaptors(DepositId),
     /// Identifies a [`Action::GenerateWithdrawalAdaptorsChunk`] action by deposit and chunk index.
@@ -73,6 +75,8 @@ pub enum ActionResult {
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Garbling table received from garbler and verified.
     GarblingTableReceived(Index, GarblingTableCommitment),
+    /// Garbling table receipt acked
+    GarblingTableTransferReceiptAcked(Index),
     /// Adaptor signatures were generated for deposit wires.
     DepositAdaptorsGenerated(DepositId, DepositAdaptors),
     /// Adaptor signatures were generated for a chunk of withdrawal wires.
@@ -101,6 +105,8 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
     ReceiveGarblingTable(GarblingTableCommitment),
+    /// Send Table Receipt
+    SendTableTransferReceipt(Index),
     /// Generate adaptors of deposit wires for a deposit.
     GenerateDepositAdaptors(DepositId),
     /// Generate adaptors of a portion of withdrawal wires for a deposit.
@@ -120,6 +126,7 @@ impl Action {
             Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
             Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
+            Self::SendTableTransferReceipt(idx) => ActionId::SendTableTransferReceipt(*idx),
             Self::GenerateDepositAdaptors(id) => ActionId::GenerateDepositAdaptors(*id),
             Self::GenerateWithdrawalAdaptorsChunk(id, chunk_index) => {
                 ActionId::GenerateWithdrawalAdaptorsChunk(*id, chunk_index.0)

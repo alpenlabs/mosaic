@@ -142,6 +142,32 @@ pub(crate) async fn handle_event<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
+        Input::RecvTableTransferReceipt(acked_index) => match &mut root_state.step {
+            Step::WaitForTableTransferReceipt { acked_indices } => {
+                let challenge_indices = state
+                    .get_challenge_indices()
+                    .await
+                    .require("expected challenge indices")?;
+                let eval_indices = get_eval_indices(&challenge_indices);
+
+                let Some(pos) = eval_indices.iter().enumerate().find_map(|(pos, index)| {
+                    if *index == acked_index {
+                        Some(pos)
+                    } else {
+                        None
+                    }
+                }) else {
+                    return Err(SMError::invalid_input_data());
+                };
+
+                acked_indices[pos] = true;
+
+                if acked_indices.all() {
+                    root_state.step = Step::SetupComplete;
+                }
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
         Input::DepositInit(
             deposit_id,
             GarblerDepositInitData {
@@ -426,8 +452,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     transferred[index] = true;
 
                     if transferred.all() {
-                        // all tables are transferred
-                        root_state.step = Step::SetupComplete;
+                        // all tables are transferred, wait for table transfer receipt
+                        root_state.step = Step::WaitForTableTransferReceipt {
+                            acked_indices: HeapArray::from_elem(false),
+                        };
                     }
                     // else stay on same step and wait all tables to be transferred
                 }

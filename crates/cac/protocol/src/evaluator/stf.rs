@@ -294,7 +294,12 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             .await?;
         }
         ActionResult::GarblingTableReceived(index, table_commitment) => {
-            handle_table_received(&mut root_state, state, index, table_commitment).await?;
+            handle_table_received(&mut root_state, state, index, table_commitment, actions).await?;
+        }
+        ActionResult::GarblingTableTransferReceiptAcked(_) => {
+            // The table transfer receipt message was sent. No further state change needed —
+            // state was already advanced to SetupComplete when
+            // we emitted the SendTableTransferReceipt action.
         }
         ActionResult::DepositAdaptorsGenerated(deposit_id, deposit_adaptors) => {
             match root_state.step {
@@ -852,6 +857,7 @@ async fn handle_table_received<S: StateMut>(
     _state: &mut S,
     index: Index,
     table_commitment: GarblingTableCommitment,
+    actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::ReceivingGarblingTables {
@@ -859,11 +865,11 @@ async fn handle_table_received<S: StateMut>(
             eval_commitments,
             received,
         } => {
-            let Some(idx) = eval_idxs.iter().position(|&x| x == index) else {
+            let Some(pos) = eval_idxs.iter().position(|&x| x == index) else {
                 return Err(SMError::InvalidInputData);
             };
 
-            let expected_commitment = eval_commitments[idx];
+            let expected_commitment = eval_commitments[pos];
             if table_commitment != expected_commitment {
                 root_state.step = Step::Aborted {
                     reason: format!("invalid table for index {}", index),
@@ -871,7 +877,9 @@ async fn handle_table_received<S: StateMut>(
                 return Ok(());
             }
 
-            received[idx] = true;
+            emit(actions, Action::SendTableTransferReceipt(index));
+
+            received[pos] = true;
 
             if received.all() {
                 root_state.step = Step::SetupComplete;

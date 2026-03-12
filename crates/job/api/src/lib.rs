@@ -403,6 +403,13 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
         peer_id: &PeerId,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
+    /// Send table transfer receipt to garbler (E1).
+    fn send_table_transfer_receipt(
+        &self,
+        peer_id: &PeerId,
+        msg: &Index,
+    ) -> impl Future<Output = HandlerOutcome> + Send;
+
     /// Generate adaptor signatures for deposit wires (E5).
     fn generate_deposit_adaptors(
         &self,

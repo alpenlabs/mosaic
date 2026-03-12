@@ -12,6 +12,7 @@ use mosaic_common::{
     Byte32,
     constants::{N_CIRCUITS, N_EVAL_CIRCUITS},
 };
+use mosaic_vs3::Index;
 
 use crate::{
     Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, DepositId,
@@ -163,6 +164,8 @@ pub enum Msg {
     CommitChunk(CommitMsgChunk),
     /// Challenge message (Evaluator -> Garbler)
     Challenge(ChallengeMsg),
+    /// Table Receipt (Evaluator -> Garbler)
+    TableTransferReceipt(Index),
     /// Challenge response header (Garbler -> Evaluator)
     ChallengeResponseHeader(ChallengeResponseMsgHeader),
     /// Challenge response chunk (Garbler -> Evaluator)
@@ -179,7 +182,8 @@ enum MsgVariant {
     Challenge = 2,
     ChallengeResponseHeader = 3,
     ChallengeResponseChunk = 4,
-    AdaptorChunk = 5,
+    TableTransferReceipt = 5,
+    AdaptorChunk = 6,
 }
 
 impl TryFrom<u8> for MsgVariant {
@@ -192,7 +196,8 @@ impl TryFrom<u8> for MsgVariant {
             2 => Ok(MsgVariant::Challenge),
             3 => Ok(MsgVariant::ChallengeResponseHeader),
             4 => Ok(MsgVariant::ChallengeResponseChunk),
-            5 => Ok(MsgVariant::AdaptorChunk),
+            5 => Ok(MsgVariant::TableTransferReceipt),
+            6 => Ok(MsgVariant::AdaptorChunk),
             _ => Err(SerializationError::InvalidData),
         }
     }
@@ -215,6 +220,11 @@ impl CanonicalSerialize for Msg {
             }
             Msg::Challenge(msg) => {
                 (MsgVariant::Challenge as u8).serialize_with_mode(&mut writer, compress)?;
+                msg.serialize_with_mode(&mut writer, compress)
+            }
+            Msg::TableTransferReceipt(msg) => {
+                (MsgVariant::TableTransferReceipt as u8)
+                    .serialize_with_mode(&mut writer, compress)?;
                 msg.serialize_with_mode(&mut writer, compress)
             }
             Msg::ChallengeResponseHeader(msg) => {
@@ -241,6 +251,7 @@ impl CanonicalSerialize for Msg {
             Msg::Challenge(msg) => msg.serialized_size(compress),
             Msg::ChallengeResponseHeader(msg) => msg.serialized_size(compress),
             Msg::ChallengeResponseChunk(msg) => msg.serialized_size(compress),
+            Msg::TableTransferReceipt(msg) => msg.serialized_size(compress),
             Msg::AdaptorChunk(msg) => msg.serialized_size(compress),
         }
     }
@@ -284,6 +295,10 @@ impl CanonicalDeserialize for Msg {
                 )?;
                 Ok(Msg::ChallengeResponseChunk(msg))
             }
+            MsgVariant::TableTransferReceipt => {
+                let msg = Index::deserialize_with_mode(&mut reader, compress, validate)?;
+                Ok(Msg::TableTransferReceipt(msg))
+            }
             MsgVariant::AdaptorChunk => {
                 let msg = AdaptorMsgChunk::deserialize_with_mode(&mut reader, compress, validate)?;
                 Ok(Msg::AdaptorChunk(msg))
@@ -300,6 +315,7 @@ impl Valid for Msg {
             Msg::Challenge(msg) => msg.check(),
             Msg::ChallengeResponseHeader(msg) => msg.check(),
             Msg::ChallengeResponseChunk(msg) => msg.check(),
+            Msg::TableTransferReceipt(msg) => msg.check(),
             Msg::AdaptorChunk(msg) => msg.check(),
         }
     }
@@ -342,5 +358,11 @@ impl From<ChallengeResponseMsgChunk> for Msg {
 impl From<AdaptorMsgChunk> for Msg {
     fn from(msg: AdaptorMsgChunk) -> Self {
         Msg::AdaptorChunk(msg)
+    }
+}
+
+impl From<Index> for Msg {
+    fn from(value: Index) -> Self {
+        Msg::TableTransferReceipt(value)
     }
 }

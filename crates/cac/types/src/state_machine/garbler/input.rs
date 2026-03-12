@@ -8,6 +8,8 @@
 //! [`TrackedActionCompleted`](fasm::Input::TrackedActionCompleted) mechanism
 //! using the [`ActionResult`](super::ActionResult) type. See issue #69.
 
+use mosaic_vs3::Index;
+
 use crate::{
     AdaptorMsgChunk, ChallengeMsg, DepositId, DepositInputs, PubKey, Seed, SetupInputs, Sighashes,
     WithdrawalInputs,
@@ -31,6 +33,9 @@ pub enum Input {
 
     /// Challenge message received from the evaluator via network.
     RecvChallengeMsg(ChallengeMsg),
+
+    /// Receive Table Transfer Receipt
+    RecvTableTransferReceipt(Index),
 
     /// Initialize a new deposit for the specified deposit ID.
     ///
