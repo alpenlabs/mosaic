@@ -81,6 +81,7 @@ async fn restore_setup_consumed_and_aborted_emit_nothing() {
         .put_root_state(&EvaluatorState {
             config: None,
             step: Step::SetupConsumed {
+                slash: None,
                 deposit_id: DepositId::from([7; 32]),
             },
         })

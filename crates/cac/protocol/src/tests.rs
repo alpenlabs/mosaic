@@ -317,6 +317,7 @@ use fasm::StateMachine;
 // 6. move lvl/g16.v5c to mosaic/cac/protocol/
 // 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
 //    --exact --show-output --nocapture --ignored
+
 async fn test_e2e() {
     use mosaic_cac_types::{
         WithdrawalInputs,
@@ -326,635 +327,677 @@ async fn test_e2e() {
     };
     use mosaic_common::constants::N_SETUP_INPUT_WIRES;
 
-    let mut garb_state = StoredGarblerState::default();
-    let mut garb_rng = ChaChaRng::seed_from_u64(42);
-    let mut eval_state = StoredEvaluatorState::default();
-    let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
+    let test_vector = {
+        // The current g16.v5c file ORs all input wires; so it yields false only if all inputs are
+        // false.
+        let setup_inputs = [0; N_SETUP_INPUT_WIRES];
+        let deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
+        let withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
+        let reveals_secret = true; // output is false
 
-    let ts = DummyTableStore { dir: temp_dir() };
-    let circuit_path = PathBuf::from_str("g16.v5c").unwrap();
-    assert!(
-        std::fs::exists(circuit_path.clone()).unwrap(),
-        "expects v5c format ckt file on circuit_path"
-    );
-    let (peer_a, peer_b) = netcl::create_client_pair();
-    let (net_client_gabler, garbler_peer_id, net_client_evaluator, eval_peer_id) =
-        (peer_a.client, peer_a.peer_id, peer_b.client, peer_b.peer_id);
-
-    let garb_seed = rand_byte_array(&mut garb_rng).into();
-    let eval_seed = rand_byte_array(&mut eval_rng).into();
-    let setup_inputs = [0; N_SETUP_INPUT_WIRES];
-
-    // Run Garbler STF
-    let sp: DummyStorageProvider = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garbler_exec = MosaicExecutor::new(
-        net_client_gabler.clone(),
-        sp,
-        ts.clone(),
-        circuit_path.clone(),
-    );
-
-    let sp: DummyStorageProvider = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_exec =
-        MosaicExecutor::new(net_client_evaluator, sp, ts.clone(), circuit_path.clone());
-
-    // Initialize garbler
-    let mut garb_actions: Vec<
-        actions::Action<
-            mosaic_cac_types::state_machine::garbler::UntrackedAction,
-            GarblerTrackedActionTypes,
-        >,
-    > = Vec::new();
-    garbler::GarblerSM::stf(
-        &mut garb_state,
-        fasm::Input::Normal(GarbInput::Init(GarblerInitData {
-            seed: garb_seed,
-            setup_inputs,
-        })),
-        &mut garb_actions,
-    )
-    .await
-    .unwrap();
-
-    // Initialize evaluator
-    let mut eval_actions: Vec<
-        actions::Action<
-            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
-            EvaluatorTrackedActionTypes,
-        >,
-    > = Vec::new();
-    evaluator::EvaluatorSM::stf(
-        &mut eval_state,
-        fasm::Input::Normal(EvalInput::Init(EvaluatorInitData {
-            seed: eval_seed,
-            setup_inputs,
-        })),
-        &mut eval_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(eval_actions.len(), 0); // Step Waiting For Commit
-
-    assert_eq!(garb_actions.len(), 1 + N_INPUT_WIRES); //  Action::GeneratePolynomialCommitments: [Output, Inputs..]
-    let mut results = mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
-    assert_eq!(results.len(), N_INPUT_WIRES + 1); // ActionResult::PolynomialCommitmentsGenerated: [Output, Inputs..]
-    while let Some(completion) = results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    // returns Action::GenerateShares
-    assert_eq!(garb_actions.len(), N_CIRCUITS + 1);
-
-    // update garbler state read by executor manually; TODO: avoidable with a shared copy of State
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut results = mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
-    while let Some(completion) = results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-
-    assert_eq!(garb_actions.len(), N_CIRCUITS); // [Action::GenerateTableCommitment; N_CIRCUITS]
-
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut results = mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
-    assert_eq!(results.len(), N_CIRCUITS); // GarblerActionResult::TableCommitmentGenerated
-
-    while let Some(completion) = results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 1 + N_INPUT_WIRES); // Action::SendCommitMsgHeader + Action::SendCommitMsgChunk
-
-    println!("spawn commit msg listener");
-    // Make evaluator listen
-    let encl = eval_exec.net_client.clone();
-    let commit_msg_listener = tokio::spawn(async move { handle_receive_commit_msg(encl).await });
-
-    println!("send commit msg");
-    // sends commit msg header then chunks; evaluator should have been listening
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
-
-    println!("receive commit msg");
-    // Evaluator reads
-    let mut eval_inputs = commit_msg_listener.await.unwrap();
-    assert_eq!(eval_inputs.len(), 1 + N_INPUT_WIRES);
-
-    while let Some(completion) = garb_results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 0); // Step: WaitForChallenge; No Action // network ack
-
-    //Evaluator receives commit msg
-    while let Some(ei) = eval_inputs.pop() {
-        evaluator::EvaluatorSM::stf(&mut eval_state, fasm::Input::Normal(ei), &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), 1); // SendChallenge
-
-    println!("Evaluator Wants to Send Challenge; Garbler should be listening");
-
-    let ncl = garbler_exec.net_client.clone();
-    let challenge_msg_listener = tokio::spawn(async move { handle_receive_challenge(&ncl).await });
-
-    // Evaluator sends challenge over network
-    println!("mock_dispatch_evaluator; send_challenge");
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-
-    let garb_inputs = challenge_msg_listener.await.unwrap(); // ChallengeMsg
-
-    // eval's tx is acked
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), 0); // Challenge was acked; step WaitingForChallengeResponse
-    // garbler processes challenge
-    garbler::GarblerSM::stf(
-        &mut garb_state,
-        fasm::Input::Normal(garb_inputs),
-        &mut garb_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(garb_actions.len(), 1 + N_OPEN_CIRCUITS); // Challenge Response Header + Challenge Response Chunks (one chunk for each circuit)
-
-    let encl = eval_exec.net_client.clone();
-    let challenge_response_listener =
-        tokio::spawn(async move { handle_receive_challenge_response(encl).await });
-
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
-
-    let mut eval_inputs = challenge_response_listener.await.unwrap();
-
-    while let Some(completion) = garb_results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), N_EVAL_CIRCUITS); //  Step::TransferringGarblingTables; Action::TransferGarblingTable
-
-    // Evaluator receives challenge response
-    while let Some(ei) = eval_inputs.pop() {
-        evaluator::EvaluatorSM::stf(&mut eval_state, fasm::Input::Normal(ei), &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), 1); // Step::VerifyingOpenedInputShares; Action::VerifyOpenedInputShares
-
-    println!("mock_dispatch_evaluator; verify shares");
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    println!("shares verified");
-    assert_eq!(eval_results.len(), 1); // ActionResult::VerifyOpenedInputSharesResult
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), N_OPEN_CIRCUITS); // Action::GenerateTableCommitment(index, seed), Step::VerifyingTableCommitments
-
-    println!("mock_dispatch_evaluator; generate table commitment");
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    assert_eq!(eval_results.len(), N_OPEN_CIRCUITS); // ActionResult::TableCommitmentGenerated
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::ReceivingGarblingTables, Action::ReceiveGarblingTable
-
-    // garbler sends table
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
+        let mut setup_inputs2 = [0; N_SETUP_INPUT_WIRES];
+        setup_inputs2[0] = 1;
+        let reveals_secret2 = false; // output is true
+        vec![
+            (
+                setup_inputs,
+                deposit_inputs,
+                withdrawal_input,
+                reveals_secret,
+            ),
+            (
+                setup_inputs2,
+                deposit_inputs,
+                withdrawal_input,
+                reveals_secret2,
+            ),
+        ]
     };
 
-    // transfer tables background
-    let tx = tokio::spawn(async move {
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await
-    });
+    for (iter, (setup_inputs, deposit_inputs, withdrawal_input, reveals_secret)) in
+        test_vector.into_iter().enumerate()
+    {
+        println!("ITERATION {}", iter + 1);
+        let mut garb_state = StoredGarblerState::default();
+        let mut garb_rng = ChaChaRng::seed_from_u64(42);
+        let mut eval_state = StoredEvaluatorState::default();
+        let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
 
-    // evaluator receives table
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::SetupComplete, Action::SendTableTransferReceipt
-    assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+        let ts = DummyTableStore {dir: temp_dir()};
 
-    // garbler transfer tables done
-    let mut garb_results = tx.await.unwrap();
-    assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
-    let mut garb_actions = vec![];
-    while let Some(completion) = garb_results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 0); // step: waiting for table transfer receipt
+        let circuit_path = PathBuf::from_str("g16.v5c").unwrap();
+        assert!(
+            std::fs::exists(circuit_path.clone()).unwrap(),
+            "expects v5c format ckt file on circuit_path"
+        );
+        let (peer_a, peer_b) = netcl::create_client_pair();
+        let (net_client_gabler, garbler_peer_id, net_client_evaluator, eval_peer_id) =
+            (peer_a.client, peer_a.peer_id, peer_b.client, peer_b.peer_id);
 
-    // garbler listens for table transfer receipt
-    let ncl = net_client_gabler.clone();
-    let tx = tokio::spawn(async move {
-        use crate::tests::netcl::handle_receive_table_transfer_receipt;
-        handle_receive_table_transfer_receipt(&ncl).await
-    });
+        let garb_seed = rand_byte_array(&mut garb_rng).into();
+        let eval_seed = rand_byte_array(&mut eval_rng).into();
 
-    // evaluator sends table receipt
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS); // ActionResult::GarblingTableTransferReceiptAcked
-    // Stf ignores ack as state has been transitioned to SetupComplete already
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), 0);
-    assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+        // Run Garbler STF
+        let sp: DummyStorageProvider = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut garbler_exec = MosaicExecutor::new(
+            net_client_gabler.clone(),
+            sp,
+            ts.clone(),
+            circuit_path.clone(),
+        );
 
-    // garbler received table transfer receipts
-    let mut garb_results = tx.await.unwrap();
-    assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
-    let mut garb_actions = vec![];
-    while let Some(input) = garb_results.pop() {
+        let sp: DummyStorageProvider = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_exec = MosaicExecutor::new(net_client_evaluator, sp, ts.clone(), circuit_path.clone());
+
+        // Initialize garbler
+        let mut garb_actions: Vec<
+            actions::Action<
+                mosaic_cac_types::state_machine::garbler::UntrackedAction,
+                GarblerTrackedActionTypes,
+            >,
+        > = Vec::new();
         garbler::GarblerSM::stf(
             &mut garb_state,
-            fasm::Input::Normal(input),
+            fasm::Input::Normal(GarbInput::Init(GarblerInitData {
+                seed: garb_seed,
+                setup_inputs,
+            })),
             &mut garb_actions,
         )
         .await
         .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 0); // setup complete
-    assert_eq!(garb_state.state.step, GarbStep::SetupComplete);
 
-    println!("setup complete");
-
-    let deposit_id = {
-        let mut empty: [u8; 32] = [0; 32];
-        empty[0] = 7;
-        DepositId(Byte32::from(empty))
-    };
-    let sighashes =
-        [Sighash(Byte32::from([0u8; 32])); N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
-    let deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
-    let eval_keypair = Signature::keypair(&mut eval_rng);
-    let deposit_input: EvaluatorDepositInitData = EvaluatorDepositInitData {
-        sk: SecretKey(eval_keypair.0),
-        sighashes: HeapArray::from_vec(sighashes.to_vec()),
-        deposit_inputs,
-    };
-
-    evaluator::EvaluatorSM::stf(
-        &mut eval_state,
-        fasm::Input::Normal(EvalInput::DepositInit(deposit_id, deposit_input)),
-        &mut eval_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(eval_actions.len(), 1 + N_ADAPTOR_MSG_CHUNKS); // Action::GenerateDepositAdaptors + [Action::GenerateWithdrawalAdaptorsChunk]
-
-    let deposit_input: GarblerDepositInitData = GarblerDepositInitData {
-        pk: PubKey(eval_keypair.1),
-        sighashes: HeapArray::from_vec(sighashes.to_vec()),
-        deposit_inputs,
-    };
-    garbler::GarblerSM::stf(
-        &mut garb_state,
-        fasm::Input::Normal(GarbInput::DepositInit(deposit_id, deposit_input)),
-        &mut garb_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(garb_actions.len(), 0);
-
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), N_DEPOSIT_INPUT_WIRES); //  Action::DepositSendAdaptorMsgChunk
-
-    println!("handle_receive_adaptor_msg_chunks");
-    // adaptor chunks listener
-    let ncl = net_client_gabler.clone();
-    let challenge_msg_listener =
-        tokio::spawn(async move { handle_receive_adaptor_msg_chunks(&ncl, deposit_id).await });
-
-    // send adaptor msg chunks
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    assert_eq!(eval_results.len(), N_DEPOSIT_INPUT_WIRES); // ActionResult::DepositAdaptorChunkSent
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(eval_actions.len(), 0);
-    println!("evaluator verifies adaptors");
-    assert_eq!(
-        eval_state
-            .deposits
-            .get(&deposit_id)
-            .unwrap()
-            .state
-            .as_ref()
-            .unwrap()
-            .step,
-        EvalDepositStep::DepositReady
-    );
-    // assert evaluator is deposit ready
-
-    // garbler listens for adaptors
-    let mut garb_inputs = challenge_msg_listener.await.unwrap();
-    assert_eq!(garb_inputs.len(), N_DEPOSIT_INPUT_WIRES);
-    while let Some(ei) = garb_inputs.pop() {
-        garbler::GarblerSM::stf(&mut garb_state, fasm::Input::Normal(ei), &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 1); // DepositStep::VerifyingAdaptors
-
-    println!("garbler now verifies adaptors");
-
-    let sp = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garbler_exec = MosaicExecutor::new(
-        net_client_gabler.clone(),
-        sp,
-        ts.clone(),
-        circuit_path.clone(),
-    );
-
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
-    // results ActionResult::DepositAdaptorVerificationResult
-    while let Some(completion) = garb_results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 0);
-    assert_eq!(
-        garb_state
-            .deposits
-            .get(&deposit_id)
-            .unwrap()
-            .state
-            .as_ref()
-            .unwrap()
-            .step,
-        GarbDepositStep::DepositReady
-    );
-    // garbler is deposit ready
-    println!("garbler is deposit ready");
-
-    println!("Withdrawal Stage");
-    // STARTING WITHDRAWAL STAGE for Disputed Withdrawal
-
-    let withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
-
-    garbler::GarblerSM::stf(
-        &mut garb_state,
-        fasm::Input::Normal(GarbInput::DisputedWithdrawal(deposit_id, withdrawal_input)),
-        &mut garb_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(garb_actions.len(), 1); // Action::CompleteAdaptorSignatures
-
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await; // ActionResult::AdaptorSignaturesCompleted
-    assert_eq!(garb_results.len(), 1);
-
-    while let Some(completion) = garb_results.pop() {
-        let (action_id, action_result) = completion.as_garbler().unwrap();
-        let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 0); // Setup Consumed
-    assert_eq!(
-        garb_state.state.step,
-        GarbStep::SetupConsumed { deposit_id }
-    );
-
-    let on_chain_sigs = garb_state
-        .deposits
-        .get(&deposit_id)
-        .unwrap()
-        .completed_sigs
-        .as_ref()
+        // Initialize evaluator
+        let mut eval_actions: Vec<
+            actions::Action<
+                mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+                EvaluatorTrackedActionTypes,
+            >,
+        > = Vec::new();
+        evaluator::EvaluatorSM::stf(
+            &mut eval_state,
+            fasm::Input::Normal(EvalInput::Init(EvaluatorInitData {
+                seed: eval_seed,
+                setup_inputs,
+            })),
+            &mut eval_actions,
+        )
+        .await
         .unwrap();
+        assert_eq!(eval_actions.len(), 0); // Step Waiting For Commit
 
-    let eval_disputed_withdrawal = EvaluatorDisputedWithdrawalData {
-        withdrawal_inputs: withdrawal_input,
-        signatures: on_chain_sigs.clone(),
-    };
-    evaluator::EvaluatorSM::stf(
-        &mut eval_state,
-        fasm::Input::Normal(EvalInput::DisputedWithdrawal(
-            deposit_id,
-            eval_disputed_withdrawal,
-        )),
-        &mut eval_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Action::EvaluateGarblingTable
+        assert_eq!(garb_actions.len(), 1 + N_INPUT_WIRES); //  Action::GeneratePolynomialCommitments: [Output, Inputs..]
+        let mut results =
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+        assert_eq!(results.len(), N_INPUT_WIRES + 1); // ActionResult::PolynomialCommitmentsGenerated: [Output, Inputs..]
+        while let Some(completion) = results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        // returns Action::GenerateShares
+        assert_eq!(garb_actions.len(), N_CIRCUITS + 1);
 
-    println!("evaluate garbling table");
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        // update garbler state read by executor manually; TODO: avoidable with a shared copy of
+        // State
+        garbler_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut results =
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+        while let Some(completion) = results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(garb_actions.len(), N_CIRCUITS); // [Action::GenerateTableCommitment; N_CIRCUITS]
+
+        garbler_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut results =
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+        assert_eq!(results.len(), N_CIRCUITS); // GarblerActionResult::TableCommitmentGenerated
+
+        while let Some(completion) = results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(garb_actions.len(), 1 + N_INPUT_WIRES); // Action::SendCommitMsgHeader + Action::SendCommitMsgChunk
+
+        println!("spawn commit msg listener");
+        // Make evaluator listen
+        let encl = eval_exec.net_client.clone();
+        let commit_msg_listener =
+            tokio::spawn(async move { handle_receive_commit_msg(encl).await });
+
+        println!("send commit msg");
+        // sends commit msg header then chunks; evaluator should have been listening
+        garbler_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut garb_results =
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+
+        println!("receive commit msg");
+        // Evaluator reads
+        let mut eval_inputs = commit_msg_listener.await.unwrap();
+        assert_eq!(eval_inputs.len(), 1 + N_INPUT_WIRES);
+
+        while let Some(completion) = garb_results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(garb_actions.len(), 0); // Step: WaitForChallenge; No Action // network ack
+
+        //Evaluator receives commit msg
+        while let Some(ei) = eval_inputs.pop() {
+            evaluator::EvaluatorSM::stf(
+                &mut eval_state,
+                fasm::Input::Normal(ei),
+                &mut eval_actions,
+            )
             .await
             .unwrap();
-    }
-    assert_eq!(eval_actions.len(), 0);
-
-    match eval_state.state.step {
-        EvalStep::SetupConsumed {
-            deposit_id: deposit_idx,
-            slash,
-        } => {
-            assert_eq!(deposit_id, deposit_idx);
-            assert!(slash.is_some(), "should have found slashing condition");
         }
-        _ => panic!(),
-    };
+        assert_eq!(eval_actions.len(), 1); // SendChallenge
+
+        println!("Evaluator Wants to Send Challenge; Garbler should be listening");
+
+        let ncl = garbler_exec.net_client.clone();
+        let challenge_msg_listener =
+            tokio::spawn(async move { handle_receive_challenge(&ncl).await });
+
+        // Evaluator sends challenge over network
+        println!("mock_dispatch_evaluator; send_challenge");
+        garbler_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+
+        let garb_inputs = challenge_msg_listener.await.unwrap(); // ChallengeMsg
+
+        // eval's tx is acked
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), 0); // Challenge was acked; step WaitingForChallengeResponse
+        // garbler processes challenge
+        garbler::GarblerSM::stf(
+            &mut garb_state,
+            fasm::Input::Normal(garb_inputs),
+            &mut garb_actions,
+        )
+        .await
+        .unwrap();
+        assert_eq!(garb_actions.len(), 1 + N_OPEN_CIRCUITS); // Challenge Response Header + Challenge Response Chunks (one chunk for each circuit)
+
+        let encl = eval_exec.net_client.clone();
+        let challenge_response_listener =
+            tokio::spawn(async move { handle_receive_challenge_response(encl).await });
+
+        garbler_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut garb_results =
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+
+        let mut eval_inputs = challenge_response_listener.await.unwrap();
+
+        while let Some(completion) = garb_results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(garb_actions.len(), N_EVAL_CIRCUITS); //  Step::TransferringGarblingTables; Action::TransferGarblingTable
+
+        // Evaluator receives challenge response
+        while let Some(ei) = eval_inputs.pop() {
+            evaluator::EvaluatorSM::stf(
+                &mut eval_state,
+                fasm::Input::Normal(ei),
+                &mut eval_actions,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(eval_actions.len(), 1); // Step::VerifyingOpenedInputShares; Action::VerifyOpenedInputShares
+
+        println!("mock_dispatch_evaluator; verify shares");
+        eval_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+        println!("shares verified");
+        assert_eq!(eval_results.len(), 1); // ActionResult::VerifyOpenedInputSharesResult
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), N_OPEN_CIRCUITS); // Action::GenerateTableCommitment(index, seed), Step::VerifyingTableCommitments
+
+        println!("mock_dispatch_evaluator; generate table commitment");
+        eval_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+        assert_eq!(eval_results.len(), N_OPEN_CIRCUITS); // ActionResult::TableCommitmentGenerated
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::ReceivingGarblingTables, Action::ReceiveGarblingTable
+
+        // garbler sends table
+        garbler_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+
+        // transfer tables background
+        let tx = tokio::spawn(async move {
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await
+        });
+
+        // evaluator receives table
+        eval_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+        assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::SetupComplete, Action::SendTableTransferReceipt
+        assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+
+        // garbler transfer tables done
+        let mut garb_results = tx.await.unwrap();
+        assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
+        let mut garb_actions = vec![];
+        while let Some(completion) = garb_results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(garb_actions.len(), 0); // step: waiting for table transfer receipt
+
+        // garbler listens for table transfer receipt
+        let ncl = net_client_gabler.clone();
+        let tx = tokio::spawn(async move {
+            use crate::tests::netcl::handle_receive_table_transfer_receipt;
+            handle_receive_table_transfer_receipt(&ncl).await
+        });
+
+        // evaluator sends table receipt
+        eval_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+        assert_eq!(eval_results.len(), N_EVAL_CIRCUITS); // ActionResult::GarblingTableTransferReceiptAcked
+        // Stf ignores ack as state has been transitioned to SetupComplete already
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), 0);
+        assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+
+        // garbler received table transfer receipts
+        let mut garb_results = tx.await.unwrap();
+        assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
+        let mut garb_actions = vec![];
+        while let Some(input) = garb_results.pop() {
+            garbler::GarblerSM::stf(
+                &mut garb_state,
+                fasm::Input::Normal(input),
+                &mut garb_actions,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(garb_actions.len(), 0); // setup complete
+        assert_eq!(garb_state.state.step, GarbStep::SetupComplete);
+
+        println!("setup complete");
+
+        let deposit_id = {
+            let mut empty: [u8; 32] = [0; 32];
+            empty[0] = 7;
+            DepositId(Byte32::from(empty))
+        };
+        let sighashes =
+            [Sighash(Byte32::from([0u8; 32])); N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
+        let eval_keypair = Signature::keypair(&mut eval_rng);
+        let deposit_input: EvaluatorDepositInitData = EvaluatorDepositInitData {
+            sk: SecretKey(eval_keypair.0),
+            sighashes: HeapArray::from_vec(sighashes.to_vec()),
+            deposit_inputs,
+        };
+
+        evaluator::EvaluatorSM::stf(
+            &mut eval_state,
+            fasm::Input::Normal(EvalInput::DepositInit(deposit_id, deposit_input)),
+            &mut eval_actions,
+        )
+        .await
+        .unwrap();
+        assert_eq!(eval_actions.len(), 1 + N_ADAPTOR_MSG_CHUNKS); // Action::GenerateDepositAdaptors + [Action::GenerateWithdrawalAdaptorsChunk]
+
+        let deposit_input: GarblerDepositInitData = GarblerDepositInitData {
+            pk: PubKey(eval_keypair.1),
+            sighashes: HeapArray::from_vec(sighashes.to_vec()),
+            deposit_inputs,
+        };
+        garbler::GarblerSM::stf(
+            &mut garb_state,
+            fasm::Input::Normal(GarbInput::DepositInit(deposit_id, deposit_input)),
+            &mut garb_actions,
+        )
+        .await
+        .unwrap();
+        assert_eq!(garb_actions.len(), 0);
+
+        eval_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), N_DEPOSIT_INPUT_WIRES); //  Action::DepositSendAdaptorMsgChunk
+
+        println!("handle_receive_adaptor_msg_chunks");
+        // adaptor chunks listener
+        let ncl = net_client_gabler.clone();
+        let challenge_msg_listener =
+            tokio::spawn(async move { handle_receive_adaptor_msg_chunks(&ncl, deposit_id).await });
+
+        // send adaptor msg chunks
+        eval_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+        assert_eq!(eval_results.len(), N_DEPOSIT_INPUT_WIRES); // ActionResult::DepositAdaptorChunkSent
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), 0);
+        println!("evaluator verifies adaptors");
+        assert_eq!(
+            eval_state
+                .deposits
+                .get(&deposit_id)
+                .unwrap()
+                .state
+                .as_ref()
+                .unwrap()
+                .step,
+            EvalDepositStep::DepositReady
+        );
+        // assert evaluator is deposit ready
+
+        // garbler listens for adaptors
+        let mut garb_inputs = challenge_msg_listener.await.unwrap();
+        assert_eq!(garb_inputs.len(), N_DEPOSIT_INPUT_WIRES);
+        while let Some(ei) = garb_inputs.pop() {
+            garbler::GarblerSM::stf(&mut garb_state, fasm::Input::Normal(ei), &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(garb_actions.len(), 1); // DepositStep::VerifyingAdaptors
+
+        println!("garbler now verifies adaptors");
+
+        let sp = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut garbler_exec = MosaicExecutor::new(
+            net_client_gabler.clone(),
+            sp,
+            ts.clone(),
+            circuit_path.clone(),
+        );
+
+        let mut garb_results =
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+        // results ActionResult::DepositAdaptorVerificationResult
+        while let Some(completion) = garb_results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(garb_actions.len(), 0);
+        assert_eq!(
+            garb_state
+                .deposits
+                .get(&deposit_id)
+                .unwrap()
+                .state
+                .as_ref()
+                .unwrap()
+                .step,
+            GarbDepositStep::DepositReady
+        );
+        // garbler is deposit ready
+        println!("garbler is deposit ready");
+
+        println!("Withdrawal Stage");
+        // STARTING WITHDRAWAL STAGE for Disputed Withdrawal
+
+        garbler::GarblerSM::stf(
+            &mut garb_state,
+            fasm::Input::Normal(GarbInput::DisputedWithdrawal(deposit_id, withdrawal_input)),
+            &mut garb_actions,
+        )
+        .await
+        .unwrap();
+        assert_eq!(garb_actions.len(), 1); // Action::CompleteAdaptorSignatures
+
+        garbler_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut garb_results =
+            mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await; // ActionResult::AdaptorSignaturesCompleted
+        assert_eq!(garb_results.len(), 1);
+
+        while let Some(completion) = garb_results.pop() {
+            let (action_id, action_result) = completion.as_garbler().unwrap();
+            let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(garb_actions.len(), 0); // Setup Consumed
+        assert_eq!(
+            garb_state.state.step,
+            GarbStep::SetupConsumed { deposit_id }
+        );
+
+        let on_chain_sigs = garb_state
+            .deposits
+            .get(&deposit_id)
+            .unwrap()
+            .completed_sigs
+            .as_ref()
+            .unwrap();
+
+        let eval_disputed_withdrawal = EvaluatorDisputedWithdrawalData {
+            withdrawal_inputs: withdrawal_input,
+            signatures: on_chain_sigs.clone(),
+        };
+        evaluator::EvaluatorSM::stf(
+            &mut eval_state,
+            fasm::Input::Normal(EvalInput::DisputedWithdrawal(
+                deposit_id,
+                eval_disputed_withdrawal,
+            )),
+            &mut eval_actions,
+        )
+        .await
+        .unwrap();
+        assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Action::EvaluateGarblingTable
+
+        println!("evaluate garbling table");
+        eval_exec.storage = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut eval_results =
+            mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+        assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
+        while let Some(completion) = eval_results.pop() {
+            let (action_id, action_result) = completion.as_evaluator().unwrap();
+            let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                fasm::Input::TrackedActionCompleted {
+                    id: action_id.clone(),
+                    result: action_result.clone(),
+                };
+            evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                .await
+                .unwrap();
+        }
+        assert_eq!(eval_actions.len(), 0);
+
+        match eval_state.state.step {
+            EvalStep::SetupConsumed {
+                deposit_id: deposit_idx,
+                slash,
+            } => {
+                assert_eq!(deposit_id, deposit_idx);
+                assert_eq!(slash.is_some(), reveals_secret);
+            }
+            _ => panic!(),
+        };
+    }
 }
 
 struct DummyStorageProvider {
