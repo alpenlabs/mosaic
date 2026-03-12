@@ -360,6 +360,9 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
         EvaluatorAction::ReceiveGarblingTable(commitment) => {
             exec.receive_garbling_table(peer_id, *commitment).await
         }
+        EvaluatorAction::SendTableTransferReceipt(msg) => {
+            exec.send_table_transfer_receipt(peer_id, msg).await
+        }
         // Circuit actions should be routed to the garbling coordinator.
         EvaluatorAction::GenerateTableCommitment(..)
         | EvaluatorAction::EvaluateGarblingTable(..) => {
