@@ -247,7 +247,7 @@ async fn test_e2e() {
     let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
 
     let ts = DummyTableStore {};
-    let circuit_path = PathBuf::from_str("g16_mini.v5c").unwrap();
+    let circuit_path = PathBuf::from_str("g16.v5c").unwrap();
     assert!(
         std::fs::exists(circuit_path.clone()).unwrap(),
         "expects v5c format ckt file on circuit_path"
