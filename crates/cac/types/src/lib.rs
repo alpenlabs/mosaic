@@ -94,9 +94,7 @@ impl SecretKey {
             bits
         }
         let rint = F::BigInt::from_bits_be(&bytes_be_to_bits_be(&bytes));
-        F::from_bigint(rint).ok_or(String::from(
-            "conversion from bigint to field element",
-        ))
+        F::from_bigint(rint).ok_or(String::from("conversion from bigint to field element"))
     }
 
     /// Create a secret key from bytes for tests.

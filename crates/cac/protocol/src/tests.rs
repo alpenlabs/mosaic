@@ -324,6 +324,7 @@ async fn test_e2e() {
             DepositStep as EvalDepositStep, EvaluatorDisputedWithdrawalData,
         },
     };
+    use mosaic_common::constants::N_SETUP_INPUT_WIRES;
 
     let mut garb_state = StoredGarblerState::default();
     let mut garb_rng = ChaChaRng::seed_from_u64(42);
@@ -342,7 +343,7 @@ async fn test_e2e() {
 
     let garb_seed = rand_byte_array(&mut garb_rng).into();
     let eval_seed = rand_byte_array(&mut eval_rng).into();
-    let setup_inputs = rand_byte_array(&mut garb_rng);
+    let setup_inputs = [0; N_SETUP_INPUT_WIRES];
 
     // Run Garbler STF
     let sp: DummyStorageProvider = DummyStorageProvider {
@@ -928,7 +929,8 @@ async fn test_e2e() {
         garb_state: garb_state.clone(),
         eval_state: eval_state.clone(),
     };
-    let mut eval_results = mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+    let mut eval_results =
+        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
     assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();

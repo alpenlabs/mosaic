@@ -2,7 +2,8 @@ use mosaic_common::constants::{N_CIRCUITS, N_COMMIT_MSG_CHUNKS, N_EVAL_CIRCUITS,
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices, HeapArray, OpenedGarblingSeeds, OpenedGarblingTableCommitments, SecretKey, Seed, SetupInputs
+    ChallengeIndices, DepositId, EvalGarblingTableCommitments, EvaluationIndices, HeapArray,
+    OpenedGarblingSeeds, OpenedGarblingTableCommitments, SecretKey, Seed, SetupInputs,
 };
 
 /// Evaluator state machine root state.
@@ -85,7 +86,7 @@ pub enum Step {
         /// Disputed withdrawal for deposit
         deposit_id: DepositId,
         /// Little-Endian encoding of scalar
-        slash: Option<SecretKey>
+        slash: Option<SecretKey>,
     },
     /// Setup was aborted due to a protocol violation.
     Aborted {

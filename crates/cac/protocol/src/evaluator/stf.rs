@@ -2,7 +2,12 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, SecretKey, Seed, SetupInputs, WithdrawalAdaptors, WithdrawalAdaptorsChunk, state_machine::evaluator::*
+    AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
+    DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
+    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
+    OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, SecretKey, Seed, SetupInputs,
+    WithdrawalAdaptors, WithdrawalAdaptorsChunk, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
