@@ -1,5 +1,6 @@
 //! protocol state machines
 
+mod common;
 mod error;
 pub mod evaluator;
 pub mod garbler;

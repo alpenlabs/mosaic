@@ -2,13 +2,12 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
-    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
-    EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    InputShares, OpenedGarblingSeeds, OpenedOutputShares, OutputShares, ReservedInputShares,
-    ReservedSetupInputShares, Seed, SetupInputs, Share, WideLabelWireShares,
-    state_machine::garbler::*,
+    AdaptorMsgChunk, AllGarblingSeeds, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk,
+    ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare, CommitMsgChunk,
+    CommitMsgHeader, DepositId, EvalGarblingSeeds, EvaluationIndices, GarblingTableCommitment,
+    HeapArray, Index, InputPolynomialCommitments, InputShares, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputShares, ReservedInputShares, ReservedSetupInputShares, Seed,
+    SetupInputs, Share, WideLabelWireShares, state_machine::garbler::*,
 };
 use mosaic_common::{
     Byte32,
@@ -21,7 +20,10 @@ use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 use super::emit;
-use crate::{ResultOptionExt, SMError, SMResult};
+use crate::{
+    ResultOptionExt, SMError, SMResult,
+    common::{get_eval_commitments, get_eval_indices},
+};
 
 // ============================================================================
 // External event handler
@@ -1125,20 +1127,6 @@ fn create_challenge_response_msg_header(
     }
 }
 
-fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
-    let challenged_indices: Vec<usize> = challenge_indices
-        .iter()
-        .map(|x| x.get())
-        .collect::<Vec<usize>>();
-    let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
-        .filter(|id| !challenged_indices.contains(id))
-        .map(|id| Index::new(id).expect("indices in valid range"))
-        .collect::<Vec<Index>>()
-        .try_into()
-        .expect("unchallenge length");
-    unchallenged_indices
-}
-
 fn get_eval_seeds(
     eval_indices: &EvaluationIndices,
     garbling_seeds: &AllGarblingSeeds,
@@ -1147,16 +1135,5 @@ fn get_eval_seeds(
         // eval_indices are 1-indexed (1..=181), garbling_seeds are 0-indexed (0..=180)
         let seed_idx = eval_indices[i].get() - 1;
         garbling_seeds[seed_idx]
-    })
-}
-
-fn get_eval_commitments(
-    eval_indices: &EvaluationIndices,
-    garbling_commitments: &AllGarblingTableCommitments,
-) -> EvalGarblingTableCommitments {
-    HeapArray::new(|i| {
-        // eval_indices are 1-indexed (1..=181), garbling_commitments are 0-indexed (0..=180)
-        let seed_idx = eval_indices[i].get() - 1;
-        garbling_commitments[seed_idx]
     })
 }

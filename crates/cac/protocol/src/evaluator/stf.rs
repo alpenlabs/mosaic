@@ -4,11 +4,10 @@ use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
-    DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
-    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
-    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
-    state_machine::evaluator::*,
+    DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
+    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
+    OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, Seed, SetupInputs,
+    WithdrawalAdaptors, WithdrawalAdaptorsChunk, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -17,7 +16,10 @@ use mosaic_common::constants::{
 use rand::SeedableRng;
 
 use super::emit;
-use crate::{ResultOptionExt, SMError, SMResult};
+use crate::{
+    ResultOptionExt, SMError, SMResult,
+    common::{get_eval_commitments, get_eval_indices},
+};
 
 // ============================================================================
 // External event handler
@@ -1135,30 +1137,6 @@ fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
     let base_seed: [u8; 32] = base_seed.into();
     let hash = blake3::keyed_hash(&base_seed, stage.as_bytes());
     Seed::from(*hash.as_bytes())
-}
-
-fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
-    let challenged_indices: Vec<usize> = challenge_indices
-        .iter()
-        .map(|x| x.get())
-        .collect::<Vec<usize>>();
-    let unchallenged_indices: [Index; N_EVAL_CIRCUITS] = (1..=N_CIRCUITS)
-        .filter(|id| !challenged_indices.contains(id))
-        .map(|id| Index::new(id).expect("indices in valid range"))
-        .collect::<Vec<Index>>()
-        .try_into()
-        .expect("unchallenge length");
-    unchallenged_indices
-}
-
-fn get_eval_commitments(
-    eval_indices: &EvaluationIndices,
-    garbling_commitments: &AllGarblingTableCommitments,
-) -> EvalGarblingTableCommitments {
-    HeapArray::new(|i| {
-        let seed_idx = eval_indices[i].get() - 1;
-        garbling_commitments[seed_idx]
-    })
 }
 
 fn create_adaptor_message_chunks(

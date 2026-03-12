@@ -239,7 +239,7 @@ use fasm::StateMachine;
 // 5. generate v5c file: cd crates/lvl && cargo run prealloc g16.ckt g16.v5c
 // 6. move lvl/g16.v5c to mosaic/cac/protocol/
 // 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
-//    --exact --show-output --nocapture
+//    --exact --show-output --nocapture --ignored
 async fn test_e2e() {
     let mut garb_state = StoredGarblerState::default();
     let mut garb_rng = ChaChaRng::seed_from_u64(42);
@@ -247,7 +247,7 @@ async fn test_e2e() {
     let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
 
     let ts = DummyTableStore {};
-    let circuit_path = PathBuf::from_str("g16.v5c").unwrap();
+    let circuit_path = PathBuf::from_str("g16_mini.v5c").unwrap();
     assert!(
         std::fs::exists(circuit_path.clone()).unwrap(),
         "expects v5c format ckt file on circuit_path"
