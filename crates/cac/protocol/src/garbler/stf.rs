@@ -22,7 +22,7 @@ use rand_chacha::ChaCha20Rng;
 use super::emit;
 use crate::{
     ResultOptionExt, SMError, SMResult,
-    common::{get_eval_commitments, get_eval_indices},
+    common::{derive_stage_seed, get_eval_commitments, get_eval_indices},
 };
 
 // ============================================================================
@@ -64,7 +64,7 @@ pub(crate) async fn handle_event<S: StateMut>(
 
                     // All input and output polynomials are generated from
                     // mutating rng initialized with stage seed
-                    let stage_seed = generate_polynomaial_seed(data.seed);
+                    let stage_seed = generate_polynomial_seed(data.seed);
 
                     emit(
                         actions,
@@ -535,7 +535,7 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
             }
             // all commitments generated; go to next step
             let config = require_config(root_state)?;
-            let stage_seed = generate_polynomaial_seed(config.seed);
+            let stage_seed = generate_polynomial_seed(config.seed);
             // NOTE: 0 is reserved index
             emit(
                 actions,
@@ -729,7 +729,7 @@ pub(crate) async fn restore<S: StateRead>(
         Step::Uninit => {}
         Step::GeneratingPolynomialCommitments { inputs, output } => {
             let config = require_config(&root_state)?;
-            let stage_seed = generate_polynomaial_seed(config.seed);
+            let stage_seed = generate_polynomial_seed(config.seed);
             if !output {
                 emit(
                     actions,
@@ -748,7 +748,7 @@ pub(crate) async fn restore<S: StateRead>(
         }
         Step::GeneratingShares { generated } => {
             let config = require_config(&root_state)?;
-            let stage_seed = generate_polynomaial_seed(config.seed);
+            let stage_seed = generate_polynomial_seed(config.seed);
             for idx in 0..N_CIRCUITS {
                 if generated[idx] {
                     continue;
@@ -978,14 +978,7 @@ async fn build_commit_msg_header<S: StateRead>(state: &S) -> SMResult<CommitMsgH
     })
 }
 
-// derive stage seed
-fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
-    let base_seed: [u8; 32] = base_seed.into();
-    let hash = blake3::keyed_hash(&base_seed, stage.as_bytes());
-    Seed::from(*hash.as_bytes())
-}
-
-fn generate_polynomaial_seed(base_seed: Seed) -> Seed {
+fn generate_polynomial_seed(base_seed: Seed) -> Seed {
     derive_stage_seed(base_seed, "generate_polynomial")
 }
 

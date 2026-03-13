@@ -1,6 +1,6 @@
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, EvalGarblingTableCommitments, EvaluationIndices,
-    HeapArray, Index,
+    HeapArray, Index, Seed,
 };
 use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS};
 
@@ -27,4 +27,11 @@ pub(crate) fn get_eval_commitments(
         let seed_idx = eval_indices[i].get() - 1;
         garbling_commitments[seed_idx]
     })
+}
+
+// derive stage seed
+pub(crate) fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
+    let base_seed: [u8; 32] = base_seed.into();
+    let hash = blake3::keyed_hash(&base_seed, stage.as_bytes());
+    Seed::from(*hash.as_bytes())
 }

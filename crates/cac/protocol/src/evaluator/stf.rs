@@ -18,7 +18,7 @@ use rand::SeedableRng;
 use super::emit;
 use crate::{
     ResultOptionExt, SMError, SMResult,
-    common::{get_eval_commitments, get_eval_indices},
+    common::{derive_stage_seed, get_eval_commitments, get_eval_indices},
 };
 
 // ============================================================================
@@ -1128,15 +1128,6 @@ fn get_opened_commitments(
 
 fn is_sorted<T: Ord>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] <= w[1])
-}
-
-// derive stage seed
-// only called to sample challenge indices
-// adaptor generation right now initializes its adaptors internally
-fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
-    let base_seed: [u8; 32] = base_seed.into();
-    let hash = blake3::keyed_hash(&base_seed, stage.as_bytes());
-    Seed::from(*hash.as_bytes())
 }
 
 fn create_adaptor_message_chunks(
