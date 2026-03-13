@@ -177,6 +177,8 @@ fn create_client_pair_with_config(config: NetClientConfig) -> (TestPeer, TestPee
                 panic!("create net service A after 50 attempts: {}", e);
             }
         };
+        // Stagger startup slightly to avoid deterministic dial races.
+        std::thread::sleep(Duration::from_millis(50));
 
         let config_b =
             NetServiceConfig::new(key_b, addr_b, vec![PeerConfig::new(peer_id_a, addr_a)])
@@ -193,7 +195,8 @@ fn create_client_pair_with_config(config: NetClientConfig) -> (TestPeer, TestPee
             }
         };
 
-        // No fixed sleep - send_and_receive handles connection stabilization with retries
+        // Allow monitors/dialers to settle before first protocol stream.
+        std::thread::sleep(Duration::from_millis(50));
 
         return (
             TestPeer {
@@ -788,7 +791,10 @@ fn test_concurrent_sends_from_same_peer() {
                     request.ack().await.expect("ack failed");
                     received += 1;
                 }
-                Err(RecvError::Read(mosaic_net_svc::StreamClosed::PeerFinished)) => continue,
+                Err(RecvError::Read {
+                    source: mosaic_net_svc::StreamClosed::PeerFinished,
+                    ..
+                }) => continue,
                 Err(err) => panic!("recv failed: {:?}", err),
             }
         }

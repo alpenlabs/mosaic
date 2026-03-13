@@ -14,9 +14,9 @@ use mosaic_common::{
 };
 
 use crate::{
-    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, HeapArray,
-    OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk,
+    Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, DepositId,
+    HeapArray, OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment,
+    ReservedSetupInputShares, WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -127,18 +127,20 @@ pub struct ChallengeResponseMsgChunk {
 
 /// AdaptorMsgChunk: Evaluator -> Garbler (chunked by deposit wire)
 ///
-/// One chunk containing 1 deposit adaptor and 41 withdrawal wire adaptors.
+/// One chunk containing 1 deposit adaptor and 32 withdrawal wire adaptors.
 /// Chunked to allow uncompressed transmission under 4 MiB frame limit.
 ///
-/// Size (uncompressed): ~1.6 MB per chunk
+/// Size (uncompressed): ~1.27 MB per chunk
 /// Total chunks needed: N_DEPOSIT_INPUT_WIRES (4)
 #[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct AdaptorMsgChunk {
+    /// Deposit this adaptor chunk belongs to.
+    pub deposit_id: DepositId,
     /// Which chunk this is (0..N_DEPOSIT_INPUT_WIRES, maps to deposit wire index)
     pub chunk_index: u8,
     /// Single deposit adaptor for this chunk's deposit wire
     pub deposit_adaptor: Adaptor,
-    /// Adaptor signatures for 41 withdrawal wires × 256 values each.
+    /// Adaptor signatures for 32 withdrawal wires × 256 values each.
     pub withdrawal_adaptors: WithdrawalAdaptorsChunk,
 }
 
@@ -153,6 +155,7 @@ pub struct AdaptorMsgChunk {
 /// Note: Acknowledgments are handled at the network layer, not here.
 /// Note: Garbling tables are transferred via bulk streams, not protocol messages.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Msg {
     /// Commitment header (Garbler -> Evaluator)
     CommitHeader(CommitMsgHeader),

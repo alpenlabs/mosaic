@@ -190,6 +190,7 @@ fn arb_adaptor_msg_chunk() -> impl Strategy<Value = AdaptorMsgChunk> {
         };
 
         AdaptorMsgChunk {
+            deposit_id: DepositId::from(bytes),
             chunk_index: (seed % 4) as u8,
             deposit_adaptor: single_adaptor,
             withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {

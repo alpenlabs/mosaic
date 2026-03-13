@@ -2203,6 +2203,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "mosaic-sm-executor"
+version = "0.1.0"
+dependencies = [
+ "ark-serialize",
+ "ed25519-dalek",
+ "fasm",
+ "futures",
+ "kanal",
+ "monoio",
+ "mosaic-cac-protocol",
+ "mosaic-cac-types",
+ "mosaic-job-api",
+ "mosaic-net-client",
+ "mosaic-net-svc-api",
+ "mosaic-sm-executor-api",
+ "mosaic-storage-api",
+ "mosaic-storage-inmemory",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "mosaic-sm-executor-api"
+version = "0.1.0"
+dependencies = [
+ "kanal",
+ "mosaic-cac-types",
+ "mosaic-net-svc-api",
+]
+
+[[package]]
 name = "mosaic-storage-api"
 version = "0.1.0"
 dependencies = [
@@ -2220,6 +2251,8 @@ dependencies = [
  "futures",
  "mosaic-cac-types",
  "mosaic-common",
+ "mosaic-net-svc-api",
+ "mosaic-storage-api",
  "mosaic-vs3",
  "thiserror 2.0.18",
 ]

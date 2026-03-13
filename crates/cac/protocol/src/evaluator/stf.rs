@@ -322,6 +322,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                                     })?;
 
                                 for chunk in create_adaptor_message_chunks(
+                                    deposit_id,
                                     deposit_adaptors,
                                     withdrawal_adaptors,
                                 ) {
@@ -388,9 +389,11 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                                 .await
                                 .require("expected withdrawal adaptors")?;
 
-                            for chunk in
-                                create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)
-                            {
+                            for chunk in create_adaptor_message_chunks(
+                                deposit_id,
+                                deposit_adaptors,
+                                withdrawal_adaptors,
+                            ) {
                                 emit(
                                     actions,
                                     Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
@@ -887,15 +890,18 @@ pub(crate) async fn restore<S: StateRead>(
     match &root_state.step {
         Step::Uninit => {}
         Step::WaitingForCommit { .. } => {}
-        Step::WaitingForChallengeResponse { .. } => {
-            let challenge_indices = state
-                .get_challenge_indices()
-                .await
-                .require("expected challenge indices")?;
-
-            let challenge_msg = ChallengeMsg { challenge_indices };
-
-            emit(actions, Action::SendChallengeMsg(challenge_msg));
+        Step::WaitingForChallengeResponse { header, chunks } => {
+            // Replay challenge send only if no response material was observed yet.
+            // Once any response data is stored, re-sending can cause duplicate
+            // challenge handling on the garbler side.
+            if !header && chunks.iter().all(|seen| !*seen) {
+                let challenge_indices = state
+                    .get_challenge_indices()
+                    .await
+                    .require("expected challenge indices")?;
+                let challenge_msg = ChallengeMsg { challenge_indices };
+                emit(actions, Action::SendChallengeMsg(challenge_msg));
+            }
         }
         Step::VerifyingOpenedInputShares => {
             emit(actions, Action::VerifyOpenedInputShares);
@@ -965,9 +971,11 @@ pub(crate) async fn restore<S: StateRead>(
                             .await
                             .require("expected withdrawal adaptors")?;
 
-                        for chunk in
-                            create_adaptor_message_chunks(deposit_adaptors, withdrawal_adaptors)
-                        {
+                        for chunk in create_adaptor_message_chunks(
+                            deposit_id,
+                            deposit_adaptors,
+                            withdrawal_adaptors,
+                        ) {
                             if !acked[chunk.chunk_index as usize] {
                                 emit(
                                     actions,
@@ -982,7 +990,29 @@ pub(crate) async fn restore<S: StateRead>(
                 }
             }
         }
-        _ => unimplemented!(),
+        Step::EvaluatingTables {
+            eval_indices,
+            eval_commitments,
+            evaluated,
+            ..
+        } => {
+            for ii in 0..N_EVAL_CIRCUITS {
+                if evaluated[ii] {
+                    continue;
+                }
+                emit(
+                    actions,
+                    Action::EvaluateGarblingTable(eval_indices[ii], eval_commitments[ii]),
+                );
+            }
+        }
+        Step::SetupConsumed { .. } => {}
+        Step::Aborted { .. } => {}
+        _ => {
+            return Err(SMError::state_inconsistency(
+                "restore: unhandled evaluator root step",
+            ));
+        }
     }
 
     Ok(())
@@ -1086,10 +1116,23 @@ fn get_eval_commitments(
     })
 }
 
-#[expect(unused_variables)]
 fn create_adaptor_message_chunks(
+    deposit_id: DepositId,
     deposit_adaptors: DepositAdaptors,
     withdrawal_adaptors: WithdrawalAdaptors,
 ) -> Vec<AdaptorMsgChunk> {
-    todo!()
+    let withdrawal_wires_per_chunk = withdrawal_adaptors.len() / N_ADAPTOR_MSG_CHUNKS;
+    (0..N_ADAPTOR_MSG_CHUNKS)
+        .map(|chunk_index| {
+            let start = chunk_index * withdrawal_wires_per_chunk;
+            AdaptorMsgChunk {
+                deposit_id,
+                chunk_index: chunk_index as u8,
+                deposit_adaptor: deposit_adaptors[chunk_index],
+                withdrawal_adaptors: HeapArray::new(|wire_offset| {
+                    withdrawal_adaptors[start + wire_offset].clone()
+                }),
+            }
+        })
+        .collect()
 }
