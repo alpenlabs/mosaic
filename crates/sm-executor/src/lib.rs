@@ -682,6 +682,12 @@ where
                     )
                     .await?;
                 }
+                Msg::TableTransferReceipt(msg) => {
+                    self.apply_garbler_event(
+                        peer_id, 
+                        garbler::Input::RecvTableTransferReceipt(*msg),
+                    ).await?;
+                }
             }
             tracing::debug!("inbound request applied; acking");
 
@@ -963,6 +969,7 @@ fn msg_kind(msg: &Msg) -> &'static str {
         Msg::Challenge(_) => "Challenge",
         Msg::ChallengeResponseHeader(_) => "ChallengeResponseHeader",
         Msg::ChallengeResponseChunk(_) => "ChallengeResponseChunk",
+        Msg::TableTransferReceipt(_) => "TableTransferReceipt",
         Msg::AdaptorChunk(_) => "AdaptorChunk",
     }
 }
