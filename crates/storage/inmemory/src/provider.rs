@@ -6,7 +6,15 @@ use std::{
 
 use futures::Stream;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels, AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices, CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares, ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::{evaluator, garbler}
+    AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
+    AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
+    CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
+    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputPolynomialCommitments,
+    InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
+    OutputPolynomialCommitment, OutputShares, ReservedInputShares, ReservedSetupInputShares,
+    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs,
+    state_machine::{evaluator, garbler},
 };
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
@@ -709,7 +717,9 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
             { mosaic_common::constants::N_EVAL_CIRCUITS },
         >,
     ) -> Result<(), Self::Error> {
-        self.inner.put_unchallenged_output_label_cts(indices, cts).await
+        self.inner
+            .put_unchallenged_output_label_cts(indices, cts)
+            .await
     }
 }
 
