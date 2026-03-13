@@ -83,6 +83,7 @@ async fn restore_setup_consumed_and_aborted_emit_nothing() {
             step: Step::SetupConsumed {
                 slash: None,
                 deposit_id: DepositId::from([7; 32]),
+                slash: None,
             },
         })
         .await
