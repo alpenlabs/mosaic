@@ -684,9 +684,10 @@ where
                 }
                 Msg::TableTransferReceipt(msg) => {
                     self.apply_garbler_event(
-                        peer_id, 
+                        peer_id,
                         garbler::Input::RecvTableTransferReceipt(*msg),
-                    ).await?;
+                    )
+                    .await?;
                 }
             }
             tracing::debug!("inbound request applied; acking");
