@@ -29,7 +29,6 @@ members = [
   "crates/storage/inmemory",
   "crates/storage/kvstore",
   "crates/storage/s3",
-  "crates/table-types",
   "crates/vs3",
   "bin/mosaic",
   "bin/mosaic-peer-id",
@@ -89,7 +88,6 @@ mosaic-storage-fdb = { path = "crates/storage/fdb" }
 mosaic-storage-inmemory = { path = "crates/storage/inmemory" }
 mosaic-storage-kvstore = { path = "crates/storage/kvstore" }
 mosaic-storage-s3 = { path = "crates/storage/s3" }
-mosaic-table-types = { path = "crates/table-types" }
 mosaic-vs3 = { path = "crates/vs3" }
 
 anyhow = "1.0"
