@@ -780,11 +780,15 @@ pub(crate) async fn restore<S: StateRead>(
         Step::GeneratingShares { generated } => {
             let config = require_config(&root_state)?;
             let stage_seed = generate_polynomial_seed(config.seed);
-            for idx in 0..N_CIRCUITS {
+            for idx in 0..N_CIRCUITS + 1 {
                 if generated[idx] {
                     continue;
                 }
-                let index = Index::new(idx + 1).expect("valid index");
+                let index = if idx == 0 {
+                    Index::reserved()
+                } else {
+                    Index::new(idx).expect("valid index")
+                };
                 emit(actions, Action::GenerateShares(stage_seed, index));
             }
         }
@@ -861,8 +865,16 @@ pub(crate) async fn restore<S: StateRead>(
             if !*header_acked {
                 emit(actions, Action::SendChallengeResponseMsgHeader(header));
             }
+
             for chunk in chunks {
-                if !chunk_acked[chunk.circuit_index as usize] {
+                let challenge_index_pos = challenge_indices
+                    .iter()
+                    .position(|x| x.get() == chunk.circuit_index as usize)
+                    .ok_or(SMError::StateInconsistency(format!(
+                        "Circuit index differs from one present in current state {}",
+                        chunk.circuit_index
+                    )))?;
+                if !chunk_acked[challenge_index_pos] {
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                 }
             }
