@@ -749,9 +749,8 @@ mod tests {
                 .expect("acquire garbler read state")
                 .get_root_state()
                 .await
-                .expect("read root state")
-                .expect("root state should exist");
-            assert!(matches!(initial.step, garbler::Step::Uninit));
+                .expect("read root state");
+            assert!(initial.is_none());
 
             {
                 let mut session = provider
@@ -762,7 +761,7 @@ mod tests {
                     .get_root_state()
                     .await
                     .expect("read mutable session root")
-                    .expect("root exists");
+                    .unwrap_or_default();
                 state.step = garbler::Step::SetupComplete;
                 session
                     .put_root_state(&state)
@@ -787,9 +786,8 @@ mod tests {
                 .expect("acquire evaluator read state")
                 .get_root_state()
                 .await
-                .expect("read evaluator root")
-                .expect("root exists");
-            assert!(matches!(eval_initial.step, evaluator::Step::Uninit));
+                .expect("read evaluator root");
+            assert!(eval_initial.is_none());
         });
     }
 }

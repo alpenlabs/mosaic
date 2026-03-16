@@ -19,7 +19,7 @@ impl StateRead for StoredGarblerState {
     type Error = DbError;
 
     async fn get_root_state(&self) -> Result<Option<GarblerState>, Self::Error> {
-        Ok(Some(self.state.clone()))
+        Ok(self.state.clone())
     }
 
     async fn get_deposit(

@@ -18,7 +18,7 @@ impl StateRead for StoredEvaluatorState {
     type Error = DbError;
 
     async fn get_root_state(&self) -> Result<Option<EvaluatorState>, Self::Error> {
-        Ok(Some(self.state.clone()))
+        Ok(self.state.clone())
     }
 
     async fn get_deposit(

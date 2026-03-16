@@ -38,7 +38,7 @@ pub(crate) async fn handle_event<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match input {
         Input::Init(data) => match root_state.step {
@@ -233,7 +233,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match result {
         ActionResult::ChallengeMsgAcked => {
@@ -903,7 +903,7 @@ pub(crate) async fn restore<S: StateRead>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match &root_state.step {
         Step::Uninit => {}

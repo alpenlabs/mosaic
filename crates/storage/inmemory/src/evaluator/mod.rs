@@ -20,7 +20,7 @@ use crate::error::DbError;
 #[derive(Debug, Clone, Default)]
 pub struct StoredEvaluatorState {
     /// Root evaluator state machine state.
-    pub state: EvaluatorState,
+    pub state: Option<EvaluatorState>,
     /// Input polynomial commitments indexed by wire.
     pub input_polynomial_commitments: BTreeMap<usize, WideLabelWirePolynomialCommitments>,
     /// Output polynomial commitment.

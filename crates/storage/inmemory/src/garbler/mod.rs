@@ -19,7 +19,7 @@ use crate::error::DbError;
 #[derive(Debug, Clone, Default)]
 pub struct StoredGarblerState {
     /// Root garbler state machine state.
-    pub state: GarblerState,
+    pub state: Option<GarblerState>,
     /// Input polynomial commitments indexed by wire.
     pub input_polynomial_commitments: BTreeMap<usize, WideLabelWirePolynomialCommitments>,
     /// Output polynomial commitment.

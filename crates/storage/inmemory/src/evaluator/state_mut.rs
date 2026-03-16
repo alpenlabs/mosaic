@@ -12,7 +12,7 @@ use crate::error::DbError;
 
 impl StateMut for StoredEvaluatorState {
     async fn put_root_state(&mut self, state: &EvaluatorState) -> Result<(), Self::Error> {
-        self.state = state.clone();
+        self.state = Some(state.clone());
         Ok(())
     }
 

@@ -11,7 +11,7 @@ use crate::error::DbError;
 
 impl StateMut for StoredGarblerState {
     async fn put_root_state(&mut self, state: &GarblerState) -> Result<(), Self::Error> {
-        self.state = state.clone();
+        self.state = Some(state.clone());
         Ok(())
     }
 
