@@ -120,6 +120,7 @@ impl Step {
             Step::WaitingForChallenge => "WaitingForChallenge",
             Step::SendingChallengeResponse { .. } => "SendingChallengeResponse",
             Step::TransferringGarblingTables { .. } => "TransferringGarblingTables",
+            Step::WaitForTableTransferReceipt { .. } => "WaitForTableTransferReceipt",
             Step::SetupComplete => "SetupComplete",
             Step::CompletingAdaptors { .. } => "CompletingAdaptors",
             Step::SetupConsumed { .. } => "SetupConsumed",

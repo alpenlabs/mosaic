@@ -644,7 +644,10 @@ async fn test_e2e() {
             .unwrap();
     }
     assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::SetupComplete, Action::SendTableTransferReceipt
-    assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+    assert_eq!(
+        eval_state.state.as_ref().unwrap().step,
+        EvalStep::SetupComplete
+    );
 
     // garbler transfer tables done
     let mut garb_results = tx.await.unwrap();
@@ -691,7 +694,10 @@ async fn test_e2e() {
             .unwrap();
     }
     assert_eq!(eval_actions.len(), 0);
-    assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+    assert_eq!(
+        eval_state.state.as_ref().unwrap().step,
+        EvalStep::SetupComplete
+    );
 
     // garbler received table transfer receipts
     let mut garb_results = tx.await.unwrap();
@@ -707,7 +713,10 @@ async fn test_e2e() {
         .unwrap();
     }
     assert_eq!(garb_actions.len(), 0); // setup complete
-    assert_eq!(garb_state.state.step, GarbStep::SetupComplete);
+    assert_eq!(
+        garb_state.state.as_ref().unwrap().step,
+        GarbStep::SetupComplete
+    );
 
     println!("setup complete");
 
@@ -895,7 +904,7 @@ async fn test_e2e() {
     }
     assert_eq!(garb_actions.len(), 0); // Setup Consumed
     assert_eq!(
-        garb_state.state.step,
+        garb_state.state.as_ref().unwrap().step,
         GarbStep::SetupConsumed { deposit_id }
     );
 

@@ -1032,9 +1032,9 @@ fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
         .map(|_| {
             let mut bytes: [u8; 32] = [0; 32];
             rng.fill_bytes(&mut bytes);
-            Byte32::from(bytes)
+            Seed::from(bytes)
         })
-        .collect::<Vec<Byte32>>();
+        .collect::<Vec<_>>();
     HeapArray::from_vec(garbling_seeds)
 }
 

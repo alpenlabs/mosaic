@@ -736,7 +736,6 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
 mod tests {
     use futures::executor::block_on;
     use mosaic_cac_types::state_machine::{
-        evaluator,
         evaluator::StateRead as EvaluatorStateRead,
         garbler,
         garbler::{StateMut as GarblerStateMut, StateRead as GarblerStateRead},
