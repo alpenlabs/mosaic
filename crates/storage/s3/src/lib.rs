@@ -201,7 +201,7 @@ mod tests {
     fn table_id() -> TableId {
         TableId {
             peer_id: PeerId::from_bytes([0x11; 32]),
-            index: Index::new(7).unwrap(),
+            index: Index::new(4).unwrap(),
         }
     }
 
