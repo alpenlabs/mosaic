@@ -1,0 +1,33 @@
+[package]
+name = "mosaic-rpc-service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-cac-types.workspace = true
+mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
+mosaic-storage-api.workspace = true
+mosaic-vs3.workspace = true
+
+ark-ff.workspace = true
+async-trait.workspace = true
+bitcoin.workspace = true
+futures.workspace = true
+kanal.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+secp256k1.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

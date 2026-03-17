@@ -2470,6 +2470,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "mosaic-rpc-service"
+version = "0.1.0"
+dependencies = [
+ "ark-ff",
+ "async-trait",
+ "bitcoin",
+ "futures",
+ "kanal",
+ "mosaic-cac-types",
+ "mosaic-common",
+ "mosaic-net-svc-api",
+ "mosaic-storage-api",
+ "mosaic-vs3",
+ "parking_lot",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "secp256k1",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "mosaic-rpc-types"
 version = "0.1.0"
 dependencies = [

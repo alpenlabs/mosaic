@@ -16,7 +16,7 @@ use crate::{
 /// Read-only access to evaluator state storage.
 pub trait StateRead {
     /// Error type used by state operations.
-    type Error: Error + Debug + 'static;
+    type Error: Error + Debug + Send + 'static;
 
     /// Retrieves the root evaluator state.
     fn get_root_state(
