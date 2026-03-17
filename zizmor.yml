@@ -1,4 +1,1 @@
-rules:
-  use-trusted-publishing:
-    ignore:
-      - release.yml:40
+rules: {}
