@@ -2455,17 +2455,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "mosaic-rpc-provider"
-version = "0.1.0"
-
-[[package]]
 name = "mosaic-rpc-server"
 version = "0.1.0"
 dependencies = [
  "jsonrpsee",
+ "mosaic-cac-types",
+ "mosaic-common",
  "mosaic-net-svc-api",
  "mosaic-rpc-api",
- "mosaic-rpc-provider",
+ "mosaic-rpc-service",
  "mosaic-rpc-types",
 ]
 

@@ -1,36 +1,48 @@
-#![allow(unused, reason = "not yet implemented")]
-
 use jsonrpsee::core::async_trait;
+use mosaic_cac_types::{
+    CompletedSignatures, DepositId, Sighashes, Signature, state_machine::StateMachineId,
+};
+use mosaic_common::Byte32;
 use mosaic_net_svc_api::PeerId;
 use mosaic_rpc_api::MosaicRpcServer;
-use mosaic_rpc_provider::RpcContextProvider;
+use mosaic_rpc_service::{
+    EvaluatorDepositInit, EvaluatorWithdrawalData, GarblerDepositInit, MosaicApi, SetupConfig,
+};
 use mosaic_rpc_types::*;
 
+use crate::conversions::{
+    cac_role_to_domain, deposit_status_to_rpc, service_err, tableset_status_to_rpc,
+};
+
 /// Mosaic RPC server impl.
+///
+/// Thin adapter that translates between RPC types and domain types, delegating
+/// all business logic to the [`MosaicApi`] service.
 #[derive(Debug)]
-pub struct RpcServerImpl<P: RpcContextProvider> {
-    #[allow(unused)]
-    provider: P,
+pub struct RpcServerImpl<Svc: MosaicApi> {
+    service: Svc,
 }
 
-impl<P: RpcContextProvider> RpcServerImpl<P> {
-    /// Constructs a new instance.
-    ///
-    /// Accepts a RPC context provider for access to the client functionality we
-    /// expose.
-    pub fn new(provider: P) -> Self {
-        Self { provider }
+impl<Svc: MosaicApi> RpcServerImpl<Svc> {
+    /// Constructs a new instance with the given service implementation.
+    pub fn new(service: Svc) -> Self {
+        Self { service }
     }
+}
+
+/// Parses an [`RpcTablesetId`] into a [`StateMachineId`].
+fn parse_sm_id(tsid: RpcTablesetId) -> RpcResult<StateMachineId> {
+    StateMachineId::try_from(tsid).map_err(|_| RpcError::InvalidStateMachineId)
 }
 
 #[async_trait]
-impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
+impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
     fn get_circuit_defs(&self) -> RpcResult<Vec<RpcCircuitInfoEntry>> {
-        todo!()
+        Ok(vec![RpcCircuitInfoEntry::from_config()])
     }
 
     fn get_peer_id(&self) -> RpcResult<RpcPeerId> {
-        todo!()
+        Ok(RpcPeerId::new(*self.service.get_peer_id().as_bytes()))
     }
 
     fn get_tableset_id(
@@ -39,23 +51,59 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         peer_id: RpcPeerId,
         instance: RpcInstanceId,
     ) -> RpcResult<RpcTablesetId> {
-        todo!()
-    }
-
-    async fn list_tableset_ids(&self) -> RpcResult<Vec<RpcTablesetId>> {
-        todo!()
+        let peer_id = PeerId::from_bytes(*peer_id.inner());
+        let sm_id = self.service.get_tableset_id(
+            cac_role_to_domain(role),
+            &peer_id,
+            &Byte32::from(instance.into_inner()),
+        );
+        Ok(sm_id.into())
     }
 
     async fn setup_tableset(&self, config: RpcSetupConfig) -> RpcResult<RpcTablesetId> {
-        todo!()
+        let domain_config = SetupConfig {
+            role: cac_role_to_domain(config.role),
+            peer_id: PeerId::from_bytes(*config.peer_info.peer_id.inner()),
+            setup_inputs: config.setup_inputs.into_inner(),
+            instance: Byte32::from(config.instance_id.into_inner()),
+        };
+        let sm_id = self
+            .service
+            .setup_tableset(domain_config)
+            .await
+            .map_err(service_err)?;
+        Ok(sm_id.into())
+    }
+
+    async fn list_tableset_ids(&self) -> RpcResult<Vec<RpcTablesetId>> {
+        Ok(self
+            .service
+            .list_tableset_ids()
+            .await
+            .map_err(service_err)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     async fn get_tableset_status(&self, tsid: RpcTablesetId) -> RpcResult<RpcTablesetStatus> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let status = self
+            .service
+            .get_tableset_status(&sm_id)
+            .await
+            .map_err(service_err)?;
+        Ok(tableset_status_to_rpc(status))
     }
 
     async fn get_fault_secret_pubkey(&self, tsid: RpcTablesetId) -> RpcResult<Option<RpcPubKey>> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        Ok(self
+            .service
+            .get_fault_secret_pubkey(&sm_id)
+            .await
+            .map_err(service_err)?
+            .map(Into::into))
     }
 
     async fn evaluator_get_adaptor_pubkey(
@@ -63,29 +111,84 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
     ) -> RpcResult<Option<RpcPubKey>> {
-        todo!()
-    }
-
-    async fn list_deposits(&self, tsid: RpcTablesetId) -> RpcResult<Vec<DepositIdStatus>> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let deposit_id = DepositId::from(deposit_id);
+        Ok(self
+            .service
+            .get_adaptor_pubkey(&sm_id, &deposit_id)
+            .await
+            .map_err(service_err)?
+            .map(Into::into))
     }
 
     async fn init_garbler_deposit(
         &self,
         tsid: RpcTablesetId,
-        deposit_id: RpcDepositId,
+        rpc_deposit_id: RpcDepositId,
         deposit: GarblerDepositConfig,
     ) -> RpcResult<()> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let deposit_id = DepositId::from(rpc_deposit_id);
+        let init = GarblerDepositInit {
+            adaptor_pk: deposit
+                .adaptor_pk
+                .try_into()
+                .map_err(|_| RpcError::InvalidArgument("invalid adaptor_pubkey".into()))?,
+            sighashes: Sighashes::from_vec(
+                deposit
+                    .sighashes
+                    .into_inner()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            ),
+            deposit_inputs: deposit.deposit_inputs.into(),
+        };
+        self.service
+            .init_garbler_deposit(&sm_id, &deposit_id, init)
+            .await
+            .map_err(service_err)
     }
 
     async fn init_evaluator_deposit(
         &self,
         tsid: RpcTablesetId,
-        deposit_id: RpcDepositId,
+        rpc_deposit_id: RpcDepositId,
         deposit: EvaluatorDepositConfig,
     ) -> RpcResult<()> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let deposit_id = DepositId::from(rpc_deposit_id);
+        let init = EvaluatorDepositInit {
+            sighashes: Sighashes::try_from_vec(
+                deposit
+                    .sighashes
+                    .into_inner()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            )
+            .ok_or_else(|| RpcError::InvalidArgument("invalid sighash length".into()))?,
+            deposit_inputs: deposit.deposit_inputs.into(),
+        };
+        self.service
+            .init_evaluator_deposit(&sm_id, &deposit_id, init)
+            .await
+            .map_err(service_err)
+    }
+
+    async fn list_deposits(&self, tsid: RpcTablesetId) -> RpcResult<Vec<DepositIdStatus>> {
+        let sm_id = parse_sm_id(tsid)?;
+        Ok(self
+            .service
+            .list_deposits(&sm_id)
+            .await
+            .map_err(service_err)?
+            .into_iter()
+            .map(|d| DepositIdStatus {
+                deposit_id: d.deposit_id.into(),
+                status: deposit_status_to_rpc(d.status),
+            })
+            .collect())
     }
 
     async fn get_deposit_status(
@@ -93,7 +196,14 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
     ) -> RpcResult<DepositStatus> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let deposit_id = DepositId::from(deposit_id);
+        let status = self
+            .service
+            .get_deposit_status(&sm_id, &deposit_id)
+            .await
+            .map_err(service_err)?;
+        Ok(deposit_status_to_rpc(status))
     }
 
     async fn mark_deposit_withdrawn(
@@ -101,7 +211,12 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
     ) -> RpcResult<()> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let deposit_id = DepositId::from(deposit_id);
+        self.service
+            .mark_deposit_withdrawn(&sm_id, &deposit_id)
+            .await
+            .map_err(service_err)
     }
 
     async fn complete_adaptor_sigs(
@@ -110,23 +225,59 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         deposit_id: RpcDepositId,
         inputs: RpcWithdrawalInputs,
     ) -> RpcResult<()> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let deposit_id = DepositId::from(deposit_id);
+        self.service
+            .complete_adaptor_sigs(&sm_id, &deposit_id, inputs.into_inner())
+            .await
+            .map_err(service_err)
     }
 
     async fn get_completed_adaptor_sigs(
         &self,
         tsid: RpcTablesetId,
     ) -> RpcResult<RpcCompletedSignatures> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let adaptor_sigs = self
+            .service
+            .get_completed_adaptor_sigs(&sm_id)
+            .await
+            .map_err(service_err)?;
+
+        let mut adaptor_sigs = adaptor_sigs.into_iter();
+        Ok(RpcCompletedSignatures::new(std::array::from_fn(|_| {
+            adaptor_sigs.next().unwrap().to_bytes()
+        })))
     }
 
     async fn evaluate_tableset(
         &self,
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
-        inputs: EvaluatorWithdrawalConfig,
+        withdrawal_data: EvaluatorWithdrawalConfig,
     ) -> RpcResult<()> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        let deposit_id = DepositId::from(deposit_id);
+
+        let signatures = withdrawal_data
+            .completed_signatures
+            .into_inner()
+            .into_iter()
+            .map(Signature::from_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| RpcError::UnparsableAdaptorSigs)?;
+
+        let data = EvaluatorWithdrawalData {
+            withdrawal_inputs: withdrawal_data.withdrawal_inputs.into_inner(),
+            signatures: CompletedSignatures::try_from_vec(signatures).ok_or_else(|| {
+                RpcError::InvalidArgument("invalid completed signatures length".into())
+            })?,
+        };
+
+        self.service
+            .evaluate_tableset(&sm_id, &deposit_id, data)
+            .await
+            .map_err(service_err)
     }
 
     async fn sign_with_fault_secret(
@@ -135,10 +286,18 @@ impl<P: RpcContextProvider> MosaicRpcServer for RpcServerImpl<P> {
         digest: RpcByte32,
         tweak: Option<RpcByte32>,
     ) -> RpcResult<Option<RpcSignatureBytes>> {
-        todo!()
+        let sm_id = parse_sm_id(tsid)?;
+        Ok(self
+            .service
+            .sign_with_fault_secret(&sm_id, digest.into(), tweak.map(Into::into))
+            .await
+            .map_err(service_err)?
+            .map(|sig| sig.serialize())
+            .map(RpcSignatureBytes::from))
     }
 
-    async fn cleanup_tableset(&self, tsid: RpcTablesetId) -> RpcResult<()> {
-        todo!()
+    async fn cleanup_tableset(&self, _tsid: RpcTablesetId) -> RpcResult<()> {
+        // This isnt needed for immediate integration. Will be implemented later.
+        return Err(RpcError::Unimplemented);
     }
 }

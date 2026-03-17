@@ -17,7 +17,6 @@ members = [
   "crates/net/svc-api",
   "crates/net/wire",
   "crates/rpc/api",
-  "crates/rpc/provider",
   "crates/rpc/server",
   "crates/rpc/service",
   "crates/rpc/types",
@@ -76,7 +75,6 @@ mosaic-net-svc-api = { path = "crates/net/svc-api" }
 mosaic-net-types = { path = "crates/net/types" }
 mosaic-net-wire = { path = "crates/net/wire" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
-mosaic-rpc-provider = { path = "crates/rpc/provider" }
 mosaic-rpc-service = { path = "crates/rpc/service" }
 mosaic-rpc-types = { path = "crates/rpc/types" }
 # SM executor
