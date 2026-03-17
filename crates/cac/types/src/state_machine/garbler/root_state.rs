@@ -107,3 +107,23 @@ pub enum Step {
         reason: String,
     },
 }
+
+impl Step {
+    /// Name of step
+    pub fn step_name(&self) -> &'static str {
+        match self {
+            Step::Uninit => "Uninit",
+            Step::GeneratingPolynomialCommitments { .. } => "GeneratingPolynomialCommitments",
+            Step::GeneratingShares { .. } => "GeneratingShares",
+            Step::GeneratingTableCommitments { .. } => "GeneratingTableCommitments",
+            Step::SendingCommit { .. } => "SendingCommit",
+            Step::WaitingForChallenge => "WaitingForChallenge",
+            Step::SendingChallengeResponse { .. } => "SendingChallengeResponse",
+            Step::TransferringGarblingTables { .. } => "TransferringGarblingTables",
+            Step::SetupComplete => "SetupComplete",
+            Step::CompletingAdaptors { .. } => "CompletingAdaptors",
+            Step::SetupConsumed { .. } => "SetupConsumed",
+            Step::Aborted { .. } => "Aborted",
+        }
+    }
+}

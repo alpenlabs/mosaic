@@ -2,10 +2,12 @@
 
 pub mod evaluator;
 pub mod garbler;
+mod input;
 
 use std::fmt::Display;
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid};
+pub use input::{StateMachineExecutorInput, StateMachineInput};
 use mosaic_net_svc_api::PeerId;
 
 /// State machine role

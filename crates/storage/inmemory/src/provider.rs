@@ -18,6 +18,7 @@ use mosaic_cac_types::{
 };
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
+use mosaic_vs3::Share;
 
 use crate::{error::DbError, evaluator::StoredEvaluatorState, garbler::StoredGarblerState};
 
@@ -534,6 +535,10 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
     ) -> Result<Option<mosaic_common::Byte32>, Self::Error> {
         self.inner.get_output_label_ct(index).await
     }
+
+    async fn get_fault_secret_share(&self) -> Result<Option<Share>, Self::Error> {
+        self.inner.get_fault_secret_share().await
+    }
 }
 
 impl evaluator::StateMut for InMemoryEvaluatorSession {
@@ -720,6 +725,10 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
         self.inner
             .put_unchallenged_output_label_cts(indices, cts)
             .await
+    }
+
+    async fn put_fault_secret_share(&mut self, fault: &Share) -> Result<(), Self::Error> {
+        self.inner.put_fault_secret_share(fault).await
     }
 }
 

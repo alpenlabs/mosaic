@@ -85,10 +85,30 @@ pub enum Step {
     SetupConsumed {
         /// Disputed withdrawal for deposit
         deposit_id: DepositId,
+        /// if final secret was extracted and can be used to sign transaction
+        success: bool,
     },
     /// Setup was aborted due to a protocol violation.
     Aborted {
         /// Abort reason
         reason: String,
     },
+}
+
+impl Step {
+    /// Name of step
+    pub fn step_name(&self) -> &'static str {
+        match self {
+            Step::Uninit => "Uninit",
+            Step::WaitingForCommit { .. } => "WaitingForCommit",
+            Step::WaitingForChallengeResponse { .. } => "WaitingForChallengeResponse",
+            Step::VerifyingOpenedInputShares => "VerifyingOpenedInputShares",
+            Step::VerifyingTableCommitments { .. } => "VerifyingTableCommitments",
+            Step::ReceivingGarblingTables { .. } => "ReceivingGarblingTables",
+            Step::SetupComplete => "SetupComplete",
+            Step::EvaluatingTables { .. } => "EvaluatingTables",
+            Step::SetupConsumed { .. } => "SetupConsumed",
+            Step::Aborted { .. } => "Aborted",
+        }
+    }
 }

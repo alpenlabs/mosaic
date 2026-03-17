@@ -1,46 +1,87 @@
-use mosaic_cac_proto_types::{CacRole, SetupWireInputs, TablesetInstanceId};
-use mosaic_net_svc_api::PeerId;
 use serde::{Deserialize, Serialize};
 
-use crate::CacParams;
+use crate::{RpcDepositId, RpcInstanceId, RpcPeerId, RpcSetupInputs};
+
+/// Info about a CaC game.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TablesetSetupInfo {
+    circuit_name: String,
+    role: CacRole,
+    cac_params: CacParams,
+    setup_inputs: RpcSetupInputs,
+    instance: RpcInstanceId,
+    peer: RpcPeerId,
+}
+
+/// The role the client should play in the garbling game.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacRole {
+    /// Garbler.
+    Garbler,
+
+    /// Evaluator.
+    Evaluator,
+}
+
+/// Cac params that can be used to setup.
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+pub enum CacParams {
+    /// default
+    N181K174,
+    /// for testing (only available in debug builds)
+    #[cfg(debug_assertions)]
+    N5K3,
+}
+
+impl CacParams {
+    /// Total number of tables.
+    pub fn tables(&self) -> u64 {
+        match self {
+            CacParams::N181K174 => 181,
+            #[cfg(debug_assertions)]
+            CacParams::N5K3 => 5,
+        }
+    }
+
+    /// Number of openings during Cac.
+    pub fn selected_openings(&self) -> u64 {
+        match self {
+            CacParams::N181K174 => 174,
+            #[cfg(debug_assertions)]
+            CacParams::N5K3 => 3,
+        }
+    }
+}
 
 /// Configuration provided as part of setting up a game instance.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RpcSetupConfig {
-    /// The name of the circuit we'll use.
-    ///
-    /// This matches the client configuration for where to find this circuit information.
-    circuit_name: String,
-
     /// The role we're playing in the setup.
-    role: CacRole,
-
-    /// CaC game configuration.
-    cac_params: CacParams,
+    pub role: CacRole,
 
     /// Peer connection information.
-    peer_info: RpcPeerInfo,
+    pub peer_info: RpcPeerInfo,
 
     /// corresponds to operator pubkey
-    setup_inputs: SetupWireInputs,
+    pub setup_inputs: RpcSetupInputs,
 
     /// For multiple tablesets per (garbler, evaluator) pair
     /// Both sides must use the same instance id.
-    instance_id: TablesetInstanceId,
+    pub instance_id: RpcInstanceId,
 }
 
 /// Describes information about the peer we're interacting with so we can
 /// connect to them and authenticate messages.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RpcPeerInfo {
-    // stable identifier to peer
-    peer_id: PeerId,
-    // TODO: more fields as required
+    /// stable identifier to peer
+    pub peer_id: RpcPeerId,
 }
 
 /// Status of where a tableset during setup.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum RpcTablesetSetupStatus {
+pub enum RpcTablesetStatus {
     /// Setup is incomplete.
     /// Wait for this to complete.
     Incomplete {
@@ -50,15 +91,36 @@ pub enum RpcTablesetSetupStatus {
     },
 
     /// Setup is completed successfully.
-    /// This setup can noew be used to process deposits.
+    /// This setup can now be used to process deposits.
     SetupComplete,
 
-    /// Setup has been used for withdrawal dispute resolution.
-    /// DO NOT USE THIS SETUP AGAIN.
-    Consumed,
+    /// Setup is being used to resolve a contested withdrawal.
+    /// For Garbler -> adaptor signatures are being completed
+    /// For Evaluator -> garbling tables are being evaluated to extract final secret.
+    ///
+    /// CANNOT USE THIS SETUP AGAIN TO PROCESS DEPOSITS.
+    Contest {
+        /// Deposit for which contested withdrawal is occuring.
+        deposit: RpcDepositId,
+    },
 
-    /// Setup was aborted.
-    /// NEW SETUP REQUIRED.
+    /// Setup has been used for contested withdrawal resolution. Mosaic side processing is
+    /// completed.
+    /// For Garbler -> completed adaptor signatures are ready.
+    /// For Evaluator -> garbling table evaluation complete
+    ///
+    /// CANNOT USE THIS SETUP AGAIN TO PROCESS DEPOSITS.
+    Consumed {
+        /// Deposit which consumed this setup.
+        deposit: RpcDepositId,
+        /// Garbler -> always true
+        /// Evaluator -> true -> final secret was extracted and can be used to sign transaction.
+        ///           -> false -> final secret could not be extracted
+        success: bool,
+    },
+
+    /// Setup was aborted due to some protocol violation.
+    /// NEW SETUP IS REQUIRED.
     Aborted {
         /// Reason for aborting.
         /// This is mainly for debugging.

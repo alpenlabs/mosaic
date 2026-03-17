@@ -12,13 +12,13 @@ pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 #[cfg(test)]
 use criterion as _;
 
-mod adaptor;
+pub mod adaptor;
 mod msgs;
 mod protocol;
 mod seed;
 pub mod state_machine;
 
-pub use adaptor::*;
+pub use adaptor::{Adaptor, Signature};
 use mosaic_common::{Byte32, impl_serde_ark};
 use mosaic_vs3::{Point, Scalar};
 pub use msgs::*;
@@ -106,6 +106,16 @@ impl PubKey {
         }
 
         aff.y().is_some_and(|y| y.into_bigint().is_even())
+    }
+
+    /// Create from BIP340 compatible pubkey bytes
+    pub fn try_from_bip340(_bytes: &[u8; 32]) -> Result<Self, &'static str> {
+        unimplemented!()
+    }
+
+    /// Convert to BIP340 compatible pubkey bytes
+    pub fn to_bip340(&self) -> [u8; 32] {
+        unimplemented!()
     }
 }
 

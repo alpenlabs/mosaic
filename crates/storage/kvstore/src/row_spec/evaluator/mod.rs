@@ -48,6 +48,8 @@ pub const ROW_TAG_CONSTANT_ZERO_LABEL: u8 = 0x13;
 pub const ROW_TAG_CONSTANT_ONE_LABEL: u8 = 0x14;
 /// Row tag for output label ciphertext by evaluation-circuit index.
 pub const ROW_TAG_OUTPUT_LABEL_CT: u8 = 0x15;
+/// Row tag for fault secret.
+pub const ROW_TAG_FAULT_SECRET: u8 = 0x15;
 
 pub use protocol::*;
 pub use state::*;

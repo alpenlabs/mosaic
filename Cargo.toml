@@ -2,7 +2,6 @@
 members = [
   "crates/adaptor-sigs",
   "crates/cac/crypto",
-  "crates/cac/proto-types",
   "crates/cac/protocol",
   "crates/cac/types",
   "crates/common",
@@ -62,7 +61,6 @@ clippy.too_long_first_doc_paragraph = "warn"
 
 [workspace.dependencies]
 mosaic-adaptor-sigs = { path = "crates/adaptor-sigs" }
-mosaic-cac-proto-types = { path = "crates/cac/proto-types" }
 mosaic-cac-protocol = { path = "crates/cac/protocol" }
 mosaic-cac-types = { path = "crates/cac/types" }
 mosaic-common = { path = "crates/common" }
@@ -124,6 +122,7 @@ rand = "0.8.5"
 rand_chacha = "0.3.1" # constrained by ark-std::rand_core
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "=1.0.149"
+serde_with = "3.17.0"
 sha2 = "0.10.9"
 strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 thiserror = "2.0"

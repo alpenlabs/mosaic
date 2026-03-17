@@ -2,7 +2,7 @@ use std::{error::Error, fmt::Debug};
 
 use futures::Stream;
 use mosaic_common::Byte32;
-use mosaic_vs3::Index;
+use mosaic_vs3::{Index, Share};
 
 use super::{DepositState, EvaluatorState};
 use crate::{
@@ -139,6 +139,11 @@ pub trait StateRead {
         &self,
         index: Index,
     ) -> impl Future<Output = Result<Option<Byte32>, Self::Error>> + Send;
+
+    /// Retrieves the fault secret extracted from garbling table evaluation.
+    fn get_fault_secret_share(
+        &self,
+    ) -> impl Future<Output = Result<Option<Share>, Self::Error>> + Send;
 }
 
 /// Mutable access to evaluator state storage.
@@ -278,5 +283,11 @@ pub trait StateMut: StateRead {
         &mut self,
         indices: &EvaluationIndices,
         cts: &crate::HeapArray<Byte32, { mosaic_common::constants::N_EVAL_CIRCUITS }>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Stores fault secret extracted from garbling table evaluation.
+    fn put_fault_secret_share(
+        &mut self,
+        fault: &Share,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

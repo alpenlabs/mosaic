@@ -465,16 +465,21 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     evaluated[idx] = true;
 
-                    if output_share.is_some() {
+                    if let Some(fault_secret_share) = output_share {
                         // Found the fault secret — evaluation complete.
-                        // TODO: store output_share, interpolate to recover secret
+                        state
+                            .put_fault_secret_share(&fault_secret_share)
+                            .await
+                            .map_err(SMError::storage)?;
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
+                            success: true,
                         };
                     } else if evaluated.all() {
                         // All tables evaluated, no fault found.
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
+                            success: false,
                         };
                     }
                     // else stay on same step and wait for more evaluations

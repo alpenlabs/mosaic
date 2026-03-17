@@ -6,6 +6,7 @@ use mosaic_cac_types::{
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut},
 };
 use mosaic_storage_api::Commit;
+use mosaic_vs3::Share;
 
 use super::StoredEvaluatorState;
 use crate::error::DbError;
@@ -233,6 +234,12 @@ impl StateMut for StoredEvaluatorState {
         for (i, ct) in indices.iter().zip(cts) {
             self.output_label_cts.insert(i.get(), *ct);
         }
+        Ok(())
+    }
+
+    async fn put_fault_secret_share(&mut self, fault: &Share) -> Result<(), Self::Error> {
+        self.fault_secret = Some(*fault);
+
         Ok(())
     }
 }

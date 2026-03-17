@@ -49,3 +49,16 @@ impl Default for DepositStep {
         }
     }
 }
+
+impl DepositStep {
+    /// Name of step
+    pub fn step_name(&self) -> &'static str {
+        match &self {
+            DepositStep::GeneratingAdaptors { .. } => "GeneratingAdaptors",
+            DepositStep::SendingAdaptors { .. } => "SendingAdaptors",
+            DepositStep::DepositReady => "DepositReady",
+            DepositStep::WithdrawnUndisputed => "WithdrawnUndisputed",
+            DepositStep::Aborted { .. } => "Aborted",
+        }
+    }
+}
