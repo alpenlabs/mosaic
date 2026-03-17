@@ -10,12 +10,13 @@
 
 use std::{
     collections::BTreeMap,
+    future::{Future, ready},
     ops::Bound,
     sync::{Arc, RwLock},
 };
 
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::{StorageProvider, StorageProviderMut};
+use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
 
 use crate::{
     evaluator::KvStoreEvaluator,
@@ -329,12 +330,18 @@ impl StorageProvider for BTreeMapStorageProvider {
     type GarblerState = KvStoreGarbler<BTreeMapScopedKvStore>;
     type EvaluatorState = KvStoreEvaluator<BTreeMapScopedKvStore>;
 
-    fn garbler_state(&self, peer_id: &PeerId) -> Self::GarblerState {
-        self.scoped_garbler(peer_id)
+    fn garbler_state(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> + Send {
+        ready(Ok(self.scoped_garbler(peer_id)))
     }
 
-    fn evaluator_state(&self, peer_id: &PeerId) -> Self::EvaluatorState {
-        self.scoped_evaluator(peer_id)
+    fn evaluator_state(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> + Send {
+        ready(Ok(self.scoped_evaluator(peer_id)))
     }
 }
 
@@ -342,12 +349,34 @@ impl StorageProviderMut for BTreeMapStorageProvider {
     type GarblerState = KvStoreGarbler<BTreeMapScopedKvStore>;
     type EvaluatorState = KvStoreEvaluator<BTreeMapScopedKvStore>;
 
-    fn garbler_state_mut(&self, peer_id: &PeerId) -> Self::GarblerState {
-        self.scoped_garbler(peer_id)
+    fn garbler_state_mut(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> {
+        ready(Ok(self.scoped_garbler(peer_id)))
     }
 
-    fn evaluator_state_mut(&self, peer_id: &PeerId) -> Self::EvaluatorState {
-        self.scoped_evaluator(peer_id)
+    fn evaluator_state_mut(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> {
+        ready(Ok(self.scoped_evaluator(peer_id)))
+    }
+}
+
+impl Commit for BTreeMapKvStore {
+    type Error = BTreeMapKvStoreError;
+
+    fn commit(self) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(Ok(()))
+    }
+}
+
+impl Commit for BTreeMapScopedKvStore {
+    type Error = BTreeMapKvStoreError;
+
+    fn commit(self) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(Ok(()))
     }
 }
 

@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    future::{Future, ready},
     sync::{Arc, Mutex},
 };
 
@@ -42,22 +43,30 @@ impl StorageProvider for InMemoryStorageProvider {
     type GarblerState = StoredGarblerState;
     type EvaluatorState = StoredEvaluatorState;
 
-    fn garbler_state(&self, peer_id: &PeerId) -> Self::GarblerState {
-        self.garbler
+    fn garbler_state(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> + Send {
+        ready(Ok(self
+            .garbler
             .lock()
             .expect("garbler map mutex poisoned")
             .get(peer_id)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default()))
     }
 
-    fn evaluator_state(&self, peer_id: &PeerId) -> Self::EvaluatorState {
-        self.evaluator
+    fn evaluator_state(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> + Send {
+        ready(Ok(self
+            .evaluator
             .lock()
             .expect("evaluator map mutex poisoned")
             .get(peer_id)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default()))
     }
 }
 
@@ -65,7 +74,10 @@ impl StorageProviderMut for InMemoryStorageProvider {
     type GarblerState = InMemoryGarblerSession;
     type EvaluatorState = InMemoryEvaluatorSession;
 
-    fn garbler_state_mut(&self, peer_id: &PeerId) -> Self::GarblerState {
+    fn garbler_state_mut(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> {
         let state = self
             .garbler
             .lock()
@@ -73,14 +85,17 @@ impl StorageProviderMut for InMemoryStorageProvider {
             .get(peer_id)
             .cloned()
             .unwrap_or_default();
-        InMemoryGarblerSession {
+        ready(Ok(InMemoryGarblerSession {
             peer_id: *peer_id,
             inner: state,
             map: Arc::clone(&self.garbler),
-        }
+        }))
     }
 
-    fn evaluator_state_mut(&self, peer_id: &PeerId) -> Self::EvaluatorState {
+    fn evaluator_state_mut(
+        &self,
+        peer_id: &PeerId,
+    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> {
         let state = self
             .evaluator
             .lock()
@@ -88,11 +103,11 @@ impl StorageProviderMut for InMemoryStorageProvider {
             .get(peer_id)
             .cloned()
             .unwrap_or_default();
-        InMemoryEvaluatorSession {
+        ready(Ok(InMemoryEvaluatorSession {
             peer_id: *peer_id,
             inner: state,
             map: Arc::clone(&self.evaluator),
-        }
+        }))
     }
 }
 
@@ -725,6 +740,8 @@ mod tests {
 
             let initial = provider
                 .garbler_state(&peer_id)
+                .await
+                .expect("acquire garbler read state")
                 .get_root_state()
                 .await
                 .expect("read root state")
@@ -732,7 +749,10 @@ mod tests {
             assert!(matches!(initial.step, garbler::Step::Uninit));
 
             {
-                let mut session = provider.garbler_state_mut(&peer_id);
+                let mut session = provider
+                    .garbler_state_mut(&peer_id)
+                    .await
+                    .expect("acquire garbler mutable state");
                 let mut state = session
                     .get_root_state()
                     .await
@@ -748,6 +768,8 @@ mod tests {
 
             let committed = provider
                 .garbler_state(&peer_id)
+                .await
+                .expect("acquire garbler read state")
                 .get_root_state()
                 .await
                 .expect("read committed root state")
@@ -756,6 +778,8 @@ mod tests {
 
             let eval_initial = provider
                 .evaluator_state(&peer_id)
+                .await
+                .expect("acquire evaluator read state")
                 .get_root_state()
                 .await
                 .expect("read evaluator root")

@@ -2,7 +2,7 @@
 
 use std::ops::Bound;
 
-use futures::{Stream, StreamExt, stream};
+use futures::{Stream, StreamExt, TryFutureExt, stream};
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
@@ -631,14 +631,17 @@ impl<KV: KvStore + Sync> StateMut for KvStoreGarbler<KV> {
     }
 }
 
-impl<KV: KvStore> Commit for KvStoreGarbler<KV> {
+impl<KV> Commit for KvStoreGarbler<KV>
+where
+    KV: KvStore + Commit,
+    <KV as Commit>::Error: std::error::Error + Send + Sync + 'static,
+{
     type Error = StorageError;
 
     fn commit(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
-        core::future::ready(Ok(()))
+        self.store.commit().map_err(StorageError::kvstore)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use futures::StreamExt as _;

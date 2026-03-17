@@ -209,7 +209,10 @@ pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
-    let garb_state = ctx.storage.garbler_state(peer_id);
+    let garb_state = match ctx.storage.garbler_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
 
     // Load all required data. Retry if any reads return None (data not yet written).
     let Some(deposit_state) = garb_state.get_deposit(&deposit_id).await.ok().flatten() else {
@@ -287,7 +290,10 @@ pub(crate) async fn handle_complete_adaptor_signatures<SP: StorageProvider, TS: 
     peer_id: &PeerId,
     deposit_id: mosaic_cac_types::DepositId,
 ) -> HandlerOutcome {
-    let garb_state = ctx.storage.garbler_state(peer_id);
+    let garb_state = match ctx.storage.garbler_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
 
     // Load all required data. Retry if any reads return None.
     let Some(deposit_adaptors) = garb_state
@@ -368,7 +374,11 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
     peer_id: &PeerId,
     seed: GarblingSeed,
 ) -> Result<TransferSession, CircuitError> {
-    let garb_state = ctx.storage.garbler_state(peer_id);
+    let garb_state = ctx
+        .storage
+        .garbler_state(peer_id)
+        .await
+        .map_err(|_| CircuitError::StorageUnavailable)?;
 
     // Resolve seed → (circuit_index, commitment) from the SM root state.
     let root_state = garb_state

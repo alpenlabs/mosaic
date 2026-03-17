@@ -168,7 +168,11 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
         let peer_id = *peer_id;
         async move {
-            let garb_state = self.storage.garbler_state(&peer_id);
+            let garb_state = self
+                .storage
+                .garbler_state(&peer_id)
+                .await
+                .map_err(|_| CircuitError::StorageUnavailable)?;
             let input_shares = garb_state
                 .get_input_shares_for_circuit(&index)
                 .await
@@ -271,7 +275,11 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
 
         let peer_id = *peer_id;
         async move {
-            let eval_state = self.storage.evaluator_state(&peer_id);
+            let eval_state = self
+                .storage
+                .evaluator_state(&peer_id)
+                .await
+                .map_err(|_| CircuitError::StorageUnavailable)?;
             let challenge_indices = eval_state
                 .get_challenge_indices()
                 .await

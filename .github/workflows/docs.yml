@@ -32,6 +32,9 @@ jobs:
         with:
           cache-on-failure: true
 
+      - name: Install FoundationDB client library
+        uses: ./.github/actions/setup-foundationdb-client
+
       - name: Check docs leaving the dependencies out
         env:
           RUSTDOCFLAGS: -A rustdoc::private-doc-tests -D warnings

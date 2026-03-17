@@ -1,0 +1,46 @@
+name: Setup FoundationDB Client
+description: Installs FoundationDB client library (required for compilation and runtime linking)
+
+inputs:
+  version:
+    description: FoundationDB version to install
+    required: false
+    default: "7.3.69"
+
+runs:
+  using: composite
+  steps:
+    - name: Download FoundationDB client package
+      shell: bash
+      env:
+        FDB_VERSION: ${{ inputs.version }}
+      run: |
+        echo "::group::Downloading FoundationDB client ${FDB_VERSION}"
+        curl -fsSLO --proto "=https" --tlsv1.2 \
+          "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+        echo "::endgroup::"
+
+    - name: Install FoundationDB client package
+      shell: bash
+      env:
+        FDB_VERSION: ${{ inputs.version }}
+      run: |
+        echo "::group::Installing FoundationDB client ${FDB_VERSION}"
+        sudo dpkg -i "foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+        echo "::endgroup::"
+
+    - name: Cleanup downloaded package
+      shell: bash
+      env:
+        FDB_VERSION: ${{ inputs.version }}
+      run: |
+        rm -f "foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+
+    - name: Verify installation
+      shell: bash
+      run: |
+        echo "FoundationDB client library installed:"
+        ls -la /usr/lib/libfdb_c.so || ls -la /usr/lib/x86_64-linux-gnu/libfdb_c.so || true
+        echo
+        echo "FoundationDB headers installed:"
+        ls -la /usr/include/foundationdb/ || true
