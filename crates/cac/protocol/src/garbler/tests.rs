@@ -1,10 +1,9 @@
 use mosaic_cac_types::{
     Adaptor, AdaptorMsgChunk, DepositId, HeapArray, Index, Polynomial, SecretKey,
     WideLabelWireAdaptors, WithdrawalAdaptorsChunk,
-    state_machine::garbler::Action,
     state_machine::garbler::{
-        ActionId, ActionResult, Config, DepositStep, GarblerDepositInitData, GarblerInitData,
-        GarblerState, GarblingMetadata, Input, StateMut, StateRead, Step,
+        Action, ActionId, ActionResult, Config, DepositStep, GarblerDepositInitData,
+        GarblerInitData, GarblerState, GarblingMetadata, Input, StateMut, StateRead, Step,
     },
 };
 use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES};

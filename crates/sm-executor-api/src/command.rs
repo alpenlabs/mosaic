@@ -229,8 +229,9 @@ pub enum SmCommandKind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use mosaic_cac_types::{HeapArray, SecretKey, Sighash, Signature};
+
+    use super::*;
 
     fn sample_garbler_init() -> GarblerInitData {
         GarblerInitData {

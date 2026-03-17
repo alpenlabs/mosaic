@@ -936,17 +936,18 @@ mod tests {
 
     use ark_serialize::{CanonicalSerialize, Compress, SerializationError};
     use ed25519_dalek::SigningKey;
-    use mosaic_cac_types::state_machine::evaluator::StateRead as EvaluatorStateRead;
-    use mosaic_cac_types::state_machine::garbler::StateMut as GarblerStateMut;
     use mosaic_cac_types::{
         ChallengeIndices, ChallengeMsg, HeapArray, Index, Msg,
-        state_machine::evaluator::{self, EvaluatorInitData},
+        state_machine::{
+            evaluator::{self, EvaluatorInitData, StateRead as EvaluatorStateRead},
+            garbler::StateMut as GarblerStateMut,
+        },
     };
     use mosaic_job_api::{JobBatch, JobCompletion, JobSchedulerHandle};
     use mosaic_net_client::NetClient;
     use mosaic_net_svc_api::{
-        NetServiceConfig, NetServiceHandle, PeerId, Stream, StreamClosed, api::NetCommand,
-        api::StreamRequest,
+        NetServiceConfig, NetServiceHandle, PeerId, Stream, StreamClosed,
+        api::{NetCommand, StreamRequest},
     };
     use mosaic_sm_executor_api::{InitData, SmTarget};
     use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
