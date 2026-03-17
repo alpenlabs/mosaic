@@ -722,15 +722,17 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
 
 #[cfg(test)]
 mod tests {
-    use crate::provider::InMemoryStorageProvider;
     use futures::executor::block_on;
-    use mosaic_cac_types::state_machine::{evaluator, garbler};
     use mosaic_cac_types::state_machine::{
+        evaluator,
         evaluator::StateRead as EvaluatorStateRead,
+        garbler,
         garbler::{StateMut as GarblerStateMut, StateRead as GarblerStateRead},
     };
     use mosaic_net_svc_api::PeerId;
     use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
+
+    use crate::provider::InMemoryStorageProvider;
 
     #[test]
     fn mutable_session_commits_to_read_provider() {

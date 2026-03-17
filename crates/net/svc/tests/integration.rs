@@ -35,7 +35,6 @@ use mosaic_net_svc::{
     svc::NetService,
     tls::peer_id_from_signing_key,
 };
-
 use tracing_subscriber as _;
 
 static KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
