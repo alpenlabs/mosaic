@@ -104,10 +104,10 @@ pub trait StorageProvider: Send + Sync + 'static {
 /// write if needed (e.g. a read-snapshot vs. a transactional write handle).
 pub trait StorageProviderMut: 'static {
     /// Mutable garbler state handle.
-    type GarblerState: garbler::StateMut + Commit;
+    type GarblerState: garbler::StateMut + Commit + Send + Sync;
 
     /// Mutable evaluator state handle.
-    type EvaluatorState: evaluator::StateMut + Commit;
+    type EvaluatorState: evaluator::StateMut + Commit + Send + Sync;
 
     /// Get a mutable storage handle for a peer's garbler state machine.
     ///
