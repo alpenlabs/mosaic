@@ -266,7 +266,7 @@ impl garbler::StateRead for InMemoryGarblerSession {
     async fn get_completed_signatures(
         &self,
         deposit_id: &DepositId,
-    ) -> Result<CompletedSignatures, Self::Error> {
+    ) -> Result<Option<CompletedSignatures>, Self::Error> {
         self.inner.get_completed_signatures(deposit_id).await
     }
 }

@@ -129,7 +129,12 @@ impl StateRead for StoredGarblerState {
         &self,
         index: Index,
     ) -> Result<Option<GarblingTableCommitment>, Self::Error> {
-        Ok(self.gt_commitments.get(&index.get()).cloned())
+        let zero_offset_index = index
+            .get()
+            .checked_sub(1)
+            .ok_or(DbError::UnexpectedZeroIndex)?;
+
+        Ok(self.gt_commitments.get(&zero_offset_index).cloned())
     }
 
     async fn get_all_garbling_table_commitments(
@@ -327,11 +332,8 @@ impl StateRead for StoredGarblerState {
     async fn get_completed_signatures(
         &self,
         deposit_id: &DepositId,
-    ) -> Result<CompletedSignatures, Self::Error> {
+    ) -> Result<Option<CompletedSignatures>, Self::Error> {
         let deposit_data = self.get_deposit_or_err(deposit_id)?;
-        deposit_data
-            .completed_sigs
-            .clone()
-            .ok_or_else(|| DbError::state_inconsistency("expected completed signatures"))
+        Ok(deposit_data.completed_sigs.clone())
     }
 }

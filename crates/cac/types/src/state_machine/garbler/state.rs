@@ -146,7 +146,7 @@ pub trait StateRead {
     fn get_completed_signatures(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<CompletedSignatures, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<CompletedSignatures>, Self::Error>> + Send;
 }
 
 /// Mutable access to garbler state storage.
