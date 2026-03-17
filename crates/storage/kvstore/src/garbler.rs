@@ -890,10 +890,10 @@ mod tests {
             AllGarblingTableCommitments::from_vec(expected_gt_commitments);
         assert_eq!(
             storage
-                .get_garbling_table_commitment(Index::new(7).expect("valid index"))
+                .get_garbling_table_commitment(Index::new(4).expect("valid index"))
                 .await
                 .expect("get garbling table commitment"),
-            Some(byte32(7))
+            Some(byte32(4))
         );
         assert_eq!(
             storage

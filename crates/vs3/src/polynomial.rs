@@ -248,15 +248,15 @@ mod tests {
 
     #[test]
     fn test_index_get() {
-        let idx = Index::new(42).unwrap();
-        assert_eq!(idx.get(), 42);
+        let idx = Index::new(2).unwrap();
+        assert_eq!(idx.get(), 2);
     }
 
     #[test]
     fn test_index_to_scalar() {
-        let idx = Index::new(7).unwrap();
+        let idx = Index::new(3).unwrap();
         let scalar = idx.to_scalar();
-        assert_eq!(scalar, Scalar::from(7u64));
+        assert_eq!(scalar, Scalar::from(3u64));
 
         let reserved = Index::reserved();
         assert_eq!(reserved.to_scalar(), Scalar::from(0u64));
@@ -264,8 +264,8 @@ mod tests {
 
     #[test]
     fn test_index_display() {
-        let idx = Index::new(123).unwrap();
-        assert_eq!(format!("{}", idx), "123");
+        let idx = Index::new(3).unwrap();
+        assert_eq!(format!("{}", idx), "3");
     }
 
     #[test]
@@ -343,13 +343,13 @@ mod tests {
             coefficients: coeffs,
         };
 
-        let x = Index::new(10).unwrap();
+        let x = Index::new(4).unwrap();
         let share = poly.eval(x);
 
-        // Manual calculation: 1 + 2*10 + 3*100 = 1 + 20 + 300 = 321
+        // Manual calculation: 1 + 2*4 + 3*16 = 1 + 8 + 48 = 57
         let expected = Scalar::one()
-            + Scalar::from(2u64) * Scalar::from(10u64)
-            + Scalar::from(3u64) * Scalar::from(100u64);
+            + Scalar::from(2u64) * Scalar::from(4u64)
+            + Scalar::from(3u64) * Scalar::from(16u64);
 
         assert_eq!(share.value(), expected);
     }
@@ -408,7 +408,7 @@ mod tests {
         let commitment = poly.commit();
 
         // Generate a valid share
-        let index = Index::new(7).unwrap();
+        let index = Index::new(3).unwrap();
         let share = poly.eval(index);
 
         // Verification should succeed
@@ -422,7 +422,7 @@ mod tests {
         let commitment = poly.commit();
 
         // Create an invalid share (wrong value for the index)
-        let index = Index::new(7).unwrap();
+        let index = Index::new(3).unwrap();
         let wrong_value = Scalar::from(999u64);
         let invalid_share = Share::new(index, wrong_value);
 
@@ -443,7 +443,7 @@ mod tests {
         let poly_commitment = poly.commit();
 
         // Test at multiple indices
-        for i in 1..=10 {
+        for i in 1..5 {
             let index = Index::new(i).unwrap();
 
             // Method 1: evaluate then commit

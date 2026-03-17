@@ -20,8 +20,7 @@ async fn restore_evaluating_tables_replays_only_pending_tables() {
         std::array::from_fn(|i| Index::new(i + 1).expect("valid index"));
     let eval_commitments = HeapArray::new(|i| [i as u8; 32].into());
     let mut evaluated = HeapArray::from_elem(false);
-    evaluated[0] = true;
-    evaluated[3] = true;
+    evaluated[1] = true;
 
     state
         .put_root_state(&EvaluatorState {
