@@ -40,7 +40,7 @@ impl std::fmt::Debug for PoolJob {
     }
 }
 
-/// Configuration for a [`JobThreadPool`].
+/// Configuration for the scheduler's internal job thread pool.
 #[derive(Debug, Clone, Copy)]
 pub struct PoolConfig {
     /// Number of worker threads.

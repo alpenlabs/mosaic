@@ -31,6 +31,8 @@ members = [
   "crates/storage/s3",
   "crates/table-types",
   "crates/vs3",
+  "bin/mosaic",
+  "bin/mosaic-peer-id",
 ]
 exclude = ["fuzz"]
 resolver = "2"

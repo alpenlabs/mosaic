@@ -22,6 +22,7 @@ use ahash::HashMap;
 use kanal::AsyncSender;
 use quinn::Endpoint;
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::Instrument;
 
 use super::{
     conn,
@@ -199,79 +200,82 @@ pub fn spawn_accept_loop(
     peer_by_ip: Arc<HashMap<IpAddr, PeerId>>,
     event_tx: UnboundedSender<ServiceEvent>,
 ) {
-    tokio::spawn(async move {
-        let handshake_slots = Arc::new(tokio::sync::Semaphore::new(
-            MAX_CONCURRENT_INCOMING_HANDSHAKES,
-        ));
-        let reject_tracker = Arc::new(InboundRejectTracker::new());
-        let mut next_candidate_id: IncomingCandidateId = 1;
+    tokio::spawn(
+        async move {
+            let handshake_slots = Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_INCOMING_HANDSHAKES,
+            ));
+            let reject_tracker = Arc::new(InboundRejectTracker::new());
+            let mut next_candidate_id: IncomingCandidateId = 1;
 
-        let mut allocate_candidate_id = || {
-            let id = next_candidate_id;
-            next_candidate_id = next_candidate_id.wrapping_add(1);
-            if next_candidate_id == 0 {
-                next_candidate_id = 1;
-            }
-            id
-        };
-
-        loop {
-            let incoming = match endpoint.accept().await {
-                Some(incoming) => incoming,
-                None => break, // endpoint closed
+            let mut allocate_candidate_id = || {
+                let id = next_candidate_id;
+                next_candidate_id = next_candidate_id.wrapping_add(1);
+                if next_candidate_id == 0 {
+                    next_candidate_id = 1;
+                }
+                id
             };
-            let accepted_at = tokio::time::Instant::now();
-            let remote_addr = normalize_socket_addr(incoming.remote_address());
-            let remote_ip = remote_addr.ip();
 
-            if !reject_tracker.should_accept(remote_ip, accepted_at) {
-                tracing::warn!(remote = %remote_addr, "rate-limiting incoming connection");
-                incoming.refuse();
-                continue;
-            }
+            loop {
+                let incoming = match endpoint.accept().await {
+                    Some(incoming) => incoming,
+                    None => break, // endpoint closed
+                };
+                let accepted_at = tokio::time::Instant::now();
+                let remote_addr = normalize_socket_addr(incoming.remote_address());
+                let remote_ip = remote_addr.ip();
 
-            let predicted_peer = peer_by_addr
-                .get(&remote_addr)
-                .copied()
-                .or_else(|| peer_by_port.get(&remote_addr.port()).copied())
-                .or_else(|| peer_by_ip.get(&remote_ip).copied());
-            let candidate_id = allocate_candidate_id();
-
-            let permit = match handshake_slots.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    tracing::warn!(
-                        remote = %remote_addr,
-                        limit = MAX_CONCURRENT_INCOMING_HANDSHAKES,
-                        "refusing incoming: handshake concurrency limit reached"
-                    );
-                    reject_tracker.on_reject(remote_ip, accepted_at);
+                if !reject_tracker.should_accept(remote_ip, accepted_at) {
+                    tracing::warn!(remote = %remote_addr, "rate-limiting incoming connection");
                     incoming.refuse();
-                    let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
-                        peer_guess: predicted_peer,
-                        peer_auth_opt: predicted_peer,
-                        candidate_id,
-                        reason: "too many concurrent incoming handshakes".to_string(),
-                    });
                     continue;
                 }
-            };
 
-            spawn_incoming_connection_handler(
-                incoming,
-                IncomingHandshakeCtx {
-                    accepted_at,
-                    predicted_peer,
-                    candidate_id,
-                    remote_ip,
-                    allowed_peers: allowed_peers.clone(),
-                    event_tx: event_tx.clone(),
-                    reject_tracker: reject_tracker.clone(),
-                    _handshake_permit: permit,
-                },
-            );
+                let predicted_peer = peer_by_addr
+                    .get(&remote_addr)
+                    .copied()
+                    .or_else(|| peer_by_port.get(&remote_addr.port()).copied())
+                    .or_else(|| peer_by_ip.get(&remote_ip).copied());
+                let candidate_id = allocate_candidate_id();
+
+                let permit = match handshake_slots.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        tracing::warn!(
+                            remote = %remote_addr,
+                            limit = MAX_CONCURRENT_INCOMING_HANDSHAKES,
+                            "refusing incoming: handshake concurrency limit reached"
+                        );
+                        reject_tracker.on_reject(remote_ip, accepted_at);
+                        incoming.refuse();
+                        let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
+                            peer_guess: predicted_peer,
+                            peer_auth_opt: predicted_peer,
+                            candidate_id,
+                            reason: "too many concurrent incoming handshakes".to_string(),
+                        });
+                        continue;
+                    }
+                };
+
+                spawn_incoming_connection_handler(
+                    incoming,
+                    IncomingHandshakeCtx {
+                        accepted_at,
+                        predicted_peer,
+                        candidate_id,
+                        remote_ip,
+                        allowed_peers: allowed_peers.clone(),
+                        event_tx: event_tx.clone(),
+                        reject_tracker: reject_tracker.clone(),
+                        _handshake_permit: permit,
+                    },
+                );
+            }
         }
-    });
+        .instrument(tracing::info_span!("net_svc.accept_loop")),
+    );
 }
 
 /// Spawn a task to handle an incoming connection's TLS handshake.
@@ -279,113 +283,124 @@ pub fn spawn_accept_loop(
 /// This completes the TLS handshake, extracts the peer ID from the certificate,
 /// verifies the peer is allowed, and sends the result back via the event channel.
 fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHandshakeCtx) {
-    tokio::spawn(async move {
-        let IncomingHandshakeCtx {
-            accepted_at,
-            predicted_peer,
-            candidate_id,
-            remote_ip,
-            allowed_peers,
-            event_tx,
-            reject_tracker,
-            _handshake_permit,
-        } = ctx;
-
-        // Complete TLS handshake with timeout to avoid hanging race resolution.
-        let connection = match tokio::time::timeout(CONNECTION_TIMEOUT, incoming).await {
-            Ok(Ok(conn)) => conn,
-            Ok(Err(e)) => {
-                reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
-                let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
-                    peer_guess: predicted_peer,
-                    peer_auth_opt: predicted_peer,
-                    candidate_id,
-                    reason: e.to_string(),
-                });
-                return;
-            }
-            Err(_) => {
-                reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
-                let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
-                    peer_guess: predicted_peer,
-                    peer_auth_opt: predicted_peer,
-                    candidate_id,
-                    reason: "incoming handshake timed out".to_string(),
-                });
-                return;
-            }
-        };
-
-        // Extract peer ID from certificate
-        let peer_id = match conn::extract_peer_id(&connection) {
-            Some(id) => id,
-            None => {
-                reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
-                connection.close(CLOSE_INVALID_PEER_ID_INCOMING, b"invalid peer id");
-                let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
-                    peer_guess: predicted_peer,
-                    peer_auth_opt: predicted_peer,
-                    candidate_id,
-                    reason: "invalid peer id".to_string(),
-                });
-                return;
-            }
-        };
-
-        // Verify peer is allowed (O(1) membership via HashSet)
-        if !allowed_peers.contains(&peer_id) {
-            reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
-            tracing::warn!(peer = %hex::encode(peer_id), "rejected unknown peer");
-            connection.close(CLOSE_UNKNOWN_PEER, b"unknown peer");
-            let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
-                peer_guess: predicted_peer,
-                peer_auth_opt: Some(peer_id),
+    let remote_ip = ctx.remote_ip;
+    let candidate_id = ctx.candidate_id;
+    let predicted_peer = ctx.predicted_peer;
+    tokio::spawn(
+        async move {
+            let IncomingHandshakeCtx {
+                accepted_at,
+                predicted_peer,
                 candidate_id,
-                reason: "unknown peer".to_string(),
-            });
-            return;
-        }
+                remote_ip,
+                allowed_peers,
+                event_tx,
+                reject_tracker,
+                _handshake_permit,
+            } = ctx;
 
-        reject_tracker.on_success(remote_ip);
-        tracing::info!(peer = %hex::encode(peer_id), "incoming connection ready");
+            // Complete TLS handshake with timeout to avoid hanging race resolution.
+            let connection = match tokio::time::timeout(CONNECTION_TIMEOUT, incoming).await {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(e)) => {
+                    reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
+                    let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
+                        peer_guess: predicted_peer,
+                        peer_auth_opt: predicted_peer,
+                        candidate_id,
+                        reason: e.to_string(),
+                    });
+                    return;
+                }
+                Err(_) => {
+                    reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
+                    let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
+                        peer_guess: predicted_peer,
+                        peer_auth_opt: predicted_peer,
+                        candidate_id,
+                        reason: "incoming handshake timed out".to_string(),
+                    });
+                    return;
+                }
+            };
 
-        let overlap_key = match extract_overlap_key_from_handshake(&connection) {
-            Some(key) => key,
-            None => {
+            // Extract peer ID from certificate
+            let peer_id = match conn::extract_peer_id(&connection) {
+                Some(id) => id,
+                None => {
+                    reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
+                    connection.close(CLOSE_INVALID_PEER_ID_INCOMING, b"invalid peer id");
+                    let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
+                        peer_guess: predicted_peer,
+                        peer_auth_opt: predicted_peer,
+                        candidate_id,
+                        reason: "invalid peer id".to_string(),
+                    });
+                    return;
+                }
+            };
+
+            // Verify peer is allowed (O(1) membership via HashSet)
+            if !allowed_peers.contains(&peer_id) {
                 reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
-                connection.close(CLOSE_INVALID_OVERLAP_KEY, b"invalid overlap key");
+                tracing::warn!(peer = %hex::encode(peer_id), "rejected unknown peer");
+                connection.close(CLOSE_UNKNOWN_PEER, b"unknown peer");
                 let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
                     peer_guess: predicted_peer,
                     peer_auth_opt: Some(peer_id),
                     candidate_id,
-                    reason: "invalid overlap key".to_string(),
+                    reason: "unknown peer".to_string(),
                 });
                 return;
             }
-        };
 
-        let peer_guess = predicted_peer.unwrap_or(peer_id);
-        if event_tx
-            .send(ServiceEvent::IncomingConnectionAccepted {
+            reject_tracker.on_success(remote_ip);
+            tracing::debug!(peer = %hex::encode(peer_id), "incoming handshake completed");
+
+            let overlap_key = match extract_overlap_key_from_handshake(&connection) {
+                Some(key) => key,
+                None => {
+                    reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
+                    connection.close(CLOSE_INVALID_OVERLAP_KEY, b"invalid overlap key");
+                    let _ = event_tx.send(ServiceEvent::IncomingConnectionRejected {
+                        peer_guess: predicted_peer,
+                        peer_auth_opt: Some(peer_id),
+                        candidate_id,
+                        reason: "invalid overlap key".to_string(),
+                    });
+                    return;
+                }
+            };
+
+            let peer_guess = predicted_peer.unwrap_or(peer_id);
+            if event_tx
+                .send(ServiceEvent::IncomingConnectionAccepted {
+                    peer_guess,
+                    accepted_at,
+                    candidate_id,
+                    overlap_key,
+                })
+                .is_err()
+            {
+                return;
+            }
+
+            let _ = event_tx.send(ServiceEvent::IncomingConnectionReady {
+                peer_auth: peer_id,
                 peer_guess,
-                accepted_at,
                 candidate_id,
+                accepted_at,
                 overlap_key,
-            })
-            .is_err()
-        {
-            return;
+                connection,
+            });
         }
-
-        let _ = event_tx.send(ServiceEvent::IncomingConnectionReady {
-            peer_auth: peer_id,
-            peer_guess,
+        .instrument(tracing::debug_span!(
+            "net_svc.incoming_handshake",
+            remote_ip = %remote_ip,
             candidate_id,
-            accepted_at,
-            overlap_key,
-            connection,
-        });
-    });
+            predicted_peer = ?predicted_peer
+        )),
+    );
 }
 
 /// Spawn a task to attempt an outbound connection.
@@ -442,7 +457,7 @@ pub fn spawn_outbound_connection(
                     return;
                 }
 
-                tracing::info!(peer = %hex::encode(peer), "outbound connection ready");
+                tracing::debug!(peer = %hex::encode(peer), "outbound handshake completed");
                 if let Err(error) = event_tx.send(ServiceEvent::OutboundConnectionReady {
                     peer,
                     attempt,
@@ -473,7 +488,12 @@ pub fn spawn_outbound_connection(
                 }
             }
         }
-    });
+    }.instrument(tracing::debug_span!(
+        "net_svc.outbound_connect",
+        peer = %hex::encode(peer),
+        attempt_id = attempt.attempt_id,
+        addr = %addr
+    )));
 }
 
 /// Spawn a task to monitor a connection and accept incoming streams.
@@ -486,55 +506,62 @@ pub fn spawn_connection_monitor(
     connection: quinn::Connection,
     event_tx: UnboundedSender<ServiceEvent>,
 ) {
-    tokio::spawn(async move {
-        tracing::debug!(peer = %hex::encode(peer), "connection monitor started");
+    tokio::spawn(
+        async move {
+            tracing::debug!(peer = %hex::encode(peer), "connection monitor started");
 
-        loop {
-            match connection.accept_bi().await {
-                Ok((send, recv)) => {
-                    // Send event to main loop - it will spawn header reading task
-                    if event_tx
-                        .send(ServiceEvent::IncomingStream {
+            loop {
+                match connection.accept_bi().await {
+                    Ok((send, recv)) => {
+                        // Send event to main loop - it will spawn header reading task
+                        if event_tx
+                            .send(ServiceEvent::IncomingStream {
+                                peer,
+                                generation,
+                                send,
+                                recv,
+                            })
+                            .is_err()
+                        {
+                            // Main loop shut down
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let reason = match &e {
+                            quinn::ConnectionError::ConnectionClosed(f) => {
+                                format!("closed: {:?}", f.reason)
+                            }
+                            quinn::ConnectionError::ApplicationClosed(f) => {
+                                format!("app closed: {:?}", f.reason)
+                            }
+                            quinn::ConnectionError::Reset => "reset".to_string(),
+                            quinn::ConnectionError::TimedOut => "timed out".to_string(),
+                            quinn::ConnectionError::TransportError(te) => {
+                                format!("transport: {}", te)
+                            }
+                            quinn::ConnectionError::LocallyClosed => "locally closed".to_string(),
+                            _ => format!("{}", e),
+                        };
+
+                        let _ = event_tx.send(ServiceEvent::ConnectionLost {
                             peer,
                             generation,
-                            send,
-                            recv,
-                        })
-                        .is_err()
-                    {
-                        // Main loop shut down
+                            reason,
+                        });
                         break;
                     }
                 }
-                Err(e) => {
-                    let reason = match &e {
-                        quinn::ConnectionError::ConnectionClosed(f) => {
-                            format!("closed: {:?}", f.reason)
-                        }
-                        quinn::ConnectionError::ApplicationClosed(f) => {
-                            format!("app closed: {:?}", f.reason)
-                        }
-                        quinn::ConnectionError::Reset => "reset".to_string(),
-                        quinn::ConnectionError::TimedOut => "timed out".to_string(),
-                        quinn::ConnectionError::TransportError(te) => {
-                            format!("transport: {}", te)
-                        }
-                        quinn::ConnectionError::LocallyClosed => "locally closed".to_string(),
-                        _ => format!("{}", e),
-                    };
-
-                    let _ = event_tx.send(ServiceEvent::ConnectionLost {
-                        peer,
-                        generation,
-                        reason,
-                    });
-                    break;
-                }
             }
-        }
 
-        tracing::debug!(peer = %hex::encode(peer), "connection monitor ended");
-    });
+            tracing::debug!(peer = %hex::encode(peer), "connection monitor ended");
+        }
+        .instrument(tracing::debug_span!(
+            "net_svc.connection_monitor",
+            peer = %hex::encode(peer),
+            generation
+        )),
+    );
 }
 
 /// Spawn a task to read a stream header.
@@ -604,7 +631,11 @@ pub fn spawn_stream_header_reader(
                 });
             }
         }
-    });
+    }.instrument(tracing::debug_span!(
+        "net_svc.stream_header_reader",
+        peer = %hex::encode(peer),
+        generation
+    )));
 }
 
 /// Spawn a task to open a stream on an existing connection.

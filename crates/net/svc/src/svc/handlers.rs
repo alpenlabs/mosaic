@@ -361,6 +361,8 @@ fn flush_pending_stream_requests(
 fn transition_to_stable(peer: PeerId, connection: TrackedConnection, state: &mut ServiceState) {
     let old_selected_generation = current_connection_generation(state, peer);
     let new_generation = connection.generation;
+    let direction = connection.direction;
+    let overlap_key = connection.overlap_key;
     let conn = connection.connection.clone();
     state
         .peer_states
@@ -372,6 +374,14 @@ fn transition_to_stable(peer: PeerId, connection: TrackedConnection, state: &mut
     }
     clear_reconnect(peer, state);
     flush_pending_stream_requests(peer, new_generation, &conn, state);
+    tracing::info!(
+        peer = %hex::encode(peer),
+        generation = new_generation,
+        direction = ?direction,
+        overlap_key,
+        replaced_existing = old_selected_generation.is_some_and(|old| old != new_generation),
+        "stable connection selected"
+    );
 }
 
 fn transition_to_race_waiting_outgoing(
@@ -1320,7 +1330,13 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
             overlap_key,
             connection,
         } => {
-            tracing::info!(peer = %hex::encode(peer_auth), "incoming connection ready");
+            tracing::debug!(
+                peer = %hex::encode(peer_auth),
+                peer_guess = %hex::encode(peer_guess),
+                candidate_id,
+                overlap_key,
+                "incoming connection candidate ready"
+            );
             on_incoming_ready(
                 peer_auth,
                 peer_guess,
@@ -1348,10 +1364,11 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
             ready_at,
             connection,
         } => {
-            tracing::info!(
+            tracing::debug!(
                 peer = %hex::encode(peer),
                 attempt_id = attempt.attempt_id,
-                "outbound connection ready"
+                overlap_key = attempt.overlap_key,
+                "outbound connection candidate ready"
             );
             on_outgoing_ready(peer, attempt, ready_at, connection, state);
         }

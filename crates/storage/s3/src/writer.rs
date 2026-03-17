@@ -2,7 +2,9 @@
 //!
 //! Streams ciphertext data to the background tokio runtime which performs
 //! multipart uploads via `object_store`. Translation material and metadata
-//! are uploaded as separate objects during [`finish`](S3TableWriter::finish).
+//! are uploaded into immutable versioned object paths, and the table becomes
+//! visible only once the live commit marker is published during
+//! [`finish`](S3TableWriter::finish).
 
 use std::sync::Arc;
 
@@ -10,7 +12,11 @@ use bytes::Bytes;
 use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
 use object_store::ObjectStore;
 
-use crate::{PART_BUFFER_SIZE, error::S3Error, paths::TablePaths};
+use crate::{
+    PART_BUFFER_SIZE,
+    error::S3Error,
+    paths::{TableRootPaths, TableVersionPaths},
+};
 
 /// Commands sent from the monoio caller to the background tokio writer task.
 enum WriterCmd {
@@ -27,7 +33,8 @@ enum WriterCmd {
 ///
 /// Ciphertext chunks are buffered and uploaded as multipart parts when the
 /// buffer exceeds [`PART_BUFFER_SIZE`]. Translation material and metadata are
-/// uploaded as separate objects on [`finish`](Self::finish).
+/// written under an immutable version prefix, then a live commit marker is
+/// published on [`finish`](Self::finish).
 ///
 /// Dropping without calling `finish` aborts the multipart upload.
 #[derive(Debug)]
@@ -44,12 +51,19 @@ impl S3TableWriter {
     pub(crate) async fn new(
         store: Arc<dyn ObjectStore>,
         rt_handle: tokio::runtime::Handle,
-        paths: TablePaths,
+        root_paths: TableRootPaths,
     ) -> Result<Self, S3Error> {
+        let version_paths = root_paths.allocate_version_paths();
         let (cmd_tx, cmd_rx) = kanal::bounded_async(crate::STREAM_CHANNEL_CAPACITY);
         let (result_tx, result_rx) = kanal::bounded_async(1);
 
-        rt_handle.spawn(background_writer(store, paths, cmd_rx, result_tx));
+        rt_handle.spawn(background_writer(
+            store,
+            root_paths,
+            version_paths,
+            cmd_rx,
+            result_tx,
+        ));
 
         Ok(Self { cmd_tx, result_rx })
     }
@@ -106,21 +120,23 @@ impl TableWriter for S3TableWriter {
 /// buffers them into parts, and uploads via `object_store` multipart API.
 async fn background_writer(
     store: Arc<dyn ObjectStore>,
-    paths: TablePaths,
+    root_paths: TableRootPaths,
+    version_paths: TableVersionPaths,
     cmd_rx: kanal::AsyncReceiver<WriterCmd>,
     result_tx: kanal::AsyncSender<Result<(), S3Error>>,
 ) {
-    let result = background_writer_inner(&store, &paths, &cmd_rx).await;
+    let result = background_writer_inner(&store, &root_paths, &version_paths, &cmd_rx).await;
     let _ = result_tx.send(result).await;
 }
 
 async fn background_writer_inner(
     store: &Arc<dyn ObjectStore>,
-    paths: &TablePaths,
+    root_paths: &TableRootPaths,
+    version_paths: &TableVersionPaths,
     cmd_rx: &kanal::AsyncReceiver<WriterCmd>,
 ) -> Result<(), S3Error> {
     // Start a multipart upload for the ciphertext object.
-    let mut upload = store.put_multipart(&paths.ciphertexts).await?;
+    let mut upload = store.put_multipart(&version_paths.ciphertexts).await?;
     let mut buffer = Vec::with_capacity(PART_BUFFER_SIZE);
 
     loop {
@@ -159,14 +175,23 @@ async fn background_writer_inner(
                 // Complete the multipart upload.
                 upload.complete().await?;
 
-                // Upload translation material as a single object.
+                // Upload translation material as a single object under the staged version.
                 store
-                    .put(&paths.translation, Bytes::from(translation).into())
+                    .put(&version_paths.translation, Bytes::from(translation).into())
                     .await?;
 
-                // Upload metadata as a single object.
+                // Upload metadata as a single object under the staged version.
                 store
-                    .put(&paths.metadata, Bytes::from(metadata_bytes).into())
+                    .put(&version_paths.metadata, Bytes::from(metadata_bytes).into())
+                    .await?;
+
+                // Publish the immutable version by atomically replacing the live marker.
+                // Readers trust only this marker when resolving the visible table version.
+                store
+                    .put(
+                        &root_paths.committed,
+                        Bytes::from(version_paths.version.clone()).into(),
+                    )
                     .await?;
 
                 return Ok(());

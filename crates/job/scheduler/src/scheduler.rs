@@ -5,7 +5,7 @@
 //! incoming actions to the appropriate pool, and forwards completions back to
 //! the SM Scheduler via the [`JobSchedulerHandle`].
 
-use std::sync::Arc;
+use std::{sync::Arc, thread::JoinHandle};
 
 use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::state_machine::{
@@ -16,6 +16,7 @@ use mosaic_job_api::{
     JobSchedulerHandle, PendingCircuitJob, SessionFactory,
 };
 use mosaic_net_svc_api::PeerId;
+use tracing::Instrument;
 
 use crate::{
     garbling::{GarblingConfig, GarblingCoordinator},
@@ -68,11 +69,39 @@ impl Default for JobSchedulerConfig {
 /// Constructed by the main binary. The SM Scheduler interacts with it
 /// exclusively through the [`JobSchedulerHandle`] returned by [`new`](Self::new).
 pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
-    light: JobThreadPool<D>,
-    heavy: JobThreadPool<D>,
-    garbling: GarblingCoordinator,
+    light: Option<JobThreadPool<D>>,
+    heavy: Option<JobThreadPool<D>>,
+    garbling: Option<GarblingCoordinator>,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
+}
+
+/// Controller for graceful scheduler shutdown.
+#[derive(Debug)]
+pub struct JobSchedulerController {
+    thread_handle: Option<JoinHandle<()>>,
+    shutdown_tx: kanal::AsyncSender<()>,
+}
+
+impl JobSchedulerController {
+    /// Signal the scheduler to stop and wait for all worker threads to exit.
+    pub fn shutdown(mut self) -> Result<(), std::io::Error> {
+        let _ = self.shutdown_tx.clone().to_sync().send(());
+
+        if let Some(handle) = self.thread_handle.take() {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("job scheduler thread panicked"))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for JobSchedulerController {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.clone().to_sync().try_send(());
+    }
 }
 
 impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> std::fmt::Debug for JobScheduler<D> {
@@ -113,9 +142,9 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         let handle = JobSchedulerHandle::new(submit_tx, completion_rx);
 
         let scheduler = Self {
-            light,
-            heavy,
-            garbling,
+            light: Some(light),
+            heavy: Some(heavy),
+            garbling: Some(garbling),
             submission_rx,
         };
 
@@ -128,28 +157,58 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// and routes each action to the appropriate pool. Workers on each pool
     /// pull jobs from the shared queue automatically.
     ///
-    /// Returns a join handle for the scheduler thread.
-    pub fn run(self) -> std::thread::JoinHandle<()> {
-        std::thread::Builder::new()
+    /// Returns a controller for graceful shutdown.
+    pub fn run(self) -> JobSchedulerController {
+        let (shutdown_tx, shutdown_rx) = kanal::bounded_async(1);
+
+        let thread_handle = std::thread::Builder::new()
             .name("job-scheduler".into())
             .spawn(move || {
                 monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
                     .build()
                     .expect("failed to build scheduler monoio runtime")
-                    .block_on(self.scheduler_loop());
+                    .block_on(
+                        self.scheduler_loop(shutdown_rx)
+                            .instrument(tracing::info_span!("job_scheduler.main_loop")),
+                    );
             })
-            .expect("failed to spawn scheduler thread")
+            .expect("failed to spawn scheduler thread");
+
+        JobSchedulerController {
+            thread_handle: Some(thread_handle),
+            shutdown_tx,
+        }
     }
 
     /// Main scheduler loop running on monoio.
-    async fn scheduler_loop(self) {
-        tracing::info!("job scheduler started");
+    async fn scheduler_loop(self, shutdown_rx: kanal::AsyncReceiver<()>) {
+        let this = self;
+        tracing::info!("job scheduler main loop started");
 
-        while let Ok(batch) = self.submission_rx.recv().await {
-            self.dispatch_batch(batch).await;
+        loop {
+            monoio::select! {
+                recv = this.submission_rx.recv() => {
+                    match recv {
+                        Ok(batch) => this.dispatch_batch(batch).await,
+                        Err(_) => {
+                            tracing::info!("job scheduler submission channel closed; main loop exiting");
+                            break;
+                        }
+                    }
+                }
+                recv = shutdown_rx.recv() => {
+                    match recv {
+                        Ok(()) | Err(_) => {
+                            tracing::info!("job scheduler shutdown requested");
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
-        tracing::info!("job scheduler submission channel closed, shutting down");
+        this.shutdown();
+        tracing::info!("job scheduler main loop exited cleanly");
     }
 
     /// Route each action in a batch to the appropriate pool.
@@ -159,69 +218,99 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// appropriate pool.
     async fn dispatch_batch(&self, batch: JobBatch) {
         let peer_id = batch.peer_id;
+        let action_count = batch.actions.len();
+        let role = if batch.actions.is_garbler() {
+            "garbler"
+        } else {
+            "evaluator"
+        };
+        let span = tracing::debug_span!(
+            "job_scheduler.dispatch_batch",
+            peer = ?peer_id,
+            role,
+            actions = action_count
+        );
 
-        match batch.actions {
-            JobActions::Garbler(container) => {
-                for fasm_action in container {
-                    match fasm_action {
-                        FasmAction::Tracked(tracked) => {
-                            let (_id, action) = tracked.into_parts();
-                            let category = action.category();
-                            let priority = action.priority();
+        async move {
+            tracing::debug!("dispatching submitted action batch");
+            match batch.actions {
+                JobActions::Garbler(container) => {
+                    for fasm_action in container {
+                        match fasm_action {
+                            FasmAction::Tracked(tracked) => {
+                                let (_id, action) = tracked.into_parts();
+                                let category = action.category();
+                                let priority = action.priority();
 
-                            match category {
-                                ActionCategory::Garbling => {
-                                    self.dispatch_garbler_circuit(peer_id, action).await;
-                                }
-                                _ => {
-                                    let worker_job = WorkerJob::Garbler { peer_id, action };
-                                    match category {
-                                        ActionCategory::Light => {
-                                            self.light.submit(priority, worker_job);
+                                match category {
+                                    ActionCategory::Garbling => {
+                                        self.dispatch_garbler_circuit(peer_id, action).await;
+                                    }
+                                    _ => {
+                                        let worker_job = WorkerJob::Garbler { peer_id, action };
+                                        match category {
+                                            ActionCategory::Light => {
+                                                self.light
+                                                    .as_ref()
+                                                    .expect("light pool must exist while scheduler is running")
+                                                    .submit(priority, worker_job);
+                                            }
+                                            ActionCategory::Heavy => {
+                                                self.heavy
+                                                    .as_ref()
+                                                    .expect("heavy pool must exist while scheduler is running")
+                                                    .submit(priority, worker_job);
+                                            }
+                                            _ => unreachable!(),
                                         }
-                                        ActionCategory::Heavy => {
-                                            self.heavy.submit(priority, worker_job);
-                                        }
-                                        _ => unreachable!(),
                                     }
                                 }
                             }
+                            FasmAction::Untracked(_) => {}
                         }
-                        FasmAction::Untracked(_) => {}
                     }
                 }
-            }
-            JobActions::Evaluator(container) => {
-                for fasm_action in container {
-                    match fasm_action {
-                        FasmAction::Tracked(tracked) => {
-                            let (_id, action) = tracked.into_parts();
-                            let category = action.category();
-                            let priority = action.priority();
+                JobActions::Evaluator(container) => {
+                    for fasm_action in container {
+                        match fasm_action {
+                            FasmAction::Tracked(tracked) => {
+                                let (_id, action) = tracked.into_parts();
+                                let category = action.category();
+                                let priority = action.priority();
 
-                            match category {
-                                ActionCategory::Garbling => {
-                                    self.dispatch_evaluator_circuit(peer_id, action).await;
-                                }
-                                _ => {
-                                    let worker_job = WorkerJob::Evaluator { peer_id, action };
-                                    match category {
-                                        ActionCategory::Light => {
-                                            self.light.submit(priority, worker_job);
+                                match category {
+                                    ActionCategory::Garbling => {
+                                        self.dispatch_evaluator_circuit(peer_id, action).await;
+                                    }
+                                    _ => {
+                                        let worker_job = WorkerJob::Evaluator { peer_id, action };
+                                        match category {
+                                            ActionCategory::Light => {
+                                                self.light
+                                                    .as_ref()
+                                                    .expect("light pool must exist while scheduler is running")
+                                                    .submit(priority, worker_job);
+                                            }
+                                            ActionCategory::Heavy => {
+                                                self.heavy
+                                                    .as_ref()
+                                                    .expect("heavy pool must exist while scheduler is running")
+                                                    .submit(priority, worker_job);
+                                            }
+                                            _ => unreachable!(),
                                         }
-                                        ActionCategory::Heavy => {
-                                            self.heavy.submit(priority, worker_job);
-                                        }
-                                        _ => unreachable!(),
                                     }
                                 }
                             }
+                            FasmAction::Untracked(_) => {}
                         }
-                        FasmAction::Untracked(_) => {}
                     }
                 }
             }
+            tracing::debug!("action batch dispatched");
         }
+        .instrument(span)
+        .await
     }
 
     /// Build a [`PendingCircuitJob`] for a garbler circuit action and submit
@@ -250,11 +339,14 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         };
 
         self.garbling
+            .as_ref()
+            .expect("garbling coordinator must exist while scheduler is running")
             .submit(PendingCircuitJob {
                 peer_id,
                 action: circuit_action,
             })
             .await;
+        tracing::debug!(peer = ?peer_id, action = ?action, "submitted garbler circuit action");
     }
 
     /// Build a [`PendingCircuitJob`] for an evaluator circuit action and
@@ -291,11 +383,14 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         };
 
         self.garbling
+            .as_ref()
+            .expect("garbling coordinator must exist while scheduler is running")
             .submit(PendingCircuitJob {
                 peer_id,
                 action: circuit_action,
             })
             .await;
+        tracing::debug!(peer = ?peer_id, action = ?action, "submitted evaluator circuit action");
     }
 
     /// Shut down all pools gracefully.
@@ -303,11 +398,17 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// Closes pool queues so workers drain remaining jobs and exit, then
     /// shuts down the garbling coordinator (joining its thread). Safe to
     /// call multiple times — all operations are idempotent.
-    pub fn shutdown(&mut self) {
+    pub fn shutdown(mut self) {
         tracing::info!("job scheduler shutting down");
-        self.light.close_queue();
-        self.heavy.close_queue();
-        self.garbling.shutdown();
+        if let Some(light) = self.light.take() {
+            light.shutdown();
+        }
+        if let Some(heavy) = self.heavy.take() {
+            heavy.shutdown();
+        }
+        if let Some(mut garbling) = self.garbling.take() {
+            garbling.shutdown();
+        }
         tracing::info!("job scheduler shut down complete");
     }
 }
@@ -317,9 +418,15 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Drop for JobScheduler<D> {
         // Ensure queues are closed and coordinator thread is joined even if
         // the caller forgot to call shutdown(). All operations are idempotent
         // so double-calling (shutdown + drop) is safe.
-        self.light.close_queue();
-        self.heavy.close_queue();
-        self.garbling.shutdown();
+        if let Some(light) = self.light.as_ref() {
+            light.close_queue();
+        }
+        if let Some(heavy) = self.heavy.as_ref() {
+            heavy.close_queue();
+        }
+        if let Some(garbling) = self.garbling.as_mut() {
+            garbling.shutdown();
+        }
     }
 }
 

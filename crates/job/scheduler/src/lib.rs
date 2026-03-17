@@ -21,5 +21,7 @@ pub mod scheduler;
 pub(crate) mod priority;
 
 // Re-export the API crate for convenience.
+pub use garbling::GarblingConfig;
 pub use mosaic_job_api;
-pub use scheduler::{JobScheduler, JobSchedulerConfig};
+pub use pool::PoolConfig;
+pub use scheduler::{JobScheduler, JobSchedulerConfig, JobSchedulerController};
