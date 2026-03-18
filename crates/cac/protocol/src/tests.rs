@@ -1,4 +1,5 @@
 use std::{
+    env::temp_dir,
     fs::File,
     io::{Read, Write},
     path::PathBuf,
@@ -329,7 +330,7 @@ async fn test_e2e() {
     let mut eval_state = StoredEvaluatorState::default();
     let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
 
-    let ts = DummyTableStore {};
+    let ts = DummyTableStore { dir: temp_dir() };
     let circuit_path = PathBuf::from_str("g16.v5c").unwrap();
     assert!(
         std::fs::exists(circuit_path.clone()).unwrap(),
@@ -351,7 +352,7 @@ async fn test_e2e() {
     let mut garbler_exec = MosaicExecutor::new(
         net_client_gabler.clone(),
         sp,
-        DummyTableStore {},
+        ts.clone(),
         circuit_path.clone(),
     );
 
@@ -359,7 +360,8 @@ async fn test_e2e() {
         garb_state: garb_state.clone(),
         eval_state: eval_state.clone(),
     };
-    let mut eval_exec = MosaicExecutor::new(net_client_evaluator, sp, ts, circuit_path.clone());
+    let mut eval_exec =
+        MosaicExecutor::new(net_client_evaluator, sp, ts.clone(), circuit_path.clone());
 
     // Initialize garbler
     let mut garb_actions: Vec<
@@ -825,7 +827,7 @@ async fn test_e2e() {
     let mut garbler_exec = MosaicExecutor::new(
         net_client_gabler.clone(),
         sp,
-        DummyTableStore {},
+        ts.clone(),
         circuit_path.clone(),
     );
 
@@ -946,7 +948,10 @@ impl StorageProvider for DummyStorageProvider {
     }
 }
 
-struct DummyTableStore {}
+#[derive(Debug, Clone)]
+struct DummyTableStore {
+    dir: PathBuf,
+}
 
 #[allow(unused_variables)]
 impl TableStore for DummyTableStore {
@@ -956,25 +961,38 @@ impl TableStore for DummyTableStore {
 
     async fn create(&self, id: &mosaic_storage_api::TableId) -> Result<Self::Writer, Self::Error> {
         let id = id.index.get();
-        let ct = File::create(format!("ct_{id}.bin")).unwrap();
-        let meta = File::create(format!("meta_{id}.bin")).unwrap();
-        let trans = File::create(format!("trans_{id}.bin")).unwrap();
+        let ct_path = self.dir.join(format!("ct_{id}.bin"));
+        let meta_path = self.dir.join(format!("meta_{id}.bin"));
+        let trans_path = self.dir.join(format!("trans_{id}.bin"));
+
+        let ct = File::create(ct_path).unwrap();
+        let meta = File::create(meta_path).unwrap();
+        let trans = File::create(trans_path).unwrap();
         Ok(FileTableWriter { ct, meta, trans })
     }
 
     async fn open(&self, id: &mosaic_storage_api::TableId) -> Result<Self::Reader, Self::Error> {
         let id = id.index.get();
-        let ct = File::create(format!("ct_{id}.bin")).unwrap();
-        let meta = File::create(format!("meta_{id}.bin")).unwrap();
-        let trans = File::create(format!("trans_{id}.bin")).unwrap();
+        let ct_path = self.dir.join(format!("ct_{id}.bin"));
+        let meta_path = self.dir.join(format!("meta_{id}.bin"));
+        let trans_path = self.dir.join(format!("trans_{id}.bin"));
+
+        let ct = File::open(ct_path).unwrap();
+        let meta = File::open(meta_path).unwrap();
+        let trans = File::open(trans_path).unwrap();
         Ok(FileTableReader { ct, meta, trans })
     }
 
     async fn exists(&self, id: &mosaic_storage_api::TableId) -> Result<bool, Self::Error> {
         let id = id.index.get();
-        let ct = std::fs::exists(format!("ct_{id}.bin")).unwrap();
-        let meta = std::fs::exists(format!("meta_{id}.bin")).unwrap();
-        let trans = std::fs::exists(format!("trans_{id}.bin")).unwrap();
+
+        let ct_path = self.dir.join(format!("ct_{id}.bin"));
+        let meta_path = self.dir.join(format!("meta_{id}.bin"));
+        let trans_path = self.dir.join(format!("trans_{id}.bin"));
+
+        let ct = std::fs::exists(ct_path).unwrap();
+        let meta = std::fs::exists(meta_path).unwrap();
+        let trans = std::fs::exists(trans_path).unwrap();
         Ok(ct && meta && trans)
     }
 
