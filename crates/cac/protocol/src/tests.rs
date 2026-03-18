@@ -363,7 +363,7 @@ async fn test_e2e() {
         let mut eval_state = StoredEvaluatorState::default();
         let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
 
-        let ts = DummyTableStore {dir: temp_dir()};
+        let ts = DummyTableStore { dir: temp_dir() };
 
         let circuit_path = PathBuf::from_str("g16.v5c").unwrap();
         assert!(
@@ -393,7 +393,8 @@ async fn test_e2e() {
             garb_state: garb_state.clone(),
             eval_state: eval_state.clone(),
         };
-        let mut eval_exec = MosaicExecutor::new(net_client_evaluator, sp, ts.clone(), circuit_path.clone());
+        let mut eval_exec =
+            MosaicExecutor::new(net_client_evaluator, sp, ts.clone(), circuit_path.clone());
 
         // Initialize garbler
         let mut garb_actions: Vec<
