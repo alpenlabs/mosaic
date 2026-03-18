@@ -227,7 +227,6 @@ mod netcl {
 
 use fasm::StateMachine;
 
-#[ignore = "does not include g16.v5c file, so test will crash in CI"]
 #[tokio::test]
 // Steps:
 // 1. clone: g16 repo and switch to branch test/simple_circuit_postaudit
@@ -531,12 +530,18 @@ impl StorageProvider for DummyStorageProvider {
     type GarblerState = StoredGarblerState;
     type EvaluatorState = StoredEvaluatorState;
 
-    fn garbler_state(&self, _peer_id: &PeerId) -> Self::GarblerState {
-        self.garb_state.clone()
+    async fn garbler_state(
+        &self,
+        _peer_id: &PeerId,
+    ) -> mosaic_storage_api::StorageResult<Self::GarblerState> {
+        Ok(self.garb_state.clone())
     }
 
-    fn evaluator_state(&self, _peer_id: &PeerId) -> Self::EvaluatorState {
-        self.eval_state.clone()
+    async fn evaluator_state(
+        &self,
+        _peer_id: &PeerId,
+    ) -> mosaic_storage_api::StorageResult<Self::EvaluatorState> {
+        Ok(self.eval_state.clone())
     }
 }
 
