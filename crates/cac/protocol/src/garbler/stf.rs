@@ -42,7 +42,7 @@ pub(crate) async fn handle_event<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match input {
         Input::Init(data) => {
@@ -296,7 +296,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match result {
         ActionResult::PolynomialCommitmentsGenerated(generated) => {

@@ -952,7 +952,6 @@ async fn test_e2e() {
             .unwrap();
 
         let eval_disputed_withdrawal = EvaluatorDisputedWithdrawalData {
-            withdrawal_inputs: withdrawal_input,
             signatures: on_chain_sigs.clone(),
         };
         evaluator::EvaluatorSM::stf(

@@ -4,16 +4,17 @@ use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
-    DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
+    CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
     InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
     OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, SecretKey, Seed, SetupInputs,
-    WithdrawalAdaptors, WithdrawalAdaptorsChunk, state_machine::evaluator::*,
+    WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
-    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
+    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK, WideLabelValue,
 };
-use mosaic_vs3::interpolate;
+use mosaic_vs3::{Share, interpolate};
 use rand::SeedableRng;
 
 use super::emit;
@@ -39,7 +40,7 @@ pub(crate) async fn handle_event<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match input {
         Input::Init(data) => match root_state.step {
@@ -146,64 +147,79 @@ pub(crate) async fn handle_event<S: StateMut>(
             }
             _ => return Err(SMError::UnexpectedInput),
         },
-        Input::DisputedWithdrawal(
-            deposit_id,
-            EvaluatorDisputedWithdrawalData {
-                signatures,
-                withdrawal_inputs,
-            },
-        ) => match root_state.step {
-            Step::SetupComplete => {
-                let deposit_state = require_deposit(state, &deposit_id).await?;
+        Input::DisputedWithdrawal(deposit_id, EvaluatorDisputedWithdrawalData { signatures }) => {
+            match root_state.step {
+                Step::SetupComplete => {
+                    let deposit_state = require_deposit(state, &deposit_id).await?;
 
-                match deposit_state.step {
-                    DepositStep::DepositReady => {
-                        state
-                            .put_completed_signatures(&deposit_id, &signatures)
-                            .await
-                            .map_err(SMError::storage)?;
+                    match deposit_state.step {
+                        DepositStep::DepositReady => {
+                            state
+                                .put_completed_signatures(&deposit_id, &signatures)
+                                .await
+                                .map_err(SMError::storage)?;
 
-                        state
-                            .put_withdrawal_inputs(&deposit_id, &withdrawal_inputs)
-                            .await
-                            .map_err(SMError::storage)?;
+                            let withdrawal_adaptors = state
+                                .get_withdrawal_adaptors(&deposit_id)
+                                .await
+                                .require("expected withdrawal adaptors")?;
+                            let input_polynomial_commitments = state
+                                .get_input_polynomial_commitments()
+                                .await
+                                .require("expected input poly commitments")?;
 
-                        let challenge_indices = state
-                            .get_challenge_indices()
-                            .await
-                            .require("expected challenge indices")?;
-                        let garbling_commitments = state
-                            .get_garbling_table_commitments()
-                            .await
-                            .require("expected garbling table commitments")?;
+                            let withdrawal_input = extract_withdrawal_input_from_signatures(
+                                signatures,
+                                withdrawal_adaptors,
+                                &input_polynomial_commitments,
+                            )
+                            .map_err(SMError::StateInconsistency)?;
+                            // returns state inconsistency error here because adaptor signature was
+                            // correctly submitted but doesn't agree
+                            // with values saved in our state
 
-                        let eval_indices = get_eval_indices(&challenge_indices);
-                        let eval_commitments =
-                            get_eval_commitments(&eval_indices, &garbling_commitments);
+                            state
+                                .put_withdrawal_inputs(&deposit_id, &withdrawal_input)
+                                .await
+                                .map_err(SMError::storage)?;
 
-                        for idx in 0..N_EVAL_CIRCUITS {
-                            let index = eval_indices[idx];
-                            let commitment = eval_commitments[idx];
-                            emit(actions, Action::EvaluateGarblingTable(index, commitment));
+                            let challenge_indices = state
+                                .get_challenge_indices()
+                                .await
+                                .require("expected challenge indices")?;
+                            let garbling_commitments = state
+                                .get_garbling_table_commitments()
+                                .await
+                                .require("expected garbling table commitments")?;
+
+                            let eval_indices = get_eval_indices(&challenge_indices);
+                            let eval_commitments =
+                                get_eval_commitments(&eval_indices, &garbling_commitments);
+
+                            for idx in 0..N_EVAL_CIRCUITS {
+                                let index = eval_indices[idx];
+                                let commitment = eval_commitments[idx];
+                                emit(actions, Action::EvaluateGarblingTable(index, commitment));
+                            }
+
+                            root_state.step = Step::EvaluatingTables {
+                                deposit_id,
+                                eval_indices,
+                                eval_commitments,
+                                evaluated: HeapArray::from_elem(false),
+                            };
                         }
-
-                        root_state.step = Step::EvaluatingTables {
-                            deposit_id,
-                            eval_indices,
-                            eval_commitments,
-                            evaluated: HeapArray::from_elem(false),
-                        };
+                        _ => return Err(SMError::UnexpectedInput),
                     }
-                    _ => return Err(SMError::UnexpectedInput),
-                }
 
-                state
-                    .put_deposit(&deposit_id, &deposit_state)
-                    .await
-                    .map_err(SMError::storage)?;
+                    state
+                        .put_deposit(&deposit_id, &deposit_state)
+                        .await
+                        .map_err(SMError::storage)?;
+                }
+                _ => return Err(SMError::UnexpectedInput),
             }
-            _ => return Err(SMError::UnexpectedInput),
-        },
+        }
         _ => return Err(SMError::UnexpectedInput),
     };
 
@@ -234,7 +250,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match result {
         ActionResult::ChallengeMsgAcked => {
@@ -1201,4 +1217,40 @@ fn create_adaptor_message_chunks(
         });
     }
     adaptor_msg_chunks
+}
+
+fn extract_withdrawal_input_from_signatures(
+    completed_signatures: CompletedSignatures,
+    withdrawal_adaptors: WithdrawalAdaptors,
+    input_polynomial_commitments: &InputPolynomialCommitments,
+) -> Result<WithdrawalInputs, String> {
+    let withdrawal_sigs = &completed_signatures[N_DEPOSIT_INPUT_WIRES..];
+    let withdrawal_poly_commits =
+        &input_polynomial_commitments[N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..];
+    let mut withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
+    for i in 0..N_WITHDRAWAL_INPUT_WIRES {
+        let sig = withdrawal_sigs[i];
+        let wide_adaptors = &withdrawal_adaptors[i];
+        let poly_commits = &withdrawal_poly_commits[i];
+        let position = wide_adaptors.iter().zip(poly_commits).enumerate().position(
+            |(pos, (adaptor, poly_commit))| {
+                let index = if pos == 0 {
+                    Index::reserved()
+                } else {
+                    Index::new(pos).expect("valid index range")
+                };
+                let val = adaptor.extract_share(&sig);
+                let share = Share::new(index, val);
+                poly_commit.verify_share(share).is_ok()
+            },
+        );
+        if let Some(position) = position {
+            withdrawal_input[i] = position as WideLabelValue;
+        } else {
+            return Err(format!(
+                "Adaptors can not extract share for wire at index {i}"
+            ));
+        }
+    }
+    Ok(withdrawal_input)
 }

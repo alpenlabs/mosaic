@@ -271,7 +271,6 @@ mod tests {
     fn sample_evaluator_disputed_withdrawal() -> EvaluatorDisputedWithdrawalData {
         let sig = Signature::from_bytes([1; 64]).expect("test signature should deserialize");
         EvaluatorDisputedWithdrawalData {
-            withdrawal_inputs: [9; 128],
             signatures: HeapArray::new(|_| sig),
         }
     }
