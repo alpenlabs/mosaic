@@ -14,3 +14,6 @@ pub use default::*;
 pub use error::*;
 pub use traits::*;
 pub use types::*;
+
+#[cfg(test)]
+mod tests;

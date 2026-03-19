@@ -15,7 +15,7 @@ use mosaic_common::{
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{Commit, StorageProviderMut};
 use mosaic_storage_inmemory::InMemoryStorageProvider;
-use mosaic_vs3::{Index, Share};
+use mosaic_vs3::{Index, Polynomial, Share};
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 
@@ -65,7 +65,7 @@ impl TestHarness {
     }
 
     async fn setup_garbler(&self, step: garbler::Step) {
-        let mut session = self.storage.garbler_state_mut(&self.peer_id);
+        let mut session = self.storage.garbler_state_mut(&self.peer_id).await.unwrap();
         let state = GarblerState {
             config: Some(garbler::Config {
                 seed: Seed::from([1u8; 32]),
@@ -93,7 +93,11 @@ impl TestHarness {
         step: evaluator::Step,
         config: Option<evaluator::Config>,
     ) {
-        let mut session = self.storage.evaluator_state_mut(&self.peer_id);
+        let mut session = self
+            .storage
+            .evaluator_state_mut(&self.peer_id)
+            .await
+            .unwrap();
         let state = EvaluatorState { config, step };
         session.put_root_state(&state).await.unwrap();
         session.commit().await.unwrap();
@@ -106,7 +110,7 @@ impl TestHarness {
             step,
             pk: sk.to_pubkey(),
         };
-        let mut session = self.storage.garbler_state_mut(&self.peer_id);
+        let mut session = self.storage.garbler_state_mut(&self.peer_id).await.unwrap();
         session
             .put_deposit(deposit_id, &deposit_state)
             .await
@@ -118,7 +122,11 @@ impl TestHarness {
         let mut rng = ChaChaRng::seed_from_u64(100);
         let sk = SecretKey::rand(&mut rng);
         let deposit_state = evaluator::DepositState { step, sk };
-        let mut session = self.storage.evaluator_state_mut(&self.peer_id);
+        let mut session = self
+            .storage
+            .evaluator_state_mut(&self.peer_id)
+            .await
+            .unwrap();
         session
             .put_deposit(&deposit_id, &deposit_state)
             .await
@@ -267,7 +275,7 @@ async fn list_tableset_ids_returns_only_committed_peers() {
 
     // Commit garbler for peer1
     {
-        let mut session = h.storage.garbler_state_mut(&peer1);
+        let mut session = h.storage.garbler_state_mut(&peer1).await.unwrap();
         session
             .put_root_state(&GarblerState {
                 config: None,
@@ -280,7 +288,7 @@ async fn list_tableset_ids_returns_only_committed_peers() {
 
     // Commit evaluator for peer2
     {
-        let mut session = h.storage.evaluator_state_mut(&peer2);
+        let mut session = h.storage.evaluator_state_mut(&peer2).await.unwrap();
         session
             .put_root_state(&EvaluatorState {
                 config: None,
@@ -293,7 +301,7 @@ async fn list_tableset_ids_returns_only_committed_peers() {
 
     // Commit both for peer3
     {
-        let mut session = h.storage.garbler_state_mut(&peer3);
+        let mut session = h.storage.garbler_state_mut(&peer3).await.unwrap();
         session
             .put_root_state(&GarblerState {
                 config: None,
@@ -304,7 +312,7 @@ async fn list_tableset_ids_returns_only_committed_peers() {
         session.commit().await.unwrap();
     }
     {
-        let mut session = h.storage.evaluator_state_mut(&peer3);
+        let mut session = h.storage.evaluator_state_mut(&peer3).await.unwrap();
         session
             .put_root_state(&EvaluatorState {
                 config: None,
@@ -574,11 +582,10 @@ async fn init_evaluator_deposit_dispatches_correct_input() {
         .unwrap();
 
     let input = h.recv_input().await;
-    match input {
+    match input.input() {
         StateMachineInput::Evaluator(evaluator::Input::DepositInit(id, data)) => {
-            assert_eq!(id, deposit_id);
+            assert_eq!(id, &deposit_id);
             assert_eq!(data.deposit_inputs, [0xCCu8; N_DEPOSIT_INPUT_WIRES]);
-            // sk should be deterministic given the seed and deposit_id
         }
         other => panic!("expected Evaluator DepositInit, got {other:?}"),
     }
@@ -785,7 +792,7 @@ async fn get_completed_adaptor_sigs_returns_signatures() {
     // Write completed signatures for the deposit
     let sigs = test_completed_signatures();
     {
-        let mut session = h.storage.garbler_state_mut(&h.peer_id);
+        let mut session = h.storage.garbler_state_mut(&h.peer_id).await.unwrap();
         session
             .put_completed_signatures(&deposit_id, &sigs)
             .await
@@ -951,7 +958,7 @@ async fn sign_with_fault_secret_signs_when_successful() {
     let scalar = ark_ff::UniformRand::rand(&mut ChaChaRng::seed_from_u64(123));
     let share = Share::new(Index::new(1).unwrap(), scalar);
     {
-        let mut session = h.storage.evaluator_state_mut(&h.peer_id);
+        let mut session = h.storage.evaluator_state_mut(&h.peer_id).await.unwrap();
         session.put_fault_secret_share(&share).await.unwrap();
         session.commit().await.unwrap();
     }
@@ -996,7 +1003,7 @@ async fn sign_with_fault_secret_signs_with_tweak() {
     let scalar = ark_ff::UniformRand::rand(&mut ChaChaRng::seed_from_u64(123));
     let share = Share::new(Index::new(1).unwrap(), scalar);
     {
-        let mut session = h.storage.evaluator_state_mut(&h.peer_id);
+        let mut session = h.storage.evaluator_state_mut(&h.peer_id).await.unwrap();
         session.put_fault_secret_share(&share).await.unwrap();
         session.commit().await.unwrap();
     }
@@ -1086,6 +1093,22 @@ async fn sign_with_fault_secret_rejects_non_consumed_step() {
     );
 }
 
+#[tokio::test]
+async fn sign_with_fault_secret_rejects_garbler_role() {
+    let h = TestHarness::new();
+
+    let err = h
+        .api
+        .sign_with_fault_secret(&h.garbler_sm_id(), [0u8; 32], None)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, ServiceError::RoleMismatch(_)),
+        "expected RoleMismatch, got {err:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Group 11: list_deposits + get_deposit_status
 // ---------------------------------------------------------------------------
@@ -1139,7 +1162,143 @@ async fn get_deposit_status_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// Group 12: executor channel failure
+// Group 12: get_fault_secret_pubkey
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_fault_secret_pubkey_returns_pubkey_from_commitment() {
+    let h = TestHarness::new();
+    h.setup_garbler(garbler::Step::SetupComplete).await;
+
+    let mut rng = ChaChaRng::seed_from_u64(200);
+    let polynomial = Polynomial::rand(&mut rng);
+    let commitment = polynomial.commit();
+    let output_commitment = HeapArray::from_vec(vec![commitment.clone()]);
+
+    {
+        let mut session = h.storage.garbler_state_mut(&h.peer_id).await.unwrap();
+        session
+            .put_output_polynomial_commitment(&output_commitment)
+            .await
+            .unwrap();
+        session.commit().await.unwrap();
+    }
+
+    let pubkey = h
+        .api
+        .get_fault_secret_pubkey(&h.garbler_sm_id())
+        .await
+        .unwrap()
+        .expect("expected Some pubkey");
+
+    let expected_point = commitment.eval(Index::reserved()).point();
+    assert_eq!(pubkey.0, expected_point);
+}
+
+#[tokio::test]
+async fn get_fault_secret_pubkey_returns_none_when_no_commitment() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::SetupComplete).await;
+    // No output_polynomial_commitment written
+
+    let result = h
+        .api
+        .get_fault_secret_pubkey(&h.evaluator_sm_id())
+        .await
+        .unwrap();
+
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Group 13: get_adaptor_pubkey
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_adaptor_pubkey_is_deterministic_across_calls() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::SetupComplete).await;
+    let deposit_id = test_deposit_id(5);
+
+    let pk1 = h
+        .api
+        .get_adaptor_pubkey(&h.evaluator_sm_id(), &deposit_id)
+        .await
+        .unwrap();
+    let pk2 = h
+        .api
+        .get_adaptor_pubkey(&h.evaluator_sm_id(), &deposit_id)
+        .await
+        .unwrap();
+
+    assert_eq!(pk1, pk2, "same seed + deposit_id must yield same pubkey");
+}
+
+#[tokio::test]
+async fn get_adaptor_pubkey_differs_per_deposit() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::SetupComplete).await;
+
+    let pk1 = h
+        .api
+        .get_adaptor_pubkey(&h.evaluator_sm_id(), &test_deposit_id(1))
+        .await
+        .unwrap();
+    let pk2 = h
+        .api
+        .get_adaptor_pubkey(&h.evaluator_sm_id(), &test_deposit_id(2))
+        .await
+        .unwrap();
+
+    assert_ne!(
+        pk1, pk2,
+        "different deposit_ids must yield different pubkeys"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Group 14: init_evaluator_deposit derived key verification
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn init_evaluator_deposit_sk_matches_get_adaptor_pubkey() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::SetupComplete).await;
+    let deposit_id = test_deposit_id(1);
+
+    // Get the adaptor pubkey before init
+    let adaptor_pk = h
+        .api
+        .get_adaptor_pubkey(&h.evaluator_sm_id(), &deposit_id)
+        .await
+        .unwrap()
+        .expect("expected Some pubkey");
+
+    let init = EvaluatorDepositInit {
+        sighashes: test_sighashes(),
+        deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
+    };
+
+    h.api
+        .init_evaluator_deposit(&h.evaluator_sm_id(), &deposit_id, init)
+        .await
+        .unwrap();
+
+    let input = h.recv_input().await;
+    match input.input() {
+        StateMachineInput::Evaluator(evaluator::Input::DepositInit(_id, data)) => {
+            assert_eq!(
+                data.sk.to_pubkey(),
+                adaptor_pk,
+                "dispatched sk must correspond to the pubkey from get_adaptor_pubkey"
+            );
+        }
+        other => panic!("expected Evaluator DepositInit, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group 15: executor channel failure
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1159,7 +1318,7 @@ async fn dispatch_returns_executor_error_when_channel_closed() {
 
     // Setup garbler at SetupComplete with a ready deposit
     {
-        let mut session = storage.garbler_state_mut(&peer_id);
+        let mut session = storage.garbler_state_mut(&peer_id).await.unwrap();
         session
             .put_root_state(&GarblerState {
                 config: None,
