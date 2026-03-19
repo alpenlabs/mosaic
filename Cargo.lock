@@ -2460,14 +2460,23 @@ dependencies = [
 name = "mosaic-rpc-server"
 version = "0.1.0"
 dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-secp256k1",
  "bitcoin",
  "jsonrpsee",
+ "mosaic-adaptor-sigs",
  "mosaic-cac-types",
  "mosaic-common",
  "mosaic-net-svc-api",
  "mosaic-rpc-api",
  "mosaic-rpc-service",
  "mosaic-rpc-types",
+ "proptest",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "secp256k1",
+ "sha2",
 ]
 
 [[package]]
