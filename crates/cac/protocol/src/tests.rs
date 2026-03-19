@@ -306,7 +306,7 @@ mod netcl {
 
 use fasm::StateMachine;
 #[tokio::test]
-// Steps:
+// OPTIONAL steps to generate v5c file yourself:
 // 1. clone: g16 repo and switch to branch test/simple_circuit_postaudit
 // test/simple_circuit_postaudit branch generates small ckt file that does input validation
 // only; not the actually groth16 verification afterwards; Meant for test purposes only]
@@ -316,7 +316,7 @@ use fasm::StateMachine;
 // 5. generate v5c file: cd crates/lvl && cargo run prealloc g16.ckt g16.v5c
 // 6. move lvl/g16.v5c to mosaic/cac/protocol/
 // 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
-//    --exact --show-output --nocapture --ignored
+//    --exact --show-output --nocapture
 
 async fn test_e2e() {
     use mosaic_cac_types::{
@@ -336,7 +336,11 @@ async fn test_e2e() {
         let reveals_secret = true; // output is false
 
         let mut setup_inputs2 = [0; N_SETUP_INPUT_WIRES];
+        let mut deposit_input2 = [0u8; N_DEPOSIT_INPUT_WIRES];
+        let mut withdrawal_input2 = [0; N_WITHDRAWAL_INPUT_WIRES];
         setup_inputs2[0] = 1;
+        deposit_input2[0] = 1;
+        withdrawal_input2[0] = 1;
         let reveals_secret2 = false; // output is true
         vec![
             (
@@ -347,8 +351,8 @@ async fn test_e2e() {
             ),
             (
                 setup_inputs2,
-                deposit_inputs,
-                withdrawal_input,
+                deposit_input2,
+                withdrawal_input2,
                 reveals_secret2,
             ),
         ]

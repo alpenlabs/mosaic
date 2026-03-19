@@ -482,7 +482,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     evaluated[idx] = true;
 
-                    let can_slash = if let Some(output_share) = output_share {
+                    let fault_secret = if let Some(output_share) = output_share {
                         // output_share is Some only if the evaluation yielded False value as result
                         // Now interpolate to find share corresponding to reserved index of output
                         // wire
@@ -507,23 +507,16 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                             .require("expected output poly commit")?[0]
                             .get_zeroth_coefficient();
 
-                        calc_commitment == output_poly_commit
+                        (calc_commitment == output_poly_commit)
+                            .then(|| SecretKey(evals_at_zeroth_index.value()))
                     } else {
-                        false
+                        None
                     };
 
-                    if can_slash {
-                        let ops = output_share.unwrap().value();
-                        let ops = SecretKey(ops);
+                    if fault_secret.is_some() || evaluated.all() {
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
-                            slash: Some(ops),
-                        };
-                    } else if evaluated.all() {
-                        // All tables evaluated, no fault found.
-                        root_state.step = Step::SetupConsumed {
-                            deposit_id: *deposit_id,
-                            slash: None,
+                            slash: fault_secret,
                         };
                     }
                     // else stay on same step and wait for more evaluations
@@ -1232,18 +1225,14 @@ fn extract_withdrawal_input_from_signatures(
         let sig = withdrawal_sigs[i];
         let wide_adaptors = &withdrawal_adaptors[i];
         let poly_commits = &withdrawal_poly_commits[i];
-        let position = wide_adaptors.iter().zip(poly_commits).enumerate().position(
-            |(pos, (adaptor, poly_commit))| {
-                let index = if pos == 0 {
-                    Index::reserved()
-                } else {
-                    Index::new(pos).expect("valid index range")
-                };
+        let position = wide_adaptors
+            .iter()
+            .zip(poly_commits)
+            .position(|(adaptor, poly_commit)| {
                 let val = adaptor.extract_share(&sig);
-                let share = Share::new(index, val);
+                let share = Share::new(Index::reserved(), val);
                 poly_commit.verify_share(share).is_ok()
-            },
-        );
+            });
         if let Some(position) = position {
             withdrawal_input[i] = position as WideLabelValue;
         } else {
