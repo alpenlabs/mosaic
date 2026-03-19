@@ -1,3 +1,4 @@
+use mosaic_common::constants::{N_CIRCUITS, N_OPEN_CIRCUITS};
 use serde::{Deserialize, Serialize};
 
 use crate::{RpcDepositId, RpcInstanceId, RpcPeerId, RpcSetupInputs};
@@ -26,30 +27,28 @@ pub enum CacRole {
 
 /// Cac params that can be used to setup.
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-pub enum CacParams {
-    /// default
-    N181K174,
-    /// for testing (only available in debug builds)
-    #[cfg(debug_assertions)]
-    N5K3,
+pub struct CacParams {
+    tables: u64,
+    selected_openings: u64,
 }
 
 impl CacParams {
     /// Total number of tables.
     pub fn tables(&self) -> u64 {
-        match self {
-            CacParams::N181K174 => 181,
-            #[cfg(debug_assertions)]
-            CacParams::N5K3 => 5,
-        }
+        self.tables
     }
 
     /// Number of openings during Cac.
     pub fn selected_openings(&self) -> u64 {
-        match self {
-            CacParams::N181K174 => 174,
-            #[cfg(debug_assertions)]
-            CacParams::N5K3 => 3,
+        self.selected_openings
+    }
+}
+
+impl Default for CacParams {
+    fn default() -> Self {
+        Self {
+            tables: N_CIRCUITS as u64,
+            selected_openings: N_OPEN_CIRCUITS as u64,
         }
     }
 }
