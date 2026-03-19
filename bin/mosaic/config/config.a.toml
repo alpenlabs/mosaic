@@ -4,7 +4,7 @@ filter = "info"
 [circuit]
 # Placeholder to allow process startup in this repo checkout.
 # Replace with a real .v5c circuit file before running any garbling jobs.
-path = "/etc/hosts"
+path = "./crates/cac/protocol/g16.v5c"
 
 [network]
 signing_key_hex = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -21,20 +21,8 @@ ack_timeout_secs = 10
 peer_id_hex = "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0"
 addr = "127.0.0.1:7001"
 
-[[network.peers]]
-peer_id_hex = "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce"
-addr = "127.0.0.1:7002"
-
-[[network.peers]]
-peer_id_hex = "d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48"
-addr = "127.0.0.1:7003"
-
-[[network.peers]]
-peer_id_hex = "c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f73242"
-addr = "127.0.0.1:7004"
-
 [storage]
-cluster_file = "/etc/foundationdb/fdb.cluster"
+cluster_file = "/usr/local/etc/foundationdb/fdb.cluster"
 global_path = ["local-dev", "node-a"]
 
 [table_store]
@@ -51,7 +39,7 @@ threads = 1
 concurrency_per_worker = 32
 
 [job_scheduler.heavy]
-threads = 2
+threads = 1
 concurrency_per_worker = 8
 
 [job_scheduler.garbling]
