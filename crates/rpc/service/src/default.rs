@@ -636,6 +636,12 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         digest: [u8; 32],
         tweak: Option<[u8; 32]>,
     ) -> ServiceResult<Option<SchnorrSignature>> {
+        if sm_id.role() != Role::Evaluator {
+            return Err(ServiceError::RoleMismatch(
+                "sign_with_fault_secret only valid for evaluator".into(),
+            ));
+        }
+
         let statemachine = self
             .evaluator_state(sm_id.peer_id())
             .await?
