@@ -3,11 +3,12 @@ use std::pin::pin;
 use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
-    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
-    CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
-    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
-    OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, SecretKey, Seed, SetupInputs,
-    WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
+    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, ChallengeResponseReceipt,
+    CommitMsgChunk, CommitMsgHeader, CompletedSignatures, DepositAdaptors, DepositId,
+    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
+    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
+    ReservedSetupInputShares, SecretKey, Seed, SetupInputs, WithdrawalAdaptors,
+    WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -309,6 +310,11 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 actions,
             )
             .await?;
+        }
+        ActionResult::SendChallengeResponseReceiptAcked => {
+            // The challenge response receipt message was sent. No further state change needed -
+            // state was already advanced to ReceivingGarblingTables in
+            // the previous step
         }
         ActionResult::GarblingTableReceived(index, table_commitment) => {
             handle_table_received(&mut root_state, state, index, table_commitment, actions).await?;
@@ -769,6 +775,8 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                 .await
                 .map_err(SMError::storage)?;
 
+            // note: chunks.all() doesn't work here because chunks.capacit()  = N_CIRCUITS >
+            // N_CHALLENGE_RESPONSE_CHUNKS
             if !*header || chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
                 return Ok(());
             }
@@ -882,6 +890,13 @@ async fn handle_table_commitment_generated<S: StateMut>(
 
                 let eval_commitments = get_eval_commitments(&eval_indices, &garbling_commitments);
 
+                // Tell garbler that he can now send
+                emit(
+                    actions,
+                    Action::SendChallengeResponseReceipt(ChallengeResponseReceipt {}),
+                );
+
+                // Listen for tables
                 for commitment in &eval_commitments {
                     emit(actions, Action::ReceiveGarblingTable(*commitment));
                 }

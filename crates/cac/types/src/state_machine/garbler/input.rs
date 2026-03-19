@@ -11,8 +11,8 @@
 use mosaic_vs3::Index;
 
 use crate::{
-    AdaptorMsgChunk, ChallengeMsg, DepositId, DepositInputs, PubKey, Seed, SetupInputs, Sighashes,
-    WithdrawalInputs,
+    AdaptorMsgChunk, ChallengeMsg, ChallengeResponseReceipt, DepositId, DepositInputs, PubKey,
+    Seed, SetupInputs, Sighashes, WithdrawalInputs,
 };
 
 /// Garbler state machine external event inputs.
@@ -33,6 +33,9 @@ pub enum Input {
 
     /// Challenge message received from the evaluator via network.
     RecvChallengeMsg(ChallengeMsg),
+
+    /// Receive Challenge Response Receipt
+    RecvChallengeResponseReceipt(ChallengeResponseReceipt),
 
     /// Receive Table Transfer Receipt
     RecvTableTransferReceipt(Index),

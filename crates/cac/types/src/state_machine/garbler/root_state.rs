@@ -73,6 +73,8 @@ pub enum Step {
         /// Track which challenge response chunks have been acked.
         chunk_acked: HeapArray<bool, N_CHALLENGE_RESPONSE_CHUNKS>,
     },
+    /// Wait for challenge response receipt before transferring tables
+    WaitForChallengeResponseReceipt,
     /// Challenge response msg ack received, send garbling tables
     TransferringGarblingTables {
         /// Seeds for garbling table generation

@@ -240,6 +240,15 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
         evaluator::handle_verify_opened_input_shares(self, peer_id)
     }
 
+    /// Send challenge response receipt
+    fn send_challenge_response_receipt(
+        &self,
+        peer_id: &PeerId,
+        msg: &mosaic_cac_types::ChallengeResponseReceipt,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_send_challenge_response_receipt(self, peer_id, msg)
+    }
+
     fn send_table_transfer_receipt(
         &self,
         peer_id: &PeerId,

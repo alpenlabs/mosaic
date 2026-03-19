@@ -2,8 +2,8 @@ use fasm::actions::TrackedActionTypes;
 use mosaic_vs3::Index;
 
 use crate::{
-    AdaptorMsgChunk, ChallengeMsg, CircuitOutputShare, DepositAdaptors, DepositId, GarblingSeed,
-    GarblingTableCommitment, WithdrawalAdaptorsChunk,
+    AdaptorMsgChunk, ChallengeMsg, ChallengeResponseReceipt, CircuitOutputShare, DepositAdaptors,
+    DepositId, GarblingSeed, GarblingTableCommitment, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -31,6 +31,8 @@ pub enum ActionId {
     GenerateTableCommitment(Index),
     /// Identifies a [`Action::ReceiveGarblingTable`] action by garbling table commitment.
     ReceiveGarblingTable(GarblingTableCommitment),
+    /// Identifies a [`Action::SendChallengeResponseReceipt`] action
+    SendChallengeResponseReceipt,
     /// Identifies a [`Action::SendTableTransferReceipt`] action by circuit index
     SendTableTransferReceipt(Index),
     /// Identifies a [`Action::GenerateDepositAdaptors`] action by deposit.
@@ -73,6 +75,8 @@ pub enum ActionResult {
     VerifyOpenedInputSharesResult(Option<String>),
     /// Garbling table commitment was generated for a circuit.
     TableCommitmentGenerated(Index, GarblingTableCommitment),
+    /// Challenge response receipt was sent and acknowledged by garbler
+    SendChallengeResponseReceiptAcked,
     /// Garbling table received from garbler and verified.
     GarblingTableReceived(Index, GarblingTableCommitment),
     /// Garbling table receipt acked
@@ -105,6 +109,8 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
     ReceiveGarblingTable(GarblingTableCommitment),
+    ///
+    SendChallengeResponseReceipt(ChallengeResponseReceipt),
     /// Send Table Receipt
     SendTableTransferReceipt(Index),
     /// Generate adaptors of deposit wires for a deposit.
@@ -125,6 +131,7 @@ impl Action {
             Self::SendChallengeMsg(_) => ActionId::SendChallengeMsg,
             Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
+            Self::SendChallengeResponseReceipt(_) => ActionId::SendChallengeResponseReceipt,
             Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
             Self::SendTableTransferReceipt(idx) => ActionId::SendTableTransferReceipt(*idx),
             Self::GenerateDepositAdaptors(id) => ActionId::GenerateDepositAdaptors(*id),

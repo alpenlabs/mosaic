@@ -50,6 +50,23 @@ pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStor
     }
 }
 
+pub(crate) async fn handle_send_challenge_response_receipt<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
+    peer_id: &PeerId,
+    msg: &mosaic_cac_types::ChallengeResponseReceipt,
+) -> HandlerOutcome {
+    match ctx.net_client.send(*peer_id, msg.clone()).await {
+        Ok(_ack) => completed(
+            ActionId::SendChallengeResponseReceipt,
+            ActionResult::SendChallengeResponseReceiptAcked,
+        ),
+        Err(e) => {
+            tracing::warn!(%e, "send challenge response receipt msg failed, will retry");
+            HandlerOutcome::Retry
+        }
+    }
+}
+
 pub(crate) async fn handle_send_table_transfer_receipt<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,

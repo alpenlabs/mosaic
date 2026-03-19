@@ -142,6 +142,13 @@ pub(crate) async fn handle_event<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
+        Input::RecvChallengeResponseReceipt(_) => match root_state.step {
+            Step::WaitForChallengeResponseReceipt => {
+                handle_post_receive_challenge_response_receipt(&mut root_state, state, actions)
+                    .await?;
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
         Input::RecvTableTransferReceipt(acked_index) => match &mut root_state.step {
             Step::WaitForTableTransferReceipt { acked_indices } => {
                 let challenge_indices = state
@@ -388,8 +395,9 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     *header_acked = true;
 
                     if chunk_acked.all() {
-                        handle_post_sending_challenge_response(&mut root_state, state, actions)
-                            .await?;
+                        // handle_post_sending_challenge_response(&mut root_state, state, actions)
+                        //     .await?;
+                        root_state.step = Step::WaitForChallengeResponseReceipt
                     }
                 }
                 _ => return Err(SMError::unexpected_input()),
@@ -421,8 +429,13 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     chunk_acked[challenge_index_pos] = true;
 
                     if *header_acked && chunk_acked.all() {
-                        handle_post_sending_challenge_response(&mut root_state, state, actions)
-                            .await?;
+                        // handle_post_receive_challenge_response_receipt(
+                        //     &mut root_state,
+                        //     state,
+                        //     actions,
+                        // )
+                        // .await?;
+                        root_state.step = Step::WaitForChallengeResponseReceipt
                     }
                 }
                 _ => return Err(SMError::unexpected_input()),
@@ -928,7 +941,7 @@ pub(crate) async fn restore<S: StateRead>(
     Ok(())
 }
 
-async fn handle_post_sending_challenge_response<S: StateMut>(
+async fn handle_post_receive_challenge_response_receipt<S: StateMut>(
     root_state: &mut GarblerState,
     state: &mut S,
     actions: &mut ActionContainer,

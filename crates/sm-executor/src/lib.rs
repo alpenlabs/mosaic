@@ -196,6 +196,7 @@ where
             .name("sm-executor".to_string())
             .spawn(move || {
                 let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build sm-executor monoio runtime");
                 let result = runtime.block_on(self.run_inner(Some(shutdown_rx)));
@@ -689,6 +690,13 @@ where
                     )
                     .await?;
                 }
+                Msg::ChallengeResponseReceipt(msg) => {
+                    self.apply_garbler_event(
+                        peer_id,
+                        garbler::Input::RecvChallengeResponseReceipt(*msg),
+                    )
+                    .await?;
+                }
             }
             tracing::debug!("inbound request applied; acking");
 
@@ -972,6 +980,7 @@ fn msg_kind(msg: &Msg) -> &'static str {
         Msg::ChallengeResponseChunk(_) => "ChallengeResponseChunk",
         Msg::TableTransferReceipt(_) => "TableTransferReceipt",
         Msg::AdaptorChunk(_) => "AdaptorChunk",
+        Msg::ChallengeResponseReceipt(_) => "ChallengeResponseReceipt",
     }
 }
 
@@ -1072,6 +1081,7 @@ mod tests {
         F: Future<Output = ()> + 'static,
     {
         monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+            .enable_timer()
             .build()
             .expect("build monoio runtime")
             .block_on(future);

@@ -403,6 +403,13 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
         peer_id: &PeerId,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
+    /// Send challenge response receipt
+    fn send_challenge_response_receipt(
+        &self,
+        peer_id: &PeerId,
+        msg: &mosaic_cac_types::ChallengeResponseReceipt,
+    ) -> impl Future<Output = HandlerOutcome> + Send;
+
     /// Send table transfer receipt to garbler (E1).
     fn send_table_transfer_receipt(
         &self,

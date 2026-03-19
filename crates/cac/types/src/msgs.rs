@@ -80,6 +80,10 @@ pub struct ChallengeMsg {
     pub challenge_indices: ChallengeIndices,
 }
 
+/// Challenge response receipt
+#[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize, Copy)]
+pub struct ChallengeResponseReceipt {}
+
 // ============================================================================
 // Challenge Response Message Types (Garbler -> Evaluator)
 // ============================================================================
@@ -164,6 +168,8 @@ pub enum Msg {
     CommitChunk(CommitMsgChunk),
     /// Challenge message (Evaluator -> Garbler)
     Challenge(ChallengeMsg),
+    /// Challenge response receipt
+    ChallengeResponseReceipt(ChallengeResponseReceipt),
     /// Table Receipt (Evaluator -> Garbler)
     TableTransferReceipt(Index),
     /// Challenge response header (Garbler -> Evaluator)
@@ -184,6 +190,7 @@ enum MsgVariant {
     ChallengeResponseChunk = 4,
     TableTransferReceipt = 5,
     AdaptorChunk = 6,
+    ChallengeResponseReceipt = 7,
 }
 
 impl TryFrom<u8> for MsgVariant {
@@ -198,6 +205,7 @@ impl TryFrom<u8> for MsgVariant {
             4 => Ok(MsgVariant::ChallengeResponseChunk),
             5 => Ok(MsgVariant::TableTransferReceipt),
             6 => Ok(MsgVariant::AdaptorChunk),
+            7 => Ok(MsgVariant::ChallengeResponseReceipt),
             _ => Err(SerializationError::InvalidData),
         }
     }
@@ -241,6 +249,11 @@ impl CanonicalSerialize for Msg {
                 (MsgVariant::AdaptorChunk as u8).serialize_with_mode(&mut writer, compress)?;
                 msg.serialize_with_mode(&mut writer, compress)
             }
+            Msg::ChallengeResponseReceipt(msg) => {
+                (MsgVariant::ChallengeResponseReceipt as u8)
+                    .serialize_with_mode(&mut writer, compress)?;
+                msg.serialize_with_mode(&mut writer, compress)
+            }
         }
     }
 
@@ -253,6 +266,7 @@ impl CanonicalSerialize for Msg {
             Msg::ChallengeResponseChunk(msg) => msg.serialized_size(compress),
             Msg::TableTransferReceipt(msg) => msg.serialized_size(compress),
             Msg::AdaptorChunk(msg) => msg.serialized_size(compress),
+            Msg::ChallengeResponseReceipt(msg) => msg.serialized_size(compress),
         }
     }
 }
@@ -303,6 +317,14 @@ impl CanonicalDeserialize for Msg {
                 let msg = AdaptorMsgChunk::deserialize_with_mode(&mut reader, compress, validate)?;
                 Ok(Msg::AdaptorChunk(msg))
             }
+            MsgVariant::ChallengeResponseReceipt => {
+                let msg = ChallengeResponseReceipt::deserialize_with_mode(
+                    &mut reader,
+                    compress,
+                    validate,
+                )?;
+                Ok(Msg::ChallengeResponseReceipt(msg))
+            }
         }
     }
 }
@@ -317,6 +339,7 @@ impl Valid for Msg {
             Msg::ChallengeResponseChunk(msg) => msg.check(),
             Msg::TableTransferReceipt(msg) => msg.check(),
             Msg::AdaptorChunk(msg) => msg.check(),
+            Msg::ChallengeResponseReceipt(msg) => msg.check(),
         }
     }
 }
@@ -364,5 +387,11 @@ impl From<AdaptorMsgChunk> for Msg {
 impl From<Index> for Msg {
     fn from(value: Index) -> Self {
         Msg::TableTransferReceipt(value)
+    }
+}
+
+impl From<ChallengeResponseReceipt> for Msg {
+    fn from(value: ChallengeResponseReceipt) -> Self {
+        Msg::ChallengeResponseReceipt(value)
     }
 }

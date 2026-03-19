@@ -44,7 +44,8 @@ use crate::{
     evaluator, garbler,
     tests::netcl::{
         handle_receive_adaptor_msg_chunks, handle_receive_challenge,
-        handle_receive_challenge_response, handle_receive_commit_msg,
+        handle_receive_challenge_response, handle_receive_challenge_response_receipt,
+        handle_receive_commit_msg,
     },
 };
 
@@ -301,6 +302,26 @@ mod netcl {
             collections.push(header);
         }
         collections
+    }
+
+    pub(crate) async fn handle_receive_challenge_response_receipt(
+        net_client: &NetClient,
+    ) -> GarbInputs {
+        const CI_TIMEOUT: Duration = Duration::from_secs(300);
+        let request = match tokio::time::timeout(CI_TIMEOUT, net_client.recv()).await {
+            Ok(Ok(request)) => request,
+            Ok(Err(err)) => panic!("recv failed: {:?}", err),
+            Err(_) => {
+                // send_handle.abort();
+                panic!("recv timed out after {CI_TIMEOUT:?}");
+            }
+        };
+        let header = match &request.message {
+            Msg::ChallengeResponseReceipt(msg) => GarbInputs::RecvChallengeResponseReceipt(*msg),
+            _ => panic!(),
+        };
+        request.ack().await.expect("ack failed");
+        header
     }
 }
 
@@ -607,7 +628,7 @@ async fn test_e2e() {
                 .await
                 .unwrap();
         }
-        assert_eq!(garb_actions.len(), N_EVAL_CIRCUITS); //  Step::TransferringGarblingTables; Action::TransferGarblingTable
+        assert_eq!(garb_actions.len(), 0); // Step::WaitChallengeResponseReceipt 
 
         // Evaluator receives challenge response
         while let Some(ei) = eval_inputs.pop() {
@@ -662,7 +683,48 @@ async fn test_e2e() {
                 .await
                 .unwrap();
         }
-        assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::ReceivingGarblingTables, Action::ReceiveGarblingTable
+        assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS + 1); // Step::ReceivingGarblingTables, Action::SendChallengeResponseReceipt & Action::ReceiveGarblingTable
+
+        println!("wait for receipts");
+        // take first eval_action corresponding to Action::SendChallengeResponseReceipt, garbler is
+        // waiting for it
+        let gncl = net_client_gabler.clone();
+        let tx =
+            tokio::spawn(async move { handle_receive_challenge_response_receipt(&gncl).await });
+
+        {
+            let action = eval_actions.remove(0);
+            eval_exec.storage = DummyStorageProvider {
+                garb_state: garb_state.clone(),
+                eval_state: eval_state.clone(),
+            };
+
+            let mut tmp_eval_actions = vec![action];
+            let mut eval_results =
+                mock_dispatch_evaluator(&mut tmp_eval_actions, &eval_exec, &garbler_peer_id).await;
+            while let Some(completion) = eval_results.pop() {
+                let (action_id, action_result) = completion.as_evaluator().unwrap();
+                let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+                    fasm::Input::TrackedActionCompleted {
+                        id: action_id.clone(),
+                        result: action_result.clone(),
+                    };
+                evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let garb_input = tx.await.unwrap(); // receipt
+
+        garbler::GarblerSM::stf(
+            &mut garb_state,
+            fasm::Input::Normal(garb_input),
+            &mut garb_actions,
+        )
+        .await
+        .unwrap();
+        assert_eq!(garb_actions.len(), N_EVAL_CIRCUITS); // Step::TransferringGarblingTables; Action::TransferGarblingTable
 
         // garbler sends table
         garbler_exec.storage = DummyStorageProvider {
@@ -1318,6 +1380,9 @@ async fn mock_dispatch_evaluator(
                     }
                     EvaluatorAction::SendTableTransferReceipt(idx) => {
                         exec.send_table_transfer_receipt(peer_id, idx).await
+                    }
+                    EvaluatorAction::SendChallengeResponseReceipt(msg) => {
+                        exec.send_challenge_response_receipt(peer_id, msg).await
                     }
                     EvaluatorAction::GenerateDepositAdaptors(deposit_id) => {
                         exec.generate_deposit_adaptors(peer_id, *deposit_id).await

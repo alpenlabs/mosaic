@@ -107,6 +107,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
             .name(format!("worker-{id}"))
             .spawn(move || {
                 monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build monoio runtime")
                     .block_on(worker_loop(
@@ -355,6 +356,9 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
         EvaluatorAction::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
             exec.deposit_send_adaptor_msg_chunk(peer_id, *deposit_id, chunk)
                 .await
+        }
+        EvaluatorAction::SendChallengeResponseReceipt(msg) => {
+            exec.send_challenge_response_receipt(peer_id, msg).await
         }
         // E4: Pool action — receives from network, no circuit reader needed.
         EvaluatorAction::ReceiveGarblingTable(commitment) => {
