@@ -80,7 +80,7 @@ impl SecretKey {
     }
 
     /// Generate a random secret key.
-    pub fn rand<R: rand::Rng>(rng: &mut R) -> Self {
+    pub fn rand<R: rand::CryptoRng + rand::Rng>(rng: &mut R) -> Self {
         Self(Scalar::rand(rng))
     }
 

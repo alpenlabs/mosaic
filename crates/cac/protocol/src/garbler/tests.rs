@@ -12,7 +12,7 @@ use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
 
 use super::stf::{handle_action_result, handle_event, restore};
 
-fn rand_byte_array<const N: usize, R: rand::Rng>(rng: &mut R) -> [u8; N] {
+fn rand_byte_array<const N: usize, R: rand::CryptoRng + rand::Rng>(rng: &mut R) -> [u8; N] {
     let mut bytes = [0u8; N];
     rng.fill_bytes(&mut bytes);
     bytes

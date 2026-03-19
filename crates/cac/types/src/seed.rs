@@ -39,7 +39,7 @@ impl Seed {
     }
 
     /// Generate a random seed using provided rng.
-    pub fn rand<R: rand::Rng>(rng: &mut R) -> Self {
+    pub fn rand<R: rand::CryptoRng + rand::Rng>(rng: &mut R) -> Self {
         let mut bytes = [0u8; 32];
         rng.fill_bytes(&mut bytes);
         Self(bytes)

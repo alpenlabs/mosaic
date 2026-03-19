@@ -20,7 +20,7 @@ use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::StorageProvider;
 use mosaic_vs3::Index;
 use parking_lot::Mutex;
-use rand::{Rng, SeedableRng};
+use rand::{CryptoRng, Rng, SeedableRng};
 use secp256k1::schnorr::Signature;
 use tracing::error;
 
@@ -35,7 +35,7 @@ use crate::{
 /// Backed by a [`StorageProvider`] for persistence and a channel to the state
 /// machine executor for dispatching inputs.
 #[derive(Debug)]
-pub struct DefaultMosaicApi<S: StorageProvider, R: Rng + Send> {
+pub struct DefaultMosaicApi<S: StorageProvider, R: CryptoRng + Rng + Send> {
     own_peer_id: PeerId,
     other_peer_ids: Vec<PeerId>,
     executor_tx: AsyncSender<StateMachineExecutorInput>,
@@ -43,7 +43,7 @@ pub struct DefaultMosaicApi<S: StorageProvider, R: Rng + Send> {
     rng: Mutex<R>,
 }
 
-impl<S: StorageProvider, R: Rng + Send> DefaultMosaicApi<S, R> {
+impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
     /// Creates a new instance.
     pub fn new(
         own_peer_id: PeerId,
@@ -88,7 +88,7 @@ impl<S: StorageProvider, R: Rng + Send> DefaultMosaicApi<S, R> {
 }
 
 #[async_trait]
-impl<S: StorageProvider, R: Rng + Send + 'static> MosaicApi for DefaultMosaicApi<S, R> {
+impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for DefaultMosaicApi<S, R> {
     fn get_peer_id(&self) -> PeerId {
         self.own_peer_id
     }
@@ -672,7 +672,7 @@ impl<S: StorageProvider, R: Rng + Send + 'static> MosaicApi for DefaultMosaicApi
 
 // --- Private helpers ---
 
-impl<S: StorageProvider, R: Rng + Send + 'static> DefaultMosaicApi<S, R> {
+impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> DefaultMosaicApi<S, R> {
     async fn generate_adaptor_keypair_deterministic(
         &self,
         sm_id: &StateMachineId,
