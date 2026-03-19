@@ -19,7 +19,8 @@ use mosaic_net_svc::{NetService, PeerId};
 use mosaic_sm_executor::{SmExecutor, SmExecutorController};
 use mosaic_sm_executor_api::SmExecutorHandle;
 use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut, TableStore};
-use mosaic_storage_fdb::FdbStorageProvider;
+// use mosaic_storage_fdb::FdbStorageProvider;
+use mosaic_storage_kvstore::btreemap::{self, BTreeMapStorageProvider};
 use mosaic_storage_s3::S3TableStore;
 use object_store::{ObjectStore, aws::AmazonS3Builder, local::LocalFileSystem};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -37,20 +38,21 @@ fn main() -> Result<()> {
     let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
         .build()
         .context("failed to build mosaic monoio runtime")?;
-    let running = runtime.block_on(startup(config))?;
+    let running: RunningMosaic<_> = runtime.block_on(startup(config))?;
 
     wait_for_shutdown_signal()?;
     shutdown(running)
 }
 
-struct RunningMosaic {
+struct RunningMosaic<S: StorageProvider> {
     net_controller: mosaic_net_svc::NetServiceController,
     job_scheduler_controller: mosaic_job_scheduler::JobSchedulerController,
     sm_executor_controller: SmExecutorController,
     _sm_executor_handle: SmExecutorHandle,
+    storage: S, // used for test only
 }
 
-async fn startup(config: MosaicConfig) -> Result<RunningMosaic> {
+async fn startup(config: MosaicConfig) -> Result<RunningMosaic<BTreeMapStorageProvider>> {
     let net_service_config = config.build_net_service_config()?;
     let our_peer_id = net_service_config.our_peer_id();
     let known_peers = config.known_peers()?;
@@ -82,10 +84,11 @@ async fn startup(config: MosaicConfig) -> Result<RunningMosaic> {
         None => foundationdb::Database::default()
             .context("failed to open foundationdb default database")?,
     };
-    let storage = FdbStorageProvider::open(db, config.build_fdb_storage_config())
-        .await
-        .context("failed to initialize foundationdb storage provider")?;
+    // let storage = FdbStorageProvider::open(db, config.build_fdb_storage_config())
+    //     .await
+    //     .context("failed to initialize foundationdb storage provider")?;
 
+    let storage = btreemap::BTreeMapStorageProvider::new();
     run_with_state_storage(config, storage, net_client, net_controller).await
 }
 
@@ -94,7 +97,7 @@ async fn run_with_state_storage<S>(
     storage: S,
     net_client: NetClient,
     net_controller: mosaic_net_svc::NetServiceController,
-) -> Result<RunningMosaic>
+) -> Result<RunningMosaic<S>>
 where
     S: StorageProvider + StorageProviderMut + Clone + Send + Sync + 'static,
     <S as StorageProviderMut>::GarblerState: garbler::StateMut + Commit,
@@ -158,7 +161,7 @@ async fn run_with_components<S, TS>(
     table_store: TS,
     net_client: NetClient,
     net_controller: mosaic_net_svc::NetServiceController,
-) -> Result<RunningMosaic>
+) -> Result<RunningMosaic<S>>
 where
     S: StorageProvider + StorageProviderMut + Clone + Send + Sync + 'static,
     <S as StorageProviderMut>::GarblerState: garbler::StateMut + Commit,
@@ -179,7 +182,7 @@ where
 
     let (sm_executor, sm_executor_handle) = SmExecutor::new(
         config.build_sm_executor_config(config.known_peers()?),
-        storage,
+        storage.clone(),
         job_handle,
         net_client,
     );
@@ -193,10 +196,11 @@ where
         job_scheduler_controller,
         sm_executor_controller,
         _sm_executor_handle: sm_executor_handle,
+        storage,
     })
 }
 
-fn shutdown(running: RunningMosaic) -> Result<()> {
+fn shutdown<S: StorageProvider>(running: RunningMosaic<S>) -> Result<()> {
     shutdown_net(running.net_controller)?;
     shutdown_sm_executor(running.sm_executor_controller)?;
     shutdown_job_scheduler(running.job_scheduler_controller)?;
@@ -268,4 +272,215 @@ fn ensure_peer_set_is_sound(our_peer_id: PeerId, peers: &[PeerId]) -> Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+
+    use std::time::Duration;
+
+    use mosaic_cac_types::{
+        DepositId, DepositInputs, HeapArray, PubKey, SecretKey, Sighash, Signature,
+        WithdrawalInputs,
+        state_machine::{
+            evaluator::{
+                EvaluatorDepositInitData, EvaluatorDisputedWithdrawalData, EvaluatorInitData,
+            },
+            garbler::{GarblerDepositInitData, GarblerInitData, StateRead},
+        },
+    };
+    use mosaic_common::{
+        Byte32,
+        constants::{N_DEPOSIT_INPUT_WIRES, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES},
+    };
+    use mosaic_sm_executor_api::SmCommand;
+    use mosaic_storage_kvstore::btreemap::BTreeMapStorageProvider;
+    use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
+
+    use super::*;
+
+    fn rand_byte_array<const N: usize, R: rand_chacha::rand_core::RngCore>(rng: &mut R) -> [u8; N] {
+        let mut bytes = [0u8; N];
+        rng.fill_bytes(&mut bytes);
+        bytes
+    }
+
+    async fn mock_main() -> Result<()> {
+        let (garb_running, garb_peer) = {
+            let config_path = PathBuf::from(
+                "/Users/manishbista/Documents/alpenlabs/mosaic/bin/mosaic/config/config.a.toml",
+            );
+            let config = MosaicConfig::from_file(&config_path)?;
+            init_tracing(&config.logging.filter)?;
+            config.validate()?;
+
+            let _fdb_network = unsafe { foundationdb::boot() };
+            let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                .enable_timer()
+                .build()
+                .context("failed to build mosaic monoio runtime")?;
+            let running: RunningMosaic<BTreeMapStorageProvider> =
+                runtime.block_on(startup(config.clone()))?;
+            let peer_id = config.known_peers().unwrap()[0];
+            (running, peer_id)
+        };
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let (eval_running, eval_peer) = {
+            let config_path = PathBuf::from(
+                "/Users/manishbista/Documents/alpenlabs/mosaic/bin/mosaic/config/config.b.toml",
+            );
+            let config = MosaicConfig::from_file(&config_path)?;
+            //init_tracing(&config.logging.filter)?;
+            config.validate()?;
+
+            // let _fdb_network = unsafe { foundationdb::boot() };
+            let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                .enable_timer()
+                .build()
+                .context("failed to build mosaic monoio runtime")?;
+            let running: RunningMosaic<BTreeMapStorageProvider> =
+                runtime.block_on(startup(config.clone()))?;
+            let peer_id = config.known_peers().unwrap()[0];
+            (running, peer_id)
+        };
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Eval init
+        {
+            let setup_inputs = [0; N_SETUP_INPUT_WIRES];
+            let mut eval_rng = ChaChaRng::seed_from_u64(43);
+            let eval_seed = rand_byte_array(&mut eval_rng).into();
+
+            let eval_init_data: EvaluatorInitData = EvaluatorInitData {
+                seed: eval_seed,
+                setup_inputs,
+            };
+            let init_eval_command = SmCommand::init_evaluator(eval_peer, eval_init_data);
+            eval_running
+                ._sm_executor_handle
+                .send(init_eval_command)
+                .await
+                .unwrap();
+        }
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        {
+            let setup_inputs = [0; N_SETUP_INPUT_WIRES];
+            let mut garb_rng = ChaChaRng::seed_from_u64(42);
+            let garb_seed = rand_byte_array(&mut garb_rng).into();
+
+            let garb_init_data: GarblerInitData = GarblerInitData {
+                seed: garb_seed,
+                setup_inputs,
+            };
+            let init_garb_command = SmCommand::init_garbler(garb_peer, garb_init_data);
+
+            garb_running
+                ._sm_executor_handle
+                .send(init_garb_command)
+                .await
+                .unwrap();
+        }
+
+        let deposit_id = {
+            let mut empty: [u8; 32] = [0; 32];
+            empty[0] = 7;
+            DepositId(Byte32::from(empty))
+        };
+        let mut eval_rng = ChaChaRng::seed_from_u64(45);
+        let eval_keypair = Signature::keypair(&mut eval_rng);
+        let sighashes =
+            [Sighash(Byte32::from([0u8; 32])); N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
+        let deposit_inputs: DepositInputs = [0; N_DEPOSIT_INPUT_WIRES];
+
+        // Wait till garbler and evaluator are in SetupComplete
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        println!("++++++++DEPOSIT STAGE++++++++++");
+
+        {
+            let garb_deposit_data: GarblerDepositInitData = GarblerDepositInitData {
+                pk: PubKey(eval_keypair.1),
+                sighashes: HeapArray::from_vec(sighashes.to_vec()),
+                deposit_inputs,
+            };
+            let init_garb_deposit_command =
+                SmCommand::deposit_init_garbler(garb_peer, deposit_id, garb_deposit_data);
+
+            garb_running
+                ._sm_executor_handle
+                .send(init_garb_deposit_command)
+                .await
+                .unwrap();
+        }
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        {
+            let eval_deposit_data: EvaluatorDepositInitData = EvaluatorDepositInitData {
+                sk: SecretKey(eval_keypair.0),
+                sighashes: HeapArray::from_vec(sighashes.to_vec()),
+                deposit_inputs,
+            };
+            let init_eval_deposit_command =
+                SmCommand::deposit_init_evaluator(eval_peer, deposit_id, eval_deposit_data);
+
+            eval_running
+                ._sm_executor_handle
+                .send(init_eval_deposit_command)
+                .await
+                .unwrap();
+        }
+
+        // Wait till garbler and evaluator are in DepositReady
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        println!("++++++++WITHDRAWAL STAGE++++++++++");
+
+        {
+            let withdrawal_inputs: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
+            let withdrawal_command =
+                SmCommand::disputed_withdrawal_garbler(garb_peer, deposit_id, withdrawal_inputs);
+
+            garb_running
+                ._sm_executor_handle
+                .send(withdrawal_command)
+                .await
+                .unwrap();
+        }
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        {
+            let completed_sigs = garb_running
+                .storage
+                .garbler_state(&garb_peer)
+                .await
+                .unwrap()
+                .get_completed_signatures(&deposit_id)
+                .await
+                .unwrap();
+            let data = EvaluatorDisputedWithdrawalData {
+                signatures: completed_sigs,
+            };
+            let withdrawal_command =
+                SmCommand::disputed_withdrawal_evaluator(eval_peer, deposit_id, data);
+
+            eval_running
+                ._sm_executor_handle
+                .send(withdrawal_command)
+                .await
+                .unwrap();
+        }
+
+        wait_for_shutdown_signal()?;
+        let r = shutdown(garb_running);
+        let _ = shutdown(eval_running);
+        r
+    }
+
+    #[tokio::test]
+    async fn test_binary() {
+        mock_main().await.unwrap();
+    }
 }
