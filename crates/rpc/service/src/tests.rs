@@ -2,7 +2,7 @@
 
 use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
 use mosaic_cac_types::{
-    DepositId, HeapArray, SecretKey, Seed, Sighashes, Signature,
+    DepositId, HeapArray, KeyPair, Seed, Sighashes, Signature,
     state_machine::{
         Role, StateMachineExecutorInput, StateMachineId, StateMachineInput,
         evaluator::{self, EvaluatorState, StateMut as EvaluatorStateMut},
@@ -107,10 +107,10 @@ impl TestHarness {
 
     async fn add_garbler_deposit(&self, deposit_id: DepositId, step: garbler::DepositStep) {
         let mut rng = ChaChaRng::seed_from_u64(99);
-        let sk = SecretKey::rand(&mut rng);
+        let keypair = KeyPair::rand(&mut rng);
         let deposit_state = garbler::DepositState {
             step,
-            pk: sk.to_pubkey(),
+            pk: keypair.public_key(),
         };
         let mut session = self.storage.garbler_state_mut(&self.peer_id).await.unwrap();
         session
@@ -122,8 +122,11 @@ impl TestHarness {
 
     async fn add_evaluator_deposit(&self, deposit_id: DepositId, step: evaluator::DepositStep) {
         let mut rng = ChaChaRng::seed_from_u64(100);
-        let sk = SecretKey::rand(&mut rng);
-        let deposit_state = evaluator::DepositState { step, sk };
+        let keypair = KeyPair::rand(&mut rng);
+        let deposit_state = evaluator::DepositState {
+            step,
+            sk: keypair.secret_key(),
+        };
         let mut session = self
             .storage
             .evaluator_state_mut(&self.peer_id)
@@ -173,9 +176,10 @@ fn test_completed_schnorr_signatures() -> Vec<SchnorrSignature> {
 fn test_completed_signatures() -> mosaic_cac_types::CompletedSignatures {
     // Signature has no Default; construct from valid field elements.
     let sig = Signature::from_bytes([1u8; 64]).expect("valid signature bytes");
-    mosaic_cac_types::HeapArray::from_vec(
-        vec![sig; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES],
-    )
+    mosaic_cac_types::HeapArray::from_vec(vec![
+        sig;
+        N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +447,8 @@ async fn init_garbler_deposit_dispatches_correct_input() {
 
     let deposit_id = test_deposit_id(1);
     let mut rng = ChaChaRng::seed_from_u64(77);
-    let internal_pk = SecretKey::rand(&mut rng).to_pubkey();
+    let keypair = KeyPair::rand(&mut rng);
+    let internal_pk = keypair.public_key();
     let adaptor_pk = try_into_x_only_pubkey(internal_pk).unwrap();
     let sighashes = test_sighashes();
     let deposit_inputs = [0xBBu8; N_DEPOSIT_INPUT_WIRES];
@@ -478,7 +483,10 @@ async fn init_garbler_deposit_rejects_wrong_step() {
 
     let deposit_id = test_deposit_id(1);
     let init = GarblerDepositInit {
-        adaptor_pk: try_into_x_only_pubkey(SecretKey::rand(&mut ChaChaRng::seed_from_u64(0)).to_pubkey()).unwrap(),
+        adaptor_pk: try_into_x_only_pubkey(
+            KeyPair::rand(&mut ChaChaRng::seed_from_u64(0)).public_key(),
+        )
+        .unwrap(),
         sighashes: test_sighashes(),
         deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
     };
@@ -505,7 +513,10 @@ async fn init_garbler_deposit_rejects_duplicate_deposit() {
         .await;
 
     let init = GarblerDepositInit {
-        adaptor_pk: try_into_x_only_pubkey(SecretKey::rand(&mut ChaChaRng::seed_from_u64(0)).to_pubkey()).unwrap(),
+        adaptor_pk: try_into_x_only_pubkey(
+            KeyPair::rand(&mut ChaChaRng::seed_from_u64(0)).public_key(),
+        )
+        .unwrap(),
         sighashes: test_sighashes(),
         deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
     };
@@ -1340,13 +1351,13 @@ async fn dispatch_returns_executor_error_when_channel_closed() {
             .unwrap();
 
         let mut rng2 = ChaChaRng::seed_from_u64(99);
-        let sk = SecretKey::rand(&mut rng2);
+        let keypair = KeyPair::rand(&mut rng2);
         session
             .put_deposit(
                 test_deposit_id(1),
                 &garbler::DepositState {
                     step: garbler::DepositStep::DepositReady,
-                    pk: sk.to_pubkey(),
+                    pk: keypair.public_key(),
                 },
             )
             .await

@@ -5,22 +5,21 @@
 //! expose in the RPC interface (or be compiled into RPC libraries).
 
 // Used by examples
-use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
-use ark_ff::{BigInteger, PrimeField, UniformRand};
 pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 // Used by benchmarks
 #[cfg(test)]
 use criterion as _;
 
 pub mod adaptor;
+mod keypair;
 mod msgs;
 mod protocol;
 mod seed;
 pub mod state_machine;
 
 pub use adaptor::{Adaptor, Signature};
-use mosaic_common::{Byte32, impl_serde_ark};
-use mosaic_vs3::{Point, Scalar};
+pub use keypair::*;
+use mosaic_common::Byte32;
 pub use msgs::*;
 pub use protocol::*;
 pub use seed::Seed;
@@ -63,49 +62,6 @@ pub struct Sighash(pub Byte32);
 impl<T: Into<Byte32>> From<T> for Sighash {
     fn from(value: T) -> Self {
         Sighash(value.into())
-    }
-}
-
-/// Secret key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct SecretKey(pub Scalar);
-
-impl_serde_ark!(SecretKey);
-
-impl SecretKey {
-    /// Create a secret key from bytes for tests.
-    pub fn from_raw_bytes(bytes: &[u8; 32]) -> Self {
-        let scalar = Scalar::from_le_bytes_mod_order(bytes);
-        Self(scalar)
-    }
-
-    /// Generate a random secret key.
-    pub fn rand<R: rand::CryptoRng + rand::Rng>(rng: &mut R) -> Self {
-        Self(Scalar::rand(rng))
-    }
-
-    /// Derive the public key from this secret key.
-    pub fn to_pubkey(&self) -> PubKey {
-        PubKey(Point::generator() * self.0)
-    }
-}
-
-/// Public Key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct PubKey(pub Point);
-
-impl_serde_ark!(PubKey);
-
-impl PubKey {
-    /// A Schnorr signing key is valid if it is non-zero and its affine y-coordinate is even.
-    pub fn valid(&self) -> bool {
-        let aff = self.0.into_affine();
-
-        if aff.is_zero() {
-            return false;
-        }
-
-        aff.y().is_some_and(|y| y.into_bigint().is_even())
     }
 }
 

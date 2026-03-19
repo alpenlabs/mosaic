@@ -1,5 +1,5 @@
 use mosaic_cac_types::{
-    Adaptor, AdaptorMsgChunk, DepositId, HeapArray, Index, Polynomial, SecretKey,
+    Adaptor, AdaptorMsgChunk, DepositId, HeapArray, Index, KeyPair, Polynomial, SecretKey,
     WideLabelWireAdaptors, WithdrawalAdaptorsChunk,
     state_machine::garbler::{
         Action, ActionId, ActionResult, Config, DepositStep, GarblerDepositInitData,
@@ -66,12 +66,12 @@ async fn test_deposit_init() {
 
     let mut rng = ChaChaRng::seed_from_u64(0);
     let deposit_id = rand_byte_array(&mut rng).into();
-    let sk = SecretKey::rand(&mut rng);
-    let pk = sk.to_pubkey();
+
+    let keypair = KeyPair::rand(&mut rng);
     let sighashes = HeapArray::new(|_| rand_byte_array(&mut rng).into());
     let deposit_inputs = rand_byte_array(&mut rng);
     let deposit_init_data = GarblerDepositInitData {
-        pk,
+        pk: keypair.public_key(),
         sighashes: sighashes.clone(),
         deposit_inputs,
     };
@@ -81,7 +81,7 @@ async fn test_deposit_init() {
     handle_event(&mut state, input, &mut actions).await.unwrap();
 
     let deposit_state = state.get_deposit(&deposit_id).await.unwrap().unwrap();
-    assert_eq!(deposit_state.pk, pk);
+    assert_eq!(deposit_state.pk, keypair.public_key());
     assert!(matches!(
         deposit_state.step,
         DepositStep::WaitingForAdaptors { .. }

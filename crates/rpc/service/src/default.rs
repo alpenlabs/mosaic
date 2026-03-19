@@ -7,7 +7,7 @@ use futures::TryStreamExt as _;
 use kanal::AsyncSender;
 use mosaic_cac_protocol::derive_stage_seed;
 use mosaic_cac_types::{
-    CompletedSignatures, DepositId, PubKey, SecretKey, Seed, WithdrawalInputs,
+    CompletedSignatures, DepositId, KeyPair, PubKey, SecretKey, Seed, WithdrawalInputs,
     state_machine::{
         Role, StateMachineExecutorInput, StateMachineId, StateMachineInput,
         evaluator::{
@@ -730,8 +730,7 @@ fn derive_deposit_keypair(base_seed: Seed, deposit_id: &DepositId) -> (SecretKey
     let seed = derive_stage_seed(base_seed, &stage);
 
     let mut rng = rand_chacha::ChaChaRng::from_seed(seed.to_bytes());
-    let sk = SecretKey::rand(&mut rng);
-    let pk = sk.to_pubkey();
+    let keypair = KeyPair::rand(&mut rng);
 
-    (sk, pk)
+    (keypair.secret_key(), keypair.public_key())
 }

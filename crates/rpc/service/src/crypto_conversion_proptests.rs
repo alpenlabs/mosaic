@@ -5,23 +5,25 @@ use ark_ec::PrimeGroup;
 use ark_ff::{BigInteger, PrimeField, UniformRand};
 use bitcoin::key::TapTweak;
 use mosaic_adaptor_sigs::serialize_field;
-use mosaic_cac_types::{Adaptor, PubKey, Signature};
+use mosaic_cac_types::{Adaptor, KeyPair, PubKey, Signature};
 use proptest::prelude::*;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use secp256k1::SECP256K1;
 use sha2::{Digest, Sha256};
 
-use crate::crypto_conversions::{
-    into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
-    try_into_x_only_pubkey,
+use crate::{
+    crypto_conversions::{
+        into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
+        try_into_x_only_pubkey,
+    },
+    schnorr_signer::SchnorrSigner,
 };
-use crate::schnorr_signer::SchnorrSigner;
 
 /// Generate an even-y internal keypair from a seed.
-fn internal_keypair_from_seed(seed: u64) -> (ark_secp256k1::Fr, ark_secp256k1::Projective) {
+fn internal_keypair_from_seed(seed: u64) -> KeyPair {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
-    Signature::keypair(&mut rng)
+    KeyPair::rand(&mut rng)
 }
 
 /// Generate a bitcoin keypair from a seed.
@@ -31,9 +33,10 @@ fn bitcoin_keypair_from_seed(seed: u64) -> secp256k1::Keypair {
 }
 
 /// Generate an adaptor-completed internal signature from a seed.
-fn internal_signature_from_seed(seed: u64) -> Signature {
+fn internal_adaptor_signature_from_seed(seed: u64) -> Signature {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
-    let (eval_sk, eval_pk) = Signature::keypair(&mut rng);
+    let keypair = KeyPair::rand(&mut rng);
+    let (eval_sk, eval_pk) = (keypair.secret_key().0, keypair.public_key().0);
     let garbler_share = ark_secp256k1::Fr::rand(&mut rng);
     let garbler_commit = ark_secp256k1::Projective::generator() * garbler_share;
     let sighash = Sha256::digest(b"proptest-sig").to_vec();
@@ -60,8 +63,8 @@ proptest! {
 
     #[test]
     fn internal_pubkey_to_bitcoin_roundtrip(seed in any::<u64>()) {
-        let (_sk, pk_proj) = internal_keypair_from_seed(seed);
-        let pubkey = PubKey(pk_proj);
+        let key_pair = internal_keypair_from_seed(seed);
+        let pubkey = key_pair.public_key();
         prop_assert!(pubkey.valid(), "keypair should produce valid (even-y) pubkey");
 
         // Internal -> Bitcoin -> Internal
@@ -93,7 +96,7 @@ proptest! {
 
     #[test]
     fn internal_signature_to_bitcoin_roundtrip(seed in any::<u64>()) {
-        let sig = internal_signature_from_seed(seed);
+        let sig = internal_adaptor_signature_from_seed(seed);
 
         // Internal -> Bitcoin -> Internal
         let schnorr_sig = into_schnorr_signature(sig);
@@ -124,7 +127,8 @@ proptest! {
     #[test]
     fn cross_verify_internal_to_bitcoin(seed in any::<u64>()) {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
-        let (eval_sk, eval_pk) = Signature::keypair(&mut rng);
+        let keypair = KeyPair::rand(&mut rng);
+        let (eval_sk, eval_pk) = (keypair.secret_key().0, keypair.public_key().0);
         let garbler_share = ark_secp256k1::Fr::rand(&mut rng);
         let garbler_commit = ark_secp256k1::Projective::generator() * garbler_share;
 
@@ -204,27 +208,15 @@ proptest! {
     /// must verify against the tweaked output key.
     #[test]
     fn schnorr_signer_sign_and_verify(seed in any::<u64>()) {
-        let mut rng = ChaCha20Rng::seed_from_u64(seed);
-        let (sk, _pk) = Signature::keypair(&mut rng);
+        let keypair = internal_keypair_from_seed(seed);
+        let x_only_pk = try_into_x_only_pubkey(keypair.public_key()).unwrap();
 
         let digest: [u8; 32] = Sha256::digest(seed.to_le_bytes()).into();
 
-        // Build the expected tweaked public key (no script-path tweak)
-        let sk_bytes: [u8; 32] = sk
-            .into_bigint()
-            .to_bytes_be()
-            .try_into()
-            .expect("Fr is 32 bytes");
-        let keypair =
-            secp256k1::Keypair::from_seckey_slice(SECP256K1, &sk_bytes).expect("valid secret key");
-        let tweaked_x_only = keypair
-            .tap_tweak(SECP256K1, None)
-            .to_keypair()
-            .x_only_public_key()
-            .0;
+        let tweaked_x_only = x_only_pk.tap_tweak(SECP256K1, None).0.to_x_only_public_key();
 
         // Sign using SchnorrSigner (ark scalar → bitcoin keypair → schnorr sig)
-        let signer = SchnorrSigner::from_ark_scalar(&sk);
+        let signer = SchnorrSigner::from_ark_scalar(&keypair.secret_key().0);
         let sig = signer.sign(digest, None);
 
         // Verify against the tweaked output key
@@ -238,27 +230,17 @@ proptest! {
     /// against the tweaked public key.
     #[test]
     fn schnorr_signer_sign_with_tweak(seed in any::<u64>()) {
-        let mut rng = ChaCha20Rng::seed_from_u64(seed);
-        let (sk, _pk) = Signature::keypair(&mut rng);
+        let keypair = internal_keypair_from_seed(seed);
+        let x_only_pk = try_into_x_only_pubkey(keypair.public_key()).unwrap();
 
         let digest: [u8; 32] = Sha256::digest(seed.to_le_bytes()).into();
         let tweak_bytes: [u8; 32] = Sha256::digest(b"tweak").into();
 
-        // Build the tweaked keypair independently to get the tweaked public key
-        let sk_bytes: [u8; 32] = sk
-            .into_bigint()
-            .to_bytes_be()
-            .try_into()
-            .expect("Fr is 32 bytes");
-        let keypair =
-            secp256k1::Keypair::from_seckey_slice(SECP256K1, &sk_bytes).expect("valid secret key");
         let tweak_hash = bitcoin::TapNodeHash::assume_hidden(tweak_bytes);
-        let tweaked = keypair
-            .tap_tweak(SECP256K1, Some(tweak_hash));
-        let tweaked_x_only = tweaked.to_keypair().x_only_public_key().0;
+        let tweaked_x_only = x_only_pk.tap_tweak(SECP256K1, Some(tweak_hash)).0.to_x_only_public_key();
 
         // Sign using SchnorrSigner with tweak
-        let signer = SchnorrSigner::from_ark_scalar(&sk);
+        let signer = SchnorrSigner::from_ark_scalar(&keypair.secret_key().0);
         let sig = signer.sign(digest, Some(tweak_bytes));
 
         // Verify against the tweaked public key
