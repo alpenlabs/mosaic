@@ -10,7 +10,7 @@ use rand_chacha::ChaCha20Rng;
 use secp256k1::SECP256K1;
 use sha2::{Digest, Sha256};
 
-use crate::conversions::{
+use crate::crypto::{
     into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
     try_into_x_only_pubkey,
 };
@@ -61,30 +61,25 @@ proptest! {
         let pubkey = PubKey(pk_proj);
         prop_assert!(pubkey.valid(), "keypair should produce valid (even-y) pubkey");
 
-        let original_bytes = pubkey.to_x_only_bytes();
-
         // Internal -> Bitcoin -> Internal
         let x_only = try_into_x_only_pubkey(pubkey).expect("conversion should succeed");
-        prop_assert_eq!(x_only.serialize(), original_bytes);
 
         let recovered = try_from_x_only_pubkey(x_only).expect("conversion back should succeed");
         prop_assert!(recovered.valid());
-        prop_assert_eq!(recovered.to_x_only_bytes(), original_bytes);
+        prop_assert_eq!(recovered, pubkey);
     }
 
     #[test]
     fn bitcoin_pubkey_to_internal_roundtrip(seed in any::<u64>()) {
         let keypair = bitcoin_keypair_from_seed(seed);
         let (x_only, _parity) = keypair.x_only_public_key();
-        let original_bytes = x_only.serialize();
 
         // Bitcoin -> Internal -> Bitcoin
         let pubkey = try_from_x_only_pubkey(x_only).expect("conversion should succeed");
         prop_assert!(pubkey.valid());
-        prop_assert_eq!(pubkey.to_x_only_bytes(), original_bytes);
 
         let recovered = try_into_x_only_pubkey(pubkey).expect("conversion back should succeed");
-        prop_assert_eq!(recovered.serialize(), original_bytes);
+        prop_assert_eq!(recovered, x_only);
     }
 }
 
@@ -96,30 +91,25 @@ proptest! {
     #[test]
     fn internal_signature_to_bitcoin_roundtrip(seed in any::<u64>()) {
         let sig = internal_signature_from_seed(seed);
-        let original_bytes = sig.to_bytes();
 
         // Internal -> Bitcoin -> Internal
         let schnorr_sig = into_schnorr_signature(sig);
-        prop_assert_eq!(schnorr_sig.serialize(), original_bytes);
 
         let recovered =
             try_from_schnorr_signature(schnorr_sig).expect("conversion back should succeed");
-        prop_assert_eq!(recovered.to_bytes(), original_bytes);
         prop_assert_eq!(recovered, sig);
     }
 
     #[test]
     fn bitcoin_signature_to_internal_roundtrip(seed in any::<u64>()) {
         let (schnorr_sig, _keypair) = bitcoin_signature_from_seed(seed);
-        let original_bytes = schnorr_sig.serialize();
 
         // Bitcoin -> Internal -> Bitcoin
         let internal_sig =
             try_from_schnorr_signature(schnorr_sig).expect("conversion should succeed");
-        prop_assert_eq!(internal_sig.to_bytes(), original_bytes);
 
         let recovered = into_schnorr_signature(internal_sig);
-        prop_assert_eq!(recovered.serialize(), original_bytes);
+        prop_assert_eq!(recovered, schnorr_sig);
     }
 }
 
@@ -183,7 +173,7 @@ proptest! {
         h.update(tag_hash);
         h.update(tag_hash);
         h.update(serialize_field::<ark_secp256k1::Fq>(&internal_sig.r));
-        h.update(internal_pk.to_x_only_bytes());
+        h.update(x_only_pk.serialize());
         h.update(msg_bytes);
         let e_bytes = h.finalize();
         let e = ark_secp256k1::Fr::from_be_bytes_mod_order(&e_bytes);

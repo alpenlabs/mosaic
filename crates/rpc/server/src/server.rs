@@ -9,10 +9,12 @@ use mosaic_rpc_service::{
 };
 use mosaic_rpc_types::*;
 
-use crate::conversions::{
-    cac_role_to_domain, deposit_status_to_rpc, into_schnorr_signature, service_err,
-    tableset_status_to_rpc, try_from_schnorr_signature, try_from_x_only_pubkey,
-    try_into_x_only_pubkey,
+use crate::{
+    conversions::{cac_role_to_domain, deposit_status_to_rpc, service_err, tableset_status_to_rpc},
+    crypto::{
+        into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
+        try_into_x_only_pubkey,
+    },
 };
 
 /// Mosaic RPC server impl.

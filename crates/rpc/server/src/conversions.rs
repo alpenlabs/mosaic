@@ -1,7 +1,6 @@
 //! Conversions between service domain types and RPC types.
 
-use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
-use mosaic_cac_types::{PubKey, Signature, state_machine::Role};
+use mosaic_cac_types::state_machine::Role;
 use mosaic_rpc_service::ServiceError;
 use mosaic_rpc_types::{CacRole, DepositStatus, RpcDepositId, RpcError, RpcTablesetStatus};
 
@@ -73,26 +72,4 @@ pub(crate) fn deposit_status_to_rpc(status: mosaic_rpc_service::DepositStatus) -
         }
         mosaic_rpc_service::DepositStatus::Aborted { reason } => DepositStatus::Aborted { reason },
     }
-}
-
-/// Converts an internal [`Signature`] to a bitcoin [`SchnorrSignature`].
-pub(crate) fn into_schnorr_signature(sig: Signature) -> SchnorrSignature {
-    SchnorrSignature::from_slice(&sig.to_bytes()).expect("64 bytes data")
-}
-
-/// Converts a bitcoin [`SchnorrSignature`] to an internal [`Signature`].
-pub(crate) fn try_from_schnorr_signature(
-    schnorr_sig: SchnorrSignature,
-) -> Result<Signature, String> {
-    Signature::from_bytes(schnorr_sig.serialize()).map_err(|e| e.to_string())
-}
-
-/// Converts an internal [`PubKey`] to a bitcoin [`XOnlyPublicKey`].
-pub(crate) fn try_into_x_only_pubkey(pubkey: PubKey) -> Result<XOnlyPublicKey, String> {
-    XOnlyPublicKey::from_slice(&pubkey.to_x_only_bytes()).map_err(|e| e.to_string())
-}
-
-/// Converts a bitcoin [`XOnlyPublicKey`] to an internal [`PubKey`].
-pub(crate) fn try_from_x_only_pubkey(x_pk: XOnlyPublicKey) -> Result<PubKey, String> {
-    PubKey::try_from_bytes(&x_pk.serialize()).map_err(|e| e.to_string())
 }

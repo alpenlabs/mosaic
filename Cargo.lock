@@ -2282,7 +2282,6 @@ version = "0.1.0"
 dependencies = [
  "ark-ec",
  "ark-ff",
- "ark-secp256k1",
  "ark-serialize",
  "criterion",
  "fasm",
@@ -2463,6 +2462,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-secp256k1",
+ "ark-serialize",
  "bitcoin",
  "jsonrpsee",
  "mosaic-adaptor-sigs",
