@@ -185,7 +185,6 @@ impl From<&evaluator::Step> for TablesetStatus {
             Aborted { reason } => TablesetStatus::Aborted {
                 reason: reason.clone(),
             },
-            _ => unreachable!("all evaluator::Step variants accounted for"),
         }
     }
 }

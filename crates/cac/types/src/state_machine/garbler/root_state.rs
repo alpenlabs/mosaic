@@ -30,7 +30,6 @@ pub struct Config {
 
 /// Valid states.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub enum Step {
     #[default]
     /// Not initialized; Default

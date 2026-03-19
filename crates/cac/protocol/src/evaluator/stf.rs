@@ -1031,11 +1031,6 @@ pub(crate) async fn restore<S: StateRead>(
         }
         Step::SetupConsumed { .. } => {}
         Step::Aborted { .. } => {}
-        _ => {
-            return Err(SMError::state_inconsistency(
-                "restore: unhandled evaluator root step",
-            ));
-        }
     }
 
     Ok(())

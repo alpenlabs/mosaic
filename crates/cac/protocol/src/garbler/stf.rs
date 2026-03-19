@@ -891,6 +891,7 @@ pub(crate) async fn restore<S: StateRead>(
                 emit(actions, Action::TransferGarblingTable(*seed));
             }
         }
+        Step::WaitForTableTransferReceipt { .. } => {}
         Step::SetupComplete => {
             let mut all_deposits = pin!(state.stream_all_deposits());
             while let Some(res) = all_deposits.next().await {
@@ -922,7 +923,6 @@ pub(crate) async fn restore<S: StateRead>(
         }
         Step::SetupConsumed { .. } => {}
         Step::Aborted { .. } => {}
-        _ => unimplemented!(),
     };
 
     Ok(())
