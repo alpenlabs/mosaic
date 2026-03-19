@@ -160,7 +160,7 @@ pub trait TableWriter {
     /// After this call returns successfully the table is durable and visible
     /// to readers.
     fn finish(
-        self,
+        &mut self,
         translation: &[u8],
         metadata: TableMetadata,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
@@ -190,13 +190,13 @@ pub trait TableReader {
     type Error: std::error::Error + Debug + Send + 'static;
 
     /// Read the table metadata.
-    fn metadata(&self) -> impl Future<Output = Result<TableMetadata, Self::Error>> + Send;
+    fn metadata(&mut self) -> impl Future<Output = Result<TableMetadata, Self::Error>> + Send;
 
     /// Read the full translation material into memory.
     ///
     /// Translation material is ~4 MB for the production circuit
     /// (N_WITHDRAWAL_INPUT_WIRES × 256 × 8 × 16 bytes).
-    fn read_translation(&self) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + Send;
+    fn read_translation(&mut self) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + Send;
 
     /// Read the next chunk of ciphertext data into `buf`.
     ///

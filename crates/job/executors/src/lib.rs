@@ -27,6 +27,7 @@ use mosaic_cac_types::state_machine::garbler::StateRead as _;
 use mosaic_job_api::{CircuitError, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
+use mosaic_vs3::Index;
 
 use crate::polynomial_cache::PolynomialCache;
 
@@ -237,6 +238,14 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
         peer_id: &PeerId,
     ) -> impl Future<Output = HandlerOutcome> + Send {
         evaluator::handle_verify_opened_input_shares(self, peer_id)
+    }
+
+    fn send_table_transfer_receipt(
+        &self,
+        peer_id: &PeerId,
+        msg: &Index,
+    ) -> impl Future<Output = HandlerOutcome> + Send {
+        evaluator::handle_send_table_transfer_receipt(self, peer_id, msg)
     }
 
     fn generate_deposit_adaptors(

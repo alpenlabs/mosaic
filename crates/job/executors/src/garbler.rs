@@ -2,8 +2,10 @@
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::{
-    AllPolynomials, CompletedSignatures, GarblingSeed, InputPolynomials, OutputPolynomial, Seed,
-    WideLabelWireShares,
+    AllPolynomials, CircuitInputShares, CompletedSignatures, DepositAdaptors, DepositInputs,
+    GarblingSeed, InputPolynomials, InputShares, OutputPolynomial, PubKey,
+    ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares, Seed,
+    WideLabelWireShares, WithdrawalAdaptors,
     state_machine::garbler::{
         ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Step, Wire,
     },
@@ -84,7 +86,19 @@ fn generate_polynomials_from_seed(seed: Seed) -> AllPolynomials {
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
     let input_polys: InputPolynomials =
         HeapArray::new(|_| HeapArray::new(|_| Polynomial::rand(&mut rng)));
-    let output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
+
+    // ensure output polynomial has a valid schnorr public key at reserved index
+    // this public key will be used for slashing condition
+    // half of the points in the domain are valid public key
+    let mut output_poly: OutputPolynomial = Polynomial::rand(&mut rng);
+    loop {
+        let output_poly_commit = output_poly.commit().get_zeroth_coefficient();
+        if PubKey(output_poly_commit).valid() {
+            break;
+        }
+        output_poly = Polynomial::rand(&mut rng);
+    }
+
     (input_polys, output_poly)
 }
 
@@ -204,6 +218,71 @@ pub(crate) async fn handle_send_challenge_response_chunk<SP: StorageProvider, TS
 // Heavy handlers (Deposit)
 // ============================================================================
 
+fn get_reserved_input_shares(input_shares: &InputShares) -> ReservedInputShares {
+    let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
+    for i in 0..N_INPUT_WIRES {
+        let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+        for j in 0..WIDE_LABEL_VALUE_COUNT {
+            wide_shares.push(input_shares[0][i][j]);
+        }
+        selected_input_shares.push(HeapArray::from_vec(wide_shares));
+    }
+    let input_shares: CircuitInputShares = HeapArray::from_vec(selected_input_shares);
+    input_shares
+}
+
+fn is_adaptor_derived_from_shares(
+    input_shares: &InputShares,
+    deposit_input: DepositInputs,
+    deposit_adaptors: &DepositAdaptors,
+    withdrawal_adaptors: &WithdrawalAdaptors,
+) -> Result<(), std::string::String> {
+    fn get_reserved_deposit_withdrawal_shares(
+        reserved_input_shares: &ReservedInputShares,
+        deposit_input: DepositInputs,
+    ) -> (ReservedDepositInputShares, ReservedWithdrawalInputShares) {
+        // select deposit input shares using deposit_input, one per wire
+        let deposit_input_shares: ReservedDepositInputShares = std::array::from_fn(|wire| {
+            reserved_input_shares[N_SETUP_INPUT_WIRES + wire][deposit_input[wire] as usize]
+        });
+
+        // withdrawal input not yet known, store one per value, per wire
+        let withdrawal_input_shares: &ReservedWithdrawalInputShares = reserved_input_shares
+            [N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
+            .try_into()
+            .expect("match length");
+
+        (deposit_input_shares, withdrawal_input_shares.clone())
+    }
+
+    let reserved_input_shares = get_reserved_input_shares(input_shares);
+    let (reserved_deposit_input_shares, reserved_withdrawal_input_shares) =
+        get_reserved_deposit_withdrawal_shares(&reserved_input_shares, deposit_input);
+
+    let is_adaptor_of_deposit_input = reserved_deposit_input_shares
+        .iter()
+        .zip(deposit_adaptors)
+        .all(|(share, adaptor)| share.commit().point() == adaptor.share_commitment);
+    if !is_adaptor_of_deposit_input {
+        return Err(String::from("deposit adaptor does not match deposit input"));
+    }
+
+    let is_adaptor_of_withdrawal_inputs = reserved_withdrawal_input_shares
+        .iter()
+        .zip(withdrawal_adaptors)
+        .all(|(withdrawal_shares, withdrawal_adaptors)| {
+            withdrawal_shares.iter().zip(withdrawal_adaptors).all(
+                |(withdrawal_share, withdrawal_adaptor)| {
+                    withdrawal_share.commit().point() == withdrawal_adaptor.share_commitment
+                },
+            )
+        });
+    if !is_adaptor_of_withdrawal_inputs {
+        return Err(String::from("withdrawal adaptors do not match order"));
+    }
+    Ok(())
+}
+
 pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
@@ -242,6 +321,27 @@ pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
     else {
         return HandlerOutcome::Retry;
     };
+
+    let Some(deposit_input) = garb_state
+        .get_deposit_inputs(&deposit_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let Some(input_shares) = garb_state.get_input_shares().await.ok().flatten() else {
+        return HandlerOutcome::Retry;
+    };
+    let link_share_to_adaptor = is_adaptor_derived_from_shares(
+        &input_shares,
+        deposit_input,
+        &deposit_adaptors,
+        &withdrawal_adaptors,
+    );
+    if link_share_to_adaptor.is_err() {
+        return HandlerOutcome::Retry;
+    }
 
     let evaluator_pk = deposit_state.pk.0;
     let id = ActionId::DepositVerifyAdaptors(deposit_id);

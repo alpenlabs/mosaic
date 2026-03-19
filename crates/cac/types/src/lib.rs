@@ -5,8 +5,8 @@
 //! expose in the RPC interface (or be compiled into RPC libraries).
 
 // Used by examples
-use ark_ec::PrimeGroup;
-use ark_ff::{PrimeField, UniformRand};
+use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
+use ark_ff::{BigInteger, PrimeField, UniformRand};
 pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 // Used by benchmarks
 #[cfg(test)]
@@ -96,6 +96,19 @@ impl SecretKey {
 pub struct PubKey(pub Point);
 
 impl_serde_ark!(PubKey);
+
+impl PubKey {
+    /// A Schnorr signing key is valid if it is non-zero and its affine y-coordinate is even.
+    pub fn valid(&self) -> bool {
+        let aff = self.0.into_affine();
+
+        if aff.is_zero() {
+            return false;
+        }
+
+        aff.y().is_some_and(|y| y.into_bigint().is_even())
+    }
+}
 
 #[cfg(test)]
 mod serde_tests;

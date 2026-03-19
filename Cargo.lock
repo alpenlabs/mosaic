@@ -2196,10 +2196,19 @@ dependencies = [
 name = "mosaic-cac-protocol"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "ckt-fmtv5-types",
+ "ed25519-dalek",
  "fasm",
  "futures",
  "mosaic-cac-types",
  "mosaic-common",
+ "mosaic-job-api",
+ "mosaic-job-executors",
+ "mosaic-net-client",
+ "mosaic-net-svc",
+ "mosaic-net-svc-api",
+ "mosaic-storage-api",
  "mosaic-storage-inmemory",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

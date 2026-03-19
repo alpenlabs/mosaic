@@ -50,6 +50,23 @@ pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStor
     }
 }
 
+pub(crate) async fn handle_send_table_transfer_receipt<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
+    peer_id: &PeerId,
+    msg: &Index,
+) -> HandlerOutcome {
+    match ctx.net_client.send(*peer_id, *msg).await {
+        Ok(_ack) => completed(
+            ActionId::SendTableTransferReceipt(*msg),
+            ActionResult::GarblingTableTransferReceiptAcked(*msg),
+        ),
+        Err(e) => {
+            tracing::warn!(%e, "send garbling table transfer receipt msg failed, will retry");
+            HandlerOutcome::Retry
+        }
+    }
+}
+
 pub(crate) async fn handle_send_adaptor_msg_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
@@ -247,7 +264,6 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 
     let translate_hash = translate_hasher.finalize();
     let ct_hash = ct_hasher.finalize();
-
     // Load metadata from evaluator state. These were stored when the garbler's
     // CommitMsgHeader (aes keys, public S) and ChallengeResponseMsgHeader
     // (output label ciphertexts) were processed by the STF.
@@ -281,7 +297,6 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     };
-
     // Verify the received data matches the expected commitment.
     let params_hash = hash_garbling_params(&aes_key, &public_s, &constant_one, &constant_zero);
     let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct, &params_hash);
@@ -289,7 +304,6 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     }
-
     let metadata = TableMetadata {
         output_label_ct,
         aes_key,
@@ -300,7 +314,6 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     }
-
     completed(
         ActionId::ReceiveGarblingTable(expected_commitment),
         ActionResult::GarblingTableReceived(index, expected_commitment),
@@ -663,7 +676,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         peer_id: *peer_id,
         index,
     };
-    let table_reader = ctx
+    let mut table_reader = ctx
         .table_store
         .open(&table_id)
         .await

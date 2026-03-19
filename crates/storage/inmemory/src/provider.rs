@@ -9,10 +9,10 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
-    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    OutputShares, ReservedInputShares, ReservedSetupInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputPolynomialCommitments,
+    InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
+    OutputPolynomialCommitment, OutputShares, ReservedInputShares, ReservedSetupInputShares,
+    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
     WithdrawalInputs,
     state_machine::{evaluator, garbler},
 };
@@ -711,12 +711,15 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
 
     async fn put_unchallenged_output_label_cts(
         &mut self,
+        indices: &EvaluationIndices,
         cts: &mosaic_cac_types::HeapArray<
             mosaic_common::Byte32,
             { mosaic_common::constants::N_EVAL_CIRCUITS },
         >,
     ) -> Result<(), Self::Error> {
-        self.inner.put_unchallenged_output_label_cts(cts).await
+        self.inner
+            .put_unchallenged_output_label_cts(indices, cts)
+            .await
     }
 }
 

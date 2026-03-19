@@ -68,7 +68,7 @@ impl PartialOrd for ActionId {
 ///
 /// Delivered to the STF via [`fasm::Input::TrackedActionCompleted`] alongside
 /// the corresponding [`ActionId`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ActionResult {
     /// Polynomial commitments were generated from the base seed.
@@ -188,7 +188,7 @@ pub enum Wire {
 }
 
 /// Identifies an input or output wire.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GeneratedPolynomialCommitments {
     /// Polynomial commitments for all wide label values for an input wire.
     Input {

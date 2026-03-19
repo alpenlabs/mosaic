@@ -2,16 +2,28 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingSeeds, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
-    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, CommitMsgHeader, DepositId, EvalGarblingSeeds, EvalGarblingTableCommitments,
-    EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    InputShares, OutputShares, Seed, SetupInputs, state_machine::garbler::*,
+    AdaptorMsgChunk, AllGarblingSeeds, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk,
+    ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare, CommitMsgChunk,
+    CommitMsgHeader, DepositId, EvalGarblingSeeds, EvaluationIndices, GarblingTableCommitment,
+    HeapArray, Index, InputPolynomialCommitments, InputShares, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputShares, ReservedInputShares, ReservedSetupInputShares, Seed,
+    SetupInputs, Share, WideLabelWireShares, state_machine::garbler::*,
 };
-use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES};
+use mosaic_common::{
+    Byte32,
+    constants::{
+        N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
+        WIDE_LABEL_VALUE_COUNT,
+    },
+};
+use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 
 use super::emit;
-use crate::{ResultOptionExt, SMError, SMResult};
+use crate::{
+    ResultOptionExt, SMError, SMResult,
+    common::{derive_stage_seed, get_eval_commitments, get_eval_indices},
+};
 
 // ============================================================================
 // External event handler
@@ -50,15 +62,19 @@ pub(crate) async fn handle_event<S: StateMut>(
                         output: false,
                     };
 
+                    // All input and output polynomials are generated from
+                    // mutating rng initialized with stage seed
+                    let stage_seed = generate_polynomial_seed(data.seed);
+
                     emit(
                         actions,
-                        Action::GeneratePolynomialCommitments(data.seed, Wire::Output),
+                        Action::GeneratePolynomialCommitments(stage_seed, Wire::Output),
                     );
                     for wire_idx in 0..N_INPUT_WIRES {
                         emit(
                             actions,
                             Action::GeneratePolynomialCommitments(
-                                data.seed,
+                                stage_seed,
                                 Wire::Input(wire_idx as u16),
                             ),
                         );
@@ -81,12 +97,26 @@ pub(crate) async fn handle_event<S: StateMut>(
                             .require("expected output shares")?;
                         let config = require_config(&root_state)?;
                         let seeds = generate_garbling_table_seeds(config.seed);
+
+                        let eval_output_cts: Vec<Byte32> = {
+                            let all_output_label_cts = state
+                                .get_all_output_label_cts()
+                                .await
+                                .require("expected garbling table metadata")?;
+                            let eval_indices = get_eval_indices(&challenge_msg.challenge_indices);
+                            eval_indices
+                                .iter()
+                                .map(|i| all_output_label_cts[i.get() - 1])
+                                .collect()
+                        };
+
                         let (header, chunks) = create_challenge_response_msgs(
                             &challenge_msg.challenge_indices,
                             input_shares,
                             output_shares,
                             seeds,
                             config.setup_inputs,
+                            eval_output_cts,
                         );
                         state
                             .put_challenge_indices(&challenge_msg.challenge_indices)
@@ -112,6 +142,32 @@ pub(crate) async fn handle_event<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
+        Input::RecvTableTransferReceipt(acked_index) => match &mut root_state.step {
+            Step::WaitForTableTransferReceipt { acked_indices } => {
+                let challenge_indices = state
+                    .get_challenge_indices()
+                    .await
+                    .require("expected challenge indices")?;
+                let eval_indices = get_eval_indices(&challenge_indices);
+
+                let Some(pos) = eval_indices.iter().enumerate().find_map(|(pos, index)| {
+                    if *index == acked_index {
+                        Some(pos)
+                    } else {
+                        None
+                    }
+                }) else {
+                    return Err(SMError::invalid_input_data());
+                };
+
+                acked_indices[pos] = true;
+
+                if acked_indices.all() {
+                    root_state.step = Step::SetupComplete;
+                }
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
         Input::DepositInit(
             deposit_id,
             GarblerDepositInitData {
@@ -275,6 +331,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     chunk_acked,
                     header_acked: header,
                 } => {
+                    let ActionId::SendCommitMsgHeader = id else {
+                        return Err(SMError::invalid_input_data());
+                    };
+
                     if *header {
                         // already acked header
                         return Err(SMError::duplicate_action());
@@ -345,13 +405,20 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     let ActionId::SendChallengeResponseMsgChunk(circuit_index) = id else {
                         return Err(SMError::invalid_input_data());
                     };
-                    let idx = circuit_index as usize;
-                    if chunk_acked[idx] {
+                    let challenge_indices = state
+                        .get_challenge_indices()
+                        .await
+                        .require("expected challenge indices")?;
+                    let challenge_index_pos = challenge_indices
+                        .iter()
+                        .position(|x| x.get() == circuit_index as usize)
+                        .ok_or(SMError::StateInconsistency(format!("Circuit index differs from one present in current state {circuit_index}")))?;
+                    if chunk_acked[challenge_index_pos] {
                         // already acked this chunk
                         return Err(SMError::invalid_input_data());
                     }
 
-                    chunk_acked[idx] = true;
+                    chunk_acked[challenge_index_pos] = true;
 
                     if *header_acked && chunk_acked.all() {
                         handle_post_sending_challenge_response(&mut root_state, state, actions)
@@ -385,8 +452,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     transferred[index] = true;
 
                     if transferred.all() {
-                        // all tables are transferred
-                        root_state.step = Step::SetupComplete;
+                        // all tables are transferred, wait for table transfer receipt
+                        root_state.step = Step::WaitForTableTransferReceipt {
+                            acked_indices: HeapArray::from_elem(false),
+                        };
                     }
                     // else stay on same step and wait all tables to be transferred
                 }
@@ -398,7 +467,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             match root_state.step {
                 Step::SetupComplete => {
                     let mut deposit_state = require_deposit(state, &deposit_id).await?;
-                    match deposit_state.step {
+                    match &mut deposit_state.step {
                         DepositStep::VerifyingAdaptors => {
                             if verification_success {
                                 deposit_state.step = DepositStep::DepositReady;
@@ -480,6 +549,7 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
                         // already seen
                         return Err(SMError::duplicate_action());
                     }
+                    *output = true;
                     state
                         .put_output_polynomial_commitment(&output_commitment)
                         .await
@@ -493,15 +563,15 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
             }
             // all commitments generated; go to next step
             let config = require_config(root_state)?;
-
+            let stage_seed = generate_polynomial_seed(config.seed);
             // NOTE: 0 is reserved index
             emit(
                 actions,
-                Action::GenerateShares(config.seed, Index::reserved()),
+                Action::GenerateShares(stage_seed, Index::reserved()),
             );
             for idx in 1..N_CIRCUITS + 1 {
                 let index = Index::new(idx).expect("valid ckt index");
-                emit(actions, Action::GenerateShares(config.seed, index));
+                emit(actions, Action::GenerateShares(stage_seed, index));
             }
             root_state.step = Step::GeneratingShares {
                 generated: HeapArray::from_elem(false),
@@ -624,7 +694,7 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
     adaptor_msg_chunk: AdaptorMsgChunk,
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
-    match root_state.step {
+    match &mut root_state.step {
         Step::SetupComplete => {
             if adaptor_msg_chunk.deposit_id != deposit_id {
                 return Err(SMError::invalid_input_data());
@@ -632,29 +702,28 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
 
             let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
-            if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
-                let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
+            let all_chunks_received =
+                if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
+                    let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
-                if chunks[chunk_idx] {
-                    // message for this chunk already seen
-                    return Err(SMError::invalid_input_data());
-                }
+                    if chunks[chunk_idx] {
+                        return Err(SMError::invalid_input_data());
+                    }
 
-                state
-                    .put_adaptor_msg_chunk_for_deposit(&deposit_id, &adaptor_msg_chunk)
-                    .await
-                    .map_err(SMError::storage)?;
+                    state
+                        .put_adaptor_msg_chunk_for_deposit(&deposit_id, &adaptor_msg_chunk)
+                        .await
+                        .map_err(SMError::storage)?;
 
-                chunks[chunk_idx] = true;
+                    chunks[chunk_idx] = true;
 
-                if !chunks.all() {
-                    // Not all chunks received, wait for more
-                    return Ok(());
-                }
+                    chunks.all()
+                } else {
+                    false
+                };
 
-                // all chunks received
+            if all_chunks_received {
                 deposit_state.step = DepositStep::VerifyingAdaptors;
-
                 emit(actions, Action::DepositVerifyAdaptors(deposit_id));
             }
 
@@ -662,6 +731,10 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
                 .put_deposit(deposit_id, &deposit_state)
                 .await
                 .map_err(SMError::storage)?;
+
+            if !all_chunks_received {
+                return Ok(());
+            }
         }
         _ => return Err(SMError::unexpected_input()),
     };
@@ -687,11 +760,11 @@ pub(crate) async fn restore<S: StateRead>(
         Step::Uninit => {}
         Step::GeneratingPolynomialCommitments { inputs, output } => {
             let config = require_config(&root_state)?;
-
+            let stage_seed = generate_polynomial_seed(config.seed);
             if !output {
                 emit(
                     actions,
-                    Action::GeneratePolynomialCommitments(config.seed, Wire::Output),
+                    Action::GeneratePolynomialCommitments(stage_seed, Wire::Output),
                 );
             }
             for (wire_idx, generated) in inputs.iter().enumerate() {
@@ -700,21 +773,23 @@ pub(crate) async fn restore<S: StateRead>(
                 }
                 emit(
                     actions,
-                    Action::GeneratePolynomialCommitments(
-                        config.seed,
-                        Wire::Input(wire_idx as u16),
-                    ),
+                    Action::GeneratePolynomialCommitments(stage_seed, Wire::Input(wire_idx as u16)),
                 );
             }
         }
         Step::GeneratingShares { generated } => {
             let config = require_config(&root_state)?;
-            for idx in 0..N_CIRCUITS {
+            let stage_seed = generate_polynomial_seed(config.seed);
+            for idx in 0..N_CIRCUITS + 1 {
                 if generated[idx] {
                     continue;
                 }
-                let index = Index::new(idx + 1).expect("valid index");
-                emit(actions, Action::GenerateShares(config.seed, index));
+                let index = if idx == 0 {
+                    Index::reserved()
+                } else {
+                    Index::new(idx).expect("valid index")
+                };
+                emit(actions, Action::GenerateShares(stage_seed, index));
             }
         }
         Step::GeneratingTableCommitments { seeds, generated } => {
@@ -765,19 +840,41 @@ pub(crate) async fn restore<S: StateRead>(
                 .require("expected output shares")?;
             let config = require_config(&root_state)?;
             let seeds = generate_garbling_table_seeds(config.seed);
+
+            let eval_output_cts: Vec<Byte32> = {
+                let all_output_label_cts = state
+                    .get_all_output_label_cts()
+                    .await
+                    .require("expected garbling table metadata")?;
+                let eval_indices = get_eval_indices(&challenge_indices);
+                eval_indices
+                    .iter()
+                    .map(|i| all_output_label_cts[i.get() - 1])
+                    .collect()
+            };
+
             let (header, chunks) = create_challenge_response_msgs(
                 &challenge_indices,
                 input_shares,
                 output_shares,
                 seeds,
                 config.setup_inputs,
+                eval_output_cts,
             );
 
             if !*header_acked {
                 emit(actions, Action::SendChallengeResponseMsgHeader(header));
             }
+
             for chunk in chunks {
-                if !chunk_acked[chunk.circuit_index as usize] {
+                let challenge_index_pos = challenge_indices
+                    .iter()
+                    .position(|x| x.get() == chunk.circuit_index as usize)
+                    .ok_or(SMError::StateInconsistency(format!(
+                        "Circuit index differs from one present in current state {}",
+                        chunk.circuit_index
+                    )))?;
+                if !chunk_acked[challenge_index_pos] {
                     emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
                 }
             }
@@ -924,44 +1021,146 @@ async fn build_commit_msg_header<S: StateRead>(state: &S) -> SMResult<CommitMsgH
     })
 }
 
-#[expect(unused_variables)]
-fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
-    todo!()
+fn generate_polynomial_seed(base_seed: Seed) -> Seed {
+    derive_stage_seed(base_seed, "generate_polynomial")
 }
 
-#[expect(unused_variables)]
+fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
+    let stage_seed = derive_stage_seed(base_seed, "generate_garbling_table_seeds");
+    let mut rng = ChaCha20Rng::from_seed(stage_seed.into()); // modify base seed ?
+    let garbling_seeds = (0..N_CIRCUITS)
+        .map(|_| {
+            let mut bytes: [u8; 32] = [0; 32];
+            rng.fill_bytes(&mut bytes);
+            Byte32::from(bytes)
+        })
+        .collect::<Vec<Byte32>>();
+    HeapArray::from_vec(garbling_seeds)
+}
+
+/// challenge indices must be in range, must not include 0, etc
 fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
-    // challenge indices must be in range, must not include 0, etc
-    todo!()
+    !challenge
+        .challenge_indices
+        .iter()
+        .any(|x| *x == Index::reserved())
+    // does not include reserved index
+    // ChallengeMsg in itself includes `Index` struct which can only be initialized within valid
+    // bounds so the range check is done during deserialization itself
 }
 
 fn create_commit_msg_chunks(
     polynomial_commitments: InputPolynomialCommitments,
 ) -> Vec<CommitMsgChunk> {
     polynomial_commitments
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(wire_index, commitments)| CommitMsgChunk {
             wire_index: wire_index as u16,
-            commitments: commitments.clone(),
+            commitments,
         })
         .collect()
 }
 
-#[expect(unused_variables)]
 fn create_challenge_response_msgs(
     challenge_idxs: &ChallengeIndices,
     input_shares: InputShares,
     output_shares: OutputShares,
     garbling_seeds: AllGarblingSeeds,
     setup_inputs: SetupInputs,
+    output_cts: Vec<Byte32>,
 ) -> (ChallengeResponseMsgHeader, Vec<ChallengeResponseMsgChunk>) {
-    todo!()
+    let header = create_challenge_response_msg_header(
+        challenge_idxs,
+        &input_shares,
+        &output_shares,
+        garbling_seeds,
+        setup_inputs,
+        HeapArray::from_vec(output_cts),
+    );
+    let chunks = create_challenge_response_msg_chunks(challenge_idxs, &input_shares);
+    (header, chunks)
 }
 
-#[expect(unused_variables)]
-fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
-    todo!()
+fn create_challenge_response_msg_chunks(
+    challenge_indices: &ChallengeIndices,
+    input_shares: &InputShares,
+) -> Vec<ChallengeResponseMsgChunk> {
+    let mut open_input_shares: Vec<ChallengeResponseMsgChunk> = Vec::with_capacity(N_OPEN_CIRCUITS);
+    for i in 0..N_OPEN_CIRCUITS {
+        let idx = challenge_indices[i].get();
+        let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
+        for j in 0..N_INPUT_WIRES {
+            let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+            for k in 0..WIDE_LABEL_VALUE_COUNT {
+                wide_shares.push(input_shares[idx][j][k]);
+            }
+            selected_input_shares.push(HeapArray::from_vec(wide_shares));
+        }
+        open_input_shares.push(ChallengeResponseMsgChunk {
+            circuit_index: idx as u16,
+            shares: HeapArray::from_vec(selected_input_shares),
+        });
+    }
+    open_input_shares
+}
+
+fn create_challenge_response_msg_header(
+    challenge_idxs: &ChallengeIndices,
+    all_input_shares: &InputShares,
+    all_output_shares: &OutputShares,
+    garbling_seeds: AllGarblingSeeds,
+    setup_input: SetupInputs,
+    unchallenged_output_label_cts: HeapArray<Byte32, N_EVAL_CIRCUITS>,
+) -> ChallengeResponseMsgHeader {
+    fn get_reserved_input_shares(input_shares: &InputShares) -> Box<ReservedInputShares> {
+        let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
+        for i in 0..N_INPUT_WIRES {
+            let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+            for j in 0..WIDE_LABEL_VALUE_COUNT {
+                wide_shares.push(input_shares[0][i][j]);
+            }
+            selected_input_shares.push(HeapArray::from_vec(wide_shares));
+        }
+        let input_shares: CircuitInputShares = HeapArray::from_vec(selected_input_shares);
+        Box::new(input_shares)
+    }
+
+    // evaluate the output false polynomial at the challenge indices
+    let opened_output_shares: OpenedOutputShares = HeapArray::from_vec(
+        challenge_idxs
+            .map(|idx| all_output_shares[idx.get()])
+            .to_vec(),
+    );
+
+    // evaluate each input polynomial at the reserved i=0 index
+    let reserved_input_shares: Box<ReservedInputShares> =
+        get_reserved_input_shares(all_input_shares);
+
+    // take 0..N_SETUP_INPUT_WIRES indices and
+    let reserved_setup_input_shares: ReservedSetupInputShares = HeapArray::from_vec(
+        (0..N_SETUP_INPUT_WIRES)
+            .map(|i| reserved_input_shares[i][setup_input[i] as usize])
+            .collect(),
+    );
+
+    // opened garbling seeds
+    let opened_garbling_seeds: OpenedGarblingSeeds = HeapArray::from_vec(
+        challenge_idxs
+            // challenge index i+1 corresponds to i_th entry in self.garbling_seeds
+            // therefore subtract by 1 here; better way ? maybe GC tables should be stored as map
+            // from Index to Value as the data structure can not be indexed in the
+            // conventional array sense
+            .map(|idx| garbling_seeds[idx.get() - 1])
+            .to_vec(),
+    );
+
+    ChallengeResponseMsgHeader {
+        reserved_setup_input_shares,
+        opened_output_shares,
+        opened_garbling_seeds,
+        unchallenged_output_label_cts,
+    }
 }
 
 fn get_eval_seeds(
@@ -972,16 +1171,5 @@ fn get_eval_seeds(
         // eval_indices are 1-indexed (1..=181), garbling_seeds are 0-indexed (0..=180)
         let seed_idx = eval_indices[i].get() - 1;
         garbling_seeds[seed_idx]
-    })
-}
-
-fn get_eval_commitments(
-    eval_indices: &EvaluationIndices,
-    garbling_commitments: &AllGarblingTableCommitments,
-) -> EvalGarblingTableCommitments {
-    HeapArray::new(|i| {
-        // eval_indices are 1-indexed (1..=181), garbling_commitments are 0-indexed (0..=180)
-        let seed_idx = eval_indices[i].get() - 1;
-        garbling_commitments[seed_idx]
     })
 }

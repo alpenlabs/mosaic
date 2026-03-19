@@ -4,17 +4,22 @@ use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
-    DepositAdaptors, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
-    GarblingTableCommitment, HeapArray, Index, InputPolynomialCommitments,
-    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Seed, SetupInputs, WithdrawalAdaptors, state_machine::evaluator::*,
+    DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
+    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
+    OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, Seed, SetupInputs,
+    WithdrawalAdaptors, WithdrawalAdaptorsChunk, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
-    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_EVAL_CIRCUITS, N_OPEN_CIRCUITS,
+    N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
+    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
+use rand::SeedableRng;
 
 use super::emit;
-use crate::{ResultOptionExt, SMError, SMResult};
+use crate::{
+    ResultOptionExt, SMError, SMResult,
+    common::{derive_stage_seed, get_eval_commitments, get_eval_indices},
+};
 
 // ============================================================================
 // External event handler
@@ -289,7 +294,12 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             .await?;
         }
         ActionResult::GarblingTableReceived(index, table_commitment) => {
-            handle_table_received(&mut root_state, state, index, table_commitment).await?;
+            handle_table_received(&mut root_state, state, index, table_commitment, actions).await?;
+        }
+        ActionResult::GarblingTableTransferReceiptAcked(_) => {
+            // The table transfer receipt message was sent. No further state change needed —
+            // state was already advanced to SetupComplete when
+            // we emitted the SendTableTransferReceipt action.
         }
         ActionResult::DepositAdaptorsGenerated(deposit_id, deposit_adaptors) => {
             match root_state.step {
@@ -636,6 +646,11 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 };
                 return Ok(());
             }
+            let challenge_idxs = state
+                .get_challenge_indices()
+                .await
+                .require("expected challenge indices")?;
+            let eval_indices = get_eval_indices(&challenge_idxs);
 
             let ChallengeResponseMsgHeader {
                 reserved_setup_input_shares,
@@ -657,7 +672,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 .await
                 .map_err(SMError::storage)?;
             state
-                .put_unchallenged_output_label_cts(&unchallenged_output_label_cts)
+                .put_unchallenged_output_label_cts(&eval_indices, &unchallenged_output_label_cts)
                 .await
                 .map_err(SMError::storage)?;
 
@@ -842,6 +857,7 @@ async fn handle_table_received<S: StateMut>(
     _state: &mut S,
     index: Index,
     table_commitment: GarblingTableCommitment,
+    actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::ReceivingGarblingTables {
@@ -849,11 +865,11 @@ async fn handle_table_received<S: StateMut>(
             eval_commitments,
             received,
         } => {
-            let Some(idx) = eval_idxs.iter().position(|&x| x == index) else {
+            let Some(pos) = eval_idxs.iter().position(|&x| x == index) else {
                 return Err(SMError::InvalidInputData);
             };
 
-            let expected_commitment = eval_commitments[idx];
+            let expected_commitment = eval_commitments[pos];
             if table_commitment != expected_commitment {
                 root_state.step = Step::Aborted {
                     reason: format!("invalid table for index {}", index),
@@ -861,7 +877,9 @@ async fn handle_table_received<S: StateMut>(
                 return Ok(());
             }
 
-            received[idx] = true;
+            emit(actions, Action::SendTableTransferReceipt(index));
+
+            received[pos] = true;
 
             if received.all() {
                 root_state.step = Step::SetupComplete;
@@ -1040,32 +1058,45 @@ async fn require_deposit<S: StateRead>(
         .ok_or_else(|| SMError::unknown_deposit(*deposit_id))
 }
 
-#[expect(unused_variables)]
 fn is_valid_commit_header(commit_header: &CommitMsgHeader) -> bool {
-    todo!()
+    // zeroth polynomial coefficient corresponds to share commitment at reserved index
+    // since this Point corresponds to verifying key, we need to validate that it is a proper
+    // schnorr pubkey
+    let poly = commit_header.output_polynomial_commitment[0].get_zeroth_coefficient();
+    PubKey(poly).valid()
 }
 
 #[expect(unused_variables)]
 fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
-    todo!()
+    true // validated when challenge response is received
 }
 
-#[expect(unused_variables)]
-fn sample_challenge_indices(seed: Seed) -> ChallengeIndices {
-    todo!()
+fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
+    let seed = derive_stage_seed(base_seed, "sample_challenge_indices");
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
+    let sampled_indices = rand::seq::index::sample(&mut rng, N_CIRCUITS, N_OPEN_CIRCUITS); // samples N_OPEN_CIRCUITS many values from the domain [0, N_CIRCUITS]
+    let mut challenge_indices: ChallengeIndices = HeapArray::from_vec(
+        sampled_indices
+            .into_iter()
+            .map(|x| Index::new(x + 1).expect("within bounds")) // sampled values displaced to domain [1, N_CIRCUITS+1] as 0 is reserved index
+            .collect::<Vec<_>>(),
+    );
+    challenge_indices.sort_by_key(|k| k.get());
+    challenge_indices
 }
 
 #[expect(unused_variables)]
 fn is_valid_challenge_response_header(response_msg_header: &ChallengeResponseMsgHeader) -> bool {
-    todo!()
+    true // validated by jobs
 }
 
-#[expect(unused_variables)]
 fn is_valid_challenge_response_chunk(
     response_msg_chunk: &ChallengeResponseMsgChunk,
     challenge_idxs: &ChallengeIndices,
 ) -> bool {
-    todo!()
+    challenge_idxs
+        .iter()
+        .any(|x| x.get() == response_msg_chunk.circuit_index as usize)
 }
 
 /// Verify opened output shares against polynomial commitments and return failure reason or None.
@@ -1074,17 +1105,28 @@ fn verify_opened_output_shares(
     opened_output_shares: &OpenedOutputShares,
     output_polynomial_commitment: &OutputPolynomialCommitment,
 ) -> Option<String> {
-    todo!()
+    None
 }
 
 /// Verify reserved setup input shares and return failure reason or None.
-#[expect(unused_variables)]
 fn verify_reserved_setup_input_shares(
     reserved_setup_input_shares: &ReservedSetupInputShares,
     setup_inputs: &SetupInputs,
     input_polynomial_commitments: &InputPolynomialCommitments,
 ) -> Option<String> {
-    todo!()
+    for wire in 0..N_SETUP_INPUT_WIRES {
+        let val = setup_inputs[wire];
+        let reserved_share = reserved_setup_input_shares[wire];
+        if input_polynomial_commitments[wire][val as usize]
+            .verify_share(reserved_share)
+            .is_err()
+        {
+            return Some(format!(
+                "verify reserved setup shares failed for wire {wire}",
+            ));
+        }
+    }
+    None
 }
 
 fn get_opened_commitments(
@@ -1101,38 +1143,25 @@ fn is_sorted<T: Ord>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] <= w[1])
 }
 
-#[expect(unused_variables)]
-fn get_eval_indices(challenge_indices: &ChallengeIndices) -> EvaluationIndices {
-    todo!()
-}
-
-fn get_eval_commitments(
-    eval_indices: &EvaluationIndices,
-    garbling_commitments: &AllGarblingTableCommitments,
-) -> EvalGarblingTableCommitments {
-    HeapArray::new(|i| {
-        let seed_idx = eval_indices[i].get() - 1;
-        garbling_commitments[seed_idx]
-    })
-}
-
 fn create_adaptor_message_chunks(
     deposit_id: DepositId,
     deposit_adaptors: DepositAdaptors,
     withdrawal_adaptors: WithdrawalAdaptors,
 ) -> Vec<AdaptorMsgChunk> {
-    let withdrawal_wires_per_chunk = withdrawal_adaptors.len() / N_ADAPTOR_MSG_CHUNKS;
-    (0..N_ADAPTOR_MSG_CHUNKS)
-        .map(|chunk_index| {
-            let start = chunk_index * withdrawal_wires_per_chunk;
-            AdaptorMsgChunk {
-                deposit_id,
-                chunk_index: chunk_index as u8,
-                deposit_adaptor: deposit_adaptors[chunk_index],
-                withdrawal_adaptors: HeapArray::new(|wire_offset| {
-                    withdrawal_adaptors[start + wire_offset].clone()
-                }),
-            }
-        })
-        .collect()
+    // take 1 deposit adaptor wire and N withdrawal adaptor wires
+    let mut adaptor_msg_chunks = vec![];
+    for chunk_index in 0..N_DEPOSIT_INPUT_WIRES {
+        let withdrawal_adaptors: WithdrawalAdaptorsChunk = HeapArray::from_vec(
+            withdrawal_adaptors[chunk_index * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK
+                ..(chunk_index + 1) * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK]
+                .to_vec(),
+        );
+        adaptor_msg_chunks.push(AdaptorMsgChunk {
+            deposit_id,
+            chunk_index: chunk_index as u8,
+            deposit_adaptor: deposit_adaptors[chunk_index],
+            withdrawal_adaptors,
+        });
+    }
+    adaptor_msg_chunks
 }

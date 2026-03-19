@@ -85,7 +85,7 @@ pub type OpenedInputShares = HeapArray<CircuitInputShares, N_OPEN_CIRCUITS>;
 /// wire. Uses HeapArray for serialization derive macro support.
 pub type ReservedSetupInputShares = HeapArray<Share, N_SETUP_INPUT_WIRES>;
 /// Reserved input shares for all wide label values corresponding to deposit input wires.
-pub type ReservedDepositInputShares = [WideLabelWireShares; N_DEPOSIT_INPUT_WIRES];
+pub type ReservedDepositInputShares = [Share; N_DEPOSIT_INPUT_WIRES];
 /// Reserved input shares for all wide labels corresponding to withdrawal input wires.
 pub type ReservedWithdrawalInputShares = [WideLabelWireShares; N_WITHDRAWAL_INPUT_WIRES];
 /// Shares for value 0 output wire for for all opened indices.
