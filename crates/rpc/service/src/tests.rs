@@ -557,33 +557,32 @@ async fn init_evaluator_deposit_rejects_duplicate() {
     );
 }
 
-// TODO(#110): enable once derive_stage_seed is implemented
-// #[tokio::test]
-// async fn init_evaluator_deposit_dispatches_correct_input() {
-//     let h = TestHarness::new();
-//     h.setup_evaluator(evaluator::Step::SetupComplete).await;
-//     let deposit_id = test_deposit_id(1);
-//
-//     let init = EvaluatorDepositInit {
-//         sighashes: test_sighashes(),
-//         deposit_inputs: [0xCCu8; N_DEPOSIT_INPUT_WIRES],
-//     };
-//
-//     h.api
-//         .init_evaluator_deposit(&h.evaluator_sm_id(), &deposit_id, init)
-//         .await
-//         .unwrap();
-//
-//     let input = h.recv_input().await;
-//     match input {
-//         StateMachineInput::Evaluator(evaluator::Input::DepositInit(id, data)) => {
-//             assert_eq!(id, deposit_id);
-//             assert_eq!(data.deposit_inputs, [0xCCu8; N_DEPOSIT_INPUT_WIRES]);
-//             // sk should be deterministic given the seed and deposit_id
-//         }
-//         other => panic!("expected Evaluator DepositInit, got {other:?}"),
-//     }
-// }
+#[tokio::test]
+async fn init_evaluator_deposit_dispatches_correct_input() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::SetupComplete).await;
+    let deposit_id = test_deposit_id(1);
+
+    let init = EvaluatorDepositInit {
+        sighashes: test_sighashes(),
+        deposit_inputs: [0xCCu8; N_DEPOSIT_INPUT_WIRES],
+    };
+
+    h.api
+        .init_evaluator_deposit(&h.evaluator_sm_id(), &deposit_id, init)
+        .await
+        .unwrap();
+
+    let input = h.recv_input().await;
+    match input {
+        StateMachineInput::Evaluator(evaluator::Input::DepositInit(id, data)) => {
+            assert_eq!(id, deposit_id);
+            assert_eq!(data.deposit_inputs, [0xCCu8; N_DEPOSIT_INPUT_WIRES]);
+            // sk should be deterministic given the seed and deposit_id
+        }
+        other => panic!("expected Evaluator DepositInit, got {other:?}"),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Group 6: mark_deposit_withdrawn

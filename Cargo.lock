@@ -2488,6 +2488,7 @@ dependencies = [
  "bitcoin",
  "futures",
  "kanal",
+ "mosaic-cac-protocol",
  "mosaic-cac-types",
  "mosaic-common",
  "mosaic-net-svc-api",

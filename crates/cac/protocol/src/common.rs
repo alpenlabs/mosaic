@@ -29,8 +29,8 @@ pub(crate) fn get_eval_commitments(
     })
 }
 
-// derive stage seed
-pub(crate) fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
+/// derive stage seed
+pub fn derive_stage_seed(base_seed: Seed, stage: &str) -> Seed {
     let base_seed: [u8; 32] = base_seed.into();
     let hash = blake3::keyed_hash(&base_seed, stage.as_bytes());
     Seed::from(*hash.as_bytes())
