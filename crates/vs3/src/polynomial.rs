@@ -238,6 +238,8 @@ pub fn batch_verify_shares(
         return Ok(());
     }
 
+    // This can't be zero, otherwise the batch verification will be trivial. We don't need
+    // a separate check for this because the probability of generating zero is negligible.
     let alpha: Scalar = Scalar::rand(rng);
 
     let num_points = pairs.len() * N_COEFFICIENTS;
