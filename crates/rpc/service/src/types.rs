@@ -3,9 +3,9 @@
 //! These are transport-agnostic representations of service responses and
 //! configuration, using domain types from `mosaic-cac-types`.
 
+use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use mosaic_cac_types::{
-    CompletedSignatures, DepositId, DepositInputs, PubKey, SetupInputs, Sighashes,
-    WithdrawalInputs,
+    DepositId, DepositInputs, SetupInputs, Sighashes, WithdrawalInputs,
     state_machine::{
         Role,
         evaluator::{self},
@@ -101,8 +101,8 @@ pub struct SetupConfig {
 /// Configuration for initializing a garbler deposit.
 #[derive(Debug)]
 pub struct GarblerDepositInit {
-    /// Evaluator's adaptor public key.
-    pub adaptor_pk: PubKey,
+    /// Evaluator's adaptor public key (BIP-340 x-only).
+    pub adaptor_pk: XOnlyPublicKey,
     /// Sighashes for deposit and withdrawal inputs.
     pub sighashes: Sighashes,
     /// Deposit input wire values.
@@ -123,8 +123,8 @@ pub struct EvaluatorDepositInit {
 pub struct EvaluatorWithdrawalData {
     /// Withdrawal input wire values.
     pub withdrawal_inputs: WithdrawalInputs,
-    /// Completed adaptor signatures from the garbler.
-    pub signatures: CompletedSignatures,
+    /// Completed adaptor signatures from the garbler (bitcoin Schnorr format).
+    pub signatures: Vec<SchnorrSignature>,
 }
 
 // --- From impls: garbler/evaluator state -> service domain types ---

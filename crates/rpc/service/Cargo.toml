@@ -11,6 +11,7 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-adaptor-sigs.workspace = true
 mosaic-cac-protocol.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
@@ -18,7 +19,10 @@ mosaic-net-svc-api.workspace = true
 mosaic-storage-api.workspace = true
 mosaic-vs3.workspace = true
 
+ark-ec.workspace = true
 ark-ff.workspace = true
+ark-secp256k1.workspace = true
+ark-serialize.workspace = true
 async-trait.workspace = true
 bitcoin.workspace = true
 futures.workspace = true
@@ -32,6 +36,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 mosaic-storage-inmemory.workspace = true
+proptest.workspace = true
+sha2.workspace = true
 tokio = { version = "1", features = ["rt", "macros"] }
 
 [lints]

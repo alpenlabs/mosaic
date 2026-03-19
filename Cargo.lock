@@ -2459,35 +2459,29 @@ dependencies = [
 name = "mosaic-rpc-server"
 version = "0.1.0"
 dependencies = [
- "ark-ec",
- "ark-ff",
- "ark-secp256k1",
- "ark-serialize",
  "bitcoin",
  "jsonrpsee",
- "mosaic-adaptor-sigs",
  "mosaic-cac-types",
  "mosaic-common",
  "mosaic-net-svc-api",
  "mosaic-rpc-api",
  "mosaic-rpc-service",
  "mosaic-rpc-types",
- "proptest",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "secp256k1",
- "sha2",
 ]
 
 [[package]]
 name = "mosaic-rpc-service"
 version = "0.1.0"
 dependencies = [
+ "ark-ec",
  "ark-ff",
+ "ark-secp256k1",
+ "ark-serialize",
  "async-trait",
  "bitcoin",
  "futures",
  "kanal",
+ "mosaic-adaptor-sigs",
  "mosaic-cac-protocol",
  "mosaic-cac-types",
  "mosaic-common",
@@ -2496,9 +2490,11 @@ dependencies = [
  "mosaic-storage-inmemory",
  "mosaic-vs3",
  "parking_lot",
+ "proptest",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "secp256k1",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

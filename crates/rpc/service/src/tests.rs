@@ -1,7 +1,8 @@
 //! Tests for [`DefaultMosaicApi`].
 
+use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
 use mosaic_cac_types::{
-    CompletedSignatures, DepositId, HeapArray, SecretKey, Seed, Sighashes, Signature,
+    DepositId, HeapArray, SecretKey, Seed, Sighashes, Signature,
     state_machine::{
         Role, StateMachineExecutorInput, StateMachineId, StateMachineInput,
         evaluator::{self, EvaluatorState, StateMut as EvaluatorStateMut},
@@ -22,6 +23,7 @@ use rand_chacha::ChaChaRng;
 use crate::{
     DefaultMosaicApi, DepositStatus, EvaluatorDepositInit, EvaluatorWithdrawalData,
     GarblerDepositInit, MosaicApi, ServiceError, SetupConfig, TablesetStatus,
+    crypto_conversions::{into_schnorr_signature, try_into_x_only_pubkey},
 };
 
 // ---------------------------------------------------------------------------
@@ -162,10 +164,18 @@ fn test_sighashes() -> Sighashes {
     ])
 }
 
-fn test_completed_signatures() -> CompletedSignatures {
+fn test_completed_schnorr_signatures() -> Vec<SchnorrSignature> {
+    let sig = Signature::from_bytes([1u8; 64]).expect("valid signature bytes");
+    let schnorr = into_schnorr_signature(sig);
+    vec![schnorr; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES]
+}
+
+fn test_completed_signatures() -> mosaic_cac_types::CompletedSignatures {
     // Signature has no Default; construct from valid field elements.
     let sig = Signature::from_bytes([1u8; 64]).expect("valid signature bytes");
-    HeapArray::from_vec(vec![sig; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES])
+    mosaic_cac_types::HeapArray::from_vec(
+        vec![sig; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +443,8 @@ async fn init_garbler_deposit_dispatches_correct_input() {
 
     let deposit_id = test_deposit_id(1);
     let mut rng = ChaChaRng::seed_from_u64(77);
-    let adaptor_pk = SecretKey::rand(&mut rng).to_pubkey();
+    let internal_pk = SecretKey::rand(&mut rng).to_pubkey();
+    let adaptor_pk = try_into_x_only_pubkey(internal_pk).unwrap();
     let sighashes = test_sighashes();
     let deposit_inputs = [0xBBu8; N_DEPOSIT_INPUT_WIRES];
 
@@ -452,7 +463,7 @@ async fn init_garbler_deposit_dispatches_correct_input() {
     match msg.input() {
         StateMachineInput::Garbler(garbler::Input::DepositInit(id, data)) => {
             assert_eq!(*id, deposit_id);
-            assert_eq!(data.pk, adaptor_pk);
+            assert_eq!(data.pk, internal_pk);
             assert_eq!(data.sighashes, sighashes);
             assert_eq!(data.deposit_inputs, deposit_inputs);
         }
@@ -467,7 +478,7 @@ async fn init_garbler_deposit_rejects_wrong_step() {
 
     let deposit_id = test_deposit_id(1);
     let init = GarblerDepositInit {
-        adaptor_pk: SecretKey::rand(&mut ChaChaRng::seed_from_u64(0)).to_pubkey(),
+        adaptor_pk: try_into_x_only_pubkey(SecretKey::rand(&mut ChaChaRng::seed_from_u64(0)).to_pubkey()).unwrap(),
         sighashes: test_sighashes(),
         deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
     };
@@ -494,7 +505,7 @@ async fn init_garbler_deposit_rejects_duplicate_deposit() {
         .await;
 
     let init = GarblerDepositInit {
-        adaptor_pk: SecretKey::rand(&mut ChaChaRng::seed_from_u64(0)).to_pubkey(),
+        adaptor_pk: try_into_x_only_pubkey(SecretKey::rand(&mut ChaChaRng::seed_from_u64(0)).to_pubkey()).unwrap(),
         sighashes: test_sighashes(),
         deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
     };
@@ -877,7 +888,7 @@ async fn evaluate_tableset_dispatches_disputed_withdrawal() {
 
     let data = EvaluatorWithdrawalData {
         withdrawal_inputs: [0xEEu8; N_WITHDRAWAL_INPUT_WIRES],
-        signatures: test_completed_signatures(),
+        signatures: test_completed_schnorr_signatures(),
     };
 
     h.api
@@ -900,7 +911,7 @@ async fn evaluate_tableset_rejects_garbler_role() {
 
     let data = EvaluatorWithdrawalData {
         withdrawal_inputs: [0u8; N_WITHDRAWAL_INPUT_WIRES],
-        signatures: test_completed_signatures(),
+        signatures: test_completed_schnorr_signatures(),
     };
 
     let err = h
@@ -925,7 +936,7 @@ async fn evaluate_tableset_rejects_wrong_step() {
 
     let data = EvaluatorWithdrawalData {
         withdrawal_inputs: [0u8; N_WITHDRAWAL_INPUT_WIRES],
-        signatures: test_completed_signatures(),
+        signatures: test_completed_schnorr_signatures(),
     };
 
     let err = h
@@ -1191,8 +1202,9 @@ async fn get_fault_secret_pubkey_returns_pubkey_from_commitment() {
         .unwrap()
         .expect("expected Some pubkey");
 
-    let expected_point = commitment.eval(Index::reserved()).point();
-    assert_eq!(pubkey.0, expected_point);
+    let expected_pk = mosaic_cac_types::PubKey(commitment.eval(Index::reserved()).point());
+    let expected_x_only = try_into_x_only_pubkey(expected_pk).unwrap();
+    assert_eq!(pubkey, expected_x_only);
 }
 
 #[tokio::test]
@@ -1287,9 +1299,9 @@ async fn init_evaluator_deposit_sk_matches_get_adaptor_pubkey() {
     let input = h.recv_input().await;
     match input.input() {
         StateMachineInput::Evaluator(evaluator::Input::DepositInit(_id, data)) => {
+            let derived_x_only = try_into_x_only_pubkey(data.sk.to_pubkey()).unwrap();
             assert_eq!(
-                data.sk.to_pubkey(),
-                adaptor_pk,
+                derived_x_only, adaptor_pk,
                 "dispatched sk must correspond to the pubkey from get_adaptor_pubkey"
             );
         }

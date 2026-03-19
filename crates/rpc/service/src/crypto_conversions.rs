@@ -1,4 +1,4 @@
-//! Conversions between service domain types and RPC for cryptographic types.
+//! Conversions between internal ark-ec crypto types and bitcoin types.
 
 use ark_ec::CurveGroup;
 use ark_ff::{BigInteger, PrimeField};

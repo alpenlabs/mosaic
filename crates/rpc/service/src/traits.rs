@@ -1,9 +1,9 @@
 //! The [`MosaicApi`] trait — transport-agnostic service interface.
 
 use async_trait::async_trait;
-use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
+use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use mosaic_cac_types::{
-    CompletedSignatures, DepositId, PubKey, WithdrawalInputs,
+    DepositId, WithdrawalInputs,
     state_machine::{Role, StateMachineId},
 };
 use mosaic_common::Byte32;
@@ -42,14 +42,14 @@ pub trait MosaicApi: Send + Sync + 'static {
     async fn get_fault_secret_pubkey(
         &self,
         sm_id: &StateMachineId,
-    ) -> ServiceResult<Option<PubKey>>;
+    ) -> ServiceResult<Option<XOnlyPublicKey>>;
 
     /// Gets the adaptor public key for an evaluator deposit.
     async fn get_adaptor_pubkey(
         &self,
         sm_id: &StateMachineId,
         deposit_id: &DepositId,
-    ) -> ServiceResult<Option<PubKey>>;
+    ) -> ServiceResult<Option<XOnlyPublicKey>>;
 
     /// Initializes a garbler deposit.
     ///
@@ -109,7 +109,7 @@ pub trait MosaicApi: Send + Sync + 'static {
     async fn get_completed_adaptor_sigs(
         &self,
         sm_id: &StateMachineId,
-    ) -> ServiceResult<CompletedSignatures>;
+    ) -> ServiceResult<Vec<SchnorrSignature>>;
 
     /// Evaluator only: evaluates the tableset using completed adaptor
     /// signatures.

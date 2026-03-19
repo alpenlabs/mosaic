@@ -11,7 +11,6 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-mosaic-adaptor-sigs.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 mosaic-net-svc-api.workspace = true
@@ -19,21 +18,8 @@ mosaic-rpc-api.workspace = true
 mosaic-rpc-service.workspace = true
 mosaic-rpc-types.workspace = true
 
-ark-ec.workspace = true
-ark-ff.workspace = true
-ark-secp256k1.workspace = true
-ark-serialize.workspace = true
 bitcoin.workspace = true
 jsonrpsee = { workspace = true, features = ["server-core"] }
-
-[dev-dependencies]
-mosaic-adaptor-sigs.workspace = true
-rand.workspace = true
-rand_chacha.workspace = true
-secp256k1 = { workspace = true, features = ["global-context"] }
-ark-secp256k1.workspace = true
-sha2.workspace = true
-proptest.workspace = true
 
 [lints]
 workspace = true

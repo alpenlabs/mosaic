@@ -4,6 +4,7 @@
 //! controlling Mosaic, used by the bridge and any other consumer.
 //! The RPC server is one frontend for this API, but it can be replaced.
 
+mod crypto_conversions;
 mod default;
 mod error;
 mod schnorr_signer;
@@ -15,5 +16,7 @@ pub use error::*;
 pub use traits::*;
 pub use types::*;
 
+#[cfg(test)]
+mod crypto_conversion_proptests;
 #[cfg(test)]
 mod tests;

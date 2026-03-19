@@ -2,7 +2,7 @@
 //! executor channel.
 
 use async_trait::async_trait;
-use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
+use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use futures::TryStreamExt as _;
 use kanal::AsyncSender;
 use mosaic_cac_protocol::derive_stage_seed;
@@ -28,6 +28,10 @@ use tracing::error;
 use crate::{
     DepositStatus, DepositWithStatus, EvaluatorDepositInit, EvaluatorWithdrawalData,
     GarblerDepositInit, MosaicApi, ServiceError, ServiceResult, SetupConfig, TablesetStatus,
+    crypto_conversions::{
+        into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
+        try_into_x_only_pubkey,
+    },
     schnorr_signer::SchnorrSigner,
 };
 
@@ -219,7 +223,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
     async fn get_fault_secret_pubkey(
         &self,
         sm_id: &StateMachineId,
-    ) -> ServiceResult<Option<PubKey>> {
+    ) -> ServiceResult<Option<XOnlyPublicKey>> {
         let output_commitment = match sm_id.role() {
             Role::Garbler => self
                 .storage
@@ -244,17 +248,24 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         };
 
         let reserve_output_share_commit = output_commitment[0].eval(Index::reserved());
-        Ok(Some(PubKey(reserve_output_share_commit.point())))
+        let pk = PubKey(reserve_output_share_commit.point());
+        let x_only = try_into_x_only_pubkey(pk).map_err(ServiceError::InvalidArgument)?;
+        Ok(Some(x_only))
     }
 
     async fn get_adaptor_pubkey(
         &self,
         sm_id: &StateMachineId,
         deposit_id: &DepositId,
-    ) -> ServiceResult<Option<PubKey>> {
-        self.generate_adaptor_keypair_deterministic(sm_id, deposit_id)
-            .await
-            .map(|r| r.map(|(_, pk)| pk))
+    ) -> ServiceResult<Option<XOnlyPublicKey>> {
+        let Some((_, pk)) = self
+            .generate_adaptor_keypair_deterministic(sm_id, deposit_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let x_only = try_into_x_only_pubkey(pk).map_err(ServiceError::InvalidArgument)?;
+        Ok(Some(x_only))
     }
 
     async fn init_garbler_deposit(
@@ -288,8 +299,10 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             return Err(ServiceError::DuplicateDeposit(*deposit_id));
         }
 
+        let adaptor_pk =
+            try_from_x_only_pubkey(init.adaptor_pk).map_err(ServiceError::InvalidArgument)?;
         let deposit_init_data = GarblerDepositInitData {
-            pk: init.adaptor_pk,
+            pk: adaptor_pk,
             sighashes: init.sighashes,
             deposit_inputs: init.deposit_inputs,
         };
@@ -544,7 +557,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
     async fn get_completed_adaptor_sigs(
         &self,
         sm_id: &StateMachineId,
-    ) -> ServiceResult<CompletedSignatures> {
+    ) -> ServiceResult<Vec<SchnorrSignature>> {
         if sm_id.role() != Role::Garbler {
             return Err(ServiceError::RoleMismatch(
                 "get_completed_adaptor_sigs only valid for garbler".into(),
@@ -565,7 +578,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             ));
         };
 
-        self
+        let completed = self
             .garbler_state(sm_id.peer_id())
             .await?
             .get_completed_signatures(&deposit_id)
@@ -574,7 +587,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             .ok_or_else(|| {
                 error!(%sm_id, %deposit_id, "CRITICAL: expected completed adaptor sigs; found none");
                 ServiceError::CompletedSigsNotFound
-            })
+            })?;
+
+        Ok(completed.into_iter().map(into_schnorr_signature).collect())
     }
 
     async fn evaluate_tableset(
@@ -617,9 +632,19 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             ));
         }
 
+        let signatures = data
+            .signatures
+            .into_iter()
+            .map(try_from_schnorr_signature)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ServiceError::UnparsableAdaptorSigs)?;
+        let signatures = CompletedSignatures::try_from_vec(signatures).ok_or_else(|| {
+            ServiceError::InvalidArgument("invalid completed signatures length".into())
+        })?;
+
         let withdrawal_data = EvaluatorDisputedWithdrawalData {
             withdrawal_inputs: data.withdrawal_inputs,
-            signatures: data.signatures,
+            signatures,
         };
 
         let input = StateMachineInput::Evaluator(evaluator::Input::DisputedWithdrawal(

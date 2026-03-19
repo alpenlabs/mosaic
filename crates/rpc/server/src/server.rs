@@ -1,6 +1,6 @@
 use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use jsonrpsee::core::async_trait;
-use mosaic_cac_types::{CompletedSignatures, DepositId, Sighashes, state_machine::StateMachineId};
+use mosaic_cac_types::{DepositId, Sighashes, state_machine::StateMachineId};
 use mosaic_common::Byte32;
 use mosaic_net_svc_api::PeerId;
 use mosaic_rpc_api::MosaicRpcServer;
@@ -9,12 +9,8 @@ use mosaic_rpc_service::{
 };
 use mosaic_rpc_types::*;
 
-use crate::{
-    conversions::{cac_role_to_domain, deposit_status_to_rpc, service_err, tableset_status_to_rpc},
-    crypto::{
-        into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
-        try_into_x_only_pubkey,
-    },
+use crate::conversions::{
+    cac_role_to_domain, deposit_status_to_rpc, service_err, tableset_status_to_rpc,
 };
 
 /// Mosaic RPC server impl.
@@ -104,14 +100,10 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         tsid: RpcTablesetId,
     ) -> RpcResult<Option<XOnlyPublicKey>> {
         let sm_id = parse_sm_id(tsid)?;
-        Ok(self
-            .service
+        self.service
             .get_fault_secret_pubkey(&sm_id)
             .await
-            .map_err(service_err)?
-            .map(try_into_x_only_pubkey)
-            .transpose()
-            .map_err(RpcError::Other)?)
+            .map_err(service_err)
     }
 
     async fn evaluator_get_adaptor_pubkey(
@@ -121,14 +113,10 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
     ) -> RpcResult<Option<XOnlyPublicKey>> {
         let sm_id = parse_sm_id(tsid)?;
         let deposit_id = DepositId::from(deposit_id);
-        Ok(self
-            .service
+        self.service
             .get_adaptor_pubkey(&sm_id, &deposit_id)
             .await
-            .map_err(service_err)?
-            .map(try_into_x_only_pubkey)
-            .transpose()
-            .map_err(RpcError::Other)?)
+            .map_err(service_err)
     }
 
     async fn init_garbler_deposit(
@@ -140,8 +128,7 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         let sm_id = parse_sm_id(tsid)?;
         let deposit_id = DepositId::from(rpc_deposit_id);
         let init = GarblerDepositInit {
-            adaptor_pk: try_from_x_only_pubkey(deposit.adaptor_pk)
-                .map_err(|_| RpcError::InvalidArgument("invalid adaptor_pubkey".into()))?,
+            adaptor_pk: deposit.adaptor_pk,
             sighashes: Sighashes::from_vec(
                 deposit
                     .sighashes
@@ -254,7 +241,7 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
 
         let mut adaptor_sigs = adaptor_sigs.into_iter();
         Ok(RpcCompletedSignatures::new(std::array::from_fn(|_| {
-            into_schnorr_signature(adaptor_sigs.next().unwrap())
+            adaptor_sigs.next().unwrap()
         })))
     }
 
@@ -267,19 +254,9 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         let sm_id = parse_sm_id(tsid)?;
         let deposit_id = DepositId::from(deposit_id);
 
-        let signatures = withdrawal_data
-            .completed_signatures
-            .into_inner()
-            .into_iter()
-            .map(try_from_schnorr_signature)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(RpcError::UnparsableAdaptorSigs)?;
-
         let data = EvaluatorWithdrawalData {
             withdrawal_inputs: withdrawal_data.withdrawal_inputs.into_inner(),
-            signatures: CompletedSignatures::try_from_vec(signatures).ok_or_else(|| {
-                RpcError::InvalidArgument("invalid completed signatures length".into())
-            })?,
+            signatures: withdrawal_data.completed_signatures.into_inner().to_vec(),
         };
 
         self.service

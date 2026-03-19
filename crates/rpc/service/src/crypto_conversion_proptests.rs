@@ -1,7 +1,9 @@
-//! Property-based tests for conversions between internal and bitcoin crypto types.
+//! Property-based tests for conversions between internal and bitcoin crypto types,
+//! including [`SchnorrSigner`] integration tests.
 
 use ark_ec::PrimeGroup;
 use ark_ff::{BigInteger, PrimeField, UniformRand};
+use bitcoin::key::TapTweak;
 use mosaic_adaptor_sigs::serialize_field;
 use mosaic_cac_types::{Adaptor, PubKey, Signature};
 use proptest::prelude::*;
@@ -10,10 +12,11 @@ use rand_chacha::ChaCha20Rng;
 use secp256k1::SECP256K1;
 use sha2::{Digest, Sha256};
 
-use crate::crypto::{
+use crate::crypto_conversions::{
     into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
     try_into_x_only_pubkey,
 };
+use crate::schnorr_signer::SchnorrSigner;
 
 /// Generate an even-y internal keypair from a seed.
 fn internal_keypair_from_seed(seed: u64) -> (ark_secp256k1::Fr, ark_secp256k1::Projective) {
@@ -185,5 +188,83 @@ proptest! {
             s_g, r_plus_ep,
             "BIP340 verification equation should hold for bitcoin-generated signature"
         );
+    }
+}
+
+// ── SchnorrSigner integration tests ─────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    /// Verify that `SchnorrSigner` produces signatures that pass bitcoin/secp256k1
+    /// verification when combined with the tap-tweaked public key.
+    ///
+    /// Note: `SchnorrSigner::sign` always applies `tap_tweak` (even with `None`
+    /// tweak, the internal key is still tweaked per taproot convention), so we
+    /// must verify against the tweaked output key.
+    #[test]
+    fn schnorr_signer_sign_and_verify(seed in any::<u64>()) {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+        let (sk, _pk) = Signature::keypair(&mut rng);
+
+        let digest: [u8; 32] = Sha256::digest(seed.to_le_bytes()).into();
+
+        // Build the expected tweaked public key (no script-path tweak)
+        let sk_bytes: [u8; 32] = sk
+            .into_bigint()
+            .to_bytes_be()
+            .try_into()
+            .expect("Fr is 32 bytes");
+        let keypair =
+            secp256k1::Keypair::from_seckey_slice(SECP256K1, &sk_bytes).expect("valid secret key");
+        let tweaked_x_only = keypair
+            .tap_tweak(SECP256K1, None)
+            .to_keypair()
+            .x_only_public_key()
+            .0;
+
+        // Sign using SchnorrSigner (ark scalar → bitcoin keypair → schnorr sig)
+        let signer = SchnorrSigner::from_ark_scalar(&sk);
+        let sig = signer.sign(digest, None);
+
+        // Verify against the tweaked output key
+        let msg = secp256k1::Message::from_digest(digest);
+        SECP256K1
+            .verify_schnorr(&sig, &msg, &tweaked_x_only)
+            .expect("SchnorrSigner signature should verify against tweaked key");
+    }
+
+    /// Verify that `SchnorrSigner` with a tap tweak produces valid signatures
+    /// against the tweaked public key.
+    #[test]
+    fn schnorr_signer_sign_with_tweak(seed in any::<u64>()) {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+        let (sk, _pk) = Signature::keypair(&mut rng);
+
+        let digest: [u8; 32] = Sha256::digest(seed.to_le_bytes()).into();
+        let tweak_bytes: [u8; 32] = Sha256::digest(b"tweak").into();
+
+        // Build the tweaked keypair independently to get the tweaked public key
+        let sk_bytes: [u8; 32] = sk
+            .into_bigint()
+            .to_bytes_be()
+            .try_into()
+            .expect("Fr is 32 bytes");
+        let keypair =
+            secp256k1::Keypair::from_seckey_slice(SECP256K1, &sk_bytes).expect("valid secret key");
+        let tweak_hash = bitcoin::TapNodeHash::assume_hidden(tweak_bytes);
+        let tweaked = keypair
+            .tap_tweak(SECP256K1, Some(tweak_hash));
+        let tweaked_x_only = tweaked.to_keypair().x_only_public_key().0;
+
+        // Sign using SchnorrSigner with tweak
+        let signer = SchnorrSigner::from_ark_scalar(&sk);
+        let sig = signer.sign(digest, Some(tweak_bytes));
+
+        // Verify against the tweaked public key
+        let msg = secp256k1::Message::from_digest(digest);
+        SECP256K1
+            .verify_schnorr(&sig, &msg, &tweaked_x_only)
+            .expect("SchnorrSigner tweaked signature should verify");
     }
 }
