@@ -165,6 +165,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             .name("job-scheduler".into())
             .spawn(move || {
                 monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build scheduler monoio runtime")
                     .block_on(
