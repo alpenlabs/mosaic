@@ -1,6 +1,7 @@
 //! Polynomial arithmetic over the secp256k1 curve for the VS3 protocol.
 
-use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
+use ark_ec::{CurveGroup, PrimeGroup, VariableBaseMSM};
+use ark_ff::{BigInteger, One, PrimeField, UniformRand, Zero};
 pub use ark_secp256k1::{Fr as Scalar, Projective as Point};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid, Validate};
 use ckt_gobble::Label;
@@ -218,6 +219,72 @@ impl PolynomialCommitment {
     /// evaluator to compute share commitments for adaptor signature generation.
     pub fn get_zeroth_coefficient(&self) -> Point {
         self.coefficients[0]
+    }
+}
+
+/// Batch-verify multiple `(commitment, shares)` pairs via a random linear combination (RLC).
+///
+/// Samples a random challenge `α` and verifies the batch in a single MSM.
+/// For N shares across M commitments with d coefficients each, the MSM size is
+/// `M · d + 1` (independent of N).
+/// Soundness error is `N / |F|` by Schwartz-Zippel, which is negligible for large fields.
+/// Returns `Ok(())` if all shares are valid, or `Err(BatchShareCommitmentMismatch)` if at
+/// least one is invalid (without identifying which one).
+pub fn batch_verify_shares(
+    pairs: &[(&PolynomialCommitment, &[Share])],
+    rng: &mut (impl CryptoRng + RngCore),
+) -> Result<(), Error> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+
+    let alpha: Scalar = Scalar::rand(rng);
+
+    let num_points = pairs.len() * N_COEFFICIENTS;
+    let mut points = Vec::with_capacity(num_points + 1); // one per coefficient + generator
+    let mut scalars = Vec::with_capacity(num_points + 1);
+    let mut gen_scalar = Scalar::zero();
+
+    let mut alpha_power = Scalar::one(); // accumulator for α^m
+
+    for (commitment, shares) in pairs {
+        // Accumulate scalar coefficients for this commitment's coefficient points.
+        // For each share (x_i, s_i) with challenge α^m:
+        //   coeff_scalars[j] += α^m · x_i^j
+        //   gen_scalar       -= α^m · s_i
+        let mut coeff_scalars = [Scalar::zero(); N_COEFFICIENTS];
+
+        for share in *shares {
+            let x = share.index().to_scalar();
+            let s = share.value();
+
+            let mut x_power = alpha_power;
+            for coeff_scalar in coeff_scalars.iter_mut() {
+                *coeff_scalar += x_power;
+                x_power *= x;
+            }
+
+            gen_scalar -= alpha_power * s;
+            alpha_power *= alpha;
+        }
+
+        points.extend(commitment.coefficients.iter().copied());
+        scalars.extend(coeff_scalars);
+    }
+
+    // Generator contribution: (- Σ_m α^m · s_m) · G
+    points.push(Point::generator());
+    scalars.push(gen_scalar);
+
+    // Convert to affine for MSM
+    let affine_points = Point::normalize_batch(&points);
+
+    let result = Point::msm(&affine_points, &scalars).expect("bases and scalars have equal length");
+
+    if result.is_zero() {
+        Ok(())
+    } else {
+        Err(Error::BatchShareCommitmentMismatch)
     }
 }
 
@@ -460,5 +527,65 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn test_batch_verify_empty() {
+        let mut rng = OsRng;
+        assert!(batch_verify_shares(&[], &mut rng).is_ok());
+    }
+
+    #[test]
+    fn test_batch_verify_single_commitment_single_share() {
+        let mut rng = OsRng;
+        let poly = Polynomial::rand(&mut rng);
+        let commitment = poly.commit();
+        let share = poly.eval(Index::new(3).unwrap());
+
+        let pairs = [(&commitment, &[share][..])];
+        assert!(batch_verify_shares(&pairs, &mut rng).is_ok());
+    }
+
+    #[test]
+    fn test_batch_verify_single_commitment_multiple_shares() {
+        let mut rng = OsRng;
+        let poly = Polynomial::rand(&mut rng);
+        let commitment = poly.commit();
+
+        let shares: Vec<Share> = (1..=5).map(|i| poly.eval(Index::new(i).unwrap())).collect();
+
+        let pairs = [(&commitment, shares.as_slice())];
+        assert!(batch_verify_shares(&pairs, &mut rng).is_ok());
+    }
+
+    #[test]
+    fn test_batch_verify_multiple_commitments() {
+        let mut rng = OsRng;
+
+        let mut pairs_data = Vec::new();
+        for _ in 0..4 {
+            let poly = Polynomial::rand(&mut rng);
+            let commitment = poly.commit();
+            let shares: Vec<Share> = (1..=3).map(|i| poly.eval(Index::new(i).unwrap())).collect();
+            pairs_data.push((commitment, shares));
+        }
+
+        let pairs: Vec<(&PolynomialCommitment, &[Share])> =
+            pairs_data.iter().map(|(c, s)| (c, s.as_slice())).collect();
+
+        assert!(batch_verify_shares(&pairs, &mut rng).is_ok());
+    }
+
+    #[test]
+    fn test_batch_verify_detects_invalid_share() {
+        let mut rng = OsRng;
+        let poly = Polynomial::rand(&mut rng);
+        let commitment = poly.commit();
+
+        let valid_share = poly.eval(Index::new(1).unwrap());
+        let invalid_share = Share::new(Index::new(2).unwrap(), Scalar::from(999u64));
+
+        let pairs = [(&commitment, &[valid_share, invalid_share][..])];
+        assert!(batch_verify_shares(&pairs, &mut rng).is_err());
     }
 }

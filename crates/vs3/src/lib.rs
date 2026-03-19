@@ -16,6 +16,7 @@ pub use interpolate::interpolate;
 // Re-export polynomial types
 pub use polynomial::{
     Index, Point, Polynomial, PolynomialCommitment, Scalar, Share, ShareCommitment,
+    batch_verify_shares,
 };
 // Re-export point scalar multiplication functions
 pub use psm::{gen_batch_mul, gen_mul, precomp};

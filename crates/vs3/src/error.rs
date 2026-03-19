@@ -12,6 +12,9 @@ pub enum Error {
         /// The index of the share that failed the commitment verification.
         index: Index,
     },
+    /// Batch share commitment verification failed (at least one share is invalid).
+    #[error("batch share commitment verification failed")]
+    BatchShareCommitmentMismatch,
     /// Invalid number of shares provided for interpolation.
     #[error("invalid share count: expected {expected}, got {actual}")]
     InvalidShareCount {
