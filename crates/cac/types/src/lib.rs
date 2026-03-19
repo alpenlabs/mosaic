@@ -7,6 +7,7 @@
 // Used by examples
 use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
 use ark_ff::{BigInteger, PrimeField, UniformRand};
+use ark_serialize::Valid;
 pub use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 // Used by benchmarks
 #[cfg(test)]
@@ -19,6 +20,7 @@ mod seed;
 pub mod state_machine;
 
 pub use adaptor::{Adaptor, Signature};
+use mosaic_adaptor_sigs::{deserialize_field, serialize_field};
 use mosaic_common::{Byte32, impl_serde_ark};
 use mosaic_vs3::{Point, Scalar};
 pub use msgs::*;
@@ -108,14 +110,26 @@ impl PubKey {
         aff.y().is_some_and(|y| y.into_bigint().is_even())
     }
 
-    /// Create from BIP340 compatible pubkey bytes
-    pub fn try_from_bip340(_bytes: &[u8; 32]) -> Result<Self, &'static str> {
-        unimplemented!()
+    /// Create from BIP340 compatible x-only pubkey bytes
+    pub fn try_from_bytes(bytes: &[u8; 32]) -> Result<Self, String> {
+        let x: ark_secp256k1::Fq = deserialize_field(bytes).map_err(|e| e.to_string())?;
+
+        let (y, neg_y) = ark_secp256k1::Affine::get_ys_from_x_unchecked(x).unwrap();
+
+        let y = if y.into_bigint().is_even() { y } else { neg_y };
+
+        let a = ark_secp256k1::Affine::new_unchecked(x, y);
+
+        a.check().map_err(|e| e.to_string())?;
+
+        Ok(PubKey(a.into()))
     }
 
-    /// Convert to BIP340 compatible pubkey bytes
-    pub fn to_bip340(&self) -> [u8; 32] {
-        unimplemented!()
+    /// Convert to BIP340 compatible x-only pubkey bytes
+    pub fn to_x_only_bytes(&self) -> [u8; 32] {
+        let aff = self.0.into_affine();
+
+        serialize_field(&aff.x)
     }
 }
 

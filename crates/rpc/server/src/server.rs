@@ -1,7 +1,6 @@
+use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use jsonrpsee::core::async_trait;
-use mosaic_cac_types::{
-    CompletedSignatures, DepositId, Sighashes, Signature, state_machine::StateMachineId,
-};
+use mosaic_cac_types::{CompletedSignatures, DepositId, Sighashes, state_machine::StateMachineId};
 use mosaic_common::Byte32;
 use mosaic_net_svc_api::PeerId;
 use mosaic_rpc_api::MosaicRpcServer;
@@ -11,7 +10,9 @@ use mosaic_rpc_service::{
 use mosaic_rpc_types::*;
 
 use crate::conversions::{
-    cac_role_to_domain, deposit_status_to_rpc, service_err, tableset_status_to_rpc,
+    cac_role_to_domain, deposit_status_to_rpc, into_schnorr_signature, service_err,
+    tableset_status_to_rpc, try_from_schnorr_signature, try_from_x_only_pubkey,
+    try_into_x_only_pubkey,
 };
 
 /// Mosaic RPC server impl.
@@ -96,21 +97,26 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         Ok(tableset_status_to_rpc(status))
     }
 
-    async fn get_fault_secret_pubkey(&self, tsid: RpcTablesetId) -> RpcResult<Option<RpcPubKey>> {
+    async fn get_fault_secret_pubkey(
+        &self,
+        tsid: RpcTablesetId,
+    ) -> RpcResult<Option<XOnlyPublicKey>> {
         let sm_id = parse_sm_id(tsid)?;
         Ok(self
             .service
             .get_fault_secret_pubkey(&sm_id)
             .await
             .map_err(service_err)?
-            .map(Into::into))
+            .map(try_into_x_only_pubkey)
+            .transpose()
+            .map_err(RpcError::Other)?)
     }
 
     async fn evaluator_get_adaptor_pubkey(
         &self,
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
-    ) -> RpcResult<Option<RpcPubKey>> {
+    ) -> RpcResult<Option<XOnlyPublicKey>> {
         let sm_id = parse_sm_id(tsid)?;
         let deposit_id = DepositId::from(deposit_id);
         Ok(self
@@ -118,7 +124,9 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
             .get_adaptor_pubkey(&sm_id, &deposit_id)
             .await
             .map_err(service_err)?
-            .map(Into::into))
+            .map(try_into_x_only_pubkey)
+            .transpose()
+            .map_err(RpcError::Other)?)
     }
 
     async fn init_garbler_deposit(
@@ -130,9 +138,7 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         let sm_id = parse_sm_id(tsid)?;
         let deposit_id = DepositId::from(rpc_deposit_id);
         let init = GarblerDepositInit {
-            adaptor_pk: deposit
-                .adaptor_pk
-                .try_into()
+            adaptor_pk: try_from_x_only_pubkey(deposit.adaptor_pk)
                 .map_err(|_| RpcError::InvalidArgument("invalid adaptor_pubkey".into()))?,
             sighashes: Sighashes::from_vec(
                 deposit
@@ -246,7 +252,7 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
 
         let mut adaptor_sigs = adaptor_sigs.into_iter();
         Ok(RpcCompletedSignatures::new(std::array::from_fn(|_| {
-            adaptor_sigs.next().unwrap().to_bytes()
+            into_schnorr_signature(adaptor_sigs.next().unwrap())
         })))
     }
 
@@ -263,9 +269,9 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
             .completed_signatures
             .into_inner()
             .into_iter()
-            .map(Signature::from_bytes)
+            .map(try_from_schnorr_signature)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| RpcError::UnparsableAdaptorSigs)?;
+            .map_err(RpcError::UnparsableAdaptorSigs)?;
 
         let data = EvaluatorWithdrawalData {
             withdrawal_inputs: withdrawal_data.withdrawal_inputs.into_inner(),
@@ -285,15 +291,13 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         tsid: RpcTablesetId,
         digest: RpcByte32,
         tweak: Option<RpcByte32>,
-    ) -> RpcResult<Option<RpcSignatureBytes>> {
+    ) -> RpcResult<Option<SchnorrSignature>> {
         let sm_id = parse_sm_id(tsid)?;
         Ok(self
             .service
             .sign_with_fault_secret(&sm_id, digest.into(), tweak.map(Into::into))
             .await
-            .map_err(service_err)?
-            .map(|sig| sig.serialize())
-            .map(RpcSignatureBytes::from))
+            .map_err(service_err)?)
     }
 
     async fn cleanup_tableset(&self, _tsid: RpcTablesetId) -> RpcResult<()> {

@@ -2,6 +2,7 @@
 //! executor channel.
 
 use async_trait::async_trait;
+use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
 use futures::TryStreamExt as _;
 use kanal::AsyncSender;
 use mosaic_cac_types::{
@@ -21,7 +22,6 @@ use mosaic_storage_api::StorageProvider;
 use mosaic_vs3::Index;
 use parking_lot::Mutex;
 use rand::{CryptoRng, Rng, SeedableRng};
-use secp256k1::schnorr::Signature;
 use tracing::error;
 
 use crate::{
@@ -634,7 +634,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         sm_id: &StateMachineId,
         digest: [u8; 32],
         tweak: Option<[u8; 32]>,
-    ) -> ServiceResult<Option<Signature>> {
+    ) -> ServiceResult<Option<SchnorrSignature>> {
         let statemachine = self
             .evaluator_state(sm_id.peer_id())
             .await?

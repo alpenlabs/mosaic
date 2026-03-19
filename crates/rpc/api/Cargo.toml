@@ -13,6 +13,7 @@ keywords.workspace = true
 [dependencies]
 mosaic-rpc-types.workspace = true
 
+bitcoin.workspace = true
 jsonrpsee = { workspace = true, features = [
   "client-core",
   "server-core",

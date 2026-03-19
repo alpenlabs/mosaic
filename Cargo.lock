@@ -2282,6 +2282,7 @@ version = "0.1.0"
 dependencies = [
  "ark-ec",
  "ark-ff",
+ "ark-secp256k1",
  "ark-serialize",
  "criterion",
  "fasm",
@@ -2450,6 +2451,7 @@ dependencies = [
 name = "mosaic-rpc-api"
 version = "0.1.0"
 dependencies = [
+ "bitcoin",
  "jsonrpsee",
  "mosaic-rpc-types",
 ]
@@ -2458,6 +2460,7 @@ dependencies = [
 name = "mosaic-rpc-server"
 version = "0.1.0"
 dependencies = [
+ "bitcoin",
  "jsonrpsee",
  "mosaic-cac-types",
  "mosaic-common",
@@ -2493,6 +2496,7 @@ dependencies = [
 name = "mosaic-rpc-types"
 version = "0.1.0"
 dependencies = [
+ "bitcoin",
  "hex",
  "jsonrpsee-types",
  "mosaic-cac-types",

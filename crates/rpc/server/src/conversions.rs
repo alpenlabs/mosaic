@@ -1,6 +1,7 @@
 //! Conversions between service domain types and RPC types.
 
-use mosaic_cac_types::state_machine::Role;
+use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
+use mosaic_cac_types::{PubKey, Signature, state_machine::Role};
 use mosaic_rpc_service::ServiceError;
 use mosaic_rpc_types::{CacRole, DepositStatus, RpcDepositId, RpcError, RpcTablesetStatus};
 
@@ -23,7 +24,7 @@ pub(crate) fn service_err(err: ServiceError) -> RpcError {
         ServiceError::DuplicateDeposit(id) => RpcError::DuplicateDeposit(RpcDepositId::from(id)),
         ServiceError::DepositNotFound => RpcError::DepositNotFound,
         ServiceError::CompletedSigsNotFound => RpcError::CompletedSigsNotFound,
-        ServiceError::UnparsableAdaptorSigs => RpcError::UnparsableAdaptorSigs,
+        ServiceError::UnparsableAdaptorSigs(s) => RpcError::UnparsableAdaptorSigs(s),
         ServiceError::InvalidArgument(s) => RpcError::InvalidArgument(s),
         ServiceError::RoleMismatch(s) => RpcError::InvalidInputForState(s),
         ServiceError::UnexpectedState(s) => RpcError::Other(s),
@@ -73,3 +74,26 @@ pub(crate) fn deposit_status_to_rpc(status: mosaic_rpc_service::DepositStatus) -
         mosaic_rpc_service::DepositStatus::Aborted { reason } => DepositStatus::Aborted { reason },
     }
 }
+
+pub(crate) fn into_schnorr_signature(sig: Signature) -> SchnorrSignature {
+    SchnorrSignature::from_slice(&sig.to_bytes()).expect("64 bytes data")
+}
+
+pub(crate) fn try_from_schnorr_signature(
+    schnorr_sig: SchnorrSignature,
+) -> Result<Signature, String> {
+    Signature::from_bytes(schnorr_sig.serialize()).map_err(|e| e.to_string())
+}
+
+pub(crate) fn try_into_x_only_pubkey(pubkey: PubKey) -> Result<XOnlyPublicKey, String> {
+    XOnlyPublicKey::from_slice(&pubkey.to_x_only_bytes()).map_err(|e| e.to_string())
+}
+
+pub(crate) fn try_from_x_only_pubkey(x_pk: XOnlyPublicKey) -> Result<PubKey, String> {
+    PubKey::try_from_bytes(&x_pk.serialize()).map_err(|e| e.to_string())
+}
+
+// TODO: add tests that valid internal signature and pubkey types convert to valid bitcoin signature
+// and pubkey types.
+// Generate keypair, signature using bitcoin types, convert to internal types and verify
+// Generate keypair, signature using internal types, convert to bitcoin types and verify

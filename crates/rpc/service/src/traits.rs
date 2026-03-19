@@ -1,13 +1,13 @@
 //! The [`MosaicApi`] trait — transport-agnostic service interface.
 
 use async_trait::async_trait;
+use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
 use mosaic_cac_types::{
     CompletedSignatures, DepositId, PubKey, WithdrawalInputs,
     state_machine::{Role, StateMachineId},
 };
 use mosaic_common::Byte32;
 use mosaic_net_svc_api::PeerId;
-use secp256k1::schnorr::Signature;
 
 use crate::{
     DepositStatus, DepositWithStatus, EvaluatorDepositInit, EvaluatorWithdrawalData,
@@ -129,5 +129,5 @@ pub trait MosaicApi: Send + Sync + 'static {
         sm_id: &StateMachineId,
         digest: [u8; 32],
         tweak: Option<[u8; 32]>,
-    ) -> ServiceResult<Option<Signature>>;
+    ) -> ServiceResult<Option<SchnorrSignature>>;
 }

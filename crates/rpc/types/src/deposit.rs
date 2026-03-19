@@ -1,8 +1,9 @@
+use bitcoin::XOnlyPublicKey;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    RpcCompletedSignatures, RpcDepositId, RpcDepositInputs, RpcInputSighashes, RpcPubKey,
-    RpcTablesetId, RpcWithdrawalInputs,
+    RpcCompletedSignatures, RpcDepositId, RpcDepositInputs, RpcInputSighashes, RpcTablesetId,
+    RpcWithdrawalInputs,
 };
 
 /// Configuration provided as part of deposit setup for garbler.
@@ -13,7 +14,7 @@ pub struct GarblerDepositConfig {
     /// Deposit and withdrawal input wire sighashes
     pub sighashes: RpcInputSighashes,
     /// Adaptor pubkey
-    pub adaptor_pk: RpcPubKey,
+    pub adaptor_pk: XOnlyPublicKey,
 }
 
 /// Configuration provided as part of deposit setup

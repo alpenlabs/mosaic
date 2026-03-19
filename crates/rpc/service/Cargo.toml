@@ -25,7 +25,7 @@ kanal.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
-secp256k1.workspace = true
+secp256k1 = { workspace = true, features = ["global-context"] }
 thiserror.workspace = true
 tracing.workspace = true
 

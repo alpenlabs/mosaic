@@ -124,7 +124,7 @@ proptest = "1.5"
 rand = "0.8.5"
 rand_chacha = "0.3.1" # constrained by ark-std::rand_core
 rand_core = "0.6"
-secp256k1 = { version = "*", features = ["global-context"] }
+secp256k1 = "*" # constrained by bitcoin
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "=1.0.149"
 serde_with = "3.17.0"

@@ -45,8 +45,8 @@ pub enum RpcError {
     CompletedSigsNotFound,
 
     /// Invalid adaptor sigs, could not parse to valid Signature
-    #[error("adaptor cannot be parsed")]
-    UnparsableAdaptorSigs,
+    #[error("adaptor cannot be parsed: {0}")]
+    UnparsableAdaptorSigs(String),
 
     /// Storage error.
     #[error("storage: {0}")]
@@ -90,7 +90,7 @@ impl RpcError {
             DuplicateDeposit(_) => 20,
             DepositNotFound => 201,
             CompletedSigsNotFound => 202,
-            UnparsableAdaptorSigs => 203,
+            UnparsableAdaptorSigs(_) => 203,
             Storage(_) => 80,
             SMExecutor(_) => 81,
             Unimplemented => -99,

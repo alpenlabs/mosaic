@@ -1,3 +1,4 @@
+use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use jsonrpsee::proc_macros::rpc;
 use mosaic_rpc_types::*;
 
@@ -57,7 +58,10 @@ pub trait MosaicRpc {
     /// Returns None if the tableset does not exist.
     /// Only valid for a garbler tableset.
     #[method(name = "getFaultSecretPubkey")]
-    async fn get_fault_secret_pubkey(&self, tsid: RpcTablesetId) -> RpcResult<Option<RpcPubKey>>;
+    async fn get_fault_secret_pubkey(
+        &self,
+        tsid: RpcTablesetId,
+    ) -> RpcResult<Option<XOnlyPublicKey>>;
 
     /// Get pubkey corresponding to secret key used to generate adaptors.
     /// Returns None if the tableset does not exist.
@@ -67,7 +71,7 @@ pub trait MosaicRpc {
         &self,
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
-    ) -> RpcResult<Option<RpcPubKey>>;
+    ) -> RpcResult<Option<XOnlyPublicKey>>;
 
     /// List all deposit ids with their status on a given tableset.
     #[method(name = "getDeposits")]
@@ -147,7 +151,7 @@ pub trait MosaicRpc {
         tsid: RpcTablesetId,
         digest: RpcByte32,
         tweak: Option<RpcByte32>,
-    ) -> RpcResult<Option<RpcSignatureBytes>>;
+    ) -> RpcResult<Option<SchnorrSignature>>;
 
     /// Cleans up a tableset, regardless of its state.
     /// After calling this, the tableset can never be used again and is also removed from

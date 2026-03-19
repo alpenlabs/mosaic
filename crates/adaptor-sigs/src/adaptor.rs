@@ -24,8 +24,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{error::Error, fixed_base::gen_mul};
 
-/// Helpers to serialize and deserialize field as per BIP340
-fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
+/// Helper to serialize field as per BIP340
+pub fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
     // `Fq` modulus is 256 bits, so its big-endian encoding always fits in 32 bytes.
     x.into_bigint()
         .to_bytes_be()
@@ -33,7 +33,8 @@ fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
         .expect("Fq encodes to exactly 32 bytes")
 }
 
-fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
+/// Helper to deserialize field as per BIP340
+pub fn deserialize_field<F: PrimeField>(bytes: &[u8; 32]) -> Result<F, Error> {
     fn bytes_be_to_bits_be(bytes: &[u8]) -> Vec<bool> {
         let mut bits = Vec::with_capacity(bytes.len() * 8);
         for &b in bytes {
@@ -43,7 +44,7 @@ fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
         }
         bits
     }
-    let rint = F::BigInt::from_bits_be(&bytes_be_to_bits_be(&bytes));
+    let rint = F::BigInt::from_bits_be(&bytes_be_to_bits_be(bytes));
     F::from_bigint(rint).ok_or(Error::Deserialization(
         "conversion from bigint to field element",
     ))

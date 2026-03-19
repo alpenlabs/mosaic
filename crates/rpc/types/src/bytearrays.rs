@@ -1,6 +1,7 @@
 //! Identifiers.
 
-use mosaic_cac_types::{DepositId, PubKey, state_machine::StateMachineId};
+use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
+use mosaic_cac_types::{DepositId, state_machine::StateMachineId};
 use mosaic_common::constants::{N_DEPOSIT_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES};
 use mosaic_net_svc_api::PeerId;
 use serde::{Deserialize, Serialize};
@@ -63,7 +64,7 @@ macro_rules! gen_array_wrapper_newtypes {
         #[serde_as]
         #[derive(Clone, Debug, Deserialize, Serialize)]
         #[doc = $docstring]
-        pub struct $name(#[serde_as(as = "[Hex; _]")] $inner);
+        pub struct $name(#[serde_as(as = "[_; _]")] $inner);
 
         impl $name {
             /// Constructs a new instance.
@@ -155,25 +156,6 @@ impl From<PeerId> for RpcPeerId {
 }
 
 gen_bytearray_newtypes!(
-    "Pubkey"
-    RpcPubKey => [u8; 32]
-);
-
-impl From<PubKey> for RpcPubKey {
-    fn from(value: PubKey) -> Self {
-        Self::new(value.to_bip340())
-    }
-}
-
-impl TryFrom<RpcPubKey> for PubKey {
-    type Error = &'static str;
-
-    fn try_from(value: RpcPubKey) -> Result<Self, Self::Error> {
-        PubKey::try_from_bip340(&value.0)
-    }
-}
-
-gen_bytearray_newtypes!(
     "Generic 32 byte data"
     RpcByte32 => [u8; 32]
 );
@@ -204,17 +186,9 @@ gen_bytearray_newtypes!(
     RpcWithdrawalInputs => [u8; N_WITHDRAWAL_INPUT_WIRES]
 );
 
-/// Completed adaptor signatures as raw bytes.
-pub type SignatureBytes = [u8; 64];
-
-gen_bytearray_newtypes!(
-    "Completed adaptor signatures as raw bytes"
-    RpcSignatureBytes => [u8; 64]
-);
-
 gen_array_wrapper_newtypes!(
     "Complete adaptor signatures for all deposit and withdrawal input wires"
-    RpcCompletedSignatures => [SignatureBytes; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES]
+    RpcCompletedSignatures => [SchnorrSignature; N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES]
 );
 
 gen_bytearray_newtypes!(

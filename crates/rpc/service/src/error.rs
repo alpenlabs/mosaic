@@ -28,8 +28,8 @@ pub enum ServiceError {
     CompletedSigsNotFound,
 
     /// Invalid adaptor signatures — could not parse.
-    #[error("unparsable adaptor signatures")]
-    UnparsableAdaptorSigs,
+    #[error("unparsable adaptor signatures: {0}")]
+    UnparsableAdaptorSigs(String),
 
     /// Invalid argument passed by caller.
     #[error("invalid argument: {0}")]
