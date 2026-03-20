@@ -1,0 +1,2 @@
+[env]
+MOSAIC_ARTIFACTS_DIR = { value = "artifacts", relative = true }

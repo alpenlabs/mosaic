@@ -368,7 +368,7 @@ async fn get_tableset_status_evaluator_consumed() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: Some(SecretKey(ark_secp256k1::Fr::ZERO)),
+        slash: None,
     })
     .await;
 
