@@ -10,6 +10,10 @@ repository.workspace = true
 categories.workspace = true
 keywords.workspace = true
 
+[features]
+default = []
+test-utils = []
+
 [dependencies]
 mosaic-adaptor-sigs.workspace = true
 mosaic-common.workspace = true

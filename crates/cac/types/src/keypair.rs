@@ -12,9 +12,10 @@ pub struct SecretKey(pub Scalar);
 impl_serde_ark!(SecretKey);
 
 impl SecretKey {
+    #[cfg(feature = "test-utils")]
     /// Create a secret key from bytes for tests.
     pub fn from_raw_bytes(bytes: &[u8; 32]) -> Self {
-        let scalar = Scalar::from_le_bytes_mod_order(bytes);
+        let scalar = Scalar::from_be_bytes_mod_order(bytes);
         Self(scalar)
     }
 
