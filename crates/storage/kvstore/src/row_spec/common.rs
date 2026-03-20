@@ -6,7 +6,7 @@ use mosaic_cac_types::{
     CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, OpenedGarblingSeeds,
     OpenedOutputShares, OutputPolynomialCommitment, PolynomialCommitment, ReservedSetupInputShares,
     Sighashes, WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
-    WithdrawalAdaptorsChunk, WithdrawalInputs,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptorsChunk, WithdrawalInputs,
 };
 use mosaic_common::Byte32;
 
@@ -393,6 +393,7 @@ impl_trusted_ark_serializable_value!(DepositAdaptors);
 impl_trusted_ark_serializable_value!(WideLabelWireAdaptors);
 impl_trusted_ark_serializable_value!(WithdrawalAdaptorsChunk);
 impl_trusted_ark_serializable_value!(CompletedSignatures);
+impl_trusted_ark_serializable_value!(WideLabelZerothPolynomialCoefficients);
 
 impl SerializableValue for [u8; 16] {
     type SerializeError = ArkSerializationError;

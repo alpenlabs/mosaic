@@ -12,8 +12,8 @@ use mosaic_cac_types::{
     DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputPolynomialCommitments,
     InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
     OutputPolynomialCommitment, OutputShares, ReservedInputShares, ReservedSetupInputShares,
-    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
-    WithdrawalInputs,
+    Sighashes, WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients,
+    WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs,
     state_machine::{evaluator, garbler},
 };
 use mosaic_net_svc_api::PeerId;
@@ -576,6 +576,16 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
     ) -> Result<(), Self::Error> {
         self.inner
             .put_output_polynomial_commitment(commitment)
+            .await
+    }
+
+    async fn put_input_polynomial_commitment_zeroth_coeffs(
+        &mut self,
+        wire_idx: u16,
+        zeroth_coefficients: &WideLabelZerothPolynomialCoefficients,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .put_input_polynomial_commitment_zeroth_coeffs(wire_idx, zeroth_coefficients)
             .await
     }
 

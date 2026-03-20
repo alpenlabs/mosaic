@@ -9,7 +9,7 @@ use mosaic_cac_types::{
     InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
     OutputPolynomialCommitment, PolynomialCommitment, ReservedSetupInputShares, Sighashes,
     WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
-    WithdrawalAdaptors, WithdrawalInputs,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut, StateRead},
 };
 use mosaic_common::{
@@ -29,16 +29,16 @@ use crate::{
         KVRowSpec, SerializableValue,
         common::{
             CircuitIndexKey, CircuitSubChunkKey, DepositDoubleChunkKey, DepositKey,
-            ProtocolSingletonKey, WireSubChunkKey,
+            ProtocolSingletonKey, WireIndexKey, WireSubChunkKey,
         },
         evaluator::{
             Aes128KeyRowSpec, ChallengeIndicesRowSpec, CompletedSignaturesRowSpec,
             ConstantOneLabelRowSpec, ConstantZeroLabelRowSpec, DepositAdaptorsRowSpec,
             DepositInputsRowSpec, DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
-            FaultSecretRowSpec, GarblingTableCommitmentsRowSpec, InputPolynomialCommitmentRowSpec,
-            OpenedGarblingSeedsRowSpec, OpenedInputShareRowSpec, OpenedOutputSharesRowSpec,
-            OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec, PublicSRowSpec,
-            ReservedSetupInputSharesRowSpec, RootStateKey, RootStateRowSpec,
+            FaultSecretRowSpec, GarblingTableCommitmentsRowSpec, InputPolyZerothCoeffRowSpec,
+            InputPolynomialCommitmentRowSpec, OpenedGarblingSeedsRowSpec, OpenedInputShareRowSpec,
+            OpenedOutputSharesRowSpec, OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec,
+            PublicSRowSpec, ReservedSetupInputSharesRowSpec, RootStateKey, RootStateRowSpec,
             WithdrawalAdaptorRowSpec, WithdrawalInputsRowSpec,
         },
     },
@@ -489,6 +489,18 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
             .await
     }
 
+    async fn put_input_polynomial_commitment_zeroth_coeffs(
+        &mut self,
+        wire_idx: u16,
+        zeroth_coefficients: &WideLabelZerothPolynomialCoefficients,
+    ) -> Result<(), Self::Error> {
+        self.put_value::<InputPolyZerothCoeffRowSpec>(
+            &WireIndexKey::new(wire_idx),
+            zeroth_coefficients,
+        )
+        .await
+    }
+
     async fn put_garbling_table_commitments(
         &mut self,
         commitments: &AllGarblingTableCommitments,
@@ -873,6 +885,34 @@ mod tests {
                 .expect("get input commitments"),
             Some(expected_input_commitments)
         );
+    }
+
+    #[tokio::test]
+    async fn input_polynomial_zeroth_coeffs_roundtrip() {
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
+
+        let expected_zeroth_coeffs = WideLabelZerothPolynomialCoefficients::new(|idx| {
+            gen_mul(&Scalar::from(idx as u64 + 1))
+        });
+
+        for wire_idx in 0..N_INPUT_WIRES {
+            storage
+                .put_input_polynomial_commitment_zeroth_coeffs(
+                    wire_idx as u16,
+                    &expected_zeroth_coeffs,
+                )
+                .await
+                .expect("put zeroth coeffs");
+        }
+
+        // Read back each wire and verify
+        for wire_idx in 0..N_INPUT_WIRES {
+            let got = storage
+                .get_value::<InputPolyZerothCoeffRowSpec>(&WireIndexKey::new(wire_idx as u16))
+                .await
+                .expect("get zeroth coeffs");
+            assert_eq!(got, Some(expected_zeroth_coeffs.clone()));
+        }
     }
 
     #[tokio::test]

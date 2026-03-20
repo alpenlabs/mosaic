@@ -49,7 +49,9 @@ pub const ROW_TAG_CONSTANT_ONE_LABEL: u8 = 0x14;
 /// Row tag for output label ciphertext by evaluation-circuit index.
 pub const ROW_TAG_OUTPUT_LABEL_CT: u8 = 0x15;
 /// Row tag for fault secret.
-pub const ROW_TAG_FAULT_SECRET: u8 = 0x15;
+pub const ROW_TAG_FAULT_SECRET: u8 = 0x16;
+/// Row tag for zeroth coefficient of input polynomial commitment by wire index.
+pub const ROW_TAG_INPUT_POLY_ZEROTH_COEFF: u8 = 0x17;
 
 pub use protocol::*;
 pub use state::*;

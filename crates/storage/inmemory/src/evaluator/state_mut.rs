@@ -2,7 +2,8 @@ use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, OpenedGarblingSeeds,
     OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients,
+    WithdrawalAdaptorsChunk, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut},
 };
 use mosaic_storage_api::Commit;
@@ -44,6 +45,17 @@ impl StateMut for StoredEvaluatorState {
         commitment: &OutputPolynomialCommitment,
     ) -> Result<(), Self::Error> {
         self.output_polynomial_commitment = Some(commitment.clone());
+
+        Ok(())
+    }
+
+    async fn put_input_polynomial_commitment_zeroth_coeffs(
+        &mut self,
+        wire_idx: u16,
+        zeroth_coefficients: &WideLabelZerothPolynomialCoefficients,
+    ) -> Result<(), Self::Error> {
+        self.zeroth_commitments
+            .insert(wire_idx as usize, zeroth_coefficients.clone());
 
         Ok(())
     }

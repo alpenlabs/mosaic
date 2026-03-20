@@ -7,7 +7,8 @@ use mosaic_cac_types::{
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
     InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
     OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, SecretKey, Seed, SetupInputs,
-    WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
+    WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -557,7 +558,7 @@ async fn handle_commit_msg_header<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut state.step {
-        Step::WaitingForCommit { header, chunks } => {
+        Step::WaitingForCommit { header, chunks, .. } => {
             if !is_valid_commit_header(&commit_msg_header) {
                 state.step = Step::Aborted {
                     reason: "invalid commit msg header".into(),
@@ -641,6 +642,14 @@ async fn handle_commit_msg_chunk<S: StateMut>(
             };
 
             chunks[chunk_idx] = true;
+
+            state
+                .put_input_polynomial_commitment_zeroth_coeffs(
+                    commit_msg_chunk.wire_index,
+                    &extract_zeroth_coefficients(&commit_msg_chunk.commitments),
+                )
+                .await
+                .map_err(SMError::storage)?;
 
             state
                 .put_input_polynomial_commitments_chunk(
@@ -1244,4 +1253,15 @@ fn extract_withdrawal_input_from_signatures(
         }
     }
     Ok(withdrawal_input)
+}
+
+fn extract_zeroth_coefficients(
+    commits: &WideLabelWirePolynomialCommitments,
+) -> WideLabelZerothPolynomialCoefficients {
+    WideLabelZerothPolynomialCoefficients::from_vec(
+        commits
+            .iter()
+            .map(|commit| commit.get_zeroth_coefficient())
+            .collect(),
+    )
 }

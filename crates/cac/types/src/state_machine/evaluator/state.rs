@@ -9,8 +9,9 @@ use crate::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, InputPolynomialCommitments,
     OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors,
-    WithdrawalAdaptorsChunk, WithdrawalInputs,
+    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs,
 };
 
 /// Read-only access to evaluator state storage.
@@ -172,6 +173,13 @@ pub trait StateMut: StateRead {
     fn put_output_polynomial_commitment(
         &mut self,
         commitment: &OutputPolynomialCommitment,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Store zeroth coeffcients of all polynomial commitments for a single wire.
+    fn put_input_polynomial_commitment_zeroth_coeffs(
+        &mut self,
+        wire_idx: u16,
+        zeroth_coefficients: &WideLabelZerothPolynomialCoefficients,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stores all garbling table commitments.
