@@ -11,13 +11,15 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-mosaic-cac-proto-types.workspace = true
+bitcoin = { workspace = true, features = ["serde"] }
+mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 mosaic-net-svc-api.workspace = true
-mosaic-table-types.workspace = true
 
+hex.workspace = true
 jsonrpsee-types.workspace = true
 serde.workspace = true
+serde_with = { workspace = true, features = ["macros", "hex"] }
 thiserror.workspace = true
 
 [lints]

@@ -1,15 +1,15 @@
 //! Mosaic RPC types
 
-pub use mosaic_cac_proto_types::*; // re-export useful types
-pub use mosaic_table_types::*;
 use serde as _; // needed because of the way the macros work
 
+mod bytearrays;
 mod circuit;
-mod job;
+mod deposit;
 mod response;
 mod tableset;
 
+pub use bytearrays::*;
 pub use circuit::*;
-pub use job::*;
+pub use deposit::*;
 pub use response::*;
 pub use tableset::*;

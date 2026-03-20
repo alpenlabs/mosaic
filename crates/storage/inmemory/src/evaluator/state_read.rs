@@ -10,6 +10,7 @@ use mosaic_cac_types::{
     state_machine::evaluator::{DepositState, EvaluatorState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_INPUT_WIRES};
+use mosaic_vs3::Share;
 
 use super::StoredEvaluatorState;
 use crate::error::DbError;
@@ -18,7 +19,7 @@ impl StateRead for StoredEvaluatorState {
     type Error = DbError;
 
     async fn get_root_state(&self) -> Result<Option<EvaluatorState>, Self::Error> {
-        Ok(Some(self.state.clone()))
+        Ok(self.state.clone())
     }
 
     async fn get_deposit(
@@ -217,5 +218,9 @@ impl StateRead for StoredEvaluatorState {
         index: mosaic_vs3::Index,
     ) -> Result<Option<mosaic_common::Byte32>, Self::Error> {
         Ok(self.output_label_cts.get(&index.get()).copied())
+    }
+
+    async fn get_fault_secret_share(&self) -> Result<Option<Share>, Self::Error> {
+        Ok(self.fault_secret)
     }
 }

@@ -86,7 +86,6 @@ pub struct EvaluatorDepositInitData {
 #[derive(Debug)]
 pub struct EvaluatorDisputedWithdrawalData {
     /// Withdrawal input wire values.
-    // NOTE: this might not be required
     pub withdrawal_inputs: WithdrawalInputs,
     /// Completed adaptor signatures extracted from on-chain transaction.
     pub signatures: CompletedSignatures,

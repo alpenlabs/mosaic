@@ -11,9 +11,9 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-mosaic-net-svc-api.workspace = true
 mosaic-rpc-types.workspace = true
 
+bitcoin.workspace = true
 jsonrpsee = { workspace = true, features = [
   "client-core",
   "server-core",

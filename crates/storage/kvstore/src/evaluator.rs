@@ -20,6 +20,7 @@ use mosaic_common::{
     },
 };
 use mosaic_storage_api::Commit;
+use mosaic_vs3::Share;
 
 use crate::{
     keyspace,
@@ -34,7 +35,7 @@ use crate::{
             Aes128KeyRowSpec, ChallengeIndicesRowSpec, CompletedSignaturesRowSpec,
             ConstantOneLabelRowSpec, ConstantZeroLabelRowSpec, DepositAdaptorsRowSpec,
             DepositInputsRowSpec, DepositSighashesRowSpec, DepositStateKey, DepositStateRowSpec,
-            GarblingTableCommitmentsRowSpec, InputPolynomialCommitmentRowSpec,
+            FaultSecretRowSpec, GarblingTableCommitmentsRowSpec, InputPolynomialCommitmentRowSpec,
             OpenedGarblingSeedsRowSpec, OpenedInputShareRowSpec, OpenedOutputSharesRowSpec,
             OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec, PublicSRowSpec,
             ReservedSetupInputSharesRowSpec, RootStateKey, RootStateRowSpec,
@@ -443,6 +444,11 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
         self.get_value::<OutputLabelCtRowSpec>(&CircuitIndexKey::new(ckt_idx))
             .await
     }
+
+    async fn get_fault_secret_share(&self) -> Result<Option<Share>, Self::Error> {
+        self.get_value::<FaultSecretRowSpec>(&ProtocolSingletonKey)
+            .await
+    }
 }
 
 impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
@@ -660,6 +666,13 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
             self.put_value::<OutputLabelCtRowSpec>(&CircuitIndexKey::new(pos as u16), ct)
                 .await?;
         }
+        Ok(())
+    }
+
+    async fn put_fault_secret_share(&mut self, fault: &Share) -> Result<(), Self::Error> {
+        self.put_value::<FaultSecretRowSpec>(&ProtocolSingletonKey, fault)
+            .await?;
+
         Ok(())
     }
 }

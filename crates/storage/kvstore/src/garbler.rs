@@ -472,11 +472,9 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     async fn get_completed_signatures(
         &self,
         deposit_id: &mosaic_cac_types::DepositId,
-    ) -> Result<CompletedSignatures, Self::Error> {
-        let signatures = self
-            .get_required_deposit_value::<CompletedSignaturesRowSpec>(deposit_id)
-            .await?;
-        signatures.ok_or_else(|| StorageError::state_inconsistency("expected completed signatures"))
+    ) -> Result<Option<CompletedSignatures>, Self::Error> {
+        self.get_required_deposit_value::<CompletedSignaturesRowSpec>(deposit_id)
+            .await
     }
 }
 
@@ -1008,7 +1006,7 @@ mod tests {
                 .get_completed_signatures(&deposit_id)
                 .await
                 .expect("get completed signatures"),
-            expected_completed_signatures
+            Some(expected_completed_signatures)
         );
     }
 

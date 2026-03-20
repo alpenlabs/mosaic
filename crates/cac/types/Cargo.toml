@@ -10,6 +10,10 @@ repository.workspace = true
 categories.workspace = true
 keywords.workspace = true
 
+[features]
+default = []
+test-utils = []
+
 [dependencies]
 mosaic-adaptor-sigs.workspace = true
 mosaic-common.workspace = true
@@ -19,12 +23,13 @@ mosaic-vs3.workspace = true
 
 ark-ec.workspace = true
 ark-ff.workspace = true
+ark-secp256k1.workspace = true
 ark-serialize.workspace = true
 fasm.workspace = true
 futures.workspace = true
+hex.workspace = true
 rand.workspace = true
 serde.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

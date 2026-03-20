@@ -1,5 +1,5 @@
 [package]
-name = "mosaic-cac-protocol"
+name = "mosaic-rpc-service"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,30 +11,34 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-adaptor-sigs.workspace = true
+mosaic-cac-protocol.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
+mosaic-net-svc-api.workspace = true
+mosaic-storage-api.workspace = true
+mosaic-vs3.workspace = true
 
-blake3.workspace = true
-fasm.workspace = true
+ark-ec.workspace = true
+ark-ff.workspace = true
+ark-secp256k1.workspace = true
+ark-serialize.workspace = true
+async-trait.workspace = true
+bitcoin.workspace = true
 futures.workspace = true
+kanal.workspace = true
+parking_lot.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
+secp256k1 = { workspace = true, features = ["global-context"] }
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-mosaic-cac-types = { workspace = true, features = ["test-utils"] }
 mosaic-storage-inmemory.workspace = true
-mosaic-job-executors.workspace = true
-mosaic-storage-api.workspace = true
-mosaic-job-api.workspace = true
-mosaic-net-svc-api.workspace = true
-mosaic-net-svc.workspace = true
-mosaic-net-client.workspace = true
-mosaic-common = { workspace = true, features = ["reduced-circuits"] }
-
+proptest.workspace = true
+sha2.workspace = true
 tokio = { version = "1", features = ["rt", "macros"] }
-ed25519-dalek = "2.2"
-ckt-fmtv5-types.workspace = true
 
 [lints]
 workspace = true

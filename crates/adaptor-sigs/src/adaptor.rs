@@ -19,13 +19,13 @@
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{AdditiveGroup, BigInteger, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use rand::{CryptoRng, Rng, RngCore};
+use rand::{CryptoRng, Rng};
 use sha2::{Digest, Sha256};
 
 use crate::{error::Error, fixed_base::gen_mul};
 
-/// Helpers to serialize and deserialize field as per BIP340
-fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
+/// Helper to serialize field as per BIP340
+pub fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
     // `Fq` modulus is 256 bits, so its big-endian encoding always fits in 32 bytes.
     x.into_bigint()
         .to_bytes_be()
@@ -33,7 +33,8 @@ fn serialize_field<F: PrimeField>(x: &F) -> [u8; 32] {
         .expect("Fq encodes to exactly 32 bytes")
 }
 
-fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
+/// Helper to deserialize field as per BIP340
+pub fn deserialize_field<F: PrimeField>(bytes: &[u8; 32]) -> Result<F, Error> {
     fn bytes_be_to_bits_be(bytes: &[u8]) -> Vec<bool> {
         let mut bits = Vec::with_capacity(bytes.len() * 8);
         for &b in bytes {
@@ -43,7 +44,7 @@ fn deserialize_field<F: PrimeField>(bytes: [u8; 32]) -> Result<F, Error> {
         }
         bits
     }
-    let rint = F::BigInt::from_bits_be(&bytes_be_to_bits_be(&bytes));
+    let rint = F::BigInt::from_bits_be(&bytes_be_to_bits_be(bytes));
     F::from_bigint(rint).ok_or(Error::Deserialization(
         "conversion from bigint to field element",
     ))
@@ -80,28 +81,6 @@ impl Signature {
             return Err(Error::Deserialization("signature.s can not be zero"));
         }
         Ok(Signature { s, r: rx })
-    }
-
-    /// Generates a secp256k1 keypair where the public key has an even Y coordinate.
-    pub fn keypair<R: CryptoRng + RngCore>(
-        rng: &mut R,
-    ) -> (ark_secp256k1::Fr, ark_secp256k1::Projective) {
-        loop {
-            let mut sk = ark_secp256k1::Fr::rand(rng);
-            if sk == ark_secp256k1::Fr::ZERO {
-                continue;
-            }
-
-            let mut pk = gen_mul(&sk);
-            let pk_affine = pk.into_affine();
-            let y_is_odd = pk_affine.y.into_bigint().is_odd();
-
-            if y_is_odd {
-                sk.neg_in_place();
-                pk.neg_in_place();
-            }
-            return (sk, pk);
-        }
     }
 }
 

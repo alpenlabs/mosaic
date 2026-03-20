@@ -16,7 +16,7 @@ use crate::{
 /// Read-only access to garbler state storage.
 pub trait StateRead {
     /// Error type used by state operations.
-    type Error: Error + Debug + 'static;
+    type Error: Error + Debug + Send + 'static;
 
     /// Retrieves the root garbler state.
     fn get_root_state(
@@ -146,7 +146,7 @@ pub trait StateRead {
     fn get_completed_signatures(
         &self,
         deposit_id: &DepositId,
-    ) -> impl Future<Output = Result<CompletedSignatures, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<CompletedSignatures>, Self::Error>> + Send;
 }
 
 /// Mutable access to garbler state storage.

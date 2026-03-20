@@ -40,3 +40,16 @@ pub struct DepositState {
     /// Pubkey for verifying adaptors for this deposit.
     pub pk: PubKey,
 }
+
+impl DepositStep {
+    /// Name of step
+    pub fn step_name(&self) -> &'static str {
+        match &self {
+            DepositStep::WaitingForAdaptors { .. } => "WaitingForAdaptors",
+            DepositStep::VerifyingAdaptors => "VerifyingAdaptors",
+            DepositStep::DepositReady => "DepositReady",
+            DepositStep::WithdrawnUndisputed => "WithdrawnUndisputed",
+            DepositStep::Aborted { .. } => "Aborted",
+        }
+    }
+}

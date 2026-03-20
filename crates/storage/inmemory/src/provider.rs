@@ -18,6 +18,7 @@ use mosaic_cac_types::{
 };
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
+use mosaic_vs3::Share;
 
 use crate::{error::DbError, evaluator::StoredEvaluatorState, garbler::StoredGarblerState};
 
@@ -266,7 +267,7 @@ impl garbler::StateRead for InMemoryGarblerSession {
     async fn get_completed_signatures(
         &self,
         deposit_id: &DepositId,
-    ) -> Result<CompletedSignatures, Self::Error> {
+    ) -> Result<Option<CompletedSignatures>, Self::Error> {
         self.inner.get_completed_signatures(deposit_id).await
     }
 }
@@ -534,6 +535,10 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
     ) -> Result<Option<mosaic_common::Byte32>, Self::Error> {
         self.inner.get_output_label_ct(index).await
     }
+
+    async fn get_fault_secret_share(&self) -> Result<Option<Share>, Self::Error> {
+        self.inner.get_fault_secret_share().await
+    }
 }
 
 impl evaluator::StateMut for InMemoryEvaluatorSession {
@@ -721,13 +726,16 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
             .put_unchallenged_output_label_cts(indices, cts)
             .await
     }
+
+    async fn put_fault_secret_share(&mut self, fault: &Share) -> Result<(), Self::Error> {
+        self.inner.put_fault_secret_share(fault).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use futures::executor::block_on;
     use mosaic_cac_types::state_machine::{
-        evaluator,
         evaluator::StateRead as EvaluatorStateRead,
         garbler,
         garbler::{StateMut as GarblerStateMut, StateRead as GarblerStateRead},
@@ -749,9 +757,8 @@ mod tests {
                 .expect("acquire garbler read state")
                 .get_root_state()
                 .await
-                .expect("read root state")
-                .expect("root state should exist");
-            assert!(matches!(initial.step, garbler::Step::Uninit));
+                .expect("read root state");
+            assert!(initial.is_none());
 
             {
                 let mut session = provider
@@ -762,7 +769,7 @@ mod tests {
                     .get_root_state()
                     .await
                     .expect("read mutable session root")
-                    .expect("root exists");
+                    .unwrap_or_default();
                 state.step = garbler::Step::SetupComplete;
                 session
                     .put_root_state(&state)
@@ -787,9 +794,8 @@ mod tests {
                 .expect("acquire evaluator read state")
                 .get_root_state()
                 .await
-                .expect("read evaluator root")
-                .expect("root exists");
-            assert!(matches!(eval_initial.step, evaluator::Step::Uninit));
+                .expect("read evaluator root");
+            assert!(eval_initial.is_none());
         });
     }
 }

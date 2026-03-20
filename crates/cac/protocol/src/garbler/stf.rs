@@ -42,7 +42,7 @@ pub(crate) async fn handle_event<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match input {
         Input::Init(data) => {
@@ -296,7 +296,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match result {
         ActionResult::PolynomialCommitmentsGenerated(generated) => {
@@ -754,7 +754,7 @@ pub(crate) async fn restore<S: StateRead>(
         .get_root_state()
         .await
         .map_err(SMError::storage)?
-        .ok_or_else(|| SMError::MissingRootState)?;
+        .unwrap_or_default();
 
     match &root_state.step {
         Step::Uninit => {}
@@ -891,6 +891,7 @@ pub(crate) async fn restore<S: StateRead>(
                 emit(actions, Action::TransferGarblingTable(*seed));
             }
         }
+        Step::WaitForTableTransferReceipt { .. } => {}
         Step::SetupComplete => {
             let mut all_deposits = pin!(state.stream_all_deposits());
             while let Some(res) = all_deposits.next().await {
@@ -922,7 +923,6 @@ pub(crate) async fn restore<S: StateRead>(
         }
         Step::SetupConsumed { .. } => {}
         Step::Aborted { .. } => {}
-        _ => unimplemented!(),
     };
 
     Ok(())
@@ -1032,9 +1032,9 @@ fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
         .map(|_| {
             let mut bytes: [u8; 32] = [0; 32];
             rng.fill_bytes(&mut bytes);
-            Byte32::from(bytes)
+            Seed::from(bytes)
         })
-        .collect::<Vec<Byte32>>();
+        .collect::<Vec<_>>();
     HeapArray::from_vec(garbling_seeds)
 }
 

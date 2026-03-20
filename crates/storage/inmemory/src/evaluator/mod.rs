@@ -13,6 +13,7 @@ use mosaic_cac_types::{
     state_machine::evaluator::{DepositState, EvaluatorState},
 };
 use mosaic_common::Byte32;
+use mosaic_vs3::Share;
 
 use crate::error::DbError;
 
@@ -20,7 +21,7 @@ use crate::error::DbError;
 #[derive(Debug, Clone, Default)]
 pub struct StoredEvaluatorState {
     /// Root evaluator state machine state.
-    pub state: EvaluatorState,
+    pub state: Option<EvaluatorState>,
     /// Input polynomial commitments indexed by wire.
     pub input_polynomial_commitments: BTreeMap<usize, WideLabelWirePolynomialCommitments>,
     /// Output polynomial commitment.
@@ -49,6 +50,8 @@ pub struct StoredEvaluatorState {
     pub output_label_cts: BTreeMap<usize, Byte32>,
     /// Per-deposit state indexed by `DepositId`.
     pub deposits: HashMap<DepositId, EvaluatorDepositState>,
+    /// Fault secret
+    pub fault_secret: Option<Share>,
 }
 
 impl StoredEvaluatorState {

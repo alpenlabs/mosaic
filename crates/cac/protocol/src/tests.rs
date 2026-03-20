@@ -11,7 +11,7 @@ use std::{
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use fasm::actions;
 use mosaic_cac_types::{
-    DepositId, HeapArray, PubKey, SecretKey, Sighash, Signature,
+    DepositId, HeapArray, KeyPair, Sighash,
     state_machine::{
         evaluator::{
             EvaluatorDepositInitData, EvaluatorInitData, EvaluatorTrackedActionTypes,
@@ -644,7 +644,10 @@ async fn test_e2e() {
             .unwrap();
     }
     assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::SetupComplete, Action::SendTableTransferReceipt
-    assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+    assert_eq!(
+        eval_state.state.as_ref().unwrap().step,
+        EvalStep::SetupComplete
+    );
 
     // garbler transfer tables done
     let mut garb_results = tx.await.unwrap();
@@ -691,7 +694,10 @@ async fn test_e2e() {
             .unwrap();
     }
     assert_eq!(eval_actions.len(), 0);
-    assert_eq!(eval_state.state.step, EvalStep::SetupComplete);
+    assert_eq!(
+        eval_state.state.as_ref().unwrap().step,
+        EvalStep::SetupComplete
+    );
 
     // garbler received table transfer receipts
     let mut garb_results = tx.await.unwrap();
@@ -707,7 +713,10 @@ async fn test_e2e() {
         .unwrap();
     }
     assert_eq!(garb_actions.len(), 0); // setup complete
-    assert_eq!(garb_state.state.step, GarbStep::SetupComplete);
+    assert_eq!(
+        garb_state.state.as_ref().unwrap().step,
+        GarbStep::SetupComplete
+    );
 
     println!("setup complete");
 
@@ -719,9 +728,9 @@ async fn test_e2e() {
     let sighashes =
         [Sighash(Byte32::from([0u8; 32])); N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
     let deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
-    let eval_keypair = Signature::keypair(&mut eval_rng);
+    let eval_keypair = KeyPair::rand(&mut eval_rng);
     let deposit_input: EvaluatorDepositInitData = EvaluatorDepositInitData {
-        sk: SecretKey(eval_keypair.0),
+        sk: eval_keypair.secret_key(),
         sighashes: HeapArray::from_vec(sighashes.to_vec()),
         deposit_inputs,
     };
@@ -736,7 +745,7 @@ async fn test_e2e() {
     assert_eq!(eval_actions.len(), 1 + N_ADAPTOR_MSG_CHUNKS); // Action::GenerateDepositAdaptors + [Action::GenerateWithdrawalAdaptorsChunk]
 
     let deposit_input: GarblerDepositInitData = GarblerDepositInitData {
-        pk: PubKey(eval_keypair.1),
+        pk: eval_keypair.public_key(),
         sighashes: HeapArray::from_vec(sighashes.to_vec()),
         deposit_inputs,
     };
@@ -895,7 +904,7 @@ async fn test_e2e() {
     }
     assert_eq!(garb_actions.len(), 0); // Setup Consumed
     assert_eq!(
-        garb_state.state.step,
+        garb_state.state.as_ref().unwrap().step,
         GarbStep::SetupConsumed { deposit_id }
     );
 

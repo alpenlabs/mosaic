@@ -30,7 +30,6 @@ pub struct Config {
 
 /// Valid states.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub enum Step {
     #[default]
     /// Not initialized; Default
@@ -106,4 +105,25 @@ pub enum Step {
         /// Abort reason
         reason: String,
     },
+}
+
+impl Step {
+    /// Name of step
+    pub fn step_name(&self) -> &'static str {
+        match self {
+            Step::Uninit => "Uninit",
+            Step::GeneratingPolynomialCommitments { .. } => "GeneratingPolynomialCommitments",
+            Step::GeneratingShares { .. } => "GeneratingShares",
+            Step::GeneratingTableCommitments { .. } => "GeneratingTableCommitments",
+            Step::SendingCommit { .. } => "SendingCommit",
+            Step::WaitingForChallenge => "WaitingForChallenge",
+            Step::SendingChallengeResponse { .. } => "SendingChallengeResponse",
+            Step::TransferringGarblingTables { .. } => "TransferringGarblingTables",
+            Step::WaitForTableTransferReceipt { .. } => "WaitForTableTransferReceipt",
+            Step::SetupComplete => "SetupComplete",
+            Step::CompletingAdaptors { .. } => "CompletingAdaptors",
+            Step::SetupConsumed { .. } => "SetupConsumed",
+            Step::Aborted { .. } => "Aborted",
+        }
+    }
 }
