@@ -18,7 +18,7 @@ use mosaic_storage_api::{Commit, StorageProviderMut};
 use mosaic_storage_inmemory::InMemoryStorageProvider;
 use mosaic_vs3::{Index, Polynomial, Share};
 use rand::SeedableRng;
-use rand_chacha::ChaChaRng;
+use rand_chacha::ChaCha20Rng;
 
 use crate::{
     DefaultMosaicApi, DepositStatus, EvaluatorDepositInit, EvaluatorWithdrawalData,
@@ -31,7 +31,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 struct TestHarness {
-    api: DefaultMosaicApi<InMemoryStorageProvider, ChaChaRng>,
+    api: DefaultMosaicApi<InMemoryStorageProvider, ChaCha20Rng>,
     storage: InMemoryStorageProvider,
     rx: kanal::AsyncReceiver<StateMachineExecutorInput>,
     peer_id: PeerId,
@@ -46,7 +46,7 @@ impl TestHarness {
     fn with_peers(other_peer_ids: Vec<PeerId>) -> Self {
         let storage = InMemoryStorageProvider::new();
         let (tx, rx) = kanal::bounded_async::<StateMachineExecutorInput>(16);
-        let rng = ChaChaRng::seed_from_u64(42);
+        let rng = ChaCha20Rng::seed_from_u64(42);
         let own_peer_id = PeerId::from([0u8; 32]);
         let peer_id = *other_peer_ids.first().unwrap_or(&PeerId::from([1u8; 32]));
         let api = DefaultMosaicApi::new(own_peer_id, other_peer_ids, tx, storage.clone(), rng);
@@ -106,7 +106,7 @@ impl TestHarness {
     }
 
     async fn add_garbler_deposit(&self, deposit_id: DepositId, step: garbler::DepositStep) {
-        let mut rng = ChaChaRng::seed_from_u64(99);
+        let mut rng = ChaCha20Rng::seed_from_u64(99);
         let keypair = KeyPair::rand(&mut rng);
         let deposit_state = garbler::DepositState {
             step,
@@ -121,7 +121,7 @@ impl TestHarness {
     }
 
     async fn add_evaluator_deposit(&self, deposit_id: DepositId, step: evaluator::DepositStep) {
-        let mut rng = ChaChaRng::seed_from_u64(100);
+        let mut rng = ChaCha20Rng::seed_from_u64(100);
         let keypair = KeyPair::rand(&mut rng);
         let deposit_state = evaluator::DepositState {
             step,
@@ -446,7 +446,7 @@ async fn init_garbler_deposit_dispatches_correct_input() {
     h.setup_garbler(garbler::Step::SetupComplete).await;
 
     let deposit_id = test_deposit_id(1);
-    let mut rng = ChaChaRng::seed_from_u64(77);
+    let mut rng = ChaCha20Rng::seed_from_u64(77);
     let keypair = KeyPair::rand(&mut rng);
     let internal_pk = keypair.public_key();
     let adaptor_pk = try_into_x_only_pubkey(internal_pk).unwrap();
@@ -484,7 +484,7 @@ async fn init_garbler_deposit_rejects_wrong_step() {
     let deposit_id = test_deposit_id(1);
     let init = GarblerDepositInit {
         adaptor_pk: try_into_x_only_pubkey(
-            KeyPair::rand(&mut ChaChaRng::seed_from_u64(0)).public_key(),
+            KeyPair::rand(&mut ChaCha20Rng::seed_from_u64(0)).public_key(),
         )
         .unwrap(),
         sighashes: test_sighashes(),
@@ -514,7 +514,7 @@ async fn init_garbler_deposit_rejects_duplicate_deposit() {
 
     let init = GarblerDepositInit {
         adaptor_pk: try_into_x_only_pubkey(
-            KeyPair::rand(&mut ChaChaRng::seed_from_u64(0)).public_key(),
+            KeyPair::rand(&mut ChaCha20Rng::seed_from_u64(0)).public_key(),
         )
         .unwrap(),
         sighashes: test_sighashes(),
@@ -977,7 +977,7 @@ async fn sign_with_fault_secret_signs_when_successful() {
     .await;
 
     // Write a fault secret share
-    let scalar = ark_ff::UniformRand::rand(&mut ChaChaRng::seed_from_u64(123));
+    let scalar = ark_ff::UniformRand::rand(&mut ChaCha20Rng::seed_from_u64(123));
     let share = Share::new(Index::new(1).unwrap(), scalar);
     {
         let mut session = h.storage.evaluator_state_mut(&h.peer_id).await.unwrap();
@@ -1022,7 +1022,7 @@ async fn sign_with_fault_secret_signs_with_tweak() {
     })
     .await;
 
-    let scalar = ark_ff::UniformRand::rand(&mut ChaChaRng::seed_from_u64(123));
+    let scalar = ark_ff::UniformRand::rand(&mut ChaCha20Rng::seed_from_u64(123));
     let share = Share::new(Index::new(1).unwrap(), scalar);
     {
         let mut session = h.storage.evaluator_state_mut(&h.peer_id).await.unwrap();
@@ -1192,7 +1192,7 @@ async fn get_fault_secret_pubkey_returns_pubkey_from_commitment() {
     let h = TestHarness::new();
     h.setup_garbler(garbler::Step::SetupComplete).await;
 
-    let mut rng = ChaChaRng::seed_from_u64(200);
+    let mut rng = ChaCha20Rng::seed_from_u64(200);
     let polynomial = Polynomial::rand(&mut rng);
     let commitment = polynomial.commit();
     let output_commitment = HeapArray::from_vec(vec![commitment.clone()]);
@@ -1328,7 +1328,7 @@ async fn init_evaluator_deposit_sk_matches_get_adaptor_pubkey() {
 async fn dispatch_returns_executor_error_when_channel_closed() {
     let storage = InMemoryStorageProvider::new();
     let (tx, rx) = kanal::bounded_async::<StateMachineExecutorInput>(16);
-    let rng = ChaChaRng::seed_from_u64(42);
+    let rng = ChaCha20Rng::seed_from_u64(42);
     let peer_id = PeerId::from([1u8; 32]);
 
     let api = DefaultMosaicApi::new(
@@ -1350,7 +1350,7 @@ async fn dispatch_returns_executor_error_when_channel_closed() {
             .await
             .unwrap();
 
-        let mut rng2 = ChaChaRng::seed_from_u64(99);
+        let mut rng2 = ChaCha20Rng::seed_from_u64(99);
         let keypair = KeyPair::rand(&mut rng2);
         session
             .put_deposit(

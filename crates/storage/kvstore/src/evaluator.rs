@@ -706,7 +706,7 @@ mod tests {
         },
     };
     use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul};
-    use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
+    use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
     use super::*;
     use crate::{btreemap::BTreeMapKvStore, kvstore::test_utils::FdbSizeGuardedKvStore};
@@ -731,7 +731,7 @@ mod tests {
     }
 
     fn polynomial_commitment(seed: u64) -> PolynomialCommitment {
-        let mut rng = ChaChaRng::seed_from_u64(seed);
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let poly = Polynomial::rand(&mut rng);
         poly.commit()
     }

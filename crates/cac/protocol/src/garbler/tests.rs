@@ -8,7 +8,7 @@ use mosaic_cac_types::{
 };
 use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES};
 use mosaic_storage_inmemory::garbler::StoredGarblerState;
-use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
+use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
 use super::stf::{handle_action_result, handle_event, restore};
 
@@ -32,7 +32,7 @@ fn sample_adaptor() -> Adaptor {
 async fn test_handle_init() {
     let mut state = StoredGarblerState::default();
 
-    let mut rng = ChaChaRng::seed_from_u64(0);
+    let mut rng = ChaCha20Rng::seed_from_u64(0);
     let seed = rand_byte_array(&mut rng).into();
     let setup_inputs = rand_byte_array(&mut rng);
 
@@ -64,7 +64,7 @@ async fn test_deposit_init() {
         .await
         .unwrap();
 
-    let mut rng = ChaChaRng::seed_from_u64(0);
+    let mut rng = ChaCha20Rng::seed_from_u64(0);
     let deposit_id = rand_byte_array(&mut rng).into();
 
     let keypair = KeyPair::rand(&mut rng);
@@ -158,7 +158,7 @@ async fn test_reject_mismatched_adaptor_chunk_deposit_id() {
 #[tokio::test]
 async fn restore_sending_commit_replays_only_unacked_header_and_chunks() {
     let mut state = StoredGarblerState::default();
-    let mut rng = ChaChaRng::seed_from_u64(7);
+    let mut rng = ChaCha20Rng::seed_from_u64(7);
     let poly_commitment = Polynomial::rand(&mut rng).commit();
     let wire_commitments = HeapArray::from_elem(poly_commitment.clone());
     let output_polynomial_commitment = HeapArray::from_elem(poly_commitment);
