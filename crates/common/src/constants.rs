@@ -69,3 +69,15 @@ const _: () = assert!(
     N_WITHDRAWAL_INPUT_WIRES % N_DEPOSIT_INPUT_WIRES == 0,
     "N_WITHDRAWAL_INPUT_WIRES must be divisible by N_DEPOSIT_INPUT_WIRES for clean chunking"
 );
+
+// Context strings used for deriving seeds
+// These _MUST_ be distinct across use cases, but are otherwise arbitrary
+/// Seed derivation context for challenge indices
+pub const SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES: &[u8] = b"sample_challenge_indices";
+/// Seed derivation context for polynomial generation
+pub const SEED_CONTEXT_GENERATE_POLYNOMIAL: &[u8] = b"generate_polynomial";
+/// Seed derivation context for garbling table seeds
+pub const SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS: &[u8] = b"generate_garbling_table_seeds";
+/// Seed derivation context for (indexed) deposit keypairs
+/// This _MUST_ be used with a distinct deposit index
+pub const SEED_CONTEXT_INDEXED_DEPOSIT_KEYPAIR: &[u8] = b"deposit_";

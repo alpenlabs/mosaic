@@ -11,7 +11,8 @@ use mosaic_cac_types::{
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
-    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
+    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES,
+    WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
 use rand::SeedableRng;
 
@@ -1072,7 +1073,7 @@ fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
 }
 
 fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
-    let seed = derive_stage_seed(base_seed, "sample_challenge_indices");
+    let seed = derive_stage_seed(base_seed, SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES);
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
     let sampled_indices = rand::seq::index::sample(&mut rng, N_CIRCUITS, N_OPEN_CIRCUITS); // samples N_OPEN_CIRCUITS many values from the domain [0, N_CIRCUITS]
     let mut challenge_indices: ChallengeIndices = HeapArray::from_vec(

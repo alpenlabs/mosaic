@@ -17,7 +17,7 @@ use mosaic_cac_types::{
         garbler::{self, GarblerDepositInitData, GarblerInitData, StateRead as _},
     },
 };
-use mosaic_common::Byte32;
+use mosaic_common::{Byte32, constants::SEED_CONTEXT_INDEXED_DEPOSIT_KEYPAIR};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::StorageProvider;
 use mosaic_vs3::Index;
@@ -726,8 +726,12 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> DefaultMosaicApi<S
 }
 
 fn derive_deposit_keypair(base_seed: Seed, deposit_id: &DepositId) -> (SecretKey, PubKey) {
-    let stage = format!("deposit:{}", deposit_id.0.to_hex());
-    let seed = derive_stage_seed(base_seed, &stage);
+    let stage = &[
+        SEED_CONTEXT_INDEXED_DEPOSIT_KEYPAIR,
+        deposit_id.0.as_bytes(),
+    ]
+    .concat();
+    let seed = derive_stage_seed(base_seed, stage);
 
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.to_bytes());
     let keypair = KeyPair::rand(&mut rng);
