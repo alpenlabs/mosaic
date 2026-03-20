@@ -126,6 +126,7 @@ proptest! {
 
     #[test]
     fn cross_verify_internal_to_bitcoin(seed in any::<u64>()) {
+        // generate keypairs internally
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let keypair = KeyPair::rand(&mut rng);
         let (eval_sk, eval_pk) = (keypair.secret_key().0, keypair.public_key().0);
@@ -134,13 +135,14 @@ proptest! {
 
         let sighash_bytes: [u8; 32] = Sha256::digest(seed.to_le_bytes()).into();
 
+        // generate adaptor signature internally
         let adaptor =
             Adaptor::generate(&mut rng, garbler_commit, eval_sk, eval_pk, &sighash_bytes)
                 .expect("adaptor generation should succeed");
-        let sig = adaptor.complete(garbler_share);
+        let internal_sig = adaptor.complete(garbler_share);
 
         // Convert to bitcoin types and verify
-        let schnorr_sig = into_schnorr_signature(sig);
+        let schnorr_sig = into_schnorr_signature(internal_sig);
         let pubkey = PubKey(eval_pk);
         let x_only_pk =
             try_into_x_only_pubkey(pubkey).expect("pubkey conversion should succeed");
@@ -153,6 +155,7 @@ proptest! {
 
     #[test]
     fn cross_verify_bitcoin_to_internal(seed in any::<u64>()) {
+        // generate keypair in bitcoin types
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let keypair = secp256k1::Keypair::new(SECP256K1, &mut rng);
         let (x_only_pk, _parity) = keypair.x_only_public_key();
