@@ -13,6 +13,7 @@ use mosaic_common::{
     Byte32,
     constants::{
         N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
+        SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS, SEED_CONTEXT_GENERATE_POLYNOMIAL,
         WIDE_LABEL_VALUE_COUNT,
     },
 };
@@ -1022,11 +1023,11 @@ async fn build_commit_msg_header<S: StateRead>(state: &S) -> SMResult<CommitMsgH
 }
 
 fn generate_polynomial_seed(base_seed: Seed) -> Seed {
-    derive_stage_seed(base_seed, "generate_polynomial")
+    derive_stage_seed(base_seed, SEED_CONTEXT_GENERATE_POLYNOMIAL)
 }
 
 fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
-    let stage_seed = derive_stage_seed(base_seed, "generate_garbling_table_seeds");
+    let stage_seed = derive_stage_seed(base_seed, SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS);
     let mut rng = ChaCha20Rng::from_seed(stage_seed.into()); // modify base seed ?
     let garbling_seeds = (0..N_CIRCUITS)
         .map(|_| {
