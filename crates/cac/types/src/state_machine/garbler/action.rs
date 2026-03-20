@@ -4,8 +4,8 @@ use mosaic_vs3::Index;
 
 use crate::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
-    CommitMsgChunk, CommitMsgHeader, CompletedSignatures, DepositId, GarblingSeed,
-    GarblingTableCommitment, OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
+    CommitMsgHeader, CompletedSignatures, DepositId, GarblingSeed, GarblingTableCommitment,
+    OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
 };
 
 // ============================================================================
@@ -112,9 +112,8 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Send commit message header with garbling table commitments and output polynomial commitment.
     SendCommitMsgHeader(CommitMsgHeader),
-    /// Send commit message chunk with polynomial commitments for a single wire
-    /// to evaluator.
-    SendCommitMsgChunk(CommitMsgChunk),
+    /// Send commit message chunk for specified wire inded to evaluator.
+    SendCommitMsgChunk(u16),
     /// Send challenge response header with setup input shares, output shares and garbling seeds for
     /// opened circuits.
     SendChallengeResponseMsgHeader(ChallengeResponseMsgHeader),
@@ -141,7 +140,7 @@ impl Action {
             Self::GenerateShares(seed, idx) => ActionId::GenerateShares(*seed, *idx),
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
             Self::SendCommitMsgHeader(_) => ActionId::SendCommitMsgHeader,
-            Self::SendCommitMsgChunk(chunk) => ActionId::SendCommitMsgChunk(chunk.wire_index),
+            Self::SendCommitMsgChunk(wire_idx) => ActionId::SendCommitMsgChunk(*wire_idx),
             Self::SendChallengeResponseMsgHeader(_) => ActionId::SendChallengeResponseMsgHeader,
             Self::SendChallengeResponseMsgChunk(chunk) => {
                 ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index)

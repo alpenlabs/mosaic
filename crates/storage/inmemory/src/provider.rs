@@ -152,10 +152,13 @@ impl garbler::StateRead for InMemoryGarblerSession {
         self.inner.stream_all_deposits()
     }
 
-    async fn get_input_polynomial_commitments(
+    async fn get_input_polynomial_commitment_by_wire(
         &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        self.inner.get_input_polynomial_commitments().await
+        wire: u16,
+    ) -> Result<Option<WideLabelWirePolynomialCommitments>, Self::Error> {
+        self.inner
+            .get_input_polynomial_commitment_by_wire(wire)
+            .await
     }
 
     async fn get_output_polynomial_commitment(

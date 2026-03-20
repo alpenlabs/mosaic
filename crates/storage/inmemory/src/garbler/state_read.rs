@@ -6,11 +6,11 @@ use mosaic_cac_types::{
     AllAes128Keys, AllConstOneLabels, AllConstZeroLabels, AllGarblingTableCommitments,
     AllOutputLabelCts, AllPublicSValues, ChallengeIndices, CircuitInputShares, CircuitOutputShare,
     CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, GarblingTableCommitment,
-    HeapArray, Index, InputPolynomialCommitments, InputShares, OutputPolynomialCommitment,
-    OutputShares, ReservedInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    HeapArray, Index, InputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares,
+    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, StateRead},
 };
-use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES};
+use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS};
 
 use super::StoredGarblerState;
 use crate::error::DbError;
@@ -45,24 +45,18 @@ impl StateRead for StoredGarblerState {
         stream::iter(deposits).map(Ok)
     }
 
-    async fn get_input_polynomial_commitments(
+    async fn get_input_polynomial_commitment_by_wire(
         &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
+        wire: u16,
+    ) -> Result<Option<mosaic_cac_types::WideLabelWirePolynomialCommitments>, Self::Error> {
         if self.input_polynomial_commitments.is_empty() {
             return Ok(None);
         }
-        let mut input_commitments = Vec::new();
-        for idx in 0..N_INPUT_WIRES {
-            let commitment = self
-                .input_polynomial_commitments
-                .get(&idx)
-                .cloned()
-                .ok_or_else(|| DbError::state_inconsistency("missing expected input commitment"))?;
 
-            input_commitments.push(commitment);
-        }
-
-        Ok(Some(HeapArray::from_vec(input_commitments)))
+        Ok(self
+            .input_polynomial_commitments
+            .get(&(wire as usize))
+            .cloned())
     }
 
     async fn get_output_polynomial_commitment(

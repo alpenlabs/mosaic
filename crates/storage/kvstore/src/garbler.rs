@@ -7,10 +7,9 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, HeapArray, InputPolynomialCommitments, InputShares,
-    OutputPolynomialCommitment, OutputShares, PolynomialCommitment, ReservedInputShares, Sighashes,
-    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
-    WithdrawalAdaptors, WithdrawalInputs,
+    DepositInputs, GarblingTableCommitment, HeapArray, InputShares, OutputPolynomialCommitment,
+    OutputShares, PolynomialCommitment, ReservedInputShares, Sighashes, WideLabelWireAdaptors,
+    WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateMut, StateRead},
 };
 use mosaic_common::constants::{
@@ -213,37 +212,23 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
             .map(|item| item.map(|(key, value)| (key.deposit_id, value)))
     }
 
-    async fn get_input_polynomial_commitments(
+    async fn get_input_polynomial_commitment_by_wire(
         &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        // Check presence via the first sub-chunk of the first wire.
-        if self
-            .get_value::<InputPolynomialCommitmentRowSpec>(&WireSubChunkKey::new(0, 0))
-            .await?
-            .is_none()
-        {
-            return Ok(None);
-        }
+        wire_idx: u16,
+    ) -> Result<Option<WideLabelWirePolynomialCommitments>, Self::Error> {
+        let commitments = self
+            .collect_fixed_array_row::<
+                InputPolynomialCommitmentRowSpec,
+                PolynomialCommitment,
+                _,
+                WIDE_LABEL_VALUE_COUNT,
+            >(
+                |pc_idx| WireSubChunkKey::new(wire_idx, pc_idx as u8),
+                "missing expected input poly commitment sub-chunk",
+            )
+            .await?;
 
-        let mut wires = Vec::with_capacity(N_INPUT_WIRES);
-        for wire_idx in 0..N_INPUT_WIRES {
-            let commitments = self
-                .collect_fixed_array_row::<
-                    InputPolynomialCommitmentRowSpec,
-                    PolynomialCommitment,
-                    _,
-                    WIDE_LABEL_VALUE_COUNT,
-                >(
-                    |pc_idx| WireSubChunkKey::new(wire_idx as u16, pc_idx as u8),
-                    "missing expected input poly commitment sub-chunk",
-                )
-                .await?
-                .ok_or_else(|| {
-                    StorageError::state_inconsistency("partial input polynomial commitments")
-                })?;
-            wires.push(commitments);
-        }
-        Ok(Some(HeapArray::from_vec(wires)))
+        Ok(commitments)
     }
 
     async fn get_output_polynomial_commitment(
@@ -645,10 +630,9 @@ mod tests {
     use futures::StreamExt as _;
     use mosaic_cac_types::{
         Adaptor, AdaptorMsgChunk, ChallengeIndices, CompletedSignatures, DepositAdaptors,
-        DepositId, DepositInputs, InputPolynomialCommitments, SecretKey, Sighash, Signature,
-        WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
-        WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs,
-        state_machine::garbler::DepositStep,
+        DepositId, DepositInputs, SecretKey, Sighash, Signature, WideLabelWireAdaptors,
+        WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors,
+        WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::garbler::DepositStep,
     };
     use mosaic_common::{
         Byte32,
@@ -797,14 +781,12 @@ mod tests {
                 .expect("put input commitments chunk");
         }
 
-        let expected_input_commitments =
-            InputPolynomialCommitments::new(|_| expected_wire_commitments.clone());
         assert_eq!(
             storage
-                .get_input_polynomial_commitments()
+                .get_input_polynomial_commitment_by_wire(12)
                 .await
                 .expect("get input commitments"),
-            Some(expected_input_commitments)
+            Some(expected_wire_commitments)
         );
     }
 

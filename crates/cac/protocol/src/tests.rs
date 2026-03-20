@@ -1516,7 +1516,7 @@ async fn mock_dispatch_garbler(
                         exec.send_commit_msg_header(peer_id, header).await
                     }
                     GarblerAction::SendCommitMsgChunk(chunk) => {
-                        exec.send_commit_msg_chunk(peer_id, chunk).await
+                        exec.send_commit_msg_chunk(peer_id, *chunk).await
                     }
                     GarblerAction::SendChallengeResponseMsgHeader(header) => {
                         exec.send_challenge_response_header(peer_id, header).await

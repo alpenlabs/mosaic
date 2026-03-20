@@ -2,8 +2,8 @@
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::{
-    AllPolynomials, CircuitInputShares, CompletedSignatures, DepositAdaptors, DepositInputs,
-    GarblingSeed, InputPolynomials, InputShares, OutputPolynomial, PubKey,
+    AllPolynomials, CircuitInputShares, CommitMsgChunk, CompletedSignatures, DepositAdaptors,
+    DepositInputs, GarblingSeed, InputPolynomials, InputShares, OutputPolynomial, PubKey,
     ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares, Seed,
     WideLabelWireShares, WithdrawalAdaptors,
     state_machine::garbler::{
@@ -172,9 +172,30 @@ pub(crate) async fn handle_send_commit_msg_header<SP: StorageProvider, TS: Table
 pub(crate) async fn handle_send_commit_msg_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
-    chunk: &mosaic_cac_types::CommitMsgChunk,
+    wire_index: u16,
 ) -> HandlerOutcome {
-    let id = ActionId::SendCommitMsgChunk(chunk.wire_index);
+    let garb_state = match ctx.storage.garbler_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
+
+    // Load all required data. Retry if any reads return None (data not yet written).
+    let Some(wire_poly_commitments) = garb_state
+        .get_input_polynomial_commitment_by_wire(wire_index)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+
+    // Create commit message chunk for this wire.
+    let chunk = CommitMsgChunk {
+        wire_index,
+        commitments: wire_poly_commitments,
+    };
+
+    let id = ActionId::SendCommitMsgChunk(wire_index);
     match ctx.net_client.send(*peer_id, chunk.clone()).await {
         Ok(_ack) => completed(id, ActionResult::CommitMsgChunkAcked),
         Err(e) => {

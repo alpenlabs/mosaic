@@ -3,11 +3,11 @@ use std::pin::pin;
 use futures::StreamExt;
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingSeeds, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk,
-    ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare, CommitMsgChunk,
-    CommitMsgHeader, DepositId, EvalGarblingSeeds, EvaluationIndices, GarblingTableCommitment,
-    HeapArray, Index, InputPolynomialCommitments, InputShares, OpenedGarblingSeeds,
-    OpenedOutputShares, OutputShares, ReservedInputShares, ReservedSetupInputShares, Seed,
-    SetupInputs, Share, WideLabelWireShares, state_machine::garbler::*,
+    ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare, CommitMsgHeader, DepositId,
+    EvalGarblingSeeds, EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputShares,
+    OpenedGarblingSeeds, OpenedOutputShares, OutputShares, ReservedInputShares,
+    ReservedSetupInputShares, Seed, SetupInputs, Share, WideLabelWireShares,
+    state_machine::garbler::*,
 };
 use mosaic_common::{
     Byte32,
@@ -674,12 +674,8 @@ async fn handle_table_commitment_generated<S: StateMut>(
             let header = build_commit_msg_header(state).await?;
             emit(actions, Action::SendCommitMsgHeader(header));
 
-            let input_polynomial_commitments = state
-                .get_input_polynomial_commitments()
-                .await
-                .require("expected input polynomial commitments")?;
-            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
-                emit(actions, Action::SendCommitMsgChunk(chunk));
+            for wire in 0..N_INPUT_WIRES {
+                emit(actions, Action::SendCommitMsgChunk(wire as u16));
             }
         }
         _ => return Err(SMError::unexpected_input()),
@@ -811,14 +807,9 @@ pub(crate) async fn restore<S: StateRead>(
                 let header = build_commit_msg_header(state).await?;
                 emit(actions, Action::SendCommitMsgHeader(header));
             }
-            let input_polynomial_commitments = state
-                .get_input_polynomial_commitments()
-                .await
-                .require("expected input polynomial commitments")?;
-
-            for chunk in create_commit_msg_chunks(input_polynomial_commitments) {
-                if !chunk_acked[chunk.wire_index as usize] {
-                    emit(actions, Action::SendCommitMsgChunk(chunk));
+            for wire in 0..N_INPUT_WIRES {
+                if !chunk_acked[wire] {
+                    emit(actions, Action::SendCommitMsgChunk(wire as u16));
                 }
             }
         }
@@ -1048,19 +1039,6 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
     // does not include reserved index
     // ChallengeMsg in itself includes `Index` struct which can only be initialized within valid
     // bounds so the range check is done during deserialization itself
-}
-
-fn create_commit_msg_chunks(
-    polynomial_commitments: InputPolynomialCommitments,
-) -> Vec<CommitMsgChunk> {
-    polynomial_commitments
-        .into_iter()
-        .enumerate()
-        .map(|(wire_index, commitments)| CommitMsgChunk {
-            wire_index: wire_index as u16,
-            commitments,
-        })
-        .collect()
 }
 
 fn create_challenge_response_msgs(

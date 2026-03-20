@@ -124,9 +124,9 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
     fn send_commit_msg_chunk(
         &self,
         peer_id: &PeerId,
-        chunk: &mosaic_cac_types::CommitMsgChunk,
+        wire_idx: u16,
     ) -> impl Future<Output = HandlerOutcome> + Send {
-        garbler::handle_send_commit_msg_chunk(self, peer_id, chunk)
+        garbler::handle_send_commit_msg_chunk(self, peer_id, wire_idx)
     }
 
     fn send_challenge_response_header(

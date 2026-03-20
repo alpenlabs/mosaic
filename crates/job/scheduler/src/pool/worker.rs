@@ -302,8 +302,8 @@ async fn dispatch_garbler<D: ExecuteGarblerJob>(
         GarblerAction::SendCommitMsgHeader(header) => {
             exec.send_commit_msg_header(peer_id, header).await
         }
-        GarblerAction::SendCommitMsgChunk(chunk) => {
-            exec.send_commit_msg_chunk(peer_id, chunk).await
+        GarblerAction::SendCommitMsgChunk(wire_idx) => {
+            exec.send_commit_msg_chunk(peer_id, *wire_idx).await
         }
         GarblerAction::SendChallengeResponseMsgHeader(header) => {
             exec.send_challenge_response_header(peer_id, header).await

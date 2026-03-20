@@ -7,10 +7,9 @@ use crate::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
-    OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
-    state_machine::garbler::GarblingMetadata,
+    DepositInputs, GarblingTableCommitment, Index, InputShares, OutputPolynomialCommitment,
+    OutputShares, ReservedInputShares, Sighashes, WideLabelWirePolynomialCommitments,
+    WithdrawalAdaptors, WithdrawalInputs, state_machine::garbler::GarblingMetadata,
 };
 
 /// Read-only access to garbler state storage.
@@ -34,10 +33,11 @@ pub trait StateRead {
         &self,
     ) -> impl Stream<Item = Result<(DepositId, DepositState), Self::Error>> + Send;
 
-    /// Retrieves commitments to input polynomials.
-    fn get_input_polynomial_commitments(
+    /// Retrieves commitments to input polynomials for all wide label values for a single wire.
+    fn get_input_polynomial_commitment_by_wire(
         &self,
-    ) -> impl Future<Output = Result<Option<InputPolynomialCommitments>, Self::Error>> + Send;
+        wire: u16,
+    ) -> impl Future<Output = Result<Option<WideLabelWirePolynomialCommitments>, Self::Error>> + Send;
 
     /// Retrieves the commitment to output polynomial.
     fn get_output_polynomial_commitment(

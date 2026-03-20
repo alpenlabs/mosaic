@@ -46,7 +46,7 @@ pub type CreateSessionFuture<'a> =
 pub use handle::{JobSchedulerHandle, SchedulerStopped};
 use mosaic_cac_types::{
     AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader,
-    CommitMsgChunk, CommitMsgHeader, DepositId, GarblingSeed, GarblingTableCommitment, Seed,
+    CommitMsgHeader, DepositId, GarblingSeed, GarblingTableCommitment, Seed,
     state_machine::{evaluator::ChunkIndex, garbler::Wire},
 };
 use mosaic_net_svc_api::PeerId;
@@ -320,7 +320,7 @@ pub trait ExecuteGarblerJob: Send + Sync + 'static {
     fn send_commit_msg_chunk(
         &self,
         peer_id: &PeerId,
-        chunk: &CommitMsgChunk,
+        wire_idx: u16,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
     /// Send challenge response header to evaluator (G6).
