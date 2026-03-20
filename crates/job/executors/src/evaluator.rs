@@ -354,11 +354,13 @@ pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: Ta
     else {
         return HandlerOutcome::Retry;
     };
-    let Some(input_poly_commits) = eval_state
-        .get_input_polynomial_commitments()
+
+    let Ok(deposit_input_wire_zero_coefficients) = eval_state
+        .get_input_polynomial_zeroth_coefficients(
+            // deposit input wire range
+            N_SETUP_INPUT_WIRES..N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES,
+        )
         .await
-        .ok()
-        .flatten()
     else {
         return HandlerOutcome::Retry;
     };
@@ -370,14 +372,18 @@ pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: Ta
     // Generate one adaptor per deposit wire, using the share commitment at
     // reserved index (= zeroth polynomial coefficient) for the wire's input value.
     let mut adaptors = Vec::with_capacity(N_DEPOSIT_INPUT_WIRES);
-    for i in 0..N_DEPOSIT_INPUT_WIRES {
-        let wire = N_SETUP_INPUT_WIRES + i;
-        let val = deposit_inputs[i] as usize;
+    for deposit_wire in 0..N_DEPOSIT_INPUT_WIRES {
+        let val = deposit_inputs[deposit_wire] as usize;
         // Zeroth coefficient of commitment polynomial = commitment to share at index 0
-        let share_commitment = input_poly_commits[wire][val].get_zeroth_coefficient();
-        let adaptor =
-            Adaptor::generate(&mut rng, share_commitment, sk, pk, sighashes[i].0.as_ref())
-                .expect("adaptor generation should not fail with valid inputs");
+        let share_commitment = deposit_input_wire_zero_coefficients[deposit_wire][val];
+        let adaptor = Adaptor::generate(
+            &mut rng,
+            share_commitment,
+            sk,
+            pk,
+            sighashes[deposit_wire].0.as_ref(),
+        )
+        .expect("adaptor generation should not fail with valid inputs");
         adaptors.push(adaptor);
     }
 
@@ -414,11 +420,13 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
     else {
         return HandlerOutcome::Retry;
     };
-    let Some(input_poly_commits) = eval_state
-        .get_input_polynomial_commitments()
+
+    let Ok(withdrawal_wire_zero_coefficients) = eval_state
+        .get_input_polynomial_zeroth_coefficients(
+            // withdrawal input wire range
+            N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..N_INPUT_WIRES,
+        )
         .await
-        .ok()
-        .flatten()
     else {
         return HandlerOutcome::Retry;
     };
@@ -433,13 +441,12 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
     let mut wires = Vec::with_capacity(WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK);
     for wire_in_chunk in 0..WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK {
         let withdrawal_wire = chunk_offset + wire_in_chunk;
-        let wire = N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
         let sighash_idx = N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
 
         let mut wire_adaptors = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
         for val in 0..WIDE_LABEL_VALUE_COUNT {
             // Zeroth coefficient = commitment to share at reserved index
-            let share_commitment = input_poly_commits[wire][val].get_zeroth_coefficient();
+            let share_commitment = withdrawal_wire_zero_coefficients[withdrawal_wire][val];
             let adaptor = Adaptor::generate(
                 &mut rng,
                 share_commitment,

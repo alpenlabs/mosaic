@@ -17,6 +17,10 @@ pub enum DbError {
     /// CRITICAL: State is inconsistent with expectations.
     #[error("CRITICAL: State is inconsistent with expectations: {0}")]
     StateInconsistency(String),
+
+    /// Invalid argument passed by the caller.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
 }
 
 impl DbError {
@@ -28,5 +32,10 @@ impl DbError {
     /// Creates a state inconsistency error.
     pub fn state_inconsistency(s: impl Into<String>) -> Self {
         Self::StateInconsistency(s.into())
+    }
+
+    /// Creates an invalid argument error.
+    pub fn invalid_argument(s: impl Into<String>) -> Self {
+        Self::InvalidArgument(s.into())
     }
 }

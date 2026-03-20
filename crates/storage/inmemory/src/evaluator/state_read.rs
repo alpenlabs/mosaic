@@ -6,7 +6,7 @@ use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors, DepositId,
     DepositInputs, HeapArray, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
     OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WithdrawalAdaptors, WithdrawalInputs,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_INPUT_WIRES};
@@ -69,6 +69,29 @@ impl StateRead for StoredEvaluatorState {
         &self,
     ) -> Result<Option<OutputPolynomialCommitment>, Self::Error> {
         Ok(self.output_polynomial_commitment.clone())
+    }
+
+    async fn get_input_polynomial_zeroth_coefficients(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<WideLabelZerothPolynomialCoefficients>, Self::Error> {
+        if range.end > N_INPUT_WIRES {
+            return Err(DbError::invalid_argument(
+                "wire index range exceeds N_INPUT_WIRES",
+            ));
+        }
+        let mut results = Vec::with_capacity(range.len());
+        for wire_idx in range {
+            let coeffs = self
+                .zeroth_commitments
+                .get(&wire_idx)
+                .cloned()
+                .ok_or_else(|| {
+                    DbError::state_inconsistency("missing zeroth polynomial coefficients for wire")
+                })?;
+            results.push(coeffs);
+        }
+        Ok(results)
     }
 
     async fn get_garbling_table_commitments(

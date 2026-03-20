@@ -829,15 +829,15 @@ async fn post_handle_challenge_response<S: StateMut>(
         .await
         .require("expected reserved setup input shares")?;
 
-    let input_polynomial_commitments = state
-        .get_input_polynomial_commitments()
+    let setup_wire_zeroth_coefficients = state
+        .get_input_polynomial_zeroth_coefficients(0..N_SETUP_INPUT_WIRES)
         .await
-        .require("expected input polynomial commitments")?;
+        .map_err(SMError::storage)?;
 
     if let Some(failure_reason) = verify_reserved_setup_input_shares(
         &reserved_setup_input_shares,
         &config.setup_inputs,
-        &input_polynomial_commitments,
+        &setup_wire_zeroth_coefficients,
     ) {
         root_state.step = Step::Aborted {
             reason: format!(
@@ -1169,15 +1169,12 @@ fn verify_opened_output_shares(
 fn verify_reserved_setup_input_shares(
     reserved_setup_input_shares: &ReservedSetupInputShares,
     setup_inputs: &SetupInputs,
-    input_polynomial_commitments: &InputPolynomialCommitments,
+    setup_wire_zeroth_coefficients: &[WideLabelZerothPolynomialCoefficients],
 ) -> Option<String> {
     for wire in 0..N_SETUP_INPUT_WIRES {
         let val = setup_inputs[wire];
         let reserved_share = reserved_setup_input_shares[wire];
-        if input_polynomial_commitments[wire][val as usize]
-            .verify_share(reserved_share)
-            .is_err()
-        {
+        if setup_wire_zeroth_coefficients[wire][val as usize] != reserved_share.commit().point() {
             return Some(format!(
                 "verify reserved setup shares failed for wire {wire}",
             ));

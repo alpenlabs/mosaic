@@ -31,6 +31,9 @@ pub enum StorageError {
     /// Critical state inconsistency with expected invariants.
     #[error("CRITICAL: State is inconsistent with expectations: {0}")]
     StateInconsistency(String),
+    /// Invalid argument passed by the caller.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
 }
 
 impl StorageError {
@@ -60,5 +63,9 @@ impl StorageError {
 
     pub(crate) fn state_inconsistency(s: impl Into<String>) -> Self {
         Self::StateInconsistency(s.into())
+    }
+
+    pub(crate) fn invalid_argument(s: impl Into<String>) -> Self {
+        Self::InvalidArgument(s.into())
     }
 }

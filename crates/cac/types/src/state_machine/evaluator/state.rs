@@ -1,4 +1,4 @@
-use std::{error::Error, fmt::Debug};
+use std::{error::Error, fmt::Debug, ops::Range};
 
 use futures::Stream;
 use mosaic_common::Byte32;
@@ -44,6 +44,12 @@ pub trait StateRead {
     fn get_output_polynomial_commitment(
         &self,
     ) -> impl Future<Output = Result<Option<OutputPolynomialCommitment>, Self::Error>> + Send;
+
+    /// Retrieves zeroth coefficients of input polynomial commitments for a range of wire indices.
+    fn get_input_polynomial_zeroth_coefficients(
+        &self,
+        range: Range<usize>,
+    ) -> impl Future<Output = Result<Vec<WideLabelZerothPolynomialCoefficients>, Self::Error>> + Send;
 
     /// Retrieves all garbling table commitments.
     fn get_garbling_table_commitments(

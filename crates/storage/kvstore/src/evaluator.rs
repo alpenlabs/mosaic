@@ -102,6 +102,16 @@ impl<KV: KvStore> KvStoreEvaluator<KV> {
     ) -> impl Stream<Item = Result<(R::Key, R::Value), StorageError>> + Send + '_ {
         let row_prefix = keyspace::row_prefix::<R>();
         let (start, end) = keyspace::prefix_range(&row_prefix);
+        self.stream_row_bounded::<R>(start, end)
+    }
+
+    /// Stream a sub-range of a row, given pre-computed start/end bounds on the
+    /// **full** key (row-tag prefix already included).
+    fn stream_row_bounded<R: KVRowSpec>(
+        &self,
+        start: Bound<Vec<u8>>,
+        end: Bound<Vec<u8>>,
+    ) -> impl Stream<Item = Result<(R::Key, R::Value), StorageError>> + Send + '_ {
         let kv_stream = self.store.range(
             Self::bound_vec_to_slice(&start),
             Self::bound_vec_to_slice(&end),
@@ -257,6 +267,44 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
     ) -> Result<Option<OutputPolynomialCommitment>, Self::Error> {
         self.get_value::<OutputPolynomialCommitmentRowSpec>(&ProtocolSingletonKey)
             .await
+    }
+
+    async fn get_input_polynomial_zeroth_coefficients(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<WideLabelZerothPolynomialCoefficients>, Self::Error> {
+        if range.end > N_INPUT_WIRES {
+            return Err(StorageError::invalid_argument(
+                "wire index range exceeds N_INPUT_WIRES",
+            ));
+        }
+        let expected_len = range.len();
+        let start_key = keyspace::full_key::<InputPolyZerothCoeffRowSpec>(&WireIndexKey::new(
+            range.start as u16,
+        ))
+        .map_err(StorageError::key_pack)?;
+        let end_key =
+            keyspace::full_key::<InputPolyZerothCoeffRowSpec>(&WireIndexKey::new(range.end as u16))
+                .map_err(StorageError::key_pack)?;
+
+        let row_stream = self.stream_row_bounded::<InputPolyZerothCoeffRowSpec>(
+            Bound::Included(start_key),
+            Bound::Excluded(end_key),
+        );
+        futures::pin_mut!(row_stream);
+
+        let mut results = Vec::with_capacity(expected_len);
+        while let Some(item) = row_stream.next().await {
+            let (_key, value) = item?;
+            results.push(value);
+        }
+
+        if results.len() != expected_len {
+            return Err(StorageError::state_inconsistency(
+                "missing zeroth polynomial coefficients for wire",
+            ));
+        }
+        Ok(results)
     }
 
     async fn get_garbling_table_commitments(
@@ -905,13 +953,33 @@ mod tests {
                 .expect("put zeroth coeffs");
         }
 
-        // Read back each wire and verify
+        // Read back each wire individually
         for wire_idx in 0..N_INPUT_WIRES {
             let got = storage
                 .get_value::<InputPolyZerothCoeffRowSpec>(&WireIndexKey::new(wire_idx as u16))
                 .await
                 .expect("get zeroth coeffs");
             assert_eq!(got, Some(expected_zeroth_coeffs.clone()));
+        }
+
+        // Read back via range getter
+        let all = storage
+            .get_input_polynomial_zeroth_coefficients(0..N_INPUT_WIRES)
+            .await
+            .expect("get zeroth coeffs range");
+        assert_eq!(all.len(), N_INPUT_WIRES);
+        for coeffs in &all {
+            assert_eq!(coeffs, &expected_zeroth_coeffs);
+        }
+
+        // Read back a smaller subset
+        let subset = storage
+            .get_input_polynomial_zeroth_coefficients(1..3)
+            .await
+            .expect("get zeroth coeffs subset");
+        assert_eq!(subset.len(), 2);
+        for coeffs in &subset {
+            assert_eq!(coeffs, &expected_zeroth_coeffs);
         }
     }
 

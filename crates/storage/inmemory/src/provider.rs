@@ -446,6 +446,15 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
         self.inner.get_output_polynomial_commitment().await
     }
 
+    async fn get_input_polynomial_zeroth_coefficients(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<WideLabelZerothPolynomialCoefficients>, Self::Error> {
+        self.inner
+            .get_input_polynomial_zeroth_coefficients(range)
+            .await
+    }
+
     async fn get_garbling_table_commitments(
         &self,
     ) -> Result<Option<AllGarblingTableCommitments>, Self::Error> {
