@@ -38,7 +38,7 @@ use mosaic_job_executors::{
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableMetadata, TableReader, TableStore, TableWriter};
 use mosaic_storage_inmemory::{evaluator::StoredEvaluatorState, garbler::StoredGarblerState};
-use rand_chacha::{ChaCha20Rng, ChaChaRng, rand_core::SeedableRng};
+use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
 use crate::{
     evaluator, garbler,
@@ -326,7 +326,7 @@ async fn test_e2e() {
     };
 
     let mut garb_state = StoredGarblerState::default();
-    let mut garb_rng = ChaChaRng::seed_from_u64(42);
+    let mut garb_rng = ChaCha20Rng::seed_from_u64(42);
     let mut eval_state = StoredEvaluatorState::default();
     let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
 

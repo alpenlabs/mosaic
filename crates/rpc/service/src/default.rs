@@ -729,7 +729,7 @@ fn derive_deposit_keypair(base_seed: Seed, deposit_id: &DepositId) -> (SecretKey
     let stage = format!("deposit:{}", deposit_id.0.to_hex());
     let seed = derive_stage_seed(base_seed, &stage);
 
-    let mut rng = rand_chacha::ChaChaRng::from_seed(seed.to_bytes());
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.to_bytes());
     let keypair = KeyPair::rand(&mut rng);
 
     (keypair.secret_key(), keypair.public_key())
