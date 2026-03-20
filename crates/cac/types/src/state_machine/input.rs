@@ -2,6 +2,10 @@ use crate::state_machine::{StateMachineId, evaluator, garbler};
 
 /// Input to either garbler or evaluator state machine
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "garbler input is large due to adaptor chunks, which will be removed now"
+)]
 pub enum StateMachineInput {
     /// input to garbler state machine
     Garbler(garbler::Input),
