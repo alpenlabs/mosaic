@@ -973,7 +973,7 @@ async fn sign_with_fault_secret_signs_when_successful() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: Some(SecretKey(ark_secp256k1::Fr::ZERO)),
+        slash: None,
     })
     .await;
 
@@ -1019,7 +1019,7 @@ async fn sign_with_fault_secret_signs_with_tweak() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: Some(SecretKey(ark_secp256k1::Fr::ZERO)),
+        slash: None,
     })
     .await;
 
