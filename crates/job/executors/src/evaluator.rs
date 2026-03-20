@@ -365,7 +365,7 @@ pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: Ta
 
     let sk = deposit_state.sk.0;
     let pk = deposit_state.sk.to_pubkey().0;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
 
     // Generate one adaptor per deposit wire, using the share commitment at
     // reserved index (= zeroth polynomial coefficient) for the wire's input value.
@@ -425,7 +425,7 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
 
     let sk = deposit_state.sk.0;
     let pk = deposit_state.sk.to_pubkey().0;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
 
     // Each chunk covers WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK consecutive withdrawal wires.
     let chunk_offset = chunk_idx.get() as usize * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
