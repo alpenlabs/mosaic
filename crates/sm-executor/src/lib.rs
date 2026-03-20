@@ -16,7 +16,7 @@ use mosaic_sm_executor_api::{
     DepositInitData, DisputedWithdrawalData, InitData, SmCommand, SmCommandKind, SmExecutorConfig,
     SmExecutorHandle, SmRole,
 };
-use mosaic_storage_api::{Commit, StorageProviderMut};
+use mosaic_storage_api::{Commit, StorageProviderError, StorageProviderMut};
 use tracing::Instrument;
 
 /// SM executor error.
@@ -97,7 +97,7 @@ pub enum SmExecutorError {
         role: SmRole,
         /// Underlying storage acquisition error.
         #[source]
-        source: mosaic_storage_api::StorageError,
+        source: StorageProviderError,
     },
 }
 
@@ -1055,14 +1055,16 @@ mod tests {
         fn garbler_state_mut(
             &self,
             _peer_id: &PeerId,
-        ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> {
+        ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>>
+        {
             std::future::ready(Ok(StoredGarblerState::default()))
         }
 
         fn evaluator_state_mut(
             &self,
             _peer_id: &PeerId,
-        ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> {
+        ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>>
+        {
             std::future::ready(Ok(StoredEvaluatorState::default()))
         }
     }

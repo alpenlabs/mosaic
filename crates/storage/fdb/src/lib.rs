@@ -17,7 +17,7 @@ use foundationdb::{
     options,
 };
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
+use mosaic_storage_api::{Commit, StorageProvider, StorageProviderError, StorageProviderMut};
 use mosaic_storage_kvstore::{
     evaluator::KvStoreEvaluator,
     garbler::KvStoreGarbler,
@@ -154,30 +154,32 @@ impl StorageProvider for FdbStorageProvider {
     fn garbler_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> + Send
-    {
+    ) -> impl core::future::Future<
+        Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>,
+    > + Send {
         let peer_id = *peer_id;
         let provider = self.clone();
         async move {
             provider
                 .garbler_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 
     fn evaluator_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> + Send
-    {
+    ) -> impl core::future::Future<
+        Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>,
+    > + Send {
         let peer_id = *peer_id;
         let provider = self.clone();
         async move {
             provider
                 .evaluator_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 }
@@ -189,7 +191,7 @@ impl StorageProviderMut for FdbStorageProvider {
     fn garbler_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>>
+    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>>
     {
         let peer_id = *peer_id;
         let provider = self.clone();
@@ -197,22 +199,23 @@ impl StorageProviderMut for FdbStorageProvider {
             provider
                 .garbler_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 
     fn evaluator_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>>
-    {
+    ) -> impl core::future::Future<
+        Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>,
+    > {
         let peer_id = *peer_id;
         let provider = self.clone();
         async move {
             provider
                 .evaluator_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 }

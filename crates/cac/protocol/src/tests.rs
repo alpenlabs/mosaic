@@ -1462,14 +1462,14 @@ impl StorageProvider for DummyStorageProvider {
     async fn garbler_state(
         &self,
         _peer_id: &PeerId,
-    ) -> mosaic_storage_api::StorageResult<Self::GarblerState> {
+    ) -> mosaic_storage_api::StorageProviderResult<Self::GarblerState> {
         Ok(self.garb_state.clone())
     }
 
     async fn evaluator_state(
         &self,
         _peer_id: &PeerId,
-    ) -> mosaic_storage_api::StorageResult<Self::EvaluatorState> {
+    ) -> mosaic_storage_api::StorageProviderResult<Self::EvaluatorState> {
         Ok(self.eval_state.clone())
     }
 }

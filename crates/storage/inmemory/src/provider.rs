@@ -47,7 +47,8 @@ impl StorageProvider for InMemoryStorageProvider {
     fn garbler_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> + Send {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>> + Send
+    {
         ready(Ok(self
             .garbler
             .lock()
@@ -60,7 +61,8 @@ impl StorageProvider for InMemoryStorageProvider {
     fn evaluator_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> + Send {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>> + Send
+    {
         ready(Ok(self
             .evaluator
             .lock()
@@ -78,7 +80,7 @@ impl StorageProviderMut for InMemoryStorageProvider {
     fn garbler_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>> {
         let state = self
             .garbler
             .lock()
@@ -96,7 +98,7 @@ impl StorageProviderMut for InMemoryStorageProvider {
     fn evaluator_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>> {
         let state = self
             .evaluator
             .lock()
