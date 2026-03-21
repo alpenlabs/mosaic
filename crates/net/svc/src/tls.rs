@@ -331,7 +331,7 @@ mod tests {
     use super::*;
 
     fn generate_test_key() -> SigningKey {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::OsRng;
         let mut bytes = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rng, &mut bytes);
         SigningKey::from_bytes(&bytes)
