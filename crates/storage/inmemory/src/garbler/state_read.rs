@@ -6,8 +6,8 @@ use mosaic_cac_types::{
     AllAes128Keys, AllConstOneLabels, AllConstZeroLabels, AllGarblingTableCommitments,
     AllOutputLabelCts, AllPublicSValues, ChallengeIndices, CircuitInputShares, CircuitOutputShare,
     CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, GarblingTableCommitment,
-    HeapArray, Index, InputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares,
-    Sighashes, WithdrawalAdaptors, WithdrawalInputs,
+    HeapArray, Index, OutputPolynomialCommitment, OutputShares, ReservedInputShares,
+    ReservedSetupInputShares, Sighashes, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS};
@@ -65,22 +65,26 @@ impl StateRead for StoredGarblerState {
         Ok(self.output_polynomial_commitment.clone())
     }
 
-    async fn get_input_shares(&self) -> Result<Option<InputShares>, Self::Error> {
-        if self.input_shares.is_empty() {
+    async fn get_reserved_setup_input_shares(
+        &self,
+    ) -> Result<Option<ReservedSetupInputShares>, Self::Error> {
+        let Some(root_state) = &self.state else {
             return Ok(None);
-        }
+        };
+        let Some(setup_inputs) = root_state.config.map(|config| config.setup_inputs) else {
+            return Ok(None);
+        };
 
-        let mut input_shares_vec = Vec::new();
-        for ckt_idx in 0..N_CIRCUITS + 1 {
-            let input_shares = self
-                .input_shares
-                .get(&ckt_idx)
-                .cloned()
-                .ok_or_else(|| DbError::state_inconsistency("missing expected input share"))?;
-            input_shares_vec.push(input_shares);
-        }
+        let Some(all_reserved_input_shares) = self.input_shares.get(&0) else {
+            return Ok(None);
+        };
 
-        Ok(Some(HeapArray::from_vec(input_shares_vec)))
+        let reserved_setup_input_shares = ReservedSetupInputShares::new(|idx| {
+            let value = setup_inputs[idx];
+            all_reserved_input_shares[idx][value as usize]
+        });
+
+        Ok(Some(reserved_setup_input_shares))
     }
 
     async fn get_output_shares(&self) -> Result<Option<OutputShares>, Self::Error> {

@@ -7,9 +7,10 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, HeapArray, InputShares, OutputPolynomialCommitment,
-    OutputShares, PolynomialCommitment, ReservedInputShares, Sighashes, WideLabelWireAdaptors,
-    WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors, WithdrawalInputs,
+    DepositInputs, GarblingTableCommitment, HeapArray, OutputPolynomialCommitment, OutputShares,
+    PolynomialCommitment, ReservedInputShares, ReservedSetupInputShares, Sighashes,
+    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+    WithdrawalAdaptors, WithdrawalInputs,
     state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateMut, StateRead},
 };
 use mosaic_common::constants::{
@@ -151,33 +152,45 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
             .await
     }
 
-    async fn get_input_shares(&self) -> Result<Option<InputShares>, Self::Error> {
-        // Check presence via the first sub-chunk of the first circuit.
-        if self
-            .get_value::<InputShareRowSpec>(&CircuitSubChunkKey::new(0, 0))
-            .await?
-            .is_none()
-        {
+    async fn get_reserved_setup_input_shares(
+        &self,
+    ) -> Result<Option<ReservedSetupInputShares>, Self::Error> {
+        let Some(root_state) = self.get_root_state().await? else {
             return Ok(None);
+        };
+        let Some(setup_inputs) = root_state.config.map(|c| c.setup_inputs) else {
+            return Ok(None);
+        };
+
+        let reserved_ckt_idx = 0;
+        let setup_input_start_idx = 0;
+        let setup_input_end_idx = 32;
+
+        let all_reserved_setup_shares = self
+            .collect_row_values::<InputShareRowSpec>(
+                Bound::Included(CircuitSubChunkKey::new(
+                    reserved_ckt_idx,
+                    setup_input_start_idx,
+                )),
+                Bound::Excluded(CircuitSubChunkKey::new(
+                    reserved_ckt_idx,
+                    setup_input_end_idx,
+                )),
+            )
+            .await?;
+
+        if all_reserved_setup_shares.len() != 32 {
+            return Err(StorageError::StateInconsistency(
+                "missing expected reserved setup shares".into(),
+            ));
         }
 
-        let mut circuits = Vec::with_capacity(N_CIRCUITS + 1);
-        for ckt_idx in 0..=(N_CIRCUITS as u16) {
-            let wire_shares = self
-                .collect_fixed_array_row::<
-                    InputShareRowSpec,
-                    WideLabelWireShares,
-                    _,
-                    N_INPUT_WIRES,
-                >(
-                    |wire_idx| CircuitSubChunkKey::new(ckt_idx, wire_idx as u8),
-                    "missing expected input share sub-chunk",
-                )
-                .await?
-                .ok_or_else(|| StorageError::state_inconsistency("partial input shares"))?;
-            circuits.push(wire_shares);
-        }
-        Ok(Some(HeapArray::from_vec(circuits)))
+        let reserved_setup_input_shares = ReservedSetupInputShares::new(|idx| {
+            let value = setup_inputs[idx];
+            all_reserved_setup_shares[idx][value as usize]
+        });
+
+        Ok(Some(reserved_setup_input_shares))
     }
 
     async fn get_output_shares(&self) -> Result<Option<OutputShares>, Self::Error> {
@@ -544,8 +557,8 @@ mod tests {
     use mosaic_cac_types::{
         Adaptor, AdaptorMsgChunk, ChallengeIndices, CompletedSignatures, DepositAdaptors,
         DepositId, DepositInputs, SecretKey, Sighash, Signature, WideLabelWireAdaptors,
-        WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors,
-        WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::garbler::DepositStep,
+        WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+        WithdrawalInputs, state_machine::garbler::DepositStep,
     };
     use mosaic_common::{
         Byte32,
@@ -554,7 +567,7 @@ mod tests {
             N_WITHDRAWAL_INPUT_WIRES,
         },
     };
-    use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul};
+    use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Scalar, gen_mul};
     use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
     use super::*;
@@ -592,18 +605,6 @@ mod tests {
 
     fn output_polynomial_commitment(seed: u64) -> OutputPolynomialCommitment {
         OutputPolynomialCommitment::from_elem(polynomial_commitment(seed))
-    }
-
-    fn circuit_input_shares(index: Index, seed: u64) -> CircuitInputShares {
-        CircuitInputShares::new(|wire| {
-            WideLabelWireShares::new(|value| {
-                Share::new(index, Scalar::from(seed + wire as u64 + value as u64 + 1))
-            })
-        })
-    }
-
-    fn circuit_output_share(index: Index, seed: u64) -> CircuitOutputShare {
-        Share::new(index, Scalar::from(seed))
     }
 
     fn challenge_indices() -> ChallengeIndices {
@@ -718,50 +719,6 @@ mod tests {
                 .await
                 .expect("get output commitment"),
             Some(expected_output_commitment)
-        );
-    }
-
-    #[tokio::test]
-    async fn shares_roundtrip() {
-        let mut storage = KvStoreGarbler::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
-        let mut expected_input_shares = Vec::with_capacity(N_CIRCUITS + 1);
-        let mut expected_output_shares = Vec::with_capacity(N_CIRCUITS + 1);
-        for ckt_idx in 0..=N_CIRCUITS {
-            let index = if ckt_idx == 0 {
-                Index::reserved()
-            } else {
-                Index::new(ckt_idx).expect("valid index")
-            };
-            let input_shares = circuit_input_shares(index, 10_000 + ckt_idx as u64);
-            let output_share = circuit_output_share(index, 20_000 + ckt_idx as u64);
-            storage
-                .put_shares_for_index(index, &input_shares, &output_share)
-                .await
-                .expect("put shares");
-            expected_input_shares.push(input_shares);
-            expected_output_shares.push(output_share);
-        }
-        let expected_input_shares = InputShares::from_vec(expected_input_shares);
-        let expected_output_shares = OutputShares::from_vec(expected_output_shares);
-        let expected_reserved = expected_input_shares[0].clone();
-
-        assert_eq!(
-            storage.get_input_shares().await.expect("get input shares"),
-            Some(expected_input_shares)
-        );
-        assert_eq!(
-            storage
-                .get_output_shares()
-                .await
-                .expect("get output shares"),
-            Some(expected_output_shares)
-        );
-        assert_eq!(
-            storage
-                .get_reserved_input_shares()
-                .await
-                .expect("get reserved input shares"),
-            Some(expected_reserved)
         );
     }
 

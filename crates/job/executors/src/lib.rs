@@ -145,9 +145,9 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
     fn send_challenge_response_chunk(
         &self,
         peer_id: &PeerId,
-        chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
+        index: &Index,
     ) -> impl Future<Output = HandlerOutcome> + Send {
-        garbler::handle_send_challenge_response_chunk(self, peer_id, chunk)
+        garbler::handle_send_challenge_response_chunk(self, peer_id, index)
     }
 
     fn deposit_verify_adaptors(

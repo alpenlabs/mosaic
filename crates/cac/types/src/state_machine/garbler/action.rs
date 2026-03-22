@@ -3,8 +3,8 @@ use mosaic_common::Byte32;
 use mosaic_vs3::Index;
 
 use crate::{
-    ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare,
-    CommitMsgHeader, CompletedSignatures, DepositId, GarblingSeed, GarblingTableCommitment,
+    ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare, CommitMsgHeader,
+    CompletedSignatures, DepositId, GarblingSeed, GarblingTableCommitment,
     OutputPolynomialCommitment, Seed, WideLabelWirePolynomialCommitments,
 };
 
@@ -118,7 +118,7 @@ pub enum Action {
     /// opened circuits.
     SendChallengeResponseMsgHeader(ChallengeResponseMsgHeader),
     /// Send challenge response chunk with revealed shares for a single circuit.
-    SendChallengeResponseMsgChunk(ChallengeResponseMsgChunk),
+    SendChallengeResponseMsgChunk(Index),
     /// Transfer a garbling table to the evaluator.
     TransferGarblingTable(GarblingSeed),
 
@@ -142,8 +142,8 @@ impl Action {
             Self::SendCommitMsgHeader(_) => ActionId::SendCommitMsgHeader,
             Self::SendCommitMsgChunk(wire_idx) => ActionId::SendCommitMsgChunk(*wire_idx),
             Self::SendChallengeResponseMsgHeader(_) => ActionId::SendChallengeResponseMsgHeader,
-            Self::SendChallengeResponseMsgChunk(chunk) => {
-                ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index)
+            Self::SendChallengeResponseMsgChunk(circuit_index) => {
+                ActionId::SendChallengeResponseMsgChunk(circuit_index.get() as u16)
             }
             Self::TransferGarblingTable(seed) => ActionId::TransferGarblingTable(*seed),
             Self::DepositVerifyAdaptors(id) => ActionId::DepositVerifyAdaptors(*id),

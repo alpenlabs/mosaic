@@ -2,20 +2,15 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use mosaic_cac_types::{
-    AdaptorMsgChunk, AllGarblingSeeds, ChallengeIndices, ChallengeMsg, ChallengeResponseMsgChunk,
+    AdaptorMsgChunk, AllGarblingSeeds, AllOutputLabelCts, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgHeader, CircuitInputShares, CircuitOutputShare, CommitMsgHeader, DepositId,
-    EvalGarblingSeeds, EvaluationIndices, GarblingTableCommitment, HeapArray, Index, InputShares,
-    OpenedGarblingSeeds, OpenedOutputShares, OutputShares, ReservedInputShares,
-    ReservedSetupInputShares, Seed, SetupInputs, Share, WideLabelWireShares,
+    EvalGarblingSeeds, EvaluationIndices, GarblingTableCommitment, HeapArray, Index,
+    OpenedGarblingSeeds, OpenedOutputShares, OutputShares, ReservedSetupInputShares, Seed,
     state_machine::garbler::*,
 };
-use mosaic_common::{
-    Byte32,
-    constants::{
-        N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
-        SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS, SEED_CONTEXT_GENERATE_POLYNOMIAL,
-        WIDE_LABEL_VALUE_COUNT,
-    },
+use mosaic_common::constants::{
+    N_CIRCUITS, N_INPUT_WIRES, SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS,
+    SEED_CONTEXT_GENERATE_POLYNOMIAL,
 };
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -88,10 +83,14 @@ pub(crate) async fn handle_event<S: StateMut>(
             match root_state.step {
                 Step::SendingCommit { .. } | Step::WaitingForChallenge => {
                     if is_valid_challenge(&challenge_msg) {
-                        let input_shares = state
-                            .get_input_shares()
+                        let challenge_indices = state
+                            .get_challenge_indices()
                             .await
-                            .require("expected input shares")?;
+                            .require("expected challenge indices")?;
+                        let reserved_setup_input_shares = state
+                            .get_reserved_setup_input_shares()
+                            .await
+                            .require("expected reserved setup input shares")?;
                         let output_shares = state
                             .get_output_shares()
                             .await
@@ -99,28 +98,20 @@ pub(crate) async fn handle_event<S: StateMut>(
                         let config = require_config(&root_state)?;
                         let seeds = generate_garbling_table_seeds(config.seed);
 
-                        let eval_output_cts: Vec<Byte32> = {
-                            let all_output_label_cts = state
-                                .get_all_output_label_cts()
-                                .await
-                                .require("expected garbling table metadata")?;
-                            let eval_indices = get_eval_indices(&challenge_msg.challenge_indices);
-                            eval_indices
-                                .iter()
-                                .map(|i| all_output_label_cts[i.get() - 1])
-                                .collect()
-                        };
+                        let all_output_label_cts = state
+                            .get_all_output_label_cts()
+                            .await
+                            .require("expected garbling table metadata")?;
 
-                        let (header, chunks) = create_challenge_response_msgs(
-                            &challenge_msg.challenge_indices,
-                            input_shares,
-                            output_shares,
+                        let header = create_challenge_response_msg_header(
+                            &challenge_indices,
+                            reserved_setup_input_shares,
+                            &output_shares,
                             seeds,
-                            config.setup_inputs,
-                            eval_output_cts,
+                            all_output_label_cts,
                         );
                         state
-                            .put_challenge_indices(&challenge_msg.challenge_indices)
+                            .put_challenge_indices(&challenge_indices)
                             .await
                             .map_err(SMError::storage)?;
 
@@ -130,8 +121,8 @@ pub(crate) async fn handle_event<S: StateMut>(
                         };
 
                         emit(actions, Action::SendChallengeResponseMsgHeader(header));
-                        for chunk in chunks {
-                            emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
+                        for circuit_idx in challenge_indices {
+                            emit(actions, Action::SendChallengeResponseMsgChunk(circuit_idx));
                         }
                     } else {
                         // TODO: should this abort, or just ignore and stay at same state ?
@@ -822,10 +813,10 @@ pub(crate) async fn restore<S: StateRead>(
                 .get_challenge_indices()
                 .await
                 .require("expected challenge indices")?;
-            let input_shares = state
-                .get_input_shares()
+            let reserved_setup_input_shares = state
+                .get_reserved_setup_input_shares()
                 .await
-                .require("expected input shares")?;
+                .require("expected reserved setup input shares")?;
             let output_shares = state
                 .get_output_shares()
                 .await
@@ -833,41 +824,26 @@ pub(crate) async fn restore<S: StateRead>(
             let config = require_config(&root_state)?;
             let seeds = generate_garbling_table_seeds(config.seed);
 
-            let eval_output_cts: Vec<Byte32> = {
-                let all_output_label_cts = state
-                    .get_all_output_label_cts()
-                    .await
-                    .require("expected garbling table metadata")?;
-                let eval_indices = get_eval_indices(&challenge_indices);
-                eval_indices
-                    .iter()
-                    .map(|i| all_output_label_cts[i.get() - 1])
-                    .collect()
-            };
+            let all_output_label_cts = state
+                .get_all_output_label_cts()
+                .await
+                .require("expected garbling table metadata")?;
 
-            let (header, chunks) = create_challenge_response_msgs(
+            let header = create_challenge_response_msg_header(
                 &challenge_indices,
-                input_shares,
-                output_shares,
+                reserved_setup_input_shares,
+                &output_shares,
                 seeds,
-                config.setup_inputs,
-                eval_output_cts,
+                all_output_label_cts,
             );
 
             if !*header_acked {
                 emit(actions, Action::SendChallengeResponseMsgHeader(header));
             }
 
-            for chunk in chunks {
-                let challenge_index_pos = challenge_indices
-                    .iter()
-                    .position(|x| x.get() == chunk.circuit_index as usize)
-                    .ok_or(SMError::StateInconsistency(format!(
-                        "Circuit index differs from one present in current state {}",
-                        chunk.circuit_index
-                    )))?;
-                if !chunk_acked[challenge_index_pos] {
-                    emit(actions, Action::SendChallengeResponseMsgChunk(chunk));
+            for (index, acked) in challenge_indices.iter().zip(chunk_acked.iter()) {
+                if !acked {
+                    emit(actions, Action::SendChallengeResponseMsgChunk(*index));
                 }
             }
         }
@@ -1041,86 +1017,20 @@ fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
     // bounds so the range check is done during deserialization itself
 }
 
-fn create_challenge_response_msgs(
-    challenge_idxs: &ChallengeIndices,
-    input_shares: InputShares,
-    output_shares: OutputShares,
-    garbling_seeds: AllGarblingSeeds,
-    setup_inputs: SetupInputs,
-    output_cts: Vec<Byte32>,
-) -> (ChallengeResponseMsgHeader, Vec<ChallengeResponseMsgChunk>) {
-    let header = create_challenge_response_msg_header(
-        challenge_idxs,
-        &input_shares,
-        &output_shares,
-        garbling_seeds,
-        setup_inputs,
-        HeapArray::from_vec(output_cts),
-    );
-    let chunks = create_challenge_response_msg_chunks(challenge_idxs, &input_shares);
-    (header, chunks)
-}
-
-fn create_challenge_response_msg_chunks(
-    challenge_indices: &ChallengeIndices,
-    input_shares: &InputShares,
-) -> Vec<ChallengeResponseMsgChunk> {
-    let mut open_input_shares: Vec<ChallengeResponseMsgChunk> = Vec::with_capacity(N_OPEN_CIRCUITS);
-    for i in 0..N_OPEN_CIRCUITS {
-        let idx = challenge_indices[i].get();
-        let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
-        for j in 0..N_INPUT_WIRES {
-            let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
-            for k in 0..WIDE_LABEL_VALUE_COUNT {
-                wide_shares.push(input_shares[idx][j][k]);
-            }
-            selected_input_shares.push(HeapArray::from_vec(wide_shares));
-        }
-        open_input_shares.push(ChallengeResponseMsgChunk {
-            circuit_index: idx as u16,
-            shares: HeapArray::from_vec(selected_input_shares),
-        });
-    }
-    open_input_shares
-}
-
 fn create_challenge_response_msg_header(
     challenge_idxs: &ChallengeIndices,
-    all_input_shares: &InputShares,
+    reserved_setup_input_shares: ReservedSetupInputShares,
     all_output_shares: &OutputShares,
     garbling_seeds: AllGarblingSeeds,
-    setup_input: SetupInputs,
-    unchallenged_output_label_cts: HeapArray<Byte32, N_EVAL_CIRCUITS>,
+    all_output_label_cts: AllOutputLabelCts,
 ) -> ChallengeResponseMsgHeader {
-    fn get_reserved_input_shares(input_shares: &InputShares) -> Box<ReservedInputShares> {
-        let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
-        for i in 0..N_INPUT_WIRES {
-            let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
-            for j in 0..WIDE_LABEL_VALUE_COUNT {
-                wide_shares.push(input_shares[0][i][j]);
-            }
-            selected_input_shares.push(HeapArray::from_vec(wide_shares));
-        }
-        let input_shares: CircuitInputShares = HeapArray::from_vec(selected_input_shares);
-        Box::new(input_shares)
-    }
+    let eval_indices = get_eval_indices(challenge_idxs);
 
     // evaluate the output false polynomial at the challenge indices
     let opened_output_shares: OpenedOutputShares = HeapArray::from_vec(
         challenge_idxs
             .map(|idx| all_output_shares[idx.get()])
             .to_vec(),
-    );
-
-    // evaluate each input polynomial at the reserved i=0 index
-    let reserved_input_shares: Box<ReservedInputShares> =
-        get_reserved_input_shares(all_input_shares);
-
-    // take 0..N_SETUP_INPUT_WIRES indices and
-    let reserved_setup_input_shares: ReservedSetupInputShares = HeapArray::from_vec(
-        (0..N_SETUP_INPUT_WIRES)
-            .map(|i| reserved_input_shares[i][setup_input[i] as usize])
-            .collect(),
     );
 
     // opened garbling seeds
@@ -1132,6 +1042,13 @@ fn create_challenge_response_msg_header(
             // conventional array sense
             .map(|idx| garbling_seeds[idx.get() - 1])
             .to_vec(),
+    );
+
+    let unchallenged_output_label_cts = HeapArray::from_vec(
+        eval_indices
+            .iter()
+            .map(|i| all_output_label_cts[i.get() - 1])
+            .collect(),
     );
 
     ChallengeResponseMsgHeader {

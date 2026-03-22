@@ -9,9 +9,9 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputShares,
-    OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment, OutputShares,
-    ReservedInputShares, ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
+    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares,
+    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
     WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
     WithdrawalInputs,
     state_machine::{evaluator, garbler},
@@ -169,8 +169,10 @@ impl garbler::StateRead for InMemoryGarblerSession {
         self.inner.get_output_polynomial_commitment().await
     }
 
-    async fn get_input_shares(&self) -> Result<Option<InputShares>, Self::Error> {
-        self.inner.get_input_shares().await
+    async fn get_reserved_setup_input_shares(
+        &self,
+    ) -> Result<Option<ReservedSetupInputShares>, Self::Error> {
+        self.inner.get_reserved_setup_input_shares().await
     }
 
     async fn get_output_shares(&self) -> Result<Option<OutputShares>, Self::Error> {

@@ -223,10 +223,28 @@ pub(crate) async fn handle_send_challenge_response_header<SP: StorageProvider, T
 pub(crate) async fn handle_send_challenge_response_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
-    chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
+    index: &Index,
 ) -> HandlerOutcome {
-    let id = ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index);
-    match ctx.net_client.send(*peer_id, chunk.clone()).await {
+    let id = ActionId::SendChallengeResponseMsgChunk(index.get() as u16);
+    let garb_state = match ctx.storage.garbler_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
+
+    let Some(shares) = garb_state
+        .get_input_shares_for_circuit(index)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let chunk = mosaic_cac_types::ChallengeResponseMsgChunk {
+        circuit_index: index.get() as u16,
+        shares,
+    };
+
+    match ctx.net_client.send(*peer_id, chunk).await {
         Ok(_ack) => completed(id, ActionResult::ChallengeResponseChunkAcked),
         Err(e) => {
             tracing::warn!(%e, "send challenge response chunk failed, will retry");
