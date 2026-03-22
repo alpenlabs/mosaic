@@ -2603,7 +2603,6 @@ dependencies = [
  "mosaic-storage-api",
  "mosaic-vs3",
  "postcard",
- "rand_chacha 0.3.1",
  "thiserror 2.0.18",
  "tokio",
 ]

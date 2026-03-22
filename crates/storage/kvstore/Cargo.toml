@@ -27,7 +27,7 @@ thiserror.workspace = true
 mosaic-storage-api = { workspace = true, features = ["test-utils"] }
 mosaic-cac-types = { workspace = true, features = ["test-utils"] }
 tokio = { version = "1", features = ["rt", "macros"] }
-rand_chacha.workspace = true
+
 
 [lints]
 workspace = true
