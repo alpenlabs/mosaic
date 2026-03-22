@@ -23,11 +23,16 @@ pub mod garbling;
 pub mod polynomial_cache;
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
-use mosaic_cac_types::state_machine::garbler::StateRead as _;
+use mosaic_cac_types::{
+    CircuitInputShares,
+    state_machine::{evaluator::StateRead as _, garbler::StateRead as _},
+};
+use mosaic_common::constants::N_OPEN_CIRCUITS;
 use mosaic_job_api::{CircuitError, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
 use mosaic_vs3::Index;
+use tracing::{error, warn};
 
 use crate::polynomial_cache::PolynomialCache;
 
@@ -280,8 +285,6 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
         index: mosaic_vs3::Index,
         seed: mosaic_cac_types::GarblingSeed,
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
-        use mosaic_cac_types::state_machine::evaluator::StateRead as _;
-
         let peer_id = *peer_id;
         async move {
             let eval_state = self
@@ -295,19 +298,54 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
-            let opened_input_shares = eval_state
-                .get_opened_input_shares()
-                .await
-                .ok()
-                .flatten()
-                .ok_or(CircuitError::StorageUnavailable)?;
             let opened_output_shares = eval_state
                 .get_opened_output_shares()
                 .await
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
+            let opened_input_shares = {
+                let mut items = Vec::<CircuitInputShares>::with_capacity(N_OPEN_CIRCUITS);
+                let mut store = self
+                    .storage
+                    .evaluator_state(&peer_id)
+                    .await
+                    .map_err(|_| CircuitError::StorageUnavailable)?;
 
+                for circuit_idx in 0..N_OPEN_CIRCUITS as u16 {
+                    match store.get_opened_input_shares_for_circuit(circuit_idx).await {
+                        Ok(Some(ckt_shares)) => {
+                            items.push(ckt_shares);
+                        }
+                        Ok(None) => {
+                            return Err(CircuitError::StorageUnavailable);
+                        }
+                        Err(err) => {
+                            warn!(?err, "failed to load input shares");
+                            // assume the error is due to transaction expiry (fdb).
+                            // retry with new txn
+                            store = self
+                                .storage
+                                .evaluator_state(&peer_id)
+                                .await
+                                .map_err(|_| CircuitError::StorageUnavailable)?;
+
+                            let ckt_shares = store
+                                .get_opened_input_shares_for_circuit(circuit_idx)
+                                .await
+                                .map_err(|err| {
+                                    error!(?err, "failed to load input shares after retry");
+                                    CircuitError::StorageUnavailable
+                                })?
+                                .ok_or(CircuitError::StorageUnavailable)?;
+
+                            items.push(ckt_shares);
+                        }
+                    }
+                }
+
+                items
+            };
             let pos = challenge_indices.iter().position(|ci| *ci == index).ok_or(
                 CircuitError::SetupFailed("index not in challenge indices".into()),
             )?;
