@@ -5,5 +5,6 @@ pub mod evaluator;
 pub mod garbler;
 pub mod keyspace;
 pub mod kvstore;
+pub(crate) mod ops;
 pub mod row_spec;
 pub mod storage_error;

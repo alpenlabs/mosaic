@@ -2,7 +2,7 @@
 
 use std::ops::Bound;
 
-use futures::{Stream, StreamExt, TryFutureExt, stream};
+use futures::{Stream, StreamExt, TryFutureExt};
 use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
@@ -20,10 +20,10 @@ use mosaic_storage_api::Commit;
 use mosaic_vs3::Index;
 
 use crate::{
-    keyspace,
     kvstore::KvStore,
+    ops::KvStoreOps,
     row_spec::{
-        KVRowSpec, SerializableValue,
+        KVRowSpec,
         common::{
             CircuitIndexKey, CircuitSubChunkKey, DepositChunkKey, DepositDoubleChunkKey,
             DepositKey, ProtocolSingletonKey, WireSubChunkKey,
@@ -47,75 +47,22 @@ pub struct KvStoreGarbler<KV: KvStore> {
     store: KV,
 }
 
+impl<KV: KvStore> KvStoreOps for KvStoreGarbler<KV> {
+    type Store = KV;
+
+    fn store(&self) -> &KV {
+        &self.store
+    }
+
+    fn store_mut(&mut self) -> &mut KV {
+        &mut self.store
+    }
+}
+
 impl<KV: KvStore> KvStoreGarbler<KV> {
     /// Create a garbler storage handle.
     pub fn new(store: KV) -> Self {
         Self { store }
-    }
-
-    fn bound_vec_to_slice(bound: &Bound<Vec<u8>>) -> Bound<&[u8]> {
-        match bound {
-            Bound::Included(bytes) => Bound::Included(bytes.as_slice()),
-            Bound::Excluded(bytes) => Bound::Excluded(bytes.as_slice()),
-            Bound::Unbounded => Bound::Unbounded,
-        }
-    }
-
-    async fn get_value<R: KVRowSpec>(
-        &self,
-        key: &R::Key,
-    ) -> Result<Option<R::Value>, StorageError> {
-        let key_bytes = keyspace::full_key::<R>(key).map_err(StorageError::key_pack)?;
-        let Some(value_bytes) = self
-            .store
-            .get(key_bytes.as_ref())
-            .await
-            .map_err(StorageError::kvstore)?
-        else {
-            return Ok(None);
-        };
-        <R::Value as SerializableValue>::deserialize(&value_bytes)
-            .map_err(StorageError::value_deserialize)
-            .map(Some)
-    }
-
-    async fn put_value<R: KVRowSpec>(
-        &mut self,
-        key: &R::Key,
-        value: &R::Value,
-    ) -> Result<(), StorageError> {
-        let key_bytes = keyspace::full_key::<R>(key).map_err(StorageError::key_pack)?;
-        let value_bytes = value.serialize().map_err(StorageError::value_serialize)?;
-
-        self.store
-            .set(key_bytes.as_ref(), value_bytes.as_ref())
-            .await
-            .map_err(StorageError::kvstore)
-    }
-
-    fn stream_row<R: KVRowSpec>(
-        &self,
-    ) -> impl Stream<Item = Result<(R::Key, R::Value), StorageError>> + Send + '_ {
-        let row_prefix = keyspace::row_prefix::<R>();
-        let (start, end) = keyspace::prefix_range(&row_prefix);
-        let kv_stream = self.store.range(
-            Self::bound_vec_to_slice(&start),
-            Self::bound_vec_to_slice(&end),
-            false,
-        );
-
-        stream::try_unfold(kv_stream, move |current| async move {
-            match current.next().await.map_err(StorageError::kvstore)? {
-                Some((pair, next)) => {
-                    let key = keyspace::split_row_key::<R>(&pair.key)
-                        .map_err(StorageError::key_unpack)?;
-                    let value = <R::Value as SerializableValue>::deserialize(&pair.value)
-                        .map_err(StorageError::value_deserialize)?;
-                    Ok(Some(((key, value), next)))
-                }
-                None => Ok(None),
-            }
-        })
     }
 
     async fn ensure_deposit_exists(&self, deposit_id: &DepositId) -> Result<(), StorageError> {
@@ -138,41 +85,6 @@ impl<KV: KvStore> KvStoreGarbler<KV> {
     {
         self.ensure_deposit_exists(deposit_id).await?;
         self.get_value::<R>(&DepositKey::new(*deposit_id)).await
-    }
-
-    async fn collect_fixed_array_row<R, T, F, const N: usize>(
-        &self,
-        mut key_for: F,
-        missing_message: &'static str,
-    ) -> Result<Option<HeapArray<T, N>>, StorageError>
-    where
-        R: KVRowSpec<Value = T>,
-        F: FnMut(usize) -> R::Key,
-    {
-        let mut values = Vec::with_capacity(N);
-        let mut any_present = false;
-        let mut any_missing = false;
-
-        for idx in 0..N {
-            match self.get_value::<R>(&key_for(idx)).await? {
-                Some(value) => {
-                    any_present = true;
-                    values.push(value);
-                }
-                None => {
-                    any_missing = true;
-                }
-            }
-        }
-
-        if !any_present {
-            return Ok(None);
-        }
-        if any_missing {
-            return Err(StorageError::state_inconsistency(missing_message));
-        }
-
-        Ok(Some(HeapArray::from_vec(values)))
     }
 
     fn index_to_u16(index: mosaic_vs3::Index) -> Result<u16, StorageError> {
@@ -208,7 +120,8 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
     fn stream_all_deposits(
         &self,
     ) -> impl Stream<Item = Result<(DepositId, DepositState), Self::Error>> + Send {
-        self.stream_row::<DepositStateRowSpec>()
+        self.stream_row::<DepositStateRowSpec>(Bound::Unbounded, Bound::Unbounded, false)
+            .expect("cannot fail")
             .map(|item| item.map(|(key, value)| (key.deposit_id, value)))
     }
 
