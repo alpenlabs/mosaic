@@ -4,10 +4,10 @@ use futures::{
 };
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, HeapArray, InputPolynomialCommitments,
-    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
-    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalInputs,
+    DepositAdaptors, DepositId, DepositInputs, HeapArray, OpenedGarblingSeeds, OpenedOutputShares,
+    OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
+    WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateRead},
 };
 use mosaic_common::constants::{N_ADAPTOR_MSG_CHUNKS, N_INPUT_WIRES};
@@ -44,26 +44,6 @@ impl StateRead for StoredEvaluatorState {
             .collect();
 
         stream::iter(deposits).map(Ok)
-    }
-
-    async fn get_input_polynomial_commitments(
-        &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        if self.input_polynomial_commitments.is_empty() {
-            return Ok(None);
-        }
-        let mut input_commitments = Vec::new();
-        for idx in 0..N_INPUT_WIRES {
-            let commitment = self
-                .input_polynomial_commitments
-                .get(&idx)
-                .cloned()
-                .ok_or_else(|| DbError::state_inconsistency("missing expected input share"))?;
-
-            input_commitments.push(commitment);
-        }
-
-        Ok(Some(HeapArray::from_vec(input_commitments)))
     }
 
     async fn get_input_polynomial_commitments_for_wire(
@@ -113,28 +93,6 @@ impl StateRead for StoredEvaluatorState {
 
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {
         Ok(self.challenge_indices.clone())
-    }
-
-    async fn get_opened_input_shares(&self) -> Result<Option<OpenedInputShares>, Self::Error> {
-        if self.opened_input_shares.is_empty() {
-            return Ok(None);
-        }
-        let challenge_indices = self
-            .get_challenge_indices()
-            .await?
-            .ok_or_else(|| DbError::state_inconsistency("expected challenge indices"))?;
-        let mut opened_input_shares_vec = Vec::new();
-        for index in challenge_indices {
-            let input_shares = self
-                .opened_input_shares
-                .get(&index.get())
-                .cloned()
-                .ok_or_else(|| DbError::state_inconsistency("expected opened input share"))?;
-
-            opened_input_shares_vec.push(input_shares);
-        }
-
-        Ok(Some(HeapArray::from_vec(opened_input_shares_vec)))
     }
 
     async fn get_opened_input_shares_for_circuit(

@@ -7,11 +7,10 @@ use mosaic_vs3::{Index, Share};
 use super::{DepositState, EvaluatorState};
 use crate::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, InputPolynomialCommitments,
-    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
-    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
-    WithdrawalInputs,
+    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
+    WithdrawalAdaptorsChunk, WithdrawalInputs,
 };
 
 /// Read-only access to evaluator state storage.
@@ -34,11 +33,6 @@ pub trait StateRead {
     fn stream_all_deposits(
         &self,
     ) -> impl Stream<Item = Result<(DepositId, DepositState), Self::Error>> + Send;
-
-    /// Retrieves commitments to input polynomials.
-    fn get_input_polynomial_commitments(
-        &self,
-    ) -> impl Future<Output = Result<Option<InputPolynomialCommitments>, Self::Error>> + Send;
 
     /// Retrieves input polynomial commitments for a single wire.
     fn get_input_polynomial_commitments_for_wire(
@@ -66,11 +60,6 @@ pub trait StateRead {
     fn get_challenge_indices(
         &self,
     ) -> impl Future<Output = Result<Option<ChallengeIndices>, Self::Error>> + Send;
-
-    /// Retrieves input shares for opened circuits.
-    fn get_opened_input_shares(
-        &self,
-    ) -> impl Future<Output = Result<Option<OpenedInputShares>, Self::Error>> + Send;
 
     /// Retrieves opened input shares for a single circuit (by circuit index).
     fn get_opened_input_shares_for_circuit(

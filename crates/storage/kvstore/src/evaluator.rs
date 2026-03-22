@@ -5,10 +5,9 @@ use std::ops::Bound;
 use futures::{Stream, StreamExt, TryFutureExt};
 use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, HeapArray,
-    InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
-    OutputPolynomialCommitment, PolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, HeapArray, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputPolynomialCommitment, PolynomialCommitment, ReservedSetupInputShares,
+    Sighashes, WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
     WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateMut, StateRead},
 };
@@ -120,39 +119,6 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
             .map(|item| item.map(|(key, value)| (key.deposit_id, value)))
     }
 
-    async fn get_input_polynomial_commitments(
-        &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        // Check presence via the first sub-chunk of the first wire.
-        if self
-            .get_value::<InputPolynomialCommitmentRowSpec>(&WireSubChunkKey::new(0, 0))
-            .await?
-            .is_none()
-        {
-            return Ok(None);
-        }
-
-        let mut wires = Vec::with_capacity(N_INPUT_WIRES);
-        for wire_idx in 0..N_INPUT_WIRES {
-            let commitments = self
-                .collect_fixed_array_row::<
-                    InputPolynomialCommitmentRowSpec,
-                    PolynomialCommitment,
-                    _,
-                    WIDE_LABEL_VALUE_COUNT,
-                >(
-                    |pc_idx| WireSubChunkKey::new(wire_idx as u16, pc_idx as u8),
-                    "missing expected input poly commitment sub-chunk",
-                )
-                .await?
-                .ok_or_else(|| {
-                    StorageError::state_inconsistency("partial input polynomial commitments")
-                })?;
-            wires.push(commitments);
-        }
-        Ok(Some(HeapArray::from_vec(wires)))
-    }
-
     async fn get_input_polynomial_commitments_for_wire(
         &self,
         wire_idx: u16,
@@ -213,39 +179,6 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {
         self.get_value::<ChallengeIndicesRowSpec>(&ProtocolSingletonKey)
             .await
-    }
-
-    async fn get_opened_input_shares(&self) -> Result<Option<OpenedInputShares>, Self::Error> {
-        if !self.row_has_any::<OpenedInputShareRowSpec>().await? {
-            return Ok(None);
-        }
-
-        let challenge_indices = self
-            .get_challenge_indices()
-            .await?
-            .ok_or_else(|| StorageError::state_inconsistency("expected challenge indices"))?;
-
-        let mut opened_input_shares = Vec::new();
-        for index in challenge_indices {
-            let ckt_idx = Self::index_to_u16(index)?;
-            let input_shares = self
-                .collect_fixed_array_row::<
-                    OpenedInputShareRowSpec,
-                    WideLabelWireShares,
-                    _,
-                    N_INPUT_WIRES,
-                >(
-                    |wire_idx| CircuitSubChunkKey::new(ckt_idx, wire_idx as u8),
-                    "missing expected opened input share sub-chunk",
-                )
-                .await?
-                .ok_or_else(|| {
-                    StorageError::state_inconsistency("expected opened input share")
-                })?;
-            opened_input_shares.push(input_shares);
-        }
-
-        Ok(Some(HeapArray::from_vec(opened_input_shares)))
     }
 
     async fn get_opened_input_shares_for_circuit(
@@ -666,7 +599,7 @@ mod tests {
     use futures::StreamExt as _;
     use mosaic_cac_types::{
         Adaptor, ChallengeIndices, CompletedSignatures, DepositAdaptors, DepositId, DepositInputs,
-        OpenedInputShares, SecretKey, Seed, Sighash, Signature, WideLabelWireAdaptors,
+        SecretKey, Seed, Sighash, Signature, WideLabelWireAdaptors,
         WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors,
         WithdrawalAdaptorsChunk,
         state_machine::evaluator::{DepositStep, Step},
@@ -674,7 +607,7 @@ mod tests {
     use mosaic_common::{
         Byte32,
         constants::{
-            N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS,
+            N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES,
             N_WITHDRAWAL_INPUT_WIRES,
         },
     };
@@ -827,28 +760,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_polynomial_commitment_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
-
-        let expected_wire_commitments = input_polynomial_commitments(19);
-        for wire_idx in 0..N_INPUT_WIRES {
-            storage
-                .put_input_polynomial_commitments_chunk(wire_idx as u16, &expected_wire_commitments)
-                .await
-                .expect("put input commitments chunk");
-        }
-        let expected_input_commitments =
-            InputPolynomialCommitments::new(|_| expected_wire_commitments.clone());
-        assert_eq!(
-            storage
-                .get_input_polynomial_commitments()
-                .await
-                .expect("get input commitments"),
-            Some(expected_input_commitments)
-        );
-    }
-
-    #[tokio::test]
     async fn input_polynomial_zeroth_coeffs_roundtrip() {
         let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
 
@@ -948,36 +859,6 @@ mod tests {
                 .await
                 .expect("get challenge indices"),
             Some(expected_challenge_indices)
-        );
-    }
-
-    #[tokio::test]
-    async fn opened_input_shares_roundtrip() {
-        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
-
-        let expected_challenge_indices = challenge_indices();
-        storage
-            .put_challenge_indices(&expected_challenge_indices)
-            .await
-            .expect("put challenge indices");
-
-        let mut expected_opened_input_shares = Vec::with_capacity(N_OPEN_CIRCUITS);
-        for (i, index) in expected_challenge_indices.iter().enumerate() {
-            let shares = circuit_input_shares(*index, 10_000 + i as u64);
-            storage
-                .put_opened_input_shares_chunk(index.get() as u16, &shares)
-                .await
-                .expect("put opened input shares");
-            expected_opened_input_shares.push(shares);
-        }
-        let expected_opened_input_shares =
-            OpenedInputShares::from_vec(expected_opened_input_shares);
-        assert_eq!(
-            storage
-                .get_opened_input_shares()
-                .await
-                .expect("get opened input shares"),
-            Some(expected_opened_input_shares)
         );
     }
 

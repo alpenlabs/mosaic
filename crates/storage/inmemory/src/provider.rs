@@ -9,11 +9,11 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputPolynomialCommitments,
-    InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
-    OutputPolynomialCommitment, OutputShares, ReservedInputShares, ReservedSetupInputShares,
-    Sighashes, WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients,
-    WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputShares,
+    OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment, OutputShares,
+    ReservedInputShares, ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs,
     state_machine::{evaluator, garbler},
 };
 use mosaic_net_svc_api::PeerId;
@@ -436,12 +436,6 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
         self.inner.stream_all_deposits()
     }
 
-    async fn get_input_polynomial_commitments(
-        &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        self.inner.get_input_polynomial_commitments().await
-    }
-
     async fn get_input_polynomial_commitments_for_wire(
         &self,
         wire_idx: u16,
@@ -474,10 +468,6 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
 
     async fn get_challenge_indices(&self) -> Result<Option<ChallengeIndices>, Self::Error> {
         self.inner.get_challenge_indices().await
-    }
-
-    async fn get_opened_input_shares(&self) -> Result<Option<OpenedInputShares>, Self::Error> {
-        self.inner.get_opened_input_shares().await
     }
 
     async fn get_opened_input_shares_for_circuit(
