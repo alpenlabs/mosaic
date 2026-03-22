@@ -26,7 +26,6 @@ thiserror.workspace = true
 [dev-dependencies]
 mosaic-storage-api = { workspace = true, features = ["test-utils"] }
 mosaic-cac-types = { workspace = true, features = ["test-utils"] }
-tokio = { version = "1", features = ["rt", "macros"] }
 
 
 [lints]

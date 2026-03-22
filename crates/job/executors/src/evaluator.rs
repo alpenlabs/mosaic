@@ -219,7 +219,6 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
 
     // Verify each opened share against its polynomial commitment.
     // Any failure produces a reason string; success returns None.
-    #[expect(clippy::needless_range_loop, reason = "uniformity")]
     let failure_reason = (|| {
         for idx in 0..N_OPEN_CIRCUITS {
             for wire in 0..N_INPUT_WIRES {
@@ -548,6 +547,7 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
         let sighash_idx = N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
 
         let mut wire_adaptors = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
+        #[expect(clippy::needless_range_loop, reason = "uniformity")]
         for val in 0..WIDE_LABEL_VALUE_COUNT {
             // Zeroth coefficient = commitment to share at reserved index
             let share_commitment = withdrawal_wire_zero_coefficients[withdrawal_wire][val];
