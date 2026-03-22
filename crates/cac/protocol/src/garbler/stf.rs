@@ -1023,11 +1023,11 @@ async fn build_commit_msg_header<S: StateRead>(state: &S) -> SMResult<CommitMsgH
 }
 
 fn generate_polynomial_seed(base_seed: Seed) -> Seed {
-    derive_stage_seed(base_seed, SEED_CONTEXT_GENERATE_POLYNOMIAL)
+    derive_stage_seed(base_seed, SEED_CONTEXT_GENERATE_POLYNOMIAL, None)
 }
 
 fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
-    let stage_seed = derive_stage_seed(base_seed, SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS);
+    let stage_seed = derive_stage_seed(base_seed, SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS, None);
     let mut rng = ChaCha20Rng::from_seed(stage_seed.into()); // modify base seed ?
     let garbling_seeds = (0..N_CIRCUITS)
         .map(|_| {

@@ -80,4 +80,4 @@ pub const SEED_CONTEXT_GENERATE_POLYNOMIAL: &str = "generate_polynomial";
 pub const SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS: &str = "generate_garbling_table_seeds";
 /// Seed derivation context for (indexed) deposit keypairs
 /// This _MUST_ be used with a distinct deposit index
-pub const SEED_CONTEXT_INDEXED_DEPOSIT_KEYPAIR: &str = "deposit_";
+pub const SEED_CONTEXT_INDEXED_DEPOSIT_KEYPAIR: &str = "deposit";

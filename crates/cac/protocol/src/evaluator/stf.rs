@@ -1073,7 +1073,7 @@ fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
 }
 
 fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
-    let seed = derive_stage_seed(base_seed, SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES);
+    let seed = derive_stage_seed(base_seed, SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES, None);
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
     let sampled_indices = rand::seq::index::sample(&mut rng, N_CIRCUITS, N_OPEN_CIRCUITS); // samples N_OPEN_CIRCUITS many values from the domain [0, N_CIRCUITS]
     let mut challenge_indices: ChallengeIndices = HeapArray::from_vec(
