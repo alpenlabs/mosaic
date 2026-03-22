@@ -19,6 +19,21 @@
 //! [`StateMut`]: mosaic_cac_types::state_machine::garbler::StateMut
 
 pub mod table_store;
+#[cfg(feature = "test-utils")]
+mod tests;
+
+/// Re-exports for `#[macro_export]` macros. Not part of the public API.
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+pub mod __private {
+    pub use futures;
+    pub use mosaic_cac_types;
+    pub use mosaic_common;
+    pub use mosaic_net_svc_api;
+    pub use mosaic_vs3;
+    pub use rand_chacha;
+    pub use tokio;
+}
 
 use core::future::Future;
 

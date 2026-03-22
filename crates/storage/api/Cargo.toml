@@ -10,13 +10,25 @@ repository.workspace = true
 categories.workspace = true
 keywords.workspace = true
 
+[features]
+default = []
+test-utils = [
+    "mosaic-cac-types/test-utils",
+    "dep:rand_chacha",
+    "dep:tokio",
+    "dep:futures",
+]
+
 [dependencies]
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 mosaic-net-svc-api.workspace = true
 mosaic-vs3.workspace = true
 
+futures = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "macros"], optional = true }
 
 [lints]
 workspace = true

@@ -532,3 +532,17 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+mod garbler_tests {
+    use super::BTreeMapStorageProvider;
+
+    mosaic_storage_api::garbler_store_tests!(BTreeMapStorageProvider::new());
+}
+
+#[cfg(test)]
+mod evaluator_tests {
+    use super::BTreeMapStorageProvider;
+
+    mosaic_storage_api::evaluator_store_tests!(BTreeMapStorageProvider::new());
+}
