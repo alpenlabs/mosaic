@@ -153,6 +153,23 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
         Ok(Some(HeapArray::from_vec(wires)))
     }
 
+    async fn get_input_polynomial_commitments_for_wire(
+        &self,
+        wire_idx: u16,
+    ) -> Result<Option<WideLabelWirePolynomialCommitments>, Self::Error> {
+        self
+            .collect_fixed_array_row::<
+                InputPolynomialCommitmentRowSpec,
+                PolynomialCommitment,
+                _,
+                WIDE_LABEL_VALUE_COUNT,
+            >(
+                |pc_idx| WireSubChunkKey::new(wire_idx, pc_idx as u8),
+                "missing expected input poly commitment sub-chunk",
+            )
+            .await
+    }
+
     async fn get_output_polynomial_commitment(
         &self,
     ) -> Result<Option<OutputPolynomialCommitment>, Self::Error> {
@@ -229,6 +246,23 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
         }
 
         Ok(Some(HeapArray::from_vec(opened_input_shares)))
+    }
+
+    async fn get_opened_input_shares_for_circuit(
+        &self,
+        circuit_idx: u16,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        self
+            .collect_fixed_array_row::<
+                OpenedInputShareRowSpec,
+                WideLabelWireShares,
+                _,
+                N_INPUT_WIRES,
+            >(
+                |wire_idx| CircuitSubChunkKey::new(circuit_idx, wire_idx as u8),
+                "missing expected opened input share sub-chunk",
+            )
+            .await
     }
 
     async fn get_reserved_setup_input_shares(
@@ -1207,5 +1241,81 @@ mod tests {
         got.sort_by_key(|(id, _)| id.0);
 
         assert_eq!(got, vec![(dep1_id, dep1), (dep2_id, dep2)]);
+    }
+
+    #[tokio::test]
+    async fn get_input_polynomial_commitments_for_wire_roundtrip() {
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
+
+        let wire0_comms = input_polynomial_commitments(100);
+        let wire1_comms = input_polynomial_commitments(200);
+
+        storage
+            .put_input_polynomial_commitments_chunk(0, &wire0_comms)
+            .await
+            .expect("put wire 0 commitments");
+        storage
+            .put_input_polynomial_commitments_chunk(1, &wire1_comms)
+            .await
+            .expect("put wire 1 commitments");
+
+        // Read back individually via new per-wire accessor.
+        let got0 = storage
+            .get_input_polynomial_commitments_for_wire(0)
+            .await
+            .expect("get wire 0");
+        assert_eq!(got0, Some(wire0_comms));
+
+        let got1 = storage
+            .get_input_polynomial_commitments_for_wire(1)
+            .await
+            .expect("get wire 1");
+        assert_eq!(got1, Some(wire1_comms));
+
+        // Wire that was never written should return None.
+        let got_missing = storage
+            .get_input_polynomial_commitments_for_wire(99)
+            .await
+            .expect("get missing wire");
+        assert_eq!(got_missing, None);
+    }
+
+    #[tokio::test]
+    async fn get_opened_input_shares_for_circuit_roundtrip() {
+        let mut storage = KvStoreEvaluator::new(FdbSizeGuardedKvStore(BTreeMapKvStore::new()));
+
+        let idx1 = Index::new(2).unwrap();
+        let idx2 = Index::new(4).unwrap();
+        let shares1 = circuit_input_shares(idx1, 5000);
+        let shares2 = circuit_input_shares(idx2, 6000);
+
+        storage
+            .put_opened_input_shares_chunk(idx1.get() as u16, &shares1)
+            .await
+            .expect("put circuit 2 shares");
+        storage
+            .put_opened_input_shares_chunk(idx2.get() as u16, &shares2)
+            .await
+            .expect("put circuit 4 shares");
+
+        // Read back individually via new per-circuit accessor.
+        let got1 = storage
+            .get_opened_input_shares_for_circuit(idx1.get() as u16)
+            .await
+            .expect("get circuit 2");
+        assert_eq!(got1, Some(shares1));
+
+        let got2 = storage
+            .get_opened_input_shares_for_circuit(idx2.get() as u16)
+            .await
+            .expect("get circuit 4");
+        assert_eq!(got2, Some(shares2));
+
+        // Circuit that was never written should return None.
+        let got_missing = storage
+            .get_opened_input_shares_for_circuit(1)
+            .await
+            .expect("get missing circuit");
+        assert_eq!(got_missing, None);
     }
 }

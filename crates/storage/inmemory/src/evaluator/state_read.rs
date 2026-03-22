@@ -3,9 +3,10 @@ use futures::{
     stream::{self, StreamExt},
 };
 use mosaic_cac_types::{
-    AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, HeapArray, InputPolynomialCommitments, OpenedGarblingSeeds, OpenedInputShares,
-    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
+    DepositAdaptors, DepositId, DepositInputs, HeapArray, InputPolynomialCommitments,
+    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
+    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
     WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState, StateRead},
 };
@@ -63,6 +64,16 @@ impl StateRead for StoredEvaluatorState {
         }
 
         Ok(Some(HeapArray::from_vec(input_commitments)))
+    }
+
+    async fn get_input_polynomial_commitments_for_wire(
+        &self,
+        wire_idx: u16,
+    ) -> Result<Option<WideLabelWirePolynomialCommitments>, Self::Error> {
+        Ok(self
+            .input_polynomial_commitments
+            .get(&(wire_idx as usize))
+            .cloned())
     }
 
     async fn get_output_polynomial_commitment(
@@ -124,6 +135,16 @@ impl StateRead for StoredEvaluatorState {
         }
 
         Ok(Some(HeapArray::from_vec(opened_input_shares_vec)))
+    }
+
+    async fn get_opened_input_shares_for_circuit(
+        &self,
+        circuit_idx: u16,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        Ok(self
+            .opened_input_shares
+            .get(&(circuit_idx as usize))
+            .cloned())
     }
 
     async fn get_reserved_setup_input_shares(

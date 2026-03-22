@@ -442,6 +442,15 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
         self.inner.get_input_polynomial_commitments().await
     }
 
+    async fn get_input_polynomial_commitments_for_wire(
+        &self,
+        wire_idx: u16,
+    ) -> Result<Option<WideLabelWirePolynomialCommitments>, Self::Error> {
+        self.inner
+            .get_input_polynomial_commitments_for_wire(wire_idx)
+            .await
+    }
+
     async fn get_output_polynomial_commitment(
         &self,
     ) -> Result<Option<OutputPolynomialCommitment>, Self::Error> {
@@ -469,6 +478,15 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
 
     async fn get_opened_input_shares(&self) -> Result<Option<OpenedInputShares>, Self::Error> {
         self.inner.get_opened_input_shares().await
+    }
+
+    async fn get_opened_input_shares_for_circuit(
+        &self,
+        circuit_idx: u16,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        self.inner
+            .get_opened_input_shares_for_circuit(circuit_idx)
+            .await
     }
 
     async fn get_reserved_setup_input_shares(

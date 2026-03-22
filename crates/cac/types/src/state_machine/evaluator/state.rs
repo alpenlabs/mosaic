@@ -40,6 +40,12 @@ pub trait StateRead {
         &self,
     ) -> impl Future<Output = Result<Option<InputPolynomialCommitments>, Self::Error>> + Send;
 
+    /// Retrieves input polynomial commitments for a single wire.
+    fn get_input_polynomial_commitments_for_wire(
+        &self,
+        wire_idx: u16,
+    ) -> impl Future<Output = Result<Option<WideLabelWirePolynomialCommitments>, Self::Error>> + Send;
+
     /// Retrieves the commitment to output polynomial.
     fn get_output_polynomial_commitment(
         &self,
@@ -65,6 +71,12 @@ pub trait StateRead {
     fn get_opened_input_shares(
         &self,
     ) -> impl Future<Output = Result<Option<OpenedInputShares>, Self::Error>> + Send;
+
+    /// Retrieves opened input shares for a single circuit (by circuit index).
+    fn get_opened_input_shares_for_circuit(
+        &self,
+        circuit_idx: u16,
+    ) -> impl Future<Output = Result<Option<CircuitInputShares>, Self::Error>> + Send;
 
     /// Retrieves reserved setup input shares.
     fn get_reserved_setup_input_shares(
