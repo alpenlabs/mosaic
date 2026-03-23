@@ -763,7 +763,7 @@ async fn handle_evaluator_consumes_receipt_ack(
     );
 }
 
-async fn hadnle_garbler_consumes_receipt_ack(
+async fn handle_garbler_consumes_receipt_ack(
     garb_inputs: &mut Vec<GarbInput>,
     garb_state: &mut StoredGarblerState,
     garb_actions: &mut Vec<
@@ -1320,7 +1320,7 @@ async fn test_e2e() {
         )
         .await;
 
-        hadnle_garbler_consumes_receipt_ack(&mut garb_inputs, &mut garb_state, &mut garb_actions)
+        handle_garbler_consumes_receipt_ack(&mut garb_inputs, &mut garb_state, &mut garb_actions)
             .await;
 
         tracing::info!("setup complete");
