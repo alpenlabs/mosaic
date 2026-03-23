@@ -24,7 +24,7 @@ macro_rules! garbler_store_tests {
                 mosaic_cac_types::{
                     Adaptor, AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices,
                     CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, InputShares,
-                    OutputShares, ReservedSetupInputShares, Seed, SecretKey, SetupInputs, Sighash,
+                    OutputShares, ReservedSetupInputShares, SecretKey, Seed, SetupInputs, Sighash,
                     Sighashes, Signature, WideLabelWireAdaptors,
                     WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors,
                     WithdrawalAdaptorsChunk, WithdrawalInputs,
@@ -492,7 +492,10 @@ macro_rules! garbler_store_tests {
             let store = provider.garbler_state(&peer).await.expect("get read");
             let keys = store.get_all_aes128_keys().await.expect("get keys");
             let public_s = store.get_all_public_s_values().await.expect("get public_s");
-            let zero = store.get_all_constant_zero_labels().await.expect("get zero");
+            let zero = store
+                .get_all_constant_zero_labels()
+                .await
+                .expect("get zero");
             let one = store.get_all_constant_one_labels().await.expect("get one");
             let cts = store.get_all_output_label_cts().await.expect("get cts");
 

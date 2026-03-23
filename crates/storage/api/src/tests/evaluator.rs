@@ -41,7 +41,9 @@ macro_rules! evaluator_store_tests {
                         N_WITHDRAWAL_INPUT_WIRES,
                     },
                 },
-                mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul},
+                mosaic_vs3::{
+                    Index, Point, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul,
+                },
                 rand_chacha::{ChaCha20Rng, rand_core::SeedableRng},
                 tokio,
             },
