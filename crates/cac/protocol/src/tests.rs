@@ -1435,10 +1435,12 @@ async fn test_e2e() {
                 if reveals_secret {
                     use mosaic_cac_types::state_machine::evaluator::StateRead;
                     let output_poly_commit = eval_state
-                            .get_output_polynomial_commitment()
-                            .await
-                            .unwrap().unwrap()[0].get_zeroth_coefficient();
-                    
+                        .get_output_polynomial_commitment()
+                        .await
+                        .unwrap()
+                        .unwrap()[0]
+                        .get_zeroth_coefficient();
+
                     let share_commit = slash.unwrap().to_pubkey();
                     assert_eq!(share_commit.0, output_poly_commit, "should be keypairs");
                 }
