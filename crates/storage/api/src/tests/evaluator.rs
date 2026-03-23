@@ -23,9 +23,10 @@ macro_rules! evaluator_store_tests {
                 futures::StreamExt as _,
                 mosaic_cac_types::{
                     Adaptor, AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures,
-                    DepositAdaptors, DepositId, DepositInputs, OpenedInputShares,
-                    ReservedSetupInputShares, SecretKey, Seed, Sighash, Sighashes, Signature,
-                    WideLabelWireAdaptors, WideLabelWirePolynomialCommitments, WideLabelWireShares,
+                    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, HeapArray,
+                    OpenedInputShares, ReservedSetupInputShares, SecretKey, Seed, Sighash,
+                    Sighashes, Signature, WideLabelWireAdaptors,
+                    WideLabelWirePolynomialCommitments, WideLabelWireShares,
                     WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
                     WithdrawalAdaptorsChunk, WithdrawalInputs,
                     state_machine::evaluator::{
@@ -36,10 +37,11 @@ macro_rules! evaluator_store_tests {
                 mosaic_common::{
                     Byte32,
                     constants::{
-                        N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
+                        N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES,
+                        N_WITHDRAWAL_INPUT_WIRES,
                     },
                 },
-                mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul},
+                mosaic_vs3::{Index, Point, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul},
                 rand_chacha::{ChaCha20Rng, rand_core::SeedableRng},
                 tokio,
             },
@@ -179,6 +181,20 @@ macro_rules! evaluator_store_tests {
 
         fn indexed_value(seed: u8, idx: usize) -> [u8; 16] {
             [seed.wrapping_add(idx as u8); 16]
+        }
+
+        fn zeroth_coefficients(seed: u64) -> WideLabelZerothPolynomialCoefficients {
+            WideLabelZerothPolynomialCoefficients::new(|idx| {
+                gen_mul(&Scalar::from(seed + idx as u64 + 1))
+            })
+        }
+
+        fn heap_array_16(seed: u8) -> HeapArray<[u8; 16], { N_CIRCUITS }> {
+            HeapArray::new(|idx| [seed.wrapping_add(idx as u8); 16])
+        }
+
+        fn evaluation_indices() -> EvaluationIndices {
+            std::array::from_fn(|idx| Index::new(idx + 1).expect("valid eval index"))
         }
 
         // ----- tests -----
@@ -560,6 +576,139 @@ macro_rules! evaluator_store_tests {
                     .await
                     .expect("get missing circuit"),
                 None
+            );
+        }
+
+        #[tokio::test]
+        async fn zeroth_polynomial_coefficients_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+            let wire0 = zeroth_coefficients(100);
+            let wire1 = zeroth_coefficients(200);
+
+            let mut store = provider.evaluator_state_mut(&peer).await.expect("get mut");
+            store
+                .put_input_polynomial_commitment_zeroth_coeffs(0, &wire0)
+                .await
+                .expect("put wire 0");
+            store
+                .put_input_polynomial_commitment_zeroth_coeffs(1, &wire1)
+                .await
+                .expect("put wire 1");
+            store.commit().await.expect("commit");
+
+            let store = provider.evaluator_state(&peer).await.expect("get read");
+            let got = store
+                .get_input_polynomial_zeroth_coefficients(0..2)
+                .await
+                .expect("get range 0..2");
+            assert_eq!(got.len(), 2);
+            assert_eq!(got[0], wire0);
+            assert_eq!(got[1], wire1);
+
+            let got_single = store
+                .get_input_polynomial_zeroth_coefficients(0..1)
+                .await
+                .expect("get range 0..1");
+            assert_eq!(got_single.len(), 1);
+            assert_eq!(got_single[0], wire0);
+        }
+
+        #[tokio::test]
+        async fn garbling_material_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+            let keys = heap_array_16(0x10);
+            let public_s = heap_array_16(0x20);
+            let zero_labels = heap_array_16(0x30);
+            let one_labels = heap_array_16(0x40);
+            let eval_indices = evaluation_indices();
+            let output_cts = HeapArray::<Byte32, { N_EVAL_CIRCUITS }>::new(|idx| {
+                byte32(0x50u8.wrapping_add(idx as u8))
+            });
+
+            let mut store = provider.evaluator_state_mut(&peer).await.expect("get mut");
+            store.put_all_aes128_keys(&keys).await.expect("put keys");
+            store
+                .put_all_public_s(&public_s)
+                .await
+                .expect("put public_s");
+            store
+                .put_all_constant_zero_labels(&zero_labels)
+                .await
+                .expect("put zero labels");
+            store
+                .put_all_constant_one_labels(&one_labels)
+                .await
+                .expect("put one labels");
+            store
+                .put_unchallenged_output_label_cts(&eval_indices, &output_cts)
+                .await
+                .expect("put output cts");
+            store.commit().await.expect("commit");
+
+            let store = provider.evaluator_state(&peer).await.expect("get read");
+
+            // Check a specific circuit index (1-based in the trait)
+            let idx = Index::new(1).expect("valid");
+            assert_eq!(
+                store.get_aes128_key(idx).await.expect("get key"),
+                Some(keys[0])
+            );
+            assert_eq!(
+                store.get_public_s(idx).await.expect("get public_s"),
+                Some(public_s[0])
+            );
+            assert_eq!(
+                store
+                    .get_constant_zero_label(idx)
+                    .await
+                    .expect("get zero label"),
+                Some(zero_labels[0])
+            );
+            assert_eq!(
+                store
+                    .get_constant_one_label(idx)
+                    .await
+                    .expect("get one label"),
+                Some(one_labels[0])
+            );
+
+            // Output label CT uses eval_indices[0] which is Index(1)
+            assert_eq!(
+                store
+                    .get_output_label_ct(eval_indices[0])
+                    .await
+                    .expect("get output ct"),
+                Some(output_cts[0])
+            );
+
+            // Check another valid circuit index
+            let idx2 = Index::new(N_CIRCUITS).expect("valid");
+            assert_eq!(
+                store.get_aes128_key(idx2).await.expect("get last key"),
+                Some(keys[N_CIRCUITS - 1])
+            );
+        }
+
+        #[tokio::test]
+        async fn fault_secret_share_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+            let idx = Index::new(3).expect("valid");
+            let expected = Share::new(idx, Scalar::from(42u64));
+
+            let mut store = provider.evaluator_state_mut(&peer).await.expect("get mut");
+            store
+                .put_fault_secret_share(&expected)
+                .await
+                .expect("put fault share");
+            store.commit().await.expect("commit");
+
+            let store = provider.evaluator_state(&peer).await.expect("get read");
+            assert_eq!(
+                store.get_fault_secret_share().await.expect("get"),
+                Some(expected)
             );
         }
     };

@@ -24,18 +24,20 @@ macro_rules! garbler_store_tests {
                 mosaic_cac_types::{
                     Adaptor, AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices,
                     CompletedSignatures, DepositAdaptors, DepositId, DepositInputs, InputShares,
-                    OutputShares, SecretKey, Sighash, Sighashes, Signature, WideLabelWireAdaptors,
+                    OutputShares, ReservedSetupInputShares, Seed, SecretKey, SetupInputs, Sighash,
+                    Sighashes, Signature, WideLabelWireAdaptors,
                     WideLabelWirePolynomialCommitments, WideLabelWireShares, WithdrawalAdaptors,
                     WithdrawalAdaptorsChunk, WithdrawalInputs,
                     state_machine::garbler::{
-                        DepositState, DepositStep, GarblerState, StateMut as _, StateRead as _,
+                        Config, DepositState, DepositStep, GarblerState, GarblingMetadata,
+                        StateMut as _, StateRead as _,
                     },
                 },
                 mosaic_common::{
                     Byte32,
                     constants::{
                         N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES,
-                        N_WITHDRAWAL_INPUT_WIRES,
+                        N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
                     },
                 },
                 mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Scalar, Share, gen_mul},
@@ -157,6 +159,23 @@ macro_rules! garbler_store_tests {
 
         fn completed_signatures(seed: u8) -> CompletedSignatures {
             CompletedSignatures::new(|idx| signature(seed.wrapping_add(idx as u8)))
+        }
+
+        fn garbling_metadata(seed: u8) -> GarblingMetadata {
+            GarblingMetadata {
+                aes128_key: [seed; 16],
+                public_s: [seed.wrapping_add(1); 16],
+                constant_zero_label: [seed.wrapping_add(2); 16],
+                constant_one_label: [seed.wrapping_add(3); 16],
+                output_label_ct: byte32(seed.wrapping_add(4)),
+            }
+        }
+
+        fn garbler_config(seed: u8) -> Config {
+            Config {
+                seed: Seed::from([seed; 32]),
+                setup_inputs: std::array::from_fn(|idx| seed.wrapping_add(idx as u8)),
+            }
         }
 
         // ----- tests -----
@@ -452,6 +471,151 @@ macro_rules! garbler_store_tests {
                 .collect::<Vec<_>>();
             got.sort_by_key(|(id, _)| id.0);
             assert_eq!(got, vec![(dep1_id, dep1), (dep2_id, dep2)]);
+        }
+
+        #[tokio::test]
+        async fn garbling_metadata_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+
+            let mut store = provider.garbler_state_mut(&peer).await.expect("get mut");
+            for ckt in 1..=N_CIRCUITS {
+                let index = Index::new(ckt).expect("valid index");
+                let md = garbling_metadata(ckt as u8);
+                store
+                    .put_garbling_table_metadata(index, &md)
+                    .await
+                    .expect("put metadata");
+            }
+            store.commit().await.expect("commit");
+
+            let store = provider.garbler_state(&peer).await.expect("get read");
+            let keys = store.get_all_aes128_keys().await.expect("get keys");
+            let public_s = store.get_all_public_s_values().await.expect("get public_s");
+            let zero = store.get_all_constant_zero_labels().await.expect("get zero");
+            let one = store.get_all_constant_one_labels().await.expect("get one");
+            let cts = store.get_all_output_label_cts().await.expect("get cts");
+
+            let keys = keys.expect("keys present");
+            let public_s = public_s.expect("public_s present");
+            let zero = zero.expect("zero labels present");
+            let one = one.expect("one labels present");
+            let cts = cts.expect("cts present");
+
+            for ckt in 1..=N_CIRCUITS {
+                let md = garbling_metadata(ckt as u8);
+                let i = ckt - 1; // 0-based HeapArray index
+                assert_eq!(keys[i], md.aes128_key);
+                assert_eq!(public_s[i], md.public_s);
+                assert_eq!(zero[i], md.constant_zero_label);
+                assert_eq!(one[i], md.constant_one_label);
+                assert_eq!(cts[i], md.output_label_ct);
+            }
+        }
+
+        #[tokio::test]
+        async fn output_shares_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+
+            let mut expected_output_shares = Vec::with_capacity(N_CIRCUITS + 1);
+
+            // Write in batches of 2 circuits to stay within FDB txn limits.
+            for batch_start in (0..=N_CIRCUITS).step_by(2) {
+                let batch_end = std::cmp::min(batch_start + 2, N_CIRCUITS + 1);
+                let mut store = provider.garbler_state_mut(&peer).await.expect("get mut");
+                for idx in batch_start..batch_end {
+                    let index = if idx == 0 {
+                        Index::reserved()
+                    } else {
+                        Index::new(idx).expect("valid index")
+                    };
+                    let is = circuit_input_shares(index, 10_000 + idx as u64);
+                    let os = circuit_output_share(index, 20_000 + idx as u64);
+                    store
+                        .put_shares_for_index(index, &is, &os)
+                        .await
+                        .expect("put shares");
+                    expected_output_shares.push(os);
+                }
+                store.commit().await.expect("commit");
+            }
+
+            let store = provider.garbler_state(&peer).await.expect("get read");
+            let got = store
+                .get_output_shares()
+                .await
+                .expect("get output shares")
+                .expect("output shares present");
+            for (i, expected) in expected_output_shares.iter().enumerate() {
+                assert_eq!(&got[i], expected, "output share mismatch at index {i}");
+            }
+        }
+
+        #[tokio::test]
+        async fn reserved_input_shares_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+            let reserved = Index::reserved();
+            let expected_is = circuit_input_shares(reserved, 7000);
+            let os = circuit_output_share(reserved, 8000);
+
+            let mut store = provider.garbler_state_mut(&peer).await.expect("get mut");
+            store
+                .put_shares_for_index(reserved, &expected_is, &os)
+                .await
+                .expect("put shares");
+            store.commit().await.expect("commit");
+
+            let store = provider.garbler_state(&peer).await.expect("get read");
+            let got = store
+                .get_reserved_input_shares()
+                .await
+                .expect("get reserved input shares")
+                .expect("reserved input shares present");
+            assert_eq!(got, expected_is);
+        }
+
+        #[tokio::test]
+        async fn reserved_setup_input_shares_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+            let config = garbler_config(0x10);
+            let reserved = Index::reserved();
+            let reserved_is = circuit_input_shares(reserved, 9000);
+            let os = circuit_output_share(reserved, 9500);
+
+            let mut store = provider.garbler_state_mut(&peer).await.expect("get mut");
+            store
+                .put_root_state(&GarblerState {
+                    config: Some(config),
+                    ..GarblerState::default()
+                })
+                .await
+                .expect("put root state");
+            store
+                .put_shares_for_index(reserved, &reserved_is, &os)
+                .await
+                .expect("put shares");
+            store.commit().await.expect("commit");
+
+            let store = provider.garbler_state(&peer).await.expect("get read");
+            let got = store
+                .get_reserved_setup_input_shares()
+                .await
+                .expect("get reserved setup input shares")
+                .expect("reserved setup input shares present");
+
+            // Verify: for each setup wire, the returned share should be
+            // the reserved circuit's share at the wide-label value from setup_inputs.
+            for idx in 0..N_SETUP_INPUT_WIRES {
+                let value = config.setup_inputs[idx];
+                let expected_share = reserved_is[idx][value as usize];
+                assert_eq!(
+                    got[idx], expected_share,
+                    "setup input share mismatch at wire {idx}"
+                );
+            }
         }
     };
 }
