@@ -1,0 +1,5 @@
+[advisories]
+# This vulnerability does not apply:
+# - The `reqwest` dependency doesn't use the affected package: https://github.com/seanmonstar/reqwest/pull/2987
+# - This codebase uses pinned keys instead of a certificate chain
+ignore = ['RUSTSEC-2026-0049']
