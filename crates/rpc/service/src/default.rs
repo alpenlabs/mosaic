@@ -726,12 +726,11 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> DefaultMosaicApi<S
 }
 
 fn derive_deposit_keypair(base_seed: Seed, deposit_id: &DepositId) -> (SecretKey, PubKey) {
-    let stage = &[
+    let seed = derive_stage_seed(
+        base_seed,
         SEED_CONTEXT_INDEXED_DEPOSIT_KEYPAIR,
-        deposit_id.0.as_bytes(),
-    ]
-    .concat();
-    let seed = derive_stage_seed(base_seed, stage);
+        Some(deposit_id.0.as_bytes()),
+    );
 
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.to_bytes());
     let keypair = KeyPair::rand(&mut rng);

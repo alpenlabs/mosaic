@@ -29,9 +29,19 @@ pub(crate) fn get_eval_commitments(
     })
 }
 
-/// derive stage seed
-pub fn derive_stage_seed(base_seed: Seed, stage: &[u8]) -> Seed {
-    let base_seed: [u8; 32] = base_seed.into();
-    let hash = blake3::keyed_hash(&base_seed, stage);
-    Seed::from(*hash.as_bytes())
+/// Derive a high-entropy stage seed.
+///
+/// This is done using BLAKE3 in KDF mode, with the `stage` used as static context and the
+/// high-entropy 32-byte `base_seed` as key material. You can optionally supply `dynamic` context
+/// data (which may be low entropy) that is included with the key material, per the BLAKE3
+/// specification. This is useful for cases where a stage needs more differentiation than a single
+/// static context can provide.
+pub fn derive_stage_seed(base_seed: Seed, stage: &str, dynamic: Option<&[u8]>) -> Seed {
+    let key_material = if let Some(bytes) = dynamic {
+        [base_seed.as_bytes(), bytes].concat()
+    } else {
+        base_seed.as_bytes().to_vec()
+    };
+    let seed = blake3::derive_key(stage, &key_material);
+    Seed::from(seed)
 }
