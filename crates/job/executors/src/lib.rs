@@ -312,7 +312,8 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                     .await
                     .map_err(|_| CircuitError::StorageUnavailable)?;
 
-                for circuit_idx in 0..N_OPEN_CIRCUITS as u16 {
+                for challenge_idx in &challenge_indices {
+                    let circuit_idx = challenge_idx.get() as u16;
                     match store.get_opened_input_shares_for_circuit(circuit_idx).await {
                         Ok(Some(ckt_shares)) => {
                             items.push(ckt_shares);
