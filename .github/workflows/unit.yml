@@ -48,6 +48,9 @@ jobs:
       - name: Install FoundationDB client library
         uses: ./.github/actions/setup-foundationdb-client
 
+      - name: Install and run FoundationDB server
+        uses: ./.github/actions/setup-foundationdb-server
+
       - name: Run tests
         run: |
           cargo --locked nextest run --all-features --workspace --release
