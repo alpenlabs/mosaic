@@ -8,7 +8,7 @@ use ckt_gobble::{
     translate_input,
 };
 use mosaic_cac_types::{
-    Adaptor, CircuitInputShares, DepositAdaptors, GarblingTableCommitment,
+    Adaptor, ChallengeIndices, CircuitInputShares, DepositAdaptors, GarblingTableCommitment,
     WideLabelWirePolynomialCommitments,
     state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
 };
@@ -36,6 +36,92 @@ use crate::{
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
     HandlerOutcome::Done(ActionCompletion::Evaluator { id, result })
 }
+
+/// Load opened input shares for challenged circuits, retrying with a fresh
+/// transaction on FDB transaction expiry.
+pub(crate) async fn load_opened_input_shares_with_retry<SP: StorageProvider>(
+    storage: &SP,
+    peer_id: &PeerId,
+    challenge_indices: &ChallengeIndices,
+) -> Result<Vec<CircuitInputShares>, CircuitError> {
+    let mut items = Vec::with_capacity(N_OPEN_CIRCUITS);
+    let mut store = storage
+        .evaluator_state(peer_id)
+        .await
+        .map_err(|_| CircuitError::StorageUnavailable)?;
+
+    for challenge_idx in challenge_indices {
+        let circuit_idx = challenge_idx.get() as u16;
+        match store.get_opened_input_shares_for_circuit(circuit_idx).await {
+            Ok(Some(ckt_shares)) => items.push(ckt_shares),
+            Ok(None) => return Err(CircuitError::StorageUnavailable),
+            Err(err) => {
+                warn!(?err, "failed to load input shares");
+                // Assume the error is due to transaction expiry (fdb).
+                // Retry once with new txn.
+                store = storage
+                    .evaluator_state(peer_id)
+                    .await
+                    .map_err(|_| CircuitError::StorageUnavailable)?;
+                let ckt_shares = store
+                    .get_opened_input_shares_for_circuit(circuit_idx)
+                    .await
+                    .map_err(|err| {
+                        error!(?err, "failed to load input shares after retry");
+                        CircuitError::StorageUnavailable
+                    })?
+                    .ok_or(CircuitError::StorageUnavailable)?;
+                items.push(ckt_shares);
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+/// Load input polynomial commitments for all wires, retrying with a fresh
+/// transaction on FDB transaction expiry.
+pub(crate) async fn load_polynomial_commitments_with_retry<SP: StorageProvider>(
+    storage: &SP,
+    peer_id: &PeerId,
+) -> Result<Vec<WideLabelWirePolynomialCommitments>, CircuitError> {
+    let mut items = Vec::with_capacity(N_INPUT_WIRES);
+    let mut store = storage
+        .evaluator_state(peer_id)
+        .await
+        .map_err(|_| CircuitError::StorageUnavailable)?;
+
+    for wire_idx in 0..N_INPUT_WIRES as u16 {
+        match store
+            .get_input_polynomial_commitments_for_wire(wire_idx)
+            .await
+        {
+            Ok(Some(commitment)) => items.push(commitment),
+            Ok(None) => return Err(CircuitError::StorageUnavailable),
+            Err(err) => {
+                warn!(?err, "failed to load input polynomial commitments");
+                // Assume the error is due to transaction expiry (fdb).
+                // Retry once with new txn.
+                store = storage
+                    .evaluator_state(peer_id)
+                    .await
+                    .map_err(|_| CircuitError::StorageUnavailable)?;
+                let commitment = store
+                    .get_input_polynomial_commitments_for_wire(wire_idx)
+                    .await
+                    .map_err(|err| {
+                        error!(?err, "failed to load polynomial commitments after retry");
+                        CircuitError::StorageUnavailable
+                    })?
+                    .ok_or(CircuitError::StorageUnavailable)?;
+                items.push(commitment);
+            }
+        }
+    }
+
+    Ok(items)
+}
+
 // ============================================================================
 
 pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStore>(
@@ -104,118 +190,15 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
     let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
         return HandlerOutcome::Retry;
     };
-    let opened_input_shares = {
-        let mut items = Vec::<CircuitInputShares>::with_capacity(N_OPEN_CIRCUITS);
-        let mut store = match ctx
-            .storage
-            .evaluator_state(peer_id)
-            .await
-            .map_err(|_| CircuitError::StorageUnavailable)
-        {
-            Ok(store) => store,
-            Err(_) => {
-                return HandlerOutcome::Retry;
-            }
-        };
-
-        for challenge_idx in &challenge_indices {
-            let circuit_idx = challenge_idx.get() as u16;
-            match store.get_opened_input_shares_for_circuit(circuit_idx).await {
-                Ok(Some(ckt_shares)) => {
-                    items.push(ckt_shares);
-                }
-                Ok(None) => {
-                    return HandlerOutcome::Retry;
-                }
-                Err(err) => {
-                    warn!(?err, "failed to load input shares");
-                    // assume the error is due to transaction expiry (fdb).
-                    // retry with new txn
-                    store = match ctx
-                        .storage
-                        .evaluator_state(peer_id)
-                        .await
-                        .map_err(|_| CircuitError::StorageUnavailable)
-                    {
-                        Ok(store) => store,
-                        Err(_) => {
-                            return HandlerOutcome::Retry;
-                        }
-                    };
-
-                    let Some(ckt_shares) = store
-                        .get_opened_input_shares_for_circuit(circuit_idx)
-                        .await
-                        .ok()
-                        .flatten()
-                    else {
-                        return HandlerOutcome::Retry;
-                    };
-
-                    items.push(ckt_shares);
-                }
-            }
-        }
-
-        items
+    let Ok(opened_input_shares) =
+        load_opened_input_shares_with_retry(&ctx.storage, peer_id, &challenge_indices).await
+    else {
+        return HandlerOutcome::Retry;
     };
 
-    let commitments = {
-        let mut items = Vec::<WideLabelWirePolynomialCommitments>::with_capacity(N_INPUT_WIRES);
-        let mut store = match ctx
-            .storage
-            .evaluator_state(peer_id)
-            .await
-            .map_err(|_| CircuitError::StorageUnavailable)
-        {
-            Ok(store) => store,
-            Err(_) => {
-                return HandlerOutcome::Retry;
-            }
-        };
-
-        for wire_idx in 0..N_INPUT_WIRES as u16 {
-            match store
-                .get_input_polynomial_commitments_for_wire(wire_idx)
-                .await
-            {
-                Ok(Some(ckt_shares)) => {
-                    items.push(ckt_shares);
-                }
-                Ok(None) => {
-                    return HandlerOutcome::Retry;
-                }
-                Err(err) => {
-                    warn!(?err, "failed to load input polynomial commitments");
-                    // assume the error is due to transaction expiry (fdb).
-                    // retry with new txn
-                    store = match ctx
-                        .storage
-                        .evaluator_state(peer_id)
-                        .await
-                        .map_err(|_| CircuitError::StorageUnavailable)
-                    {
-                        Ok(store) => store,
-                        Err(_) => {
-                            return HandlerOutcome::Retry;
-                        }
-                    };
-
-                    let Some(ckt_shares) = store
-                        .get_input_polynomial_commitments_for_wire(wire_idx)
-                        .await
-                        .ok()
-                        .flatten()
-                    else {
-                        return HandlerOutcome::Retry;
-                    };
-
-                    items.push(ckt_shares);
-                }
-            }
-        }
-
-        items
+    let Ok(commitments) = load_polynomial_commitments_with_retry(&ctx.storage, peer_id).await
+    else {
+        return HandlerOutcome::Retry;
     };
 
     // Verify each opened share against its polynomial commitment.
@@ -666,49 +649,8 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .ok()
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
-    let opened_input_shares = {
-        let mut items = Vec::<CircuitInputShares>::with_capacity(N_OPEN_CIRCUITS);
-        let mut store = ctx
-            .storage
-            .evaluator_state(peer_id)
-            .await
-            .map_err(|_| CircuitError::StorageUnavailable)?;
-
-        for challenge_idx in &challenge_indices {
-            let circuit_idx = challenge_idx.get() as u16;
-            match store.get_opened_input_shares_for_circuit(circuit_idx).await {
-                Ok(Some(ckt_shares)) => {
-                    items.push(ckt_shares);
-                }
-                Ok(None) => {
-                    return Err(CircuitError::StorageUnavailable);
-                }
-                Err(err) => {
-                    warn!(?err, "failed to load input shares");
-                    // assume the error is due to transaction expiry (fdb).
-                    // retry with new txn
-                    store = ctx
-                        .storage
-                        .evaluator_state(peer_id)
-                        .await
-                        .map_err(|_| CircuitError::StorageUnavailable)?;
-
-                    let ckt_shares = store
-                        .get_opened_input_shares_for_circuit(circuit_idx)
-                        .await
-                        .map_err(|err| {
-                            error!(?err, "failed to load input shares after retry");
-                            CircuitError::StorageUnavailable
-                        })?
-                        .ok_or(CircuitError::StorageUnavailable)?;
-
-                    items.push(ckt_shares);
-                }
-            }
-        }
-
-        items
-    };
+    let opened_input_shares =
+        load_opened_input_shares_with_retry(&ctx.storage, peer_id, &challenge_indices).await?;
     // ── Build selected input values (which value index per wire) ────────
     let mut selected_input: [u8; N_INPUT_WIRES] = [0; N_INPUT_WIRES];
     selected_input[..N_SETUP_INPUT_WIRES].copy_from_slice(&setup_input);
