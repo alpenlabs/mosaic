@@ -83,10 +83,6 @@ pub(crate) async fn handle_event<S: StateMut>(
             match root_state.step {
                 Step::SendingCommit { .. } | Step::WaitingForChallenge => {
                     if is_valid_challenge(&challenge_msg) {
-                        let challenge_indices = state
-                            .get_challenge_indices()
-                            .await
-                            .require("expected challenge indices")?;
                         let reserved_setup_input_shares = state
                             .get_reserved_setup_input_shares()
                             .await
@@ -102,6 +98,8 @@ pub(crate) async fn handle_event<S: StateMut>(
                             .get_all_output_label_cts()
                             .await
                             .require("expected garbling table metadata")?;
+
+                        let challenge_indices = challenge_msg.challenge_indices;
 
                         let header = create_challenge_response_msg_header(
                             &challenge_indices,
