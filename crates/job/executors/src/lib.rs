@@ -23,7 +23,10 @@ pub mod garbling;
 pub mod polynomial_cache;
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
-use mosaic_cac_types::state_machine::{evaluator::StateRead as _, garbler::StateRead as _};
+use mosaic_cac_types::{
+    TableTransferReceiptMsg,
+    state_machine::{evaluator::StateRead as _, garbler::StateRead as _},
+};
 use mosaic_job_api::{CircuitError, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
@@ -243,7 +246,7 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
     fn send_table_transfer_receipt(
         &self,
         peer_id: &PeerId,
-        msg: &Index,
+        msg: &TableTransferReceiptMsg,
     ) -> impl Future<Output = HandlerOutcome> + Send {
         evaluator::handle_send_table_transfer_receipt(self, peer_id, msg)
     }

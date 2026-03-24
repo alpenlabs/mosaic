@@ -987,6 +987,7 @@ fn garbler_input_kind(input: &garbler::Input) -> &'static str {
     match input {
         garbler::Input::Init(_) => "Init",
         garbler::Input::RecvChallengeMsg(_) => "RecvChallengeMsg",
+        garbler::Input::RecvTableTransferReceipt(_) => "RecvTableTransferReceipt",
         garbler::Input::DepositInit(_, _) => "DepositInit",
         garbler::Input::DepositRecvAdaptorMsgChunk(_, _) => "DepositRecvAdaptorMsgChunk",
         garbler::Input::DepositUndisputedWithdrawal(_) => "DepositUndisputedWithdrawal",

@@ -3,7 +3,7 @@ use mosaic_vs3::Index;
 
 use crate::{
     AdaptorMsgChunk, ChallengeMsg, CircuitOutputShare, DepositAdaptors, DepositId, GarblingSeed,
-    GarblingTableCommitment, WithdrawalAdaptorsChunk,
+    GarblingTableCommitment, TableTransferReceiptMsg, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -32,7 +32,7 @@ pub enum ActionId {
     /// Identifies a [`Action::ReceiveGarblingTable`] action by garbling table commitment.
     ReceiveGarblingTable(GarblingTableCommitment),
     /// Identifies a [`Action::SendTableTransferReceipt`] action by circuit index
-    SendTableTransferReceipt(Index),
+    SendTableTransferReceipt(TableTransferReceiptMsg),
     /// Identifies a [`Action::GenerateDepositAdaptors`] action by deposit.
     GenerateDepositAdaptors(DepositId),
     /// Identifies a [`Action::GenerateWithdrawalAdaptorsChunk`] action by deposit and chunk index.
@@ -106,7 +106,7 @@ pub enum Action {
     /// Receive evaluation garbling tables from garbler.
     ReceiveGarblingTable(GarblingTableCommitment),
     /// Send Table Receipt
-    SendTableTransferReceipt(Index),
+    SendTableTransferReceipt(TableTransferReceiptMsg),
     /// Generate adaptors of deposit wires for a deposit.
     GenerateDepositAdaptors(DepositId),
     /// Generate adaptors of a portion of withdrawal wires for a deposit.
