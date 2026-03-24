@@ -2278,7 +2278,6 @@ dependencies = [
  "rand_chacha 0.3.1",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]

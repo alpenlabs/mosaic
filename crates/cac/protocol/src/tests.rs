@@ -440,11 +440,11 @@ async fn handlle_garbler_transfers_commit_msg<SP: StorageProvider + StorageProvi
     let encl = net_client_evaluator.clone();
     let commit_msg_listener = tokio::spawn(async move { handle_receive_commit_msg(encl).await });
 
-    tracing::info!("send commit msg");
+    println!("send commit msg");
     // sends commit msg header then chunks; evaluator should have been listening
     let garb_results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await;
 
-    tracing::info!("receive commit msg");
+    println!("receive commit msg");
     // Evaluator reads
     let eval_inputs = commit_msg_listener.await.unwrap();
     assert_eq!(eval_inputs.len(), 1 + N_INPUT_WIRES);
@@ -521,7 +521,7 @@ async fn handle_evaluator_transfers_challenge_msg<SP: StorageProvider + StorageP
     let challenge_msg_listener = tokio::spawn(async move { handle_receive_challenge(&ncl).await });
 
     // Evaluator sends challenge over network
-    tracing::info!("mock_dispatch_evaluator; send_challenge");
+    println!("mock_dispatch_evaluator; send_challenge");
     let eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
 
     let garb_inputs = challenge_msg_listener.await.unwrap(); // ChallengeMsg
@@ -661,9 +661,9 @@ async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + Sto
     }
     assert_eq!(eval_actions.len(), 1); // Step::VerifyingOpenedInputShares; Action::VerifyOpenedInputShares
 
-    tracing::info!("mock_dispatch_evaluator; verify shares");
+    println!("mock_dispatch_evaluator; verify shares");
     let mut eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
-    tracing::info!("shares verified");
+    println!("shares verified");
     assert_eq!(eval_results.len(), 1); // ActionResult::VerifyOpenedInputSharesResult
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
@@ -678,7 +678,7 @@ async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + Sto
     }
     assert_eq!(eval_actions.len(), N_OPEN_CIRCUITS); // Action::GenerateTableCommitment(index, seed), Step::VerifyingTableCommitments
 
-    tracing::info!("mock_dispatch_evaluator; generate table commitment");
+    println!("mock_dispatch_evaluator; generate table commitment");
     let mut eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
     assert_eq!(eval_results.len(), N_OPEN_CIRCUITS); // ActionResult::TableCommitmentGenerated
     while let Some(completion) = eval_results.pop() {
@@ -945,7 +945,7 @@ async fn handle_evaluator_sends_adaptors<SP: StorageProvider + StorageProviderMu
     garbler_peer_id: PeerId,
     net_client_gabler: NetClient,
 ) -> (Vec<GarbInput>, Vec<ActionCompletion>) {
-    tracing::info!("handle_receive_adaptor_msg_chunks");
+    println!("handle_receive_adaptor_msg_chunks");
     // adaptor chunks listener
     let ncl = net_client_gabler.clone();
     let challenge_msg_listener =
@@ -1044,9 +1044,9 @@ async fn handle_garbler_verifies_adaptors<SP: StorageProvider + StorageProviderM
         GarbDepositStep::DepositReady
     );
     // garbler is deposit ready
-    tracing::info!("garbler is deposit ready");
+    println!("garbler is deposit ready");
     // garbler is deposit ready
-    tracing::info!("garbler is deposit ready");
+    println!("garbler is deposit ready");
 }
 
 async fn handle_garbler_starts_adaptor_verification_job<
@@ -1160,7 +1160,7 @@ async fn handle_evaluator_finds_fault_secret<SP: StorageProvider + StorageProvid
     .unwrap();
     assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Action::EvaluateGarblingTable
 
-    tracing::info!("evaluate garbling table");
+    println!("evaluate garbling table");
     let mut eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, garbler_peer_id).await;
     assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
     while let Some(completion) = eval_results.pop() {
@@ -1230,7 +1230,7 @@ async fn test_e2e() {
     for (iter, (setup_inputs, deposit_inputs, withdrawal_input, reveals_secret)) in
         test_vector.into_iter().enumerate()
     {
-        tracing::info!("ITERATION {}", iter + 1);
+        println!("ITERATION {}", iter + 1);
         let mut garb_rng = ChaCha20Rng::seed_from_u64(42);
         let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
 
@@ -1341,7 +1341,7 @@ async fn test_e2e() {
         )
         .await;
 
-        tracing::info!("Evaluator Wants to Send Challenge; Garbler should be listening");
+        println!("Evaluator Wants to Send Challenge; Garbler should be listening");
 
         let (garb_inputs, mut eval_results) = handle_evaluator_transfers_challenge_msg(
             &mut eval_actions,
@@ -1457,7 +1457,7 @@ async fn test_e2e() {
         )
         .await;
 
-        tracing::info!("setup complete");
+        println!("setup complete");
 
         let deposit_id = {
             let mut empty: [u8; 32] = [0; 32];
@@ -1524,10 +1524,10 @@ async fn test_e2e() {
         )
         .await;
 
-        tracing::info!("Withdrawal Stage");
+        println!("Withdrawal Stage");
         // STARTING WITHDRAWAL STAGE for Disputed Withdrawal
 
-        tracing::info!("Withdrawal Stage");
+        println!("Withdrawal Stage");
         // STARTING WITHDRAWAL STAGE for Disputed Withdrawal
 
         let on_chain_sigs = handle_garbler_completes_signatures(
@@ -1645,7 +1645,7 @@ async fn mock_dispatch_garbler<SP: StorageProvider + StorageProviderMut>(
                         exec.complete_adaptor_signatures(peer_id, *deposit_id).await
                     }
                     _ => {
-                        tracing::info!("unhandled garbler action variant {:?}", action);
+                        println!("unhandled garbler action variant {:?}", action);
                         HandlerOutcome::Retry
                     }
                 }
