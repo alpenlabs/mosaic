@@ -508,10 +508,17 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
         return HandlerOutcome::Retry;
     };
 
-    let Ok(withdrawal_wire_zero_coefficients) = eval_state
+    // Each chunk covers WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK consecutive withdrawal wires.
+    let chunk_offset = chunk_idx.get() as usize * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
+
+    // load only coefficients corresponding to chunk range
+    let withdrawal_offset = N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES;
+    let chunk_range_start = withdrawal_offset + chunk_offset;
+    let chunk_range_end = chunk_range_start + WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
+    let Ok(chunk_zero_coefficients) = eval_state
         .get_input_polynomial_zeroth_coefficients(
-            // withdrawal input wire range
-            N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..N_INPUT_WIRES,
+            // withdrawal input wire range for current chunk
+            chunk_range_start..chunk_range_end,
         )
         .await
     else {
@@ -522,9 +529,6 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
     let pk = deposit_state.sk.to_pubkey().0;
     let mut rng = rand::rngs::OsRng;
 
-    // Each chunk covers WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK consecutive withdrawal wires.
-    let chunk_offset = chunk_idx.get() as usize * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
-
     let mut wires = Vec::with_capacity(WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK);
     for wire_in_chunk in 0..WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK {
         let withdrawal_wire = chunk_offset + wire_in_chunk;
@@ -534,7 +538,7 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
         #[expect(clippy::needless_range_loop, reason = "uniformity")]
         for val in 0..WIDE_LABEL_VALUE_COUNT {
             // Zeroth coefficient = commitment to share at reserved index
-            let share_commitment = withdrawal_wire_zero_coefficients[withdrawal_wire][val];
+            let share_commitment = chunk_zero_coefficients[wire_in_chunk][val];
             let adaptor = Adaptor::generate(
                 &mut rng,
                 share_commitment,
