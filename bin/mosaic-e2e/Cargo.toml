@@ -1,0 +1,29 @@
+[package]
+name = "mosaic-e2e"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+mosaic-net-svc.workspace = true
+mosaic-rpc-api.workspace = true
+mosaic-rpc-types.workspace = true
+
+anyhow.workspace = true
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+jsonrpsee = { workspace = true, features = ["http-client"] }
+serde.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+toml = "0.8"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[lints]
+workspace = true
