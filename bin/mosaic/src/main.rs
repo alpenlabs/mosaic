@@ -1,6 +1,7 @@
 //! Mosaic binary composition root.
 
 mod config;
+mod rpc;
 
 use std::{
     env,
@@ -22,6 +23,7 @@ use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut, TableStore
 use mosaic_storage_fdb::FdbStorageProvider;
 use mosaic_storage_s3::S3TableStore;
 use object_store::{ObjectStore, aws::AmazonS3Builder, local::LocalFileSystem};
+use rand::SeedableRng as _;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[global_allocator]
@@ -48,6 +50,7 @@ struct RunningMosaic {
     job_scheduler_controller: mosaic_job_scheduler::JobSchedulerController,
     sm_executor_controller: SmExecutorController,
     _sm_executor_handle: SmExecutorHandle,
+    rpc_controller: rpc::RpcController,
 }
 
 async fn startup(config: MosaicConfig) -> Result<RunningMosaic> {
@@ -179,7 +182,7 @@ where
 
     let (sm_executor, sm_executor_handle) = SmExecutor::new(
         config.build_sm_executor_config(config.known_peers()?),
-        storage,
+        storage.clone(),
         job_handle,
         net_client,
     );
@@ -187,16 +190,36 @@ where
         .spawn()
         .context("failed to spawn sm executor thread")?;
 
+    let rpc_bind_addr = config.rpc_bind_addr()?;
+    let our_peer_id = config.build_net_service_config()?.our_peer_id();
+    let other_peer_ids = config.known_peers()?;
+    let rng = rand_chacha::ChaCha20Rng::from_entropy();
+
+    let mosaic_api = mosaic_rpc_service::DefaultMosaicApi::new(
+        our_peer_id,
+        other_peer_ids,
+        sm_executor_handle.clone(),
+        storage,
+        rng,
+    );
+    let rpc_controller =
+        rpc::start_rpc_server(rpc_bind_addr, mosaic_api).context("failed to start RPC server")?;
+
     tracing::info!("all currently supported components started");
     Ok(RunningMosaic {
         net_controller,
         job_scheduler_controller,
         sm_executor_controller,
         _sm_executor_handle: sm_executor_handle,
+        rpc_controller,
     })
 }
 
 fn shutdown(running: RunningMosaic) -> Result<()> {
+    running
+        .rpc_controller
+        .shutdown()
+        .context("failed to shut down RPC server")?;
     shutdown_net(running.net_controller)?;
     shutdown_sm_executor(running.sm_executor_controller)?;
     shutdown_job_scheduler(running.job_scheduler_controller)?;

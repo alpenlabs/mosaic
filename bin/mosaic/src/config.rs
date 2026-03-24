@@ -24,6 +24,7 @@ pub(crate) struct MosaicConfig {
     pub(crate) table_store: TableStoreConfig,
     pub(crate) job_scheduler: JobSchedulerSection,
     pub(crate) sm_executor: SmExecutorSection,
+    pub(crate) rpc: RpcConfig,
 }
 
 impl MosaicConfig {
@@ -94,6 +95,10 @@ impl MosaicConfig {
             submission_queue_size: self.job_scheduler.submission_queue_size,
             completion_queue_size: self.job_scheduler.completion_queue_size,
         }
+    }
+
+    pub(crate) fn rpc_bind_addr(&self) -> Result<SocketAddr> {
+        parse_socket_addr(&self.rpc.bind_addr)
     }
 
     pub(crate) fn build_fdb_storage_config(&self) -> FdbStorageConfig {
@@ -349,6 +354,12 @@ pub(crate) struct SmExecutorSection {
     pub(crate) command_queue_size: usize,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RpcConfig {
+    pub(crate) bind_addr: String,
+}
+
 fn parse_socket_addr(value: &str) -> Result<SocketAddr> {
     value
         .parse()
@@ -493,6 +504,9 @@ prefix = "tables"
 [job_scheduler]
 
 [sm_executor]
+
+[rpc]
+bind_addr = "127.0.0.1:8080"
 "#,
             circuit_path.display()
         )
