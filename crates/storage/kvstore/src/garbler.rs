@@ -14,7 +14,7 @@ use mosaic_cac_types::{
     state_machine::garbler::{DepositState, GarblerState, GarblingMetadata, StateMut, StateRead},
 };
 use mosaic_common::constants::{
-    N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
+    N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES, WIDE_LABEL_VALUE_COUNT,
     WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK,
 };
 use mosaic_storage_api::Commit;
@@ -164,7 +164,7 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
 
         let reserved_ckt_idx = 0;
         let setup_input_start_idx = 0;
-        let setup_input_end_idx = 32;
+        let setup_input_end_idx = N_SETUP_INPUT_WIRES as u8;
 
         let all_reserved_setup_shares = self
             .collect_row_values::<InputShareRowSpec>(
@@ -179,7 +179,7 @@ impl<KV: KvStore + Sync> StateRead for KvStoreGarbler<KV> {
             )
             .await?;
 
-        if all_reserved_setup_shares.len() != 32 {
+        if all_reserved_setup_shares.len() != N_SETUP_INPUT_WIRES {
             return Err(StorageError::StateInconsistency(
                 "missing expected reserved setup shares".into(),
             ));
