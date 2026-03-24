@@ -8,7 +8,10 @@ mod interpolate;
 mod polynomial;
 mod psm;
 
+// Used by benchmarks
 pub(crate) use constants::*;
+#[cfg(test)]
+use criterion as _;
 // Re-export error types
 pub use error::Error;
 // Re-export interpolation function

@@ -2679,6 +2679,7 @@ dependencies = [
  "ark-serialize",
  "blake3",
  "ckt-gobble",
+ "criterion",
  "mosaic-common",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
