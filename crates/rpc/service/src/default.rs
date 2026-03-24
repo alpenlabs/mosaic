@@ -188,10 +188,13 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         Ok(statemachine_id)
     }
 
-    async fn get_tableset_status(&self, sm_id: &StateMachineId) -> ServiceResult<TablesetStatus> {
+    async fn get_tableset_status(
+        &self,
+        sm_id: &StateMachineId,
+    ) -> ServiceResult<Option<TablesetStatus>> {
         match sm_id.role() {
             Role::Garbler => {
-                let state = self
+                let Some(state) = self
                     .storage
                     .garbler_state(sm_id.peer_id())
                     .await
@@ -199,15 +202,17 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .get_root_state()
                     .await
                     .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::StateMachineNotFound(*sm_id))?;
+                else {
+                    return Ok(None);
+                };
 
                 if state.step == garbler::Step::Uninit {
-                    return Err(ServiceError::UnexpectedState("Uninit".into()));
+                    return Ok(None);
                 }
-                Ok(TablesetStatus::from(&state.step))
+                Ok(Some(TablesetStatus::from(&state.step)))
             }
             Role::Evaluator => {
-                let state = self
+                let Some(state) = self
                     .storage
                     .evaluator_state(sm_id.peer_id())
                     .await
@@ -215,12 +220,14 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .get_root_state()
                     .await
                     .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::StateMachineNotFound(*sm_id))?;
+                else {
+                    return Ok(None);
+                };
 
                 if state.step == evaluator::Step::Uninit {
-                    return Err(ServiceError::UnexpectedState("Uninit".into()));
+                    return Ok(None);
                 }
-                Ok(TablesetStatus::from(&state.step))
+                Ok(Some(TablesetStatus::from(&state.step)))
             }
         }
     }

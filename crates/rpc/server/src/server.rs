@@ -85,14 +85,17 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
             .collect())
     }
 
-    async fn get_tableset_status(&self, tsid: RpcTablesetId) -> RpcResult<RpcTablesetStatus> {
+    async fn get_tableset_status(
+        &self,
+        tsid: RpcTablesetId,
+    ) -> RpcResult<Option<RpcTablesetStatus>> {
         let sm_id = parse_sm_id(tsid)?;
         let status = self
             .service
             .get_tableset_status(&sm_id)
             .await
             .map_err(service_err)?;
-        Ok(tableset_status_to_rpc(status))
+        Ok(status.map(tableset_status_to_rpc))
     }
 
     async fn get_fault_secret_pubkey(

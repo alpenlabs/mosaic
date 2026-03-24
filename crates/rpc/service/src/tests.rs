@@ -369,7 +369,7 @@ async fn get_tableset_status_garbler_setup_complete() {
     h.setup_garbler(garbler::Step::SetupComplete).await;
 
     let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
-    assert!(matches!(status, TablesetStatus::SetupComplete));
+    assert!(matches!(status, Some(TablesetStatus::SetupComplete)));
 }
 
 #[tokio::test]
@@ -388,14 +388,14 @@ async fn get_tableset_status_evaluator_consumed() {
         .await
         .unwrap();
     match status {
-        TablesetStatus::Consumed {
+        Some(TablesetStatus::Consumed {
             deposit_id: id,
             success,
-        } => {
+        }) => {
             assert_eq!(id, deposit_id);
             assert!(success);
         }
-        other => panic!("expected Consumed, got {other:?}"),
+        other => panic!("expected Some(Consumed), got {other:?}"),
     }
 }
 
@@ -409,42 +409,28 @@ async fn get_tableset_status_garbler_aborted() {
 
     let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
     match status {
-        TablesetStatus::Aborted { reason } => {
+        Some(TablesetStatus::Aborted { reason }) => {
             assert_eq!(reason, "protocol violation");
         }
-        other => panic!("expected Aborted, got {other:?}"),
+        other => panic!("expected Some(Aborted), got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn get_tableset_status_rejects_uninit() {
+async fn get_tableset_status_returns_none_for_uninit() {
     let h = TestHarness::new();
     h.setup_garbler(garbler::Step::Uninit).await;
 
-    let err = h
-        .api
-        .get_tableset_status(&h.garbler_sm_id())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, ServiceError::UnexpectedState(ref s) if s == "Uninit"),
-        "expected UnexpectedState(Uninit), got {err:?}"
-    );
+    let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
+    assert!(status.is_none(), "expected None, got {status:?}");
 }
 
 #[tokio::test]
-async fn get_tableset_status_not_found() {
+async fn get_tableset_status_returns_none_when_not_found() {
     let h = TestHarness::new();
     // No state committed for this peer
-    let err = h
-        .api
-        .get_tableset_status(&h.garbler_sm_id())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, ServiceError::StateMachineNotFound(_)),
-        "expected StateMachineNotFound, got {err:?}"
-    );
+    let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
+    assert!(status.is_none(), "expected None, got {status:?}");
 }
 
 // ---------------------------------------------------------------------------

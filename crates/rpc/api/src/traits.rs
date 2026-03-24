@@ -50,9 +50,13 @@ pub trait MosaicRpc {
     async fn setup_tableset(&self, config: RpcSetupConfig) -> RpcResult<RpcTablesetId>;
 
     /// Gets current setup status of a tableset.
+    /// Returns None if the tableset does not exist.
     /// This should be polled to check when the setup is complete.
     #[method(name = "getTablesetStatus")]
-    async fn get_tableset_status(&self, tsid: RpcTablesetId) -> RpcResult<RpcTablesetStatus>;
+    async fn get_tableset_status(
+        &self,
+        tsid: RpcTablesetId,
+    ) -> RpcResult<Option<RpcTablesetStatus>>;
 
     /// Gets pubkey for the fault secret encoded in the garbling tables.
     /// Returns None if the tableset does not exist.

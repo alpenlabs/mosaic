@@ -35,7 +35,10 @@ pub trait MosaicApi: Send + Sync + 'static {
     async fn setup_tableset(&self, config: SetupConfig) -> ServiceResult<StateMachineId>;
 
     /// Gets the current status of a tableset.
-    async fn get_tableset_status(&self, sm_id: &StateMachineId) -> ServiceResult<TablesetStatus>;
+    async fn get_tableset_status(
+        &self,
+        sm_id: &StateMachineId,
+    ) -> ServiceResult<Option<TablesetStatus>>;
 
     /// Gets the fault secret public key for a tableset.
     /// Dispatches internally based on the role encoded in `sm_id`.
