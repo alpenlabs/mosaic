@@ -19,6 +19,21 @@
 //! [`StateMut`]: mosaic_cac_types::state_machine::garbler::StateMut
 
 pub mod table_store;
+#[cfg(feature = "test-utils")]
+mod tests;
+
+/// Re-exports for `#[macro_export]` macros. Not part of the public API.
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+pub mod __private {
+    pub use futures;
+    pub use mosaic_cac_types;
+    pub use mosaic_common;
+    pub use mosaic_net_svc_api;
+    pub use mosaic_vs3;
+    pub use rand_chacha;
+    pub use tokio;
+}
 
 use core::future::Future;
 
@@ -27,9 +42,9 @@ use mosaic_net_svc_api::PeerId;
 pub use table_store::{TableId, TableMetadata, TableReader, TableStore, TableWriter};
 use thiserror::Error;
 
-/// Storage Error.
+/// Storage Provider Error.
 #[derive(Debug, Error)]
-pub enum StorageError {
+pub enum StorageProviderError {
     /// Failed to serialize/deserialize.
     #[error("Serialization: {0}")]
     Serialization(String),
@@ -38,8 +53,8 @@ pub enum StorageError {
     Other(String),
 }
 
-/// Storage Result
-pub type StorageResult<T> = Result<T, StorageError>;
+/// Storage Provider Result
+pub type StorageProviderResult<T> = Result<T, StorageProviderError>;
 
 /// Commit hook for mutable storage sessions/handles.
 ///
@@ -81,7 +96,7 @@ pub trait StorageProvider: Send + Sync + 'static {
     fn garbler_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = StorageResult<Self::GarblerState>> + Send;
+    ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>> + Send;
 
     /// Get a read-only storage handle for a peer's evaluator state machine.
     ///
@@ -90,7 +105,7 @@ pub trait StorageProvider: Send + Sync + 'static {
     fn evaluator_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = StorageResult<Self::EvaluatorState>> + Send;
+    ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>> + Send;
 }
 
 /// Read-write provider of per-peer storage handles.
@@ -118,7 +133,7 @@ pub trait StorageProviderMut: 'static {
     fn garbler_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = StorageResult<Self::GarblerState>>;
+    ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>>;
 
     /// Get a mutable storage handle for a peer's evaluator state machine.
     ///
@@ -128,5 +143,5 @@ pub trait StorageProviderMut: 'static {
     fn evaluator_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = StorageResult<Self::EvaluatorState>>;
+    ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>>;
 }

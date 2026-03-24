@@ -2,7 +2,7 @@ use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CompletedSignatures, DepositAdaptors,
     DepositInputs, OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment,
     PolynomialCommitment, ReservedSetupInputShares, Sighashes, WideLabelWireAdaptors,
-    WideLabelWireShares, WithdrawalInputs,
+    WideLabelWireShares, WideLabelZerothPolynomialCoefficients, WithdrawalInputs,
 };
 use mosaic_common::Byte32;
 use mosaic_vs3::Share;
@@ -11,17 +11,17 @@ use crate::row_spec::{
     KVRowSpec,
     common::{
         CircuitIndexKey, CircuitSubChunkKey, DepositDoubleChunkKey, DepositKey,
-        ProtocolSingletonKey, WireSubChunkKey,
+        ProtocolSingletonKey, WireIndexKey, WireSubChunkKey,
     },
     evaluator::{
         ROW_TAG_AES128_KEY, ROW_TAG_CHALLENGE_INDICES, ROW_TAG_COMPLETED_SIGNATURES,
         ROW_TAG_CONSTANT_ONE_LABEL, ROW_TAG_CONSTANT_ZERO_LABEL, ROW_TAG_DEPOSIT_ADAPTORS,
         ROW_TAG_DEPOSIT_INPUTS, ROW_TAG_DEPOSIT_SIGHASHES, ROW_TAG_FAULT_SECRET,
         ROW_TAG_GARBLING_TABLE_COMMITMENTS, ROW_TAG_INPUT_POLY_COMMITMENT_CHUNK,
-        ROW_TAG_OPENED_GARBLING_SEEDS, ROW_TAG_OPENED_INPUT_SHARE_CHUNK,
-        ROW_TAG_OPENED_OUTPUT_SHARES, ROW_TAG_OUTPUT_LABEL_CT, ROW_TAG_OUTPUT_POLY_COMMITMENT,
-        ROW_TAG_PUBLIC_S, ROW_TAG_RESERVED_SETUP_INPUT_SHARES, ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK,
-        ROW_TAG_WITHDRAWAL_INPUTS,
+        ROW_TAG_INPUT_POLY_ZEROTH_COEFF, ROW_TAG_OPENED_GARBLING_SEEDS,
+        ROW_TAG_OPENED_INPUT_SHARE_CHUNK, ROW_TAG_OPENED_OUTPUT_SHARES, ROW_TAG_OUTPUT_LABEL_CT,
+        ROW_TAG_OUTPUT_POLY_COMMITMENT, ROW_TAG_PUBLIC_S, ROW_TAG_RESERVED_SETUP_INPUT_SHARES,
+        ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK, ROW_TAG_WITHDRAWAL_INPUTS,
     },
 };
 
@@ -46,6 +46,17 @@ impl KVRowSpec for OutputPolynomialCommitmentRowSpec {
 
     type Key = ProtocolSingletonKey;
     type Value = OutputPolynomialCommitment;
+}
+
+/// Row spec for zeroth coefficient of input polynomial commitment, keyed by wire index.
+#[derive(Debug)]
+pub struct InputPolyZerothCoeffRowSpec;
+
+impl KVRowSpec for InputPolyZerothCoeffRowSpec {
+    const ROW_TAG: u8 = ROW_TAG_INPUT_POLY_ZEROTH_COEFF;
+
+    type Key = WireIndexKey;
+    type Value = WideLabelZerothPolynomialCoefficients;
 }
 
 /// Row spec for all garbling table commitments singleton.

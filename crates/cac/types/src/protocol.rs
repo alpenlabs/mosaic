@@ -7,6 +7,7 @@ use mosaic_common::{
     },
 };
 pub use mosaic_heap_array::HeapArray;
+use mosaic_vs3::Point;
 pub use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
 use crate::{Adaptor, GarblingTableCommitment, Seed, Sighash, Signature};
@@ -27,6 +28,12 @@ pub type InputPolynomialCommitments = HeapArray<WideLabelWirePolynomialCommitmen
 pub type OutputPolynomial = Polynomial;
 /// Output wire polynomial commitment.
 pub type OutputPolynomialCommitment = HeapArray<PolynomialCommitment, 1>;
+
+/// Zeroth coefficients for polynomial commitments for all wide label values for a single wire.
+pub type WideLabelZerothPolynomialCoefficients = HeapArray<Point, WIDE_LABEL_VALUE_COUNT>;
+/// Zeroth coefficients for polynomial commitments for all wide label values for all input wires.
+pub type InputPolynomialZerothCoefficients =
+    HeapArray<WideLabelZerothPolynomialCoefficients, N_INPUT_WIRES>;
 
 /// All Polynomials.
 pub type AllPolynomials = (InputPolynomials, OutputPolynomial);

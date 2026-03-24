@@ -9,7 +9,8 @@ use mosaic_cac_types::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, OpenedGarblingSeeds, OpenedOutputShares,
     OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk, WithdrawalInputs,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients,
+    WithdrawalAdaptorsChunk, WithdrawalInputs,
     state_machine::evaluator::{DepositState, EvaluatorState},
 };
 use mosaic_common::Byte32;
@@ -24,6 +25,8 @@ pub struct StoredEvaluatorState {
     pub state: Option<EvaluatorState>,
     /// Input polynomial commitments indexed by wire.
     pub input_polynomial_commitments: BTreeMap<usize, WideLabelWirePolynomialCommitments>,
+    /// Zeroth coefficients for polynomial commitments indexed by wire.
+    pub zeroth_commitments: BTreeMap<usize, WideLabelZerothPolynomialCoefficients>,
     /// Output polynomial commitment.
     pub output_polynomial_commitment: Option<OutputPolynomialCommitment>,
     /// Garbling table commitments for all circuits.

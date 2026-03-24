@@ -16,7 +16,7 @@ use std::{
 };
 
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
+use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut, StorageProviderResult};
 
 use crate::{
     evaluator::KvStoreEvaluator,
@@ -333,14 +333,14 @@ impl StorageProvider for BTreeMapStorageProvider {
     fn garbler_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> + Send {
+    ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>> + Send {
         ready(Ok(self.scoped_garbler(peer_id)))
     }
 
     fn evaluator_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> + Send {
+    ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>> + Send {
         ready(Ok(self.scoped_evaluator(peer_id)))
     }
 }
@@ -352,14 +352,14 @@ impl StorageProviderMut for BTreeMapStorageProvider {
     fn garbler_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> {
+    ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>> {
         ready(Ok(self.scoped_garbler(peer_id)))
     }
 
     fn evaluator_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> {
+    ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>> {
         ready(Ok(self.scoped_evaluator(peer_id)))
     }
 }
@@ -531,4 +531,18 @@ mod tests {
             );
         });
     }
+}
+
+#[cfg(test)]
+mod garbler_tests {
+    use super::BTreeMapStorageProvider;
+
+    mosaic_storage_api::garbler_store_tests!(BTreeMapStorageProvider::new());
+}
+
+#[cfg(test)]
+mod evaluator_tests {
+    use super::BTreeMapStorageProvider;
+
+    mosaic_storage_api::evaluator_store_tests!(BTreeMapStorageProvider::new());
 }

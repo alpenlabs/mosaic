@@ -23,7 +23,7 @@ pub mod garbling;
 pub mod polynomial_cache;
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
-use mosaic_cac_types::state_machine::garbler::StateRead as _;
+use mosaic_cac_types::state_machine::{evaluator::StateRead as _, garbler::StateRead as _};
 use mosaic_job_api::{CircuitError, ExecuteEvaluatorJob, ExecuteGarblerJob, HandlerOutcome};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
@@ -124,9 +124,9 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
     fn send_commit_msg_chunk(
         &self,
         peer_id: &PeerId,
-        chunk: &mosaic_cac_types::CommitMsgChunk,
+        wire_idx: u16,
     ) -> impl Future<Output = HandlerOutcome> + Send {
-        garbler::handle_send_commit_msg_chunk(self, peer_id, chunk)
+        garbler::handle_send_commit_msg_chunk(self, peer_id, wire_idx)
     }
 
     fn send_challenge_response_header(
@@ -140,9 +140,9 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
     fn send_challenge_response_chunk(
         &self,
         peer_id: &PeerId,
-        chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
+        index: &Index,
     ) -> impl Future<Output = HandlerOutcome> + Send {
-        garbler::handle_send_challenge_response_chunk(self, peer_id, chunk)
+        garbler::handle_send_challenge_response_chunk(self, peer_id, index)
     }
 
     fn deposit_verify_adaptors(
@@ -280,8 +280,6 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
         index: mosaic_vs3::Index,
         seed: mosaic_cac_types::GarblingSeed,
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
-        use mosaic_cac_types::state_machine::evaluator::StateRead as _;
-
         let peer_id = *peer_id;
         async move {
             let eval_state = self
@@ -295,19 +293,18 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
-            let opened_input_shares = eval_state
-                .get_opened_input_shares()
-                .await
-                .ok()
-                .flatten()
-                .ok_or(CircuitError::StorageUnavailable)?;
             let opened_output_shares = eval_state
                 .get_opened_output_shares()
                 .await
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
-
+            let opened_input_shares = evaluator::load_opened_input_shares_with_retry(
+                &self.storage,
+                &peer_id,
+                &challenge_indices,
+            )
+            .await?;
             let pos = challenge_indices.iter().position(|ci| *ci == index).ok_or(
                 CircuitError::SetupFailed("index not in challenge indices".into()),
             )?;

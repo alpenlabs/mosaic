@@ -7,10 +7,9 @@ use crate::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, GarblingTableCommitment, Index, InputPolynomialCommitments, InputShares,
-    OutputPolynomialCommitment, OutputShares, ReservedInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
-    state_machine::garbler::GarblingMetadata,
+    DepositInputs, GarblingTableCommitment, Index, OutputPolynomialCommitment, OutputShares,
+    ReservedInputShares, ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
+    WithdrawalAdaptors, WithdrawalInputs, state_machine::garbler::GarblingMetadata,
 };
 
 /// Read-only access to garbler state storage.
@@ -34,20 +33,16 @@ pub trait StateRead {
         &self,
     ) -> impl Stream<Item = Result<(DepositId, DepositState), Self::Error>> + Send;
 
-    /// Retrieves commitments to input polynomials.
-    fn get_input_polynomial_commitments(
+    /// Retrieves commitments to input polynomials for all wide label values for a single wire.
+    fn get_input_polynomial_commitment_by_wire(
         &self,
-    ) -> impl Future<Output = Result<Option<InputPolynomialCommitments>, Self::Error>> + Send;
+        wire: u16,
+    ) -> impl Future<Output = Result<Option<WideLabelWirePolynomialCommitments>, Self::Error>> + Send;
 
     /// Retrieves the commitment to output polynomial.
     fn get_output_polynomial_commitment(
         &self,
     ) -> impl Future<Output = Result<Option<OutputPolynomialCommitment>, Self::Error>> + Send;
-
-    /// Retrieves input shares for all circuits.
-    fn get_input_shares(
-        &self,
-    ) -> impl Future<Output = Result<Option<InputShares>, Self::Error>> + Send;
 
     /// Retrieves output shares for all circuits.
     fn get_output_shares(
@@ -65,6 +60,11 @@ pub trait StateRead {
         &self,
         circuit_idx: &Index,
     ) -> impl Future<Output = Result<Option<CircuitOutputShare>, Self::Error>> + Send;
+
+    /// Retrives reserved setup input shares for all wide label values.
+    fn get_reserved_setup_input_shares(
+        &self,
+    ) -> impl Future<Output = Result<Option<ReservedSetupInputShares>, Self::Error>> + Send;
 
     /// Retrieves reserved input shares.
     fn get_reserved_input_shares(

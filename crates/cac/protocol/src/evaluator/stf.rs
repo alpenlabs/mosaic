@@ -5,13 +5,14 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
-    InputPolynomialCommitments, OpenedGarblingTableCommitments, OpenedOutputShares,
-    OutputPolynomialCommitment, PubKey, ReservedSetupInputShares, SecretKey, Seed, SetupInputs,
-    WithdrawalAdaptors, WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
+    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
+    ReservedSetupInputShares, SecretKey, Seed, SetupInputs, WideLabelWirePolynomialCommitments,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
-    N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
+    N_EVAL_CIRCUITS, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES,
     SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES, WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK, WideLabelValue,
 };
 use mosaic_vs3::{Share, interpolate};
@@ -163,15 +164,20 @@ pub(crate) async fn handle_event<S: StateMut>(
                                 .get_withdrawal_adaptors(&deposit_id)
                                 .await
                                 .require("expected withdrawal adaptors")?;
-                            let input_polynomial_commitments = state
-                                .get_input_polynomial_commitments()
+                            let withdrawal_wires_start =
+                                N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES;
+                            let withdrawal_wires_end = N_INPUT_WIRES;
+                            let withdrawal_input_zeroth_coeffs = state
+                                .get_input_polynomial_zeroth_coefficients(
+                                    withdrawal_wires_start..withdrawal_wires_end,
+                                )
                                 .await
-                                .require("expected input poly commitments")?;
+                                .map_err(SMError::storage)?;
 
                             let withdrawal_input = extract_withdrawal_input_from_signatures(
                                 signatures,
                                 withdrawal_adaptors,
-                                &input_polynomial_commitments,
+                                withdrawal_input_zeroth_coeffs,
                             )
                             .map_err(SMError::StateInconsistency)?;
                             // returns state inconsistency error here because adaptor signature was
@@ -557,7 +563,7 @@ async fn handle_commit_msg_header<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut state.step {
-        Step::WaitingForCommit { header, chunks } => {
+        Step::WaitingForCommit { header, chunks, .. } => {
             if !is_valid_commit_header(&commit_msg_header) {
                 state.step = Step::Aborted {
                     reason: "invalid commit msg header".into(),
@@ -641,6 +647,14 @@ async fn handle_commit_msg_chunk<S: StateMut>(
             };
 
             chunks[chunk_idx] = true;
+
+            state
+                .put_input_polynomial_commitment_zeroth_coeffs(
+                    commit_msg_chunk.wire_index,
+                    &extract_zeroth_coefficients(&commit_msg_chunk.commitments),
+                )
+                .await
+                .map_err(SMError::storage)?;
 
             state
                 .put_input_polynomial_commitments_chunk(
@@ -820,15 +834,15 @@ async fn post_handle_challenge_response<S: StateMut>(
         .await
         .require("expected reserved setup input shares")?;
 
-    let input_polynomial_commitments = state
-        .get_input_polynomial_commitments()
+    let setup_wire_zeroth_coefficients = state
+        .get_input_polynomial_zeroth_coefficients(0..N_SETUP_INPUT_WIRES)
         .await
-        .require("expected input polynomial commitments")?;
+        .map_err(SMError::storage)?;
 
     if let Some(failure_reason) = verify_reserved_setup_input_shares(
         &reserved_setup_input_shares,
         &config.setup_inputs,
-        &input_polynomial_commitments,
+        &setup_wire_zeroth_coefficients,
     ) {
         root_state.step = Step::Aborted {
             reason: format!(
@@ -1160,15 +1174,12 @@ fn verify_opened_output_shares(
 fn verify_reserved_setup_input_shares(
     reserved_setup_input_shares: &ReservedSetupInputShares,
     setup_inputs: &SetupInputs,
-    input_polynomial_commitments: &InputPolynomialCommitments,
+    setup_wire_zeroth_coefficients: &[WideLabelZerothPolynomialCoefficients],
 ) -> Option<String> {
     for wire in 0..N_SETUP_INPUT_WIRES {
         let val = setup_inputs[wire];
         let reserved_share = reserved_setup_input_shares[wire];
-        if input_polynomial_commitments[wire][val as usize]
-            .verify_share(reserved_share)
-            .is_err()
-        {
+        if setup_wire_zeroth_coefficients[wire][val as usize] != reserved_share.commit().point() {
             return Some(format!(
                 "verify reserved setup shares failed for wire {wire}",
             ));
@@ -1217,31 +1228,41 @@ fn create_adaptor_message_chunks(
 fn extract_withdrawal_input_from_signatures(
     completed_signatures: CompletedSignatures,
     withdrawal_adaptors: WithdrawalAdaptors,
-    input_polynomial_commitments: &InputPolynomialCommitments,
+    withdrawal_input_zeroth_coeffs: Vec<WideLabelZerothPolynomialCoefficients>,
 ) -> Result<WithdrawalInputs, String> {
     let withdrawal_sigs = &completed_signatures[N_DEPOSIT_INPUT_WIRES..];
-    let withdrawal_poly_commits =
-        &input_polynomial_commitments[N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..];
     let mut withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
-    for i in 0..N_WITHDRAWAL_INPUT_WIRES {
-        let sig = withdrawal_sigs[i];
-        let wide_adaptors = &withdrawal_adaptors[i];
-        let poly_commits = &withdrawal_poly_commits[i];
+
+    for wire_idx in 0..N_WITHDRAWAL_INPUT_WIRES {
+        let sig = withdrawal_sigs[wire_idx];
+        let wide_adaptors = &withdrawal_adaptors[wire_idx];
+        let poly_commits = &withdrawal_input_zeroth_coeffs[wire_idx];
         let position = wide_adaptors
             .iter()
             .zip(poly_commits)
             .position(|(adaptor, poly_commit)| {
                 let val = adaptor.extract_share(&sig);
                 let share = Share::new(Index::reserved(), val);
-                poly_commit.verify_share(share).is_ok()
+                *poly_commit == share.commit().point()
             });
         if let Some(position) = position {
-            withdrawal_input[i] = position as WideLabelValue;
+            withdrawal_input[wire_idx] = position as WideLabelValue;
         } else {
             return Err(format!(
-                "Adaptors can not extract share for wire at index {i}"
+                "Adaptors can not extract share for withdrawal wire at index {wire_idx}"
             ));
         }
     }
     Ok(withdrawal_input)
+}
+
+fn extract_zeroth_coefficients(
+    commits: &WideLabelWirePolynomialCommitments,
+) -> WideLabelZerothPolynomialCoefficients {
+    WideLabelZerothPolynomialCoefficients::from_vec(
+        commits
+            .iter()
+            .map(|commit| commit.get_zeroth_coefficient())
+            .collect(),
+    )
 }

@@ -17,7 +17,7 @@ use foundationdb::{
     options,
 };
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
+use mosaic_storage_api::{Commit, StorageProvider, StorageProviderError, StorageProviderMut};
 use mosaic_storage_kvstore::{
     evaluator::KvStoreEvaluator,
     garbler::KvStoreGarbler,
@@ -154,30 +154,32 @@ impl StorageProvider for FdbStorageProvider {
     fn garbler_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> + Send
-    {
+    ) -> impl core::future::Future<
+        Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>,
+    > + Send {
         let peer_id = *peer_id;
         let provider = self.clone();
         async move {
             provider
                 .garbler_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 
     fn evaluator_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> + Send
-    {
+    ) -> impl core::future::Future<
+        Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>,
+    > + Send {
         let peer_id = *peer_id;
         let provider = self.clone();
         async move {
             provider
                 .evaluator_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 }
@@ -189,7 +191,7 @@ impl StorageProviderMut for FdbStorageProvider {
     fn garbler_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>>
+    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>>
     {
         let peer_id = *peer_id;
         let provider = self.clone();
@@ -197,22 +199,23 @@ impl StorageProviderMut for FdbStorageProvider {
             provider
                 .garbler_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 
     fn evaluator_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl core::future::Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>>
-    {
+    ) -> impl core::future::Future<
+        Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>,
+    > {
         let peer_id = *peer_id;
         let provider = self.clone();
         async move {
             provider
                 .evaluator_state_handle(peer_id)
                 .await
-                .map_err(|err| mosaic_storage_api::StorageError::Other(err.to_string()))
+                .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
     }
 }
@@ -480,4 +483,88 @@ mod tests {
         assert_eq!(next_prefix(&[0x10, 0xFF]), Some(vec![0x11]));
         assert_eq!(next_prefix(&[0xFF, 0xFF]), None);
     }
+}
+
+#[cfg(all(test, feature = "fdb-storage-tests"))]
+mod test_utils {
+    use std::sync::{
+        Once,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    use super::*;
+
+    static FDB_BOOT: Once = Once::new();
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static RUN_ID: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+    });
+
+    /// Initialize the FoundationDB network thread (idempotent).
+    ///
+    /// The returned `NetworkAutoStop` is intentionally leaked so the FDB network
+    /// thread stays alive for the duration of the test process.
+    pub(crate) fn fdb_boot() {
+        FDB_BOOT.call_once(|| {
+            // SAFETY: Must be called at most once before any FDB operations.
+            // `Once` guarantees single execution. We leak the handle so the
+            // network thread is never torn down mid-test.
+            let handle = unsafe { foundationdb::boot() };
+            std::mem::forget(handle);
+        });
+    }
+
+    /// Create an [`FdbStorageProvider`] with a unique directory path for test isolation.
+    ///
+    /// The provider's garbler and evaluator keyspaces for the test peer are
+    /// pre-warmed (with retry) so that directory-layer conflicts don't surface
+    /// during the actual test body.
+    pub(crate) async fn create_provider() -> FdbStorageProvider {
+        fdb_boot();
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let config = FdbStorageConfig {
+            global_path: vec![format!("test-provider-{}-{id}", *RUN_ID)],
+        };
+        let mut last_err = String::new();
+        for _ in 0..5 {
+            let db = Database::default().expect("failed to open FDB database");
+            let p = match FdbStorageProvider::open(db, config.clone()).await {
+                Ok(p) => p,
+                Err(e) => {
+                    last_err = e.to_string();
+                    continue;
+                }
+            };
+            // Pre-warm both keyspaces so ensure_role_keyspace() won't need
+            // to hit the directory layer during tests.
+            let peer = PeerId::from([0x01; 32]);
+            if let Err(e) = p.ensure_role_keyspace(peer, RoleKeyspace::Garbler).await {
+                last_err = e.to_string();
+                continue;
+            }
+            if let Err(e) = p.ensure_role_keyspace(peer, RoleKeyspace::Evaluator).await {
+                last_err = e.to_string();
+                continue;
+            }
+            return p;
+        }
+        panic!("failed to open FDB storage provider after 5 attempts: {last_err}")
+    }
+}
+
+#[cfg(all(test, feature = "fdb-storage-tests"))]
+mod garbler_tests {
+    use super::test_utils::create_provider;
+
+    mosaic_storage_api::garbler_store_tests!(create_provider().await);
+}
+
+#[cfg(all(test, feature = "fdb-storage-tests"))]
+mod evaluator_tests {
+    use super::test_utils::create_provider;
+
+    mosaic_storage_api::evaluator_store_tests!(create_provider().await);
 }

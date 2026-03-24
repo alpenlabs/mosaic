@@ -24,8 +24,9 @@ postcard.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
-rand_chacha.workspace = true
+mosaic-storage-api = { workspace = true, features = ["test-utils"] }
+mosaic-cac-types = { workspace = true, features = ["test-utils"] }
+
 
 [lints]
 workspace = true

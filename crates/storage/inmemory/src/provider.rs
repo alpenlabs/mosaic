@@ -9,10 +9,10 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllAes128Keys, AllConstOneLabels, AllConstZeroLabels,
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
-    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, InputPolynomialCommitments,
-    InputShares, OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares,
-    OutputPolynomialCommitment, OutputShares, ReservedInputShares, ReservedSetupInputShares,
-    Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    DepositInputs, EvaluationIndices, GarblingTableCommitment, Index, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputPolynomialCommitment, OutputShares, ReservedInputShares,
+    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
     WithdrawalInputs,
     state_machine::{evaluator, garbler},
 };
@@ -47,7 +47,8 @@ impl StorageProvider for InMemoryStorageProvider {
     fn garbler_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> + Send {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>> + Send
+    {
         ready(Ok(self
             .garbler
             .lock()
@@ -60,7 +61,8 @@ impl StorageProvider for InMemoryStorageProvider {
     fn evaluator_state(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> + Send {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>> + Send
+    {
         ready(Ok(self
             .evaluator
             .lock()
@@ -78,7 +80,7 @@ impl StorageProviderMut for InMemoryStorageProvider {
     fn garbler_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::GarblerState>> {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::GarblerState>> {
         let state = self
             .garbler
             .lock()
@@ -96,7 +98,7 @@ impl StorageProviderMut for InMemoryStorageProvider {
     fn evaluator_state_mut(
         &self,
         peer_id: &PeerId,
-    ) -> impl Future<Output = mosaic_storage_api::StorageResult<Self::EvaluatorState>> {
+    ) -> impl Future<Output = mosaic_storage_api::StorageProviderResult<Self::EvaluatorState>> {
         let state = self
             .evaluator
             .lock()
@@ -152,10 +154,13 @@ impl garbler::StateRead for InMemoryGarblerSession {
         self.inner.stream_all_deposits()
     }
 
-    async fn get_input_polynomial_commitments(
+    async fn get_input_polynomial_commitment_by_wire(
         &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        self.inner.get_input_polynomial_commitments().await
+        wire: u16,
+    ) -> Result<Option<WideLabelWirePolynomialCommitments>, Self::Error> {
+        self.inner
+            .get_input_polynomial_commitment_by_wire(wire)
+            .await
     }
 
     async fn get_output_polynomial_commitment(
@@ -164,8 +169,10 @@ impl garbler::StateRead for InMemoryGarblerSession {
         self.inner.get_output_polynomial_commitment().await
     }
 
-    async fn get_input_shares(&self) -> Result<Option<InputShares>, Self::Error> {
-        self.inner.get_input_shares().await
+    async fn get_reserved_setup_input_shares(
+        &self,
+    ) -> Result<Option<ReservedSetupInputShares>, Self::Error> {
+        self.inner.get_reserved_setup_input_shares().await
     }
 
     async fn get_output_shares(&self) -> Result<Option<OutputShares>, Self::Error> {
@@ -431,16 +438,28 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
         self.inner.stream_all_deposits()
     }
 
-    async fn get_input_polynomial_commitments(
+    async fn get_input_polynomial_commitments_for_wire(
         &self,
-    ) -> Result<Option<InputPolynomialCommitments>, Self::Error> {
-        self.inner.get_input_polynomial_commitments().await
+        wire_idx: u16,
+    ) -> Result<Option<WideLabelWirePolynomialCommitments>, Self::Error> {
+        self.inner
+            .get_input_polynomial_commitments_for_wire(wire_idx)
+            .await
     }
 
     async fn get_output_polynomial_commitment(
         &self,
     ) -> Result<Option<OutputPolynomialCommitment>, Self::Error> {
         self.inner.get_output_polynomial_commitment().await
+    }
+
+    async fn get_input_polynomial_zeroth_coefficients(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<WideLabelZerothPolynomialCoefficients>, Self::Error> {
+        self.inner
+            .get_input_polynomial_zeroth_coefficients(range)
+            .await
     }
 
     async fn get_garbling_table_commitments(
@@ -453,8 +472,13 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
         self.inner.get_challenge_indices().await
     }
 
-    async fn get_opened_input_shares(&self) -> Result<Option<OpenedInputShares>, Self::Error> {
-        self.inner.get_opened_input_shares().await
+    async fn get_opened_input_shares_for_circuit(
+        &self,
+        circuit_idx: u16,
+    ) -> Result<Option<CircuitInputShares>, Self::Error> {
+        self.inner
+            .get_opened_input_shares_for_circuit(circuit_idx)
+            .await
     }
 
     async fn get_reserved_setup_input_shares(
@@ -573,6 +597,16 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
     ) -> Result<(), Self::Error> {
         self.inner
             .put_output_polynomial_commitment(commitment)
+            .await
+    }
+
+    async fn put_input_polynomial_commitment_zeroth_coeffs(
+        &mut self,
+        wire_idx: u16,
+        zeroth_coefficients: &WideLabelZerothPolynomialCoefficients,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .put_input_polynomial_commitment_zeroth_coeffs(wire_idx, zeroth_coefficients)
             .await
     }
 

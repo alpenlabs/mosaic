@@ -2,10 +2,10 @@
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::{
-    AllPolynomials, CircuitInputShares, CompletedSignatures, DepositAdaptors, DepositInputs,
-    GarblingSeed, InputPolynomials, InputShares, OutputPolynomial, PubKey,
-    ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares, Seed,
-    WideLabelWireShares, WithdrawalAdaptors,
+    AllPolynomials, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositInputs,
+    GarblingSeed, InputPolynomials, OutputPolynomial, PubKey, ReservedDepositInputShares,
+    ReservedInputShares, ReservedWithdrawalInputShares, Seed, WideLabelWireShares,
+    WithdrawalAdaptors,
     state_machine::garbler::{
         ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Step, Wire,
     },
@@ -172,9 +172,30 @@ pub(crate) async fn handle_send_commit_msg_header<SP: StorageProvider, TS: Table
 pub(crate) async fn handle_send_commit_msg_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
-    chunk: &mosaic_cac_types::CommitMsgChunk,
+    wire_index: u16,
 ) -> HandlerOutcome {
-    let id = ActionId::SendCommitMsgChunk(chunk.wire_index);
+    let garb_state = match ctx.storage.garbler_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
+
+    // Load all required data. Retry if any reads return None (data not yet written).
+    let Some(wire_poly_commitments) = garb_state
+        .get_input_polynomial_commitment_by_wire(wire_index)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+
+    // Create commit message chunk for this wire.
+    let chunk = CommitMsgChunk {
+        wire_index,
+        commitments: wire_poly_commitments,
+    };
+
+    let id = ActionId::SendCommitMsgChunk(wire_index);
     match ctx.net_client.send(*peer_id, chunk.clone()).await {
         Ok(_ack) => completed(id, ActionResult::CommitMsgChunkAcked),
         Err(e) => {
@@ -202,10 +223,28 @@ pub(crate) async fn handle_send_challenge_response_header<SP: StorageProvider, T
 pub(crate) async fn handle_send_challenge_response_chunk<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
-    chunk: &mosaic_cac_types::ChallengeResponseMsgChunk,
+    index: &Index,
 ) -> HandlerOutcome {
-    let id = ActionId::SendChallengeResponseMsgChunk(chunk.circuit_index);
-    match ctx.net_client.send(*peer_id, chunk.clone()).await {
+    let id = ActionId::SendChallengeResponseMsgChunk(index.get() as u16);
+    let garb_state = match ctx.storage.garbler_state(peer_id).await {
+        Ok(state) => state,
+        Err(_) => return HandlerOutcome::Retry,
+    };
+
+    let Some(shares) = garb_state
+        .get_input_shares_for_circuit(index)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return HandlerOutcome::Retry;
+    };
+    let chunk = mosaic_cac_types::ChallengeResponseMsgChunk {
+        circuit_index: index.get() as u16,
+        shares,
+    };
+
+    match ctx.net_client.send(*peer_id, chunk).await {
         Ok(_ack) => completed(id, ActionResult::ChallengeResponseChunkAcked),
         Err(e) => {
             tracing::warn!(%e, "send challenge response chunk failed, will retry");
@@ -218,21 +257,8 @@ pub(crate) async fn handle_send_challenge_response_chunk<SP: StorageProvider, TS
 // Heavy handlers (Deposit)
 // ============================================================================
 
-fn get_reserved_input_shares(input_shares: &InputShares) -> ReservedInputShares {
-    let mut selected_input_shares: Vec<WideLabelWireShares> = Vec::with_capacity(N_INPUT_WIRES);
-    for i in 0..N_INPUT_WIRES {
-        let mut wide_shares: Vec<Share> = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
-        for j in 0..WIDE_LABEL_VALUE_COUNT {
-            wide_shares.push(input_shares[0][i][j]);
-        }
-        selected_input_shares.push(HeapArray::from_vec(wide_shares));
-    }
-    let input_shares: CircuitInputShares = HeapArray::from_vec(selected_input_shares);
-    input_shares
-}
-
 fn is_adaptor_derived_from_shares(
-    input_shares: &InputShares,
+    reserved_input_shares: &ReservedInputShares,
     deposit_input: DepositInputs,
     deposit_adaptors: &DepositAdaptors,
     withdrawal_adaptors: &WithdrawalAdaptors,
@@ -255,9 +281,8 @@ fn is_adaptor_derived_from_shares(
         (deposit_input_shares, withdrawal_input_shares.clone())
     }
 
-    let reserved_input_shares = get_reserved_input_shares(input_shares);
     let (reserved_deposit_input_shares, reserved_withdrawal_input_shares) =
-        get_reserved_deposit_withdrawal_shares(&reserved_input_shares, deposit_input);
+        get_reserved_deposit_withdrawal_shares(reserved_input_shares, deposit_input);
 
     let is_adaptor_of_deposit_input = reserved_deposit_input_shares
         .iter()
@@ -330,11 +355,12 @@ pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
     else {
         return HandlerOutcome::Retry;
     };
-    let Some(input_shares) = garb_state.get_input_shares().await.ok().flatten() else {
+    let Some(reserved_input_shares) = garb_state.get_reserved_input_shares().await.ok().flatten()
+    else {
         return HandlerOutcome::Retry;
     };
     let link_share_to_adaptor = is_adaptor_derived_from_shares(
-        &input_shares,
+        &reserved_input_shares,
         deposit_input,
         &deposit_adaptors,
         &withdrawal_adaptors,

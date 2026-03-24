@@ -2555,11 +2555,14 @@ dependencies = [
 name = "mosaic-storage-api"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "mosaic-cac-types",
  "mosaic-common",
  "mosaic-net-svc-api",
  "mosaic-vs3",
+ "rand_chacha 0.3.1",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -2600,9 +2603,7 @@ dependencies = [
  "mosaic-storage-api",
  "mosaic-vs3",
  "postcard",
- "rand_chacha 0.3.1",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

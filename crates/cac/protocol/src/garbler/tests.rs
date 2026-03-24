@@ -220,8 +220,8 @@ async fn restore_sending_commit_replays_only_unacked_header_and_chunks() {
         let (_id, action) = tracked.into_parts();
         match action {
             Action::SendCommitMsgHeader(_) => header_count += 1,
-            Action::SendCommitMsgChunk(chunk) => {
-                assert!(!acked[chunk.wire_index as usize]);
+            Action::SendCommitMsgChunk(wire_index) => {
+                assert!(!acked[wire_index as usize]);
                 chunk_count += 1;
             }
             _ => panic!("unexpected action emitted while restoring SendingCommit"),

@@ -79,6 +79,28 @@ pub(crate) fn next_prefix(prefix: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
+pub(crate) fn start_bound<R: KVRowSpec>(
+    bound: Bound<R::Key>,
+) -> Result<Bound<Vec<u8>>, <R::Key as PackableKey>::PackingError> {
+    match bound {
+        Bound::Included(key) => full_key::<R>(&key).map(Bound::Included),
+        Bound::Excluded(key) => full_key::<R>(&key).map(Bound::Excluded),
+        Bound::Unbounded => Ok(Bound::Included(row_prefix::<R>())),
+    }
+}
+
+pub(crate) fn end_bound<R: KVRowSpec>(
+    bound: Bound<R::Key>,
+) -> Result<Bound<Vec<u8>>, <R::Key as PackableKey>::PackingError> {
+    match bound {
+        Bound::Included(key) => full_key::<R>(&key).map(Bound::Included),
+        Bound::Excluded(key) => full_key::<R>(&key).map(Bound::Excluded),
+        Bound::Unbounded => Ok(Bound::Excluded(
+            next_prefix(&row_prefix::<R>()).unwrap_or(vec![0xff]),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ops::Bound;

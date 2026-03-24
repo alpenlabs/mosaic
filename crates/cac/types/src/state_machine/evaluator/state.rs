@@ -1,4 +1,4 @@
-use std::{error::Error, fmt::Debug};
+use std::{error::Error, fmt::Debug, ops::Range};
 
 use futures::Stream;
 use mosaic_common::Byte32;
@@ -7,9 +7,9 @@ use mosaic_vs3::{Index, Share};
 use super::{DepositState, EvaluatorState};
 use crate::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
-    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, InputPolynomialCommitments,
-    OpenedGarblingSeeds, OpenedInputShares, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments, WithdrawalAdaptors,
+    DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, OpenedGarblingSeeds,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
     WithdrawalAdaptorsChunk, WithdrawalInputs,
 };
 
@@ -34,15 +34,22 @@ pub trait StateRead {
         &self,
     ) -> impl Stream<Item = Result<(DepositId, DepositState), Self::Error>> + Send;
 
-    /// Retrieves commitments to input polynomials.
-    fn get_input_polynomial_commitments(
+    /// Retrieves input polynomial commitments for a single wire.
+    fn get_input_polynomial_commitments_for_wire(
         &self,
-    ) -> impl Future<Output = Result<Option<InputPolynomialCommitments>, Self::Error>> + Send;
+        wire_idx: u16,
+    ) -> impl Future<Output = Result<Option<WideLabelWirePolynomialCommitments>, Self::Error>> + Send;
 
     /// Retrieves the commitment to output polynomial.
     fn get_output_polynomial_commitment(
         &self,
     ) -> impl Future<Output = Result<Option<OutputPolynomialCommitment>, Self::Error>> + Send;
+
+    /// Retrieves zeroth coefficients of input polynomial commitments for a range of wire indices.
+    fn get_input_polynomial_zeroth_coefficients(
+        &self,
+        range: Range<usize>,
+    ) -> impl Future<Output = Result<Vec<WideLabelZerothPolynomialCoefficients>, Self::Error>> + Send;
 
     /// Retrieves all garbling table commitments.
     fn get_garbling_table_commitments(
@@ -54,10 +61,11 @@ pub trait StateRead {
         &self,
     ) -> impl Future<Output = Result<Option<ChallengeIndices>, Self::Error>> + Send;
 
-    /// Retrieves input shares for opened circuits.
-    fn get_opened_input_shares(
+    /// Retrieves opened input shares for a single circuit (by circuit index).
+    fn get_opened_input_shares_for_circuit(
         &self,
-    ) -> impl Future<Output = Result<Option<OpenedInputShares>, Self::Error>> + Send;
+        circuit_idx: u16,
+    ) -> impl Future<Output = Result<Option<CircuitInputShares>, Self::Error>> + Send;
 
     /// Retrieves reserved setup input shares.
     fn get_reserved_setup_input_shares(
@@ -172,6 +180,13 @@ pub trait StateMut: StateRead {
     fn put_output_polynomial_commitment(
         &mut self,
         commitment: &OutputPolynomialCommitment,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Store zeroth coeffcients of all polynomial commitments for a single wire.
+    fn put_input_polynomial_commitment_zeroth_coeffs(
+        &mut self,
+        wire_idx: u16,
+        zeroth_coefficients: &WideLabelZerothPolynomialCoefficients,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stores all garbling table commitments.

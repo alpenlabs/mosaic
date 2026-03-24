@@ -19,5 +19,8 @@ async-trait.workspace = true
 foundationdb.workspace = true
 thiserror.workspace = true
 
+[features]
+fdb-storage-tests = ["mosaic-storage-api/test-utils"]
+
 [lints]
 workspace = true

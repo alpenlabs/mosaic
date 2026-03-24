@@ -8,7 +8,8 @@ use ckt_gobble::{
     translate_input,
 };
 use mosaic_cac_types::{
-    Adaptor, DepositAdaptors, GarblingTableCommitment,
+    Adaptor, ChallengeIndices, CircuitInputShares, DepositAdaptors, GarblingTableCommitment,
+    WideLabelWirePolynomialCommitments,
     state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
 };
 use mosaic_common::constants::{
@@ -23,6 +24,7 @@ use mosaic_storage_api::{
     table_store::{TableId, TableReader as _, TableStore, TableWriter as _},
 };
 use mosaic_vs3::{Index, Share, interpolate};
+use tracing::{error, warn};
 
 use super::MosaicExecutor;
 use crate::{
@@ -34,6 +36,92 @@ use crate::{
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
     HandlerOutcome::Done(ActionCompletion::Evaluator { id, result })
 }
+
+/// Load opened input shares for challenged circuits, retrying with a fresh
+/// transaction on FDB transaction expiry.
+pub(crate) async fn load_opened_input_shares_with_retry<SP: StorageProvider>(
+    storage: &SP,
+    peer_id: &PeerId,
+    challenge_indices: &ChallengeIndices,
+) -> Result<Vec<CircuitInputShares>, CircuitError> {
+    let mut items = Vec::with_capacity(N_OPEN_CIRCUITS);
+    let mut store = storage
+        .evaluator_state(peer_id)
+        .await
+        .map_err(|_| CircuitError::StorageUnavailable)?;
+
+    for challenge_idx in challenge_indices {
+        let circuit_idx = challenge_idx.get() as u16;
+        match store.get_opened_input_shares_for_circuit(circuit_idx).await {
+            Ok(Some(ckt_shares)) => items.push(ckt_shares),
+            Ok(None) => return Err(CircuitError::StorageUnavailable),
+            Err(err) => {
+                warn!(?err, "failed to load input shares");
+                // Assume the error is due to transaction expiry (fdb).
+                // Retry once with new txn.
+                store = storage
+                    .evaluator_state(peer_id)
+                    .await
+                    .map_err(|_| CircuitError::StorageUnavailable)?;
+                let ckt_shares = store
+                    .get_opened_input_shares_for_circuit(circuit_idx)
+                    .await
+                    .map_err(|err| {
+                        error!(?err, "failed to load input shares after retry");
+                        CircuitError::StorageUnavailable
+                    })?
+                    .ok_or(CircuitError::StorageUnavailable)?;
+                items.push(ckt_shares);
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+/// Load input polynomial commitments for all wires, retrying with a fresh
+/// transaction on FDB transaction expiry.
+pub(crate) async fn load_polynomial_commitments_with_retry<SP: StorageProvider>(
+    storage: &SP,
+    peer_id: &PeerId,
+) -> Result<Vec<WideLabelWirePolynomialCommitments>, CircuitError> {
+    let mut items = Vec::with_capacity(N_INPUT_WIRES);
+    let mut store = storage
+        .evaluator_state(peer_id)
+        .await
+        .map_err(|_| CircuitError::StorageUnavailable)?;
+
+    for wire_idx in 0..N_INPUT_WIRES as u16 {
+        match store
+            .get_input_polynomial_commitments_for_wire(wire_idx)
+            .await
+        {
+            Ok(Some(commitment)) => items.push(commitment),
+            Ok(None) => return Err(CircuitError::StorageUnavailable),
+            Err(err) => {
+                warn!(?err, "failed to load input polynomial commitments");
+                // Assume the error is due to transaction expiry (fdb).
+                // Retry once with new txn.
+                store = storage
+                    .evaluator_state(peer_id)
+                    .await
+                    .map_err(|_| CircuitError::StorageUnavailable)?;
+                let commitment = store
+                    .get_input_polynomial_commitments_for_wire(wire_idx)
+                    .await
+                    .map_err(|err| {
+                        error!(?err, "failed to load polynomial commitments after retry");
+                        CircuitError::StorageUnavailable
+                    })?
+                    .ok_or(CircuitError::StorageUnavailable)?;
+                items.push(commitment);
+            }
+        }
+    }
+
+    Ok(items)
+}
+
 // ============================================================================
 
 pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStore>(
@@ -102,14 +190,13 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
     let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
         return HandlerOutcome::Retry;
     };
-    let Some(shares) = eval_state.get_opened_input_shares().await.ok().flatten() else {
+    let Ok(opened_input_shares) =
+        load_opened_input_shares_with_retry(&ctx.storage, peer_id, &challenge_indices).await
+    else {
         return HandlerOutcome::Retry;
     };
-    let Some(commitments) = eval_state
-        .get_input_polynomial_commitments()
-        .await
-        .ok()
-        .flatten()
+
+    let Ok(commitments) = load_polynomial_commitments_with_retry(&ctx.storage, peer_id).await
     else {
         return HandlerOutcome::Retry;
     };
@@ -120,7 +207,7 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
         for idx in 0..N_OPEN_CIRCUITS {
             for wire in 0..N_INPUT_WIRES {
                 for val in 0..WIDE_LABEL_VALUE_COUNT {
-                    let share = shares[idx][wire][val];
+                    let share = opened_input_shares[idx][wire][val];
                     if commitments[wire][val].verify_share(share).is_err() {
                         return Some(format!(
                             "verify failed for circuit {}, wire {}, value {}",
@@ -354,11 +441,13 @@ pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: Ta
     else {
         return HandlerOutcome::Retry;
     };
-    let Some(input_poly_commits) = eval_state
-        .get_input_polynomial_commitments()
+
+    let Ok(deposit_input_wire_zero_coefficients) = eval_state
+        .get_input_polynomial_zeroth_coefficients(
+            // deposit input wire range
+            N_SETUP_INPUT_WIRES..N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES,
+        )
         .await
-        .ok()
-        .flatten()
     else {
         return HandlerOutcome::Retry;
     };
@@ -370,14 +459,18 @@ pub(crate) async fn handle_generate_deposit_adaptors<SP: StorageProvider, TS: Ta
     // Generate one adaptor per deposit wire, using the share commitment at
     // reserved index (= zeroth polynomial coefficient) for the wire's input value.
     let mut adaptors = Vec::with_capacity(N_DEPOSIT_INPUT_WIRES);
-    for i in 0..N_DEPOSIT_INPUT_WIRES {
-        let wire = N_SETUP_INPUT_WIRES + i;
-        let val = deposit_inputs[i] as usize;
+    for deposit_wire in 0..N_DEPOSIT_INPUT_WIRES {
+        let val = deposit_inputs[deposit_wire] as usize;
         // Zeroth coefficient of commitment polynomial = commitment to share at index 0
-        let share_commitment = input_poly_commits[wire][val].get_zeroth_coefficient();
-        let adaptor =
-            Adaptor::generate(&mut rng, share_commitment, sk, pk, sighashes[i].0.as_ref())
-                .expect("adaptor generation should not fail with valid inputs");
+        let share_commitment = deposit_input_wire_zero_coefficients[deposit_wire][val];
+        let adaptor = Adaptor::generate(
+            &mut rng,
+            share_commitment,
+            sk,
+            pk,
+            sighashes[deposit_wire].0.as_ref(),
+        )
+        .expect("adaptor generation should not fail with valid inputs");
         adaptors.push(adaptor);
     }
 
@@ -414,11 +507,20 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
     else {
         return HandlerOutcome::Retry;
     };
-    let Some(input_poly_commits) = eval_state
-        .get_input_polynomial_commitments()
+
+    // Each chunk covers WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK consecutive withdrawal wires.
+    let chunk_offset = chunk_idx.get() as usize * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
+
+    // load only coefficients corresponding to chunk range
+    let withdrawal_offset = N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES;
+    let chunk_range_start = withdrawal_offset + chunk_offset;
+    let chunk_range_end = chunk_range_start + WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
+    let Ok(chunk_zero_coefficients) = eval_state
+        .get_input_polynomial_zeroth_coefficients(
+            // withdrawal input wire range for current chunk
+            chunk_range_start..chunk_range_end,
+        )
         .await
-        .ok()
-        .flatten()
     else {
         return HandlerOutcome::Retry;
     };
@@ -427,19 +529,16 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
     let pk = deposit_state.sk.to_pubkey().0;
     let mut rng = rand::rngs::OsRng;
 
-    // Each chunk covers WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK consecutive withdrawal wires.
-    let chunk_offset = chunk_idx.get() as usize * WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK;
-
     let mut wires = Vec::with_capacity(WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK);
+    #[expect(clippy::needless_range_loop, reason = "uniformity")]
     for wire_in_chunk in 0..WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK {
         let withdrawal_wire = chunk_offset + wire_in_chunk;
-        let wire = N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
         let sighash_idx = N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
 
         let mut wire_adaptors = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
         for val in 0..WIDE_LABEL_VALUE_COUNT {
             // Zeroth coefficient = commitment to share at reserved index
-            let share_commitment = input_poly_commits[wire][val].get_zeroth_coefficient();
+            let share_commitment = chunk_zero_coefficients[wire_in_chunk][val];
             let adaptor = Adaptor::generate(
                 &mut rng,
                 share_commitment,
@@ -518,12 +617,6 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .ok()
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
-    let opened_input_shares = eval_state
-        .get_opened_input_shares()
-        .await
-        .ok()
-        .flatten()
-        .ok_or(CircuitError::StorageUnavailable)?;
     let deposit_inputs = eval_state
         .get_deposit_inputs(&deposit_id)
         .await
@@ -560,7 +653,8 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .ok()
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
-
+    let opened_input_shares =
+        load_opened_input_shares_with_retry(&ctx.storage, peer_id, &challenge_indices).await?;
     // ── Build selected input values (which value index per wire) ────────
     let mut selected_input: [u8; N_INPUT_WIRES] = [0; N_INPUT_WIRES];
     selected_input[..N_SETUP_INPUT_WIRES].copy_from_slice(&setup_input);
