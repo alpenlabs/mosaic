@@ -30,6 +30,7 @@ members = [
   "crates/storage/s3",
   "crates/vs3",
   "bin/mosaic",
+  "bin/mosaic-e2e",
   "bin/mosaic-peer-id",
 ]
 exclude = ["fuzz"]
