@@ -530,12 +530,12 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
     let mut rng = rand::rngs::OsRng;
 
     let mut wires = Vec::with_capacity(WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK);
+    #[expect(clippy::needless_range_loop, reason = "uniformity")]
     for wire_in_chunk in 0..WITHDRAWAL_WIRES_PER_ADAPTOR_CHUNK {
         let withdrawal_wire = chunk_offset + wire_in_chunk;
         let sighash_idx = N_DEPOSIT_INPUT_WIRES + withdrawal_wire;
 
         let mut wire_adaptors = Vec::with_capacity(WIDE_LABEL_VALUE_COUNT);
-        #[expect(clippy::needless_range_loop, reason = "uniformity")]
         for val in 0..WIDE_LABEL_VALUE_COUNT {
             // Zeroth coefficient = commitment to share at reserved index
             let share_commitment = chunk_zero_coefficients[wire_in_chunk][val];
