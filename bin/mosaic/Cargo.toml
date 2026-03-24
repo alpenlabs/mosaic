@@ -34,5 +34,10 @@ toml = "0.8"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+rand_chacha.workspace = true
+mosaic-common = { workspace = true, features = ["reduced-circuits"]}
+
 [lints]
 workspace = true

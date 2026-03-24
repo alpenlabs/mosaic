@@ -35,6 +35,7 @@ fn main() -> Result<()> {
 
     let _fdb_network = unsafe { foundationdb::boot() };
     let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+        .enable_timer()
         .build()
         .context("failed to build mosaic monoio runtime")?;
     let running = runtime.block_on(startup(config))?;
@@ -268,4 +269,117 @@ fn ensure_peer_set_is_sound(our_peer_id: PeerId, peers: &[PeerId]) -> Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+
+    use std::time::Duration;
+
+    use mosaic_cac_types::{
+        DepositId, DepositInputs, HeapArray, KeyPair, Sighash, WithdrawalInputs,
+        state_machine::{
+            evaluator::{EvaluatorDepositInitData, EvaluatorInitData},
+            garbler::{GarblerDepositInitData, GarblerInitData},
+        },
+    };
+    use mosaic_common::{
+        Byte32,
+        constants::{N_DEPOSIT_INPUT_WIRES, N_SETUP_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES},
+    };
+    use mosaic_sm_executor_api::SmCommand;
+    use rand_chacha::{ChaChaRng, rand_core::SeedableRng};
+
+    use super::*;
+
+    fn rand_byte_array<const N: usize, R: rand_chacha::rand_core::RngCore>(rng: &mut R) -> [u8; N] {
+        let mut bytes = [0u8; N];
+        rng.fill_bytes(&mut bytes);
+        bytes
+    }
+
+    async fn mock_main() -> Result<()> {
+        let _fdb_network = unsafe { foundationdb::boot() };
+
+        let (eval_running, eval_peer) = {
+            let config_path = PathBuf::from(
+                "mosaic/bin/mosaic/config/config.b.toml",
+            );
+            let config = MosaicConfig::from_file(&config_path)?;
+            config.validate()?;
+
+            // let _fdb_network = unsafe { foundationdb::boot() };
+            let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                .enable_timer()
+                .build()
+                .context("failed to build mosaic monoio runtime")?;
+            let running: RunningMosaic = runtime.block_on(startup(config.clone()))?;
+            let peer_id = config.known_peers().unwrap()[0];
+            (running, peer_id)
+        };
+
+        let (garb_running, garb_peer) = {
+            let config_path = PathBuf::from(
+                "mosaic/bin/mosaic/config/config.a.toml",
+            );
+            let config = MosaicConfig::from_file(&config_path)?;
+            init_tracing(&config.logging.filter)?;
+            config.validate()?;
+
+            let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                .enable_timer()
+                .build()
+                .context("failed to build mosaic monoio runtime")?;
+            let running: RunningMosaic = runtime.block_on(startup(config.clone()))?;
+            let peer_id = config.known_peers().unwrap()[0];
+            (running, peer_id)
+        };
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Eval init
+        {
+            let setup_inputs = [0; N_SETUP_INPUT_WIRES];
+            let mut eval_rng = ChaChaRng::seed_from_u64(43);
+            let eval_seed = rand_byte_array(&mut eval_rng).into();
+
+            let eval_init_data: EvaluatorInitData = EvaluatorInitData {
+                seed: eval_seed,
+                setup_inputs,
+            };
+            let init_eval_command = SmCommand::init_evaluator(eval_peer, eval_init_data);
+            eval_running
+                ._sm_executor_handle
+                .send(init_eval_command)
+                .await
+                .unwrap();
+        }
+
+        {
+            let setup_inputs = [0; N_SETUP_INPUT_WIRES];
+            let mut garb_rng = ChaChaRng::seed_from_u64(42);
+            let garb_seed = rand_byte_array(&mut garb_rng).into();
+
+            let garb_init_data: GarblerInitData = GarblerInitData {
+                seed: garb_seed,
+                setup_inputs,
+            };
+            let init_garb_command = SmCommand::init_garbler(garb_peer, garb_init_data);
+
+            garb_running
+                ._sm_executor_handle
+                .send(init_garb_command)
+                .await
+                .unwrap();
+        }
+
+        wait_for_shutdown_signal()?;
+        let r = shutdown(garb_running);
+        let _ = shutdown(eval_running);
+        r
+    }
+
+    #[tokio::test]
+    async fn test_binary() {
+        mock_main().await.unwrap();
+    }
 }

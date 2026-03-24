@@ -196,6 +196,7 @@ where
             .name("sm-executor".to_string())
             .spawn(move || {
                 let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build sm-executor monoio runtime");
                 let result = runtime.block_on(self.run_inner(Some(shutdown_rx)));
@@ -1074,6 +1075,7 @@ mod tests {
         F: Future<Output = ()> + 'static,
     {
         monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+            .enable_timer()
             .build()
             .expect("build monoio runtime")
             .block_on(future);

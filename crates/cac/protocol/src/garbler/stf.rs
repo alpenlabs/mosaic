@@ -40,6 +40,7 @@ pub(crate) async fn handle_event<S: StateMut>(
         .map_err(SMError::storage)?
         .unwrap_or_default();
 
+    println!("garbler root_state {:?}", root_state.step);
     match input {
         Input::Init(data) => {
             match root_state.step {
@@ -288,6 +289,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         .map_err(SMError::storage)?
         .unwrap_or_default();
 
+    println!("garbler root_state {:?}", root_state.step);
     match result {
         ActionResult::PolynomialCommitmentsGenerated(generated) => {
             handle_polynomial_commitments_generated(&mut root_state, state, generated, actions)

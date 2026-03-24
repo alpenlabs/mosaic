@@ -72,6 +72,7 @@ fn make_garbler_action(
 /// Run an async block on a temporary monoio runtime.
 fn block_on<F: std::future::Future<Output = T>, T>(f: F) -> T {
     monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+        .enable_timer()
         .build()
         .expect("failed to build test monoio runtime")
         .block_on(f)
