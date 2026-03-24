@@ -193,7 +193,7 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         &self,
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
-    ) -> RpcResult<DepositStatus> {
+    ) -> RpcResult<Option<DepositStatus>> {
         let sm_id = parse_sm_id(tsid)?;
         let deposit_id = DepositId::from(deposit_id);
         let status = self
@@ -201,7 +201,7 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
             .get_deposit_status(&sm_id, &deposit_id)
             .await
             .map_err(service_err)?;
-        Ok(deposit_status_to_rpc(status))
+        Ok(status.map(deposit_status_to_rpc))
     }
 
     async fn mark_deposit_withdrawn(

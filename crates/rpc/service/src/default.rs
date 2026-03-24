@@ -413,7 +413,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         &self,
         sm_id: &StateMachineId,
         deposit_id: &DepositId,
-    ) -> ServiceResult<DepositStatus> {
+    ) -> ServiceResult<Option<DepositStatus>> {
         match sm_id.role() {
             Role::Garbler => {
                 let deposit = self
@@ -421,10 +421,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .await?
                     .get_deposit(deposit_id)
                     .await
-                    .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::DepositNotFound)?;
+                    .map_err(ServiceError::storage)?;
 
-                Ok(DepositStatus::from(deposit))
+                Ok(deposit.map(DepositStatus::from))
             }
             Role::Evaluator => {
                 let deposit = self
@@ -432,10 +431,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .await?
                     .get_deposit(deposit_id)
                     .await
-                    .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::DepositNotFound)?;
+                    .map_err(ServiceError::storage)?;
 
-                Ok(DepositStatus::from(deposit))
+                Ok(deposit.map(DepositStatus::from))
             }
         }
     }

@@ -1176,20 +1176,17 @@ async fn list_deposits_empty() {
 }
 
 #[tokio::test]
-async fn get_deposit_status_not_found() {
+async fn get_deposit_status_returns_none_when_not_found() {
     let h = TestHarness::new();
     h.setup_garbler(garbler::Step::SetupComplete).await;
 
-    let err = h
+    let status = h
         .api
         .get_deposit_status(&h.garbler_sm_id(), &test_deposit_id(99))
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(
-        matches!(err, ServiceError::DepositNotFound),
-        "expected DepositNotFound, got {err:?}"
-    );
+    assert!(status.is_none(), "expected None, got {status:?}");
 }
 
 // ---------------------------------------------------------------------------

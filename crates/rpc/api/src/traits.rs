@@ -100,13 +100,14 @@ pub trait MosaicRpc {
     ) -> RpcResult<()>;
 
     /// Gets a deposit instance on a given tableset.
+    /// Returns None if the deposit does not exist.
     /// This should be polled to check if the deposit is ready to be used.
     #[method(name = "getDepositStatus")]
     async fn get_deposit_status(
         &self,
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
-    ) -> RpcResult<DepositStatus>;
+    ) -> RpcResult<Option<DepositStatus>>;
 
     /// Marks that a deposit was succesfully withdrawn without contest. This deposit cannot be
     /// used afterwards and will be hidden from `getDeposits`.
