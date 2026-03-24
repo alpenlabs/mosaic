@@ -16,6 +16,7 @@ mosaic-cac-protocol.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 mosaic-net-svc-api.workspace = true
+mosaic-sm-executor-api.workspace = true
 mosaic-storage-api.workspace = true
 mosaic-vs3.workspace = true
 
@@ -26,7 +27,6 @@ ark-serialize.workspace = true
 async-trait.workspace = true
 bitcoin.workspace = true
 futures.workspace = true
-kanal.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
@@ -35,6 +35,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+kanal.workspace = true
 mosaic-storage-inmemory.workspace = true
 proptest.workspace = true
 sha2.workspace = true
