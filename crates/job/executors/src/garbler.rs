@@ -16,7 +16,7 @@ use mosaic_common::constants::{
 };
 use mosaic_heap_array::HeapArray;
 use mosaic_job_api::{ActionCompletion, CircuitError, HandlerOutcome};
-use mosaic_net_svc_api::PeerId;
+use mosaic_net_svc_api::{PeerId, StreamClosed};
 use mosaic_storage_api::{StorageProvider, table_store::TableStore};
 use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
@@ -590,10 +590,15 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
 
     const MAX_CHUNK: usize = 2 * 1024 * 1024; // 2 MiB — well under 4 MiB frame limit
     for chunk in translation_bytes.chunks(MAX_CHUNK) {
-        let _ = stream
-            .write(chunk.to_vec())
-            .await
-            .map_err(|e| CircuitError::SetupFailed(format!("translation send: {e:?}")))?;
+        let _ = stream.write(chunk.to_vec()).await.map_err(|e| {
+            match e {
+                // Retry if PeerFinished error was sent. The PeerFinished error could have been
+                // thrown because sender tried sending prematurely and stream was closed by the
+                // receiver
+                StreamClosed::PeerFinished => CircuitError::PeerNotReady,
+                _ => CircuitError::SetupFailed(format!("translation send: {e:?}")),
+            }
+        })?;
     }
 
     Ok(TransferSession::new(

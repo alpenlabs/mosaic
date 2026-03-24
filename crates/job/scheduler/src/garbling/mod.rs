@@ -405,11 +405,22 @@ async fn coordinator_loop(
                         });
                     }
                     Err(CircuitError::StorageUnavailable) => {
-                        // Transient — data not yet written by STF. Keep for retry.
+                        // Transient — data not yet written by STF. Keep for
+                        // retry.
                         tracing::debug!(
                             peer = ?job.peer_id,
                             action = ?job.action,
                             "session storage unavailable — will retry next pass"
+                        );
+                        pending_retry.push(job);
+                    }
+                    Err(CircuitError::PeerNotReady) => {
+                        // Transient — waiting for peer; Keep for
+                        // retry.
+                        tracing::debug!(
+                            peer = ?job.peer_id,
+                            action = ?job.action,
+                            "peer not ready — will retry next pass"
                         );
                         pending_retry.push(job);
                     }
