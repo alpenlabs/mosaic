@@ -203,6 +203,7 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
 
     // Batch-verify all opened shares against their polynomial commitments via RLC.
     // Collects (commitment, shares) pairs and verifies in a single MSM.
+    #[allow(clippy::needless_range_loop)]
     let failure_reason = {
         let mut share_bufs: Vec<Vec<Share>> =
             Vec::with_capacity(N_INPUT_WIRES * WIDE_LABEL_VALUE_COUNT);
