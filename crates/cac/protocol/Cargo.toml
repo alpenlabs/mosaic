@@ -33,6 +33,7 @@ mosaic-net-svc.workspace = true
 mosaic-net-client.workspace = true
 mosaic-common = { workspace = true, features = ["reduced-circuits"] }
 mosaic-storage-s3.workspace = true 
+mosaic-storage-kvstore.workspace = true
 
 tracing.workspace = true
 tokio = { version = "1", features = ["rt", "macros"] }
