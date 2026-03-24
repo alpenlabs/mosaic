@@ -1,20 +1,14 @@
-use std::{
-    env::temp_dir,
-    fs::File,
-    io::{Read, Write},
-    path::PathBuf,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{env::temp_dir, path::PathBuf, sync::Arc, time::Duration};
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use fasm::actions;
 use mosaic_cac_types::{
-    DepositId, HeapArray, KeyPair, Sighash,
+    CompletedSignatures, DepositId, DepositInputs, HeapArray, KeyPair, PubKey, SecretKey, Seed,
+    SetupInputs, Sighash, Sighashes, WithdrawalInputs,
     state_machine::{
         evaluator::{
-            EvaluatorDepositInitData, EvaluatorInitData, EvaluatorTrackedActionTypes,
+            DepositStep as EvalDepositStep, EvaluatorDepositInitData,
+            EvaluatorDisputedWithdrawalData, EvaluatorInitData, EvaluatorTrackedActionTypes,
             Input as EvalInput, Step as EvalStep,
         },
         garbler::{
@@ -33,11 +27,14 @@ use mosaic_common::{
 use mosaic_job_api::{ActionCompletion, ExecuteGarblerJob, HandlerOutcome, OwnedBlock, OwnedChunk};
 use mosaic_job_executors::{
     MosaicExecutor,
-    circuit_sessions::{EvaluatorCircuitSession, GarblerCircuitSession},
+    circuit_sessions::{EvaluationSession, EvaluatorCircuitSession, GarblerCircuitSession},
 };
+use mosaic_net_client::NetClient;
 use mosaic_net_svc_api::PeerId;
-use mosaic_storage_api::{StorageProvider, TableMetadata, TableReader, TableStore, TableWriter};
+use mosaic_storage_api::StorageProvider;
 use mosaic_storage_inmemory::{evaluator::StoredEvaluatorState, garbler::StoredGarblerState};
+use mosaic_storage_s3::S3TableStore;
+use object_store::{ObjectStore, local::LocalFileSystem};
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
 use crate::{
@@ -304,104 +301,66 @@ mod netcl {
     }
 }
 
-use fasm::StateMachine;
-#[tokio::test]
-// Steps:
-// 1. clone: g16 repo and switch to branch test/simple_circuit_postaudit
-// test/simple_circuit_postaudit branch generates small ckt file that does input validation
-// only; not the actually groth16 verification afterwards; Meant for test purposes only]
-// 2. generate v5a ckt file: cd g16gen && cargo run generate 6 && cargo run write-input-bits 6
-// 3. clone: ckt repo
-// 4. move g16gen/g16.ckt file to ckt/lvl/
-// 5. generate v5c file: cd crates/lvl && cargo run prealloc g16.ckt g16.v5c
-// 6. move lvl/g16.v5c to mosaic/cac/protocol/
-// 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
-//    --exact --show-output --nocapture --ignored
-async fn test_e2e() {
-    use mosaic_cac_types::{
-        WithdrawalInputs,
-        state_machine::evaluator::{
-            DepositStep as EvalDepositStep, EvaluatorDisputedWithdrawalData,
-        },
-    };
-
-    let mut garb_state = StoredGarblerState::default();
-    let mut garb_rng = ChaCha20Rng::seed_from_u64(42);
-    let mut eval_state = StoredEvaluatorState::default();
-    let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
-
-    let ts = DummyTableStore { dir: temp_dir() };
-    let circuit_path = PathBuf::from_str("g16.v5c").unwrap();
-    assert!(
-        std::fs::exists(circuit_path.clone()).unwrap(),
-        "expects v5c format ckt file on circuit_path"
-    );
-    let (peer_a, peer_b) = netcl::create_client_pair();
-    let (net_client_gabler, garbler_peer_id, net_client_evaluator, eval_peer_id) =
-        (peer_a.client, peer_a.peer_id, peer_b.client, peer_b.peer_id);
-
-    let garb_seed = rand_byte_array(&mut garb_rng).into();
-    let eval_seed = rand_byte_array(&mut eval_rng).into();
-    let setup_inputs = rand_byte_array(&mut garb_rng);
-
-    // Run Garbler STF
-    let sp: DummyStorageProvider = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garbler_exec = MosaicExecutor::new(
-        net_client_gabler.clone(),
-        sp,
-        ts.clone(),
-        circuit_path.clone(),
-    );
-
-    let sp: DummyStorageProvider = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_exec =
-        MosaicExecutor::new(net_client_evaluator, sp, ts.clone(), circuit_path.clone());
-
-    // Initialize garbler
-    let mut garb_actions: Vec<
+async fn handle_init_garbler(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
         actions::Action<
             mosaic_cac_types::state_machine::garbler::UntrackedAction,
             GarblerTrackedActionTypes,
         >,
-    > = Vec::new();
+    >,
+    garb_seed: Seed,
+    setup_inputs: SetupInputs,
+) {
     garbler::GarblerSM::stf(
-        &mut garb_state,
+        garb_state,
         fasm::Input::Normal(GarbInput::Init(GarblerInitData {
             seed: garb_seed,
             setup_inputs,
         })),
-        &mut garb_actions,
+        garb_actions,
     )
     .await
     .unwrap();
+}
 
-    // Initialize evaluator
-    let mut eval_actions: Vec<
+async fn handle_init_evaluator(
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
         actions::Action<
             mosaic_cac_types::state_machine::evaluator::UntrackedAction,
             EvaluatorTrackedActionTypes,
         >,
-    > = Vec::new();
+    >,
+    eval_seed: Seed,
+    setup_inputs: SetupInputs,
+) {
     evaluator::EvaluatorSM::stf(
-        &mut eval_state,
+        eval_state,
         fasm::Input::Normal(EvalInput::Init(EvaluatorInitData {
             seed: eval_seed,
             setup_inputs,
         })),
-        &mut eval_actions,
+        eval_actions,
     )
     .await
     .unwrap();
     assert_eq!(eval_actions.len(), 0); // Step Waiting For Commit
+}
 
+async fn handle_garbler_prepares_commit_msg(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garbler_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    eval_peer_id: PeerId,
+) {
     assert_eq!(garb_actions.len(), 1 + N_INPUT_WIRES); //  Action::GeneratePolynomialCommitments: [Output, Inputs..]
-    let mut results = mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+    let mut results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await;
     assert_eq!(results.len(), N_INPUT_WIRES + 1); // ActionResult::PolynomialCommitmentsGenerated: [Output, Inputs..]
     while let Some(completion) = results.pop() {
         let (action_id, action_result) = completion.as_garbler().unwrap();
@@ -410,19 +369,16 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
     // returns Action::GenerateShares
     assert_eq!(garb_actions.len(), N_CIRCUITS + 1);
 
-    // update garbler state read by executor manually; TODO: avoidable with a shared copy of State
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut results = mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+    garbler_exec.storage.garb_state = garb_state.clone();
+
+    let mut results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await;
     while let Some(completion) = results.pop() {
         let (action_id, action_result) = completion.as_garbler().unwrap();
         let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
@@ -430,18 +386,15 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
 
     assert_eq!(garb_actions.len(), N_CIRCUITS); // [Action::GenerateTableCommitment; N_CIRCUITS]
 
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut results = mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+    garbler_exec.storage.garb_state = garb_state.clone();
+    let mut results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await;
     assert_eq!(results.len(), N_CIRCUITS); // GarblerActionResult::TableCommitmentGenerated
 
     while let Some(completion) = results.pop() {
@@ -451,31 +404,52 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
     assert_eq!(garb_actions.len(), 1 + N_INPUT_WIRES); // Action::SendCommitMsgHeader + Action::SendCommitMsgChunk
+}
 
-    println!("spawn commit msg listener");
+async fn handlle_garbler_transfers_commit_msg(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garbler_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    eval_peer_id: PeerId,
+    net_client_evaluator: NetClient,
+) -> (Vec<EvalInput>, Vec<ActionCompletion>) {
     // Make evaluator listen
-    let encl = eval_exec.net_client.clone();
+    let encl = net_client_evaluator.clone();
     let commit_msg_listener = tokio::spawn(async move { handle_receive_commit_msg(encl).await });
 
-    println!("send commit msg");
+    tracing::info!("send commit msg");
     // sends commit msg header then chunks; evaluator should have been listening
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+    garbler_exec.storage.garb_state = garb_state.clone();
+    let garb_results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await;
 
-    println!("receive commit msg");
+    tracing::info!("receive commit msg");
     // Evaluator reads
-    let mut eval_inputs = commit_msg_listener.await.unwrap();
+    let eval_inputs = commit_msg_listener.await.unwrap();
     assert_eq!(eval_inputs.len(), 1 + N_INPUT_WIRES);
 
+    (eval_inputs, garb_results)
+}
+
+async fn handle_garbler_waits_for_challenge(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garb_results: &mut Vec<ActionCompletion>,
+) {
     while let Some(completion) = garb_results.pop() {
         let (action_id, action_result) = completion.as_garbler().unwrap();
         let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
@@ -483,36 +457,65 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
     assert_eq!(garb_actions.len(), 0); // Step: WaitForChallenge; No Action // network ack
+}
 
-    //Evaluator receives commit msg
+async fn handle_evaluator_prepares_challenge(
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    eval_inputs: &mut Vec<EvalInput>,
+) {
     while let Some(ei) = eval_inputs.pop() {
-        evaluator::EvaluatorSM::stf(&mut eval_state, fasm::Input::Normal(ei), &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, fasm::Input::Normal(ei), eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), 1); // SendChallenge
+}
 
-    println!("Evaluator Wants to Send Challenge; Garbler should be listening");
-
-    let ncl = garbler_exec.net_client.clone();
+async fn handle_evaluator_transfers_challenge_msg(
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    eval_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    garbler_peer_id: PeerId,
+    net_client_garbler: NetClient,
+) -> (GarbInput, Vec<ActionCompletion>) {
+    let ncl = net_client_garbler;
     let challenge_msg_listener = tokio::spawn(async move { handle_receive_challenge(&ncl).await });
 
     // Evaluator sends challenge over network
-    println!("mock_dispatch_evaluator; send_challenge");
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+    tracing::info!("mock_dispatch_evaluator; send_challenge");
+    eval_exec.storage.eval_state = eval_state.clone();
+    let eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
 
     let garb_inputs = challenge_msg_listener.await.unwrap(); // ChallengeMsg
+    (garb_inputs, eval_results)
+}
 
+async fn handle_evaluator_waits_for_challenge_response(
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    eval_results: &mut Vec<ActionCompletion>,
+) {
     // eval's tx is acked
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
@@ -521,34 +524,63 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), 0); // Challenge was acked; step WaitingForChallengeResponse
-    // garbler processes challenge
-    garbler::GarblerSM::stf(
-        &mut garb_state,
-        fasm::Input::Normal(garb_inputs),
-        &mut garb_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(garb_actions.len(), 1 + N_OPEN_CIRCUITS); // Challenge Response Header + Challenge Response Chunks (one chunk for each circuit)
+}
 
-    let encl = eval_exec.net_client.clone();
+async fn handle_garbler_prepares_challenge_response(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garb_inputs: GarbInput,
+) {
+    garbler::GarblerSM::stf(garb_state, fasm::Input::Normal(garb_inputs), garb_actions)
+        .await
+        .unwrap();
+    assert_eq!(garb_actions.len(), 1 + N_OPEN_CIRCUITS); // Challenge Response Header + Challenge Response Chunks (one chunk for each circuit)
+}
+
+async fn handle_garbler_transfers_challenge_response(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garbler_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    eval_peer_id: PeerId,
+    net_client_evaluator: NetClient,
+) -> (Vec<EvalInput>, Vec<ActionCompletion>) {
+    let encl = net_client_evaluator.clone();
     let challenge_response_listener =
         tokio::spawn(async move { handle_receive_challenge_response(encl).await });
 
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+    garbler_exec.storage.garb_state = garb_state.clone();
+    let garb_results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await;
 
-    let mut eval_inputs = challenge_response_listener.await.unwrap();
+    let eval_inputs = challenge_response_listener.await.unwrap();
 
+    (eval_inputs, garb_results)
+}
+
+async fn handle_garbler_prepares_for_table_transfer(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garb_results: &mut Vec<ActionCompletion>,
+) {
     while let Some(completion) = garb_results.pop() {
         let (action_id, action_result) = completion.as_garbler().unwrap();
         let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
@@ -556,28 +588,37 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
     assert_eq!(garb_actions.len(), N_EVAL_CIRCUITS); //  Step::TransferringGarblingTables; Action::TransferGarblingTable
+}
 
+async fn handle_evaluator_processes_challenge_response(
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    eval_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    eval_inputs: &mut Vec<EvalInput>,
+    garbler_peer_id: PeerId,
+) {
     // Evaluator receives challenge response
     while let Some(ei) = eval_inputs.pop() {
-        evaluator::EvaluatorSM::stf(&mut eval_state, fasm::Input::Normal(ei), &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, fasm::Input::Normal(ei), eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), 1); // Step::VerifyingOpenedInputShares; Action::VerifyOpenedInputShares
 
-    println!("mock_dispatch_evaluator; verify shares");
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    println!("shares verified");
+    tracing::info!("mock_dispatch_evaluator; verify shares");
+    eval_exec.storage.eval_state = eval_state.clone();
+    let mut eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
+    tracing::info!("shares verified");
     assert_eq!(eval_results.len(), 1); // ActionResult::VerifyOpenedInputSharesResult
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
@@ -586,19 +627,15 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), N_OPEN_CIRCUITS); // Action::GenerateTableCommitment(index, seed), Step::VerifyingTableCommitments
 
-    println!("mock_dispatch_evaluator; generate table commitment");
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+    tracing::info!("mock_dispatch_evaluator; generate table commitment");
+    eval_exec.storage.eval_state = eval_state.clone();
+    let mut eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
     assert_eq!(eval_results.len(), N_OPEN_CIRCUITS); // ActionResult::TableCommitmentGenerated
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
@@ -607,31 +644,24 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::ReceivingGarblingTables, Action::ReceiveGarblingTable
+}
 
-    // garbler sends table
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-
-    // transfer tables background
-    let tx = tokio::spawn(async move {
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await
-    });
-
-    // evaluator receives table
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
-    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
+async fn handle_evaluator_processes_table(
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    eval_results: &mut Vec<ActionCompletion>,
+) {
+    // process receipt
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
         let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
@@ -639,20 +669,27 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::SetupComplete, Action::SendTableTransferReceipt
     assert_eq!(
-        eval_state.state.as_ref().unwrap().step,
+        eval_state.clone().state.unwrap().step,
         EvalStep::SetupComplete
     );
+}
 
-    // garbler transfer tables done
-    let mut garb_results = tx.await.unwrap();
-    assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
-    let mut garb_actions = vec![];
+async fn handle_garbler_waits_for_receipt(
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garb_results: &mut Vec<ActionCompletion>,
+) {
     while let Some(completion) = garb_results.pop() {
         let (action_id, action_result) = completion.as_garbler().unwrap();
         let tracked_input: fasm::Input<GarblerTrackedActionTypes, GarbInput> =
@@ -660,12 +697,25 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
     assert_eq!(garb_actions.len(), 0); // step: waiting for table transfer receipt
+}
 
+async fn handle_evaluator_transfers_receipt(
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    eval_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    eval_state: &mut StoredEvaluatorState,
+    garbler_peer_id: PeerId,
+    net_client_gabler: NetClient,
+) -> (Vec<GarbInput>, Vec<ActionCompletion>) {
     // garbler listens for table transfer receipt
     let ncl = net_client_gabler.clone();
     let tx = tokio::spawn(async move {
@@ -674,13 +724,26 @@ async fn test_e2e() {
     });
 
     // evaluator sends table receipt
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+    eval_exec.storage.eval_state = eval_state.clone();
+
+    let eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
     assert_eq!(eval_results.len(), N_EVAL_CIRCUITS); // ActionResult::GarblingTableTransferReceiptAcked
+    // garbler received table transfer receipts
+    let garb_inputs = tx.await.unwrap();
+    assert_eq!(garb_inputs.len(), N_EVAL_CIRCUITS);
+    (garb_inputs, eval_results)
+}
+
+async fn handle_evaluator_consumes_receipt_ack(
+    eval_results: &mut Vec<ActionCompletion>,
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+) {
     // Stf ignores ack as state has been transitioned to SetupComplete already
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
@@ -689,81 +752,101 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), 0);
     assert_eq!(
-        eval_state.state.as_ref().unwrap().step,
+        eval_state.clone().state.unwrap().step,
         EvalStep::SetupComplete
     );
+}
 
-    // garbler received table transfer receipts
-    let mut garb_results = tx.await.unwrap();
-    assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
-    let mut garb_actions = vec![];
-    while let Some(input) = garb_results.pop() {
-        garbler::GarblerSM::stf(
-            &mut garb_state,
-            fasm::Input::Normal(input),
-            &mut garb_actions,
-        )
-        .await
-        .unwrap();
+async fn handle_garbler_consumes_receipt_ack(
+    garb_inputs: &mut Vec<GarbInput>,
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+) {
+    while let Some(input) = garb_inputs.pop() {
+        garbler::GarblerSM::stf(garb_state, fasm::Input::Normal(input), garb_actions)
+            .await
+            .unwrap();
     }
     assert_eq!(garb_actions.len(), 0); // setup complete
     assert_eq!(
-        garb_state.state.as_ref().unwrap().step,
+        garb_state.clone().state.unwrap().step,
         GarbStep::SetupComplete
     );
+}
 
-    println!("setup complete");
-
-    let deposit_id = {
-        let mut empty: [u8; 32] = [0; 32];
-        empty[0] = 7;
-        DepositId(Byte32::from(empty))
+async fn handle_garbler_inits_deposit(
+    sighashes: Sighashes,
+    deposit_inputs: DepositInputs,
+    eval_pubkey: PubKey,
+    deposit_id: DepositId,
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+) {
+    let deposit_input: GarblerDepositInitData = GarblerDepositInitData {
+        pk: eval_pubkey,
+        sighashes: HeapArray::from_vec(sighashes.to_vec()),
+        deposit_inputs,
     };
-    let sighashes =
-        [Sighash(Byte32::from([0u8; 32])); N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
-    let deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
-    let eval_keypair = KeyPair::rand(&mut eval_rng);
+    garbler::GarblerSM::stf(
+        garb_state,
+        fasm::Input::Normal(GarbInput::DepositInit(deposit_id, deposit_input)),
+        garb_actions,
+    )
+    .await
+    .unwrap();
+    assert_eq!(garb_actions.len(), 0);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_evaluator_inits_deposit(
+    sighashes: Sighashes,
+    eval_sk: SecretKey,
+    deposit_inputs: DepositInputs,
+    deposit_id: DepositId,
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    eval_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    garbler_peer_id: PeerId,
+) {
     let deposit_input: EvaluatorDepositInitData = EvaluatorDepositInitData {
-        sk: eval_keypair.secret_key(),
+        sk: eval_sk,
         sighashes: HeapArray::from_vec(sighashes.to_vec()),
         deposit_inputs,
     };
 
     evaluator::EvaluatorSM::stf(
-        &mut eval_state,
+        eval_state,
         fasm::Input::Normal(EvalInput::DepositInit(deposit_id, deposit_input)),
-        &mut eval_actions,
+        eval_actions,
     )
     .await
     .unwrap();
     assert_eq!(eval_actions.len(), 1 + N_ADAPTOR_MSG_CHUNKS); // Action::GenerateDepositAdaptors + [Action::GenerateWithdrawalAdaptorsChunk]
 
-    let deposit_input: GarblerDepositInitData = GarblerDepositInitData {
-        pk: eval_keypair.public_key(),
-        sighashes: HeapArray::from_vec(sighashes.to_vec()),
-        deposit_inputs,
-    };
-    garbler::GarblerSM::stf(
-        &mut garb_state,
-        fasm::Input::Normal(GarbInput::DepositInit(deposit_id, deposit_input)),
-        &mut garb_actions,
-    )
-    .await
-    .unwrap();
-    assert_eq!(garb_actions.len(), 0);
+    eval_exec.storage.eval_state = eval_state.clone();
 
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+    let mut eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
         let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
@@ -771,26 +854,55 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), N_DEPOSIT_INPUT_WIRES); //  Action::DepositSendAdaptorMsgChunk
+}
 
-    println!("handle_receive_adaptor_msg_chunks");
+async fn handle_evaluator_sends_adaptors(
+    eval_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    deposit_id: DepositId,
+    garbler_peer_id: PeerId,
+    net_client_gabler: NetClient,
+) -> (Vec<GarbInput>, Vec<ActionCompletion>) {
+    tracing::info!("handle_receive_adaptor_msg_chunks");
     // adaptor chunks listener
     let ncl = net_client_gabler.clone();
     let challenge_msg_listener =
         tokio::spawn(async move { handle_receive_adaptor_msg_chunks(&ncl, deposit_id).await });
 
     // send adaptor msg chunks
-    eval_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut eval_results =
-        mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+    eval_exec.storage.eval_state = eval_state.clone();
+    let eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
     assert_eq!(eval_results.len(), N_DEPOSIT_INPUT_WIRES); // ActionResult::DepositAdaptorChunkSent
+
+    // garbler listens for adaptors
+    let garb_inputs = challenge_msg_listener.await.unwrap();
+    assert_eq!(garb_inputs.len(), N_DEPOSIT_INPUT_WIRES);
+
+    (garb_inputs, eval_results)
+}
+
+async fn handle_evaluator_is_deposit_ready(
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    deposit_id: DepositId,
+    eval_results: &mut Vec<ActionCompletion>,
+) {
     while let Some(completion) = eval_results.pop() {
         let (action_id, action_result) = completion.as_evaluator().unwrap();
         let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
@@ -798,12 +910,12 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, &mut eval_actions)
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
     assert_eq!(eval_actions.len(), 0);
-    println!("evaluator verifies adaptors");
+
     assert_eq!(
         eval_state
             .deposits
@@ -816,32 +928,21 @@ async fn test_e2e() {
         EvalDepositStep::DepositReady
     );
     // assert evaluator is deposit ready
+}
 
-    // garbler listens for adaptors
-    let mut garb_inputs = challenge_msg_listener.await.unwrap();
-    assert_eq!(garb_inputs.len(), N_DEPOSIT_INPUT_WIRES);
-    while let Some(ei) = garb_inputs.pop() {
-        garbler::GarblerSM::stf(&mut garb_state, fasm::Input::Normal(ei), &mut garb_actions)
-            .await
-            .unwrap();
-    }
-    assert_eq!(garb_actions.len(), 1); // DepositStep::VerifyingAdaptors
-
-    println!("garbler now verifies adaptors");
-
-    let sp = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garbler_exec = MosaicExecutor::new(
-        net_client_gabler.clone(),
-        sp,
-        ts.clone(),
-        circuit_path.clone(),
-    );
-
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+async fn handle_garbler_verifies_adaptors(
+    garbler_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    garb_state: &mut StoredGarblerState,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    eval_peer_id: PeerId,
+    deposit_id: DepositId,
+) {
+    let mut garb_results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await;
     // results ActionResult::DepositAdaptorVerificationResult
     while let Some(completion) = garb_results.pop() {
         let (action_id, action_result) = completion.as_garbler().unwrap();
@@ -850,7 +951,7 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -867,28 +968,53 @@ async fn test_e2e() {
         GarbDepositStep::DepositReady
     );
     // garbler is deposit ready
-    println!("garbler is deposit ready");
+    tracing::info!("garbler is deposit ready");
+    // garbler is deposit ready
+    tracing::info!("garbler is deposit ready");
+}
 
-    println!("Withdrawal Stage");
-    // STARTING WITHDRAWAL STAGE for Disputed Withdrawal
+async fn handle_garbler_starts_adaptor_verification_job(
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garb_inputs: &mut Vec<GarbInput>,
+    garb_state: &mut StoredGarblerState,
+) {
+    while let Some(ei) = garb_inputs.pop() {
+        garbler::GarblerSM::stf(garb_state, fasm::Input::Normal(ei), garb_actions)
+            .await
+            .unwrap();
+    }
+    assert_eq!(garb_actions.len(), 1); // DepositStep::VerifyingAdaptors
+}
 
-    let withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
-
+async fn handle_garbler_completes_signatures(
+    garbler_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    garb_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::garbler::UntrackedAction,
+            GarblerTrackedActionTypes,
+        >,
+    >,
+    garb_state: &mut StoredGarblerState,
+    deposit_id: DepositId,
+    withdrawal_input: WithdrawalInputs,
+    eval_peer_id: PeerId,
+) -> CompletedSignatures {
     garbler::GarblerSM::stf(
-        &mut garb_state,
+        garb_state,
         fasm::Input::Normal(GarbInput::DisputedWithdrawal(deposit_id, withdrawal_input)),
-        &mut garb_actions,
+        garb_actions,
     )
     .await
     .unwrap();
     assert_eq!(garb_actions.len(), 1); // Action::CompleteAdaptorSignatures
 
-    garbler_exec.storage = DummyStorageProvider {
-        garb_state: garb_state.clone(),
-        eval_state: eval_state.clone(),
-    };
-    let mut garb_results =
-        mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await; // ActionResult::AdaptorSignaturesCompleted
+    garbler_exec.storage.garb_state = garb_state.clone();
+    let mut garb_results = mock_dispatch_garbler(garb_actions, garbler_exec, &eval_peer_id).await; // ActionResult::AdaptorSignaturesCompleted
     assert_eq!(garb_results.len(), 1);
 
     while let Some(completion) = garb_results.pop() {
@@ -898,13 +1024,13 @@ async fn test_e2e() {
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, &mut garb_actions)
+        garbler::GarblerSM::stf(garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
     assert_eq!(garb_actions.len(), 0); // Setup Consumed
     assert_eq!(
-        garb_state.state.as_ref().unwrap().step,
+        garb_state.clone().state.as_ref().unwrap().step,
         GarbStep::SetupConsumed { deposit_id }
     );
 
@@ -915,22 +1041,413 @@ async fn test_e2e() {
         .completed_sigs
         .as_ref()
         .unwrap();
+    on_chain_sigs.clone()
+}
 
+async fn handle_evaluator_finds_fault_secret(
+    eval_exec: &mut MosaicExecutor<DummyStorageProvider, S3TableStore>,
+    on_chain_sigs: CompletedSignatures,
+    eval_state: &mut StoredEvaluatorState,
+    eval_actions: &mut Vec<
+        actions::Action<
+            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+            EvaluatorTrackedActionTypes,
+        >,
+    >,
+    deposit_id: DepositId,
+    garbler_peer_id: PeerId,
+) {
     let eval_disputed_withdrawal = EvaluatorDisputedWithdrawalData {
-        withdrawal_inputs: withdrawal_input,
         signatures: on_chain_sigs.clone(),
     };
     evaluator::EvaluatorSM::stf(
-        &mut eval_state,
+        eval_state,
         fasm::Input::Normal(EvalInput::DisputedWithdrawal(
             deposit_id,
             eval_disputed_withdrawal,
         )),
-        &mut eval_actions,
+        eval_actions,
     )
     .await
     .unwrap();
     assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Action::EvaluateGarblingTable
+
+    tracing::info!("evaluate garbling table");
+    eval_exec.storage.eval_state = eval_state.clone();
+    let mut eval_results = mock_dispatch_evaluator(eval_actions, eval_exec, &garbler_peer_id).await;
+    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
+    while let Some(completion) = eval_results.pop() {
+        let (action_id, action_result) = completion.as_evaluator().unwrap();
+        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
+            fasm::Input::TrackedActionCompleted {
+                id: action_id.clone(),
+                result: action_result.clone(),
+            };
+        evaluator::EvaluatorSM::stf(eval_state, tracked_input, eval_actions)
+            .await
+            .unwrap();
+    }
+    assert_eq!(eval_actions.len(), 0);
+}
+
+use fasm::StateMachine;
+#[tokio::test]
+// OPTIONAL steps to generate v5c file yourself:
+// 1. clone: g16 repo and switch to branch test/simple_circuit_postaudit
+// test/simple_circuit_postaudit branch generates small ckt file that does input validation
+// only; not the actually groth16 verification afterwards; Meant for test purposes only]
+// 2. generate v5a ckt file: cd g16gen && cargo run generate 6 && cargo run write-input-bits 6
+// 3. clone: ckt repo
+// 4. move g16gen/g16.ckt file to ckt/lvl/
+// 5. generate v5c file: cd crates/lvl && cargo run prealloc g16.ckt g16.v5c
+// 6. move lvl/g16.v5c to mosaic/cac/protocol/
+// 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
+//    --exact --show-output --nocapture
+async fn test_e2e() {
+    use mosaic_cac_types::WithdrawalInputs;
+    use mosaic_common::constants::N_SETUP_INPUT_WIRES;
+
+    let test_vector = {
+        // The current g16.v5c file ORs all input wires; so it yields false only if all inputs are
+        // false.
+        let setup_inputs = [0; N_SETUP_INPUT_WIRES];
+        let deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
+        let withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
+        let reveals_secret = true; // output is false
+
+        let mut setup_inputs2 = [0; N_SETUP_INPUT_WIRES];
+        let mut deposit_input2 = [0u8; N_DEPOSIT_INPUT_WIRES];
+        let mut withdrawal_input2 = [0; N_WITHDRAWAL_INPUT_WIRES];
+        setup_inputs2[0] = 1;
+        deposit_input2[0] = 1;
+        withdrawal_input2[0] = 1;
+        let reveals_secret2 = false; // output is true
+        vec![
+            (
+                setup_inputs,
+                deposit_inputs,
+                withdrawal_input,
+                reveals_secret,
+            ),
+            (
+                setup_inputs2,
+                deposit_input2,
+                withdrawal_input2,
+                reveals_secret2,
+            ),
+        ]
+    };
+
+    for (iter, (setup_inputs, deposit_inputs, withdrawal_input, reveals_secret)) in
+        test_vector.into_iter().enumerate()
+    {
+        tracing::info!("ITERATION {}", iter + 1);
+        let mut garb_state = StoredGarblerState::default();
+        let mut garb_rng = ChaCha20Rng::seed_from_u64(42);
+        let mut eval_state = StoredEvaluatorState::default();
+        let mut eval_rng = ChaCha20Rng::seed_from_u64(43);
+
+        let temp_dir = temp_dir();
+        let prefix = "garbling-tables";
+        std::fs::create_dir_all(temp_dir.clone()).unwrap();
+        let local = LocalFileSystem::new_with_prefix(temp_dir.clone()).unwrap();
+        let ts = S3TableStore::new(Arc::new(local) as Arc<dyn ObjectStore>, prefix);
+
+        let circuit_path = PathBuf::from(env!("MOSAIC_ARTIFACTS_DIR")).join("g16.v5c");
+        assert!(
+            std::fs::exists(circuit_path.clone()).unwrap(),
+            "expects v5c format ckt file on circuit_path"
+        );
+        let (peer_a, peer_b) = netcl::create_client_pair();
+        let (net_client_gabler, garbler_peer_id, net_client_evaluator, eval_peer_id) =
+            (peer_a.client, peer_a.peer_id, peer_b.client, peer_b.peer_id);
+
+        let garb_seed = rand_byte_array(&mut garb_rng).into();
+        let eval_seed = rand_byte_array(&mut eval_rng).into();
+
+        // Run Garbler STF
+        let sp: DummyStorageProvider = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let mut garbler_exec =
+            MosaicExecutor::new(net_client_gabler.clone(), sp, ts, circuit_path.clone());
+
+        let sp: DummyStorageProvider = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+
+        let prefix = "evaluating-tables";
+        let local = LocalFileSystem::new_with_prefix(temp_dir.clone()).unwrap();
+        let ts = S3TableStore::new(Arc::new(local) as Arc<dyn ObjectStore>, prefix);
+
+        let mut eval_exec =
+            MosaicExecutor::new(net_client_evaluator.clone(), sp, ts, circuit_path.clone());
+
+        let mut garb_actions: Vec<
+            actions::Action<
+                mosaic_cac_types::state_machine::garbler::UntrackedAction,
+                GarblerTrackedActionTypes,
+            >,
+        > = Vec::new();
+
+        // Initialize evaluator
+        let mut eval_actions: Vec<
+            actions::Action<
+                mosaic_cac_types::state_machine::evaluator::UntrackedAction,
+                EvaluatorTrackedActionTypes,
+            >,
+        > = Vec::new();
+
+        handle_init_garbler(&mut garb_state, &mut garb_actions, garb_seed, setup_inputs).await;
+
+        handle_init_evaluator(&mut eval_state, &mut eval_actions, eval_seed, setup_inputs).await;
+
+        handle_garbler_prepares_commit_msg(
+            &mut garb_state,
+            &mut garb_actions,
+            &mut garbler_exec,
+            eval_peer_id,
+        )
+        .await;
+
+        tracing::info!("spawn commit msg listener");
+        let (mut eval_inputs, mut garb_results) = handlle_garbler_transfers_commit_msg(
+            &mut garb_state,
+            &mut garb_actions,
+            &mut garbler_exec,
+            eval_peer_id,
+            net_client_evaluator.clone(),
+        )
+        .await;
+
+        // garbler waits for challenge
+        handle_garbler_waits_for_challenge(&mut garb_state, &mut garb_actions, &mut garb_results)
+            .await;
+
+        //Evaluator receives commit msg
+        handle_evaluator_prepares_challenge(&mut eval_state, &mut eval_actions, &mut eval_inputs)
+            .await;
+
+        tracing::info!("Evaluator Wants to Send Challenge; Garbler should be listening");
+
+        let (garb_inputs, mut eval_results) = handle_evaluator_transfers_challenge_msg(
+            &mut eval_state,
+            &mut eval_actions,
+            &mut eval_exec,
+            garbler_peer_id,
+            net_client_gabler.clone(),
+        )
+        .await;
+
+        // evaluator waits for challenge response
+        handle_evaluator_waits_for_challenge_response(
+            &mut eval_state,
+            &mut eval_actions,
+            &mut eval_results,
+        )
+        .await;
+
+        // garbler processes challenge and prepares challenge response
+        handle_garbler_prepares_challenge_response(&mut garb_state, &mut garb_actions, garb_inputs)
+            .await;
+
+        let (mut eval_inputs, mut garb_results) = handle_garbler_transfers_challenge_response(
+            &mut garb_state,
+            &mut garb_actions,
+            &mut garbler_exec,
+            eval_peer_id,
+            net_client_evaluator,
+        )
+        .await;
+
+        handle_garbler_prepares_for_table_transfer(
+            &mut garb_state,
+            &mut garb_actions,
+            &mut garb_results,
+        )
+        .await;
+
+        handle_evaluator_processes_challenge_response(
+            &mut eval_state,
+            &mut eval_actions,
+            &mut eval_exec,
+            &mut eval_inputs,
+            garbler_peer_id,
+        )
+        .await;
+
+        // Table Transfer
+        let (mut garb_results, mut eval_results) = {
+            garbler_exec.storage.garb_state = garb_state.clone();
+            // transfer tables background
+            let tx = tokio::spawn(async move {
+                mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await
+            });
+            // evaluator receives table
+            eval_exec.storage.eval_state = eval_state.clone();
+            let eval_results =
+                mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+            assert_eq!(eval_results.len(), N_EVAL_CIRCUITS);
+            // garbler transfer tables done
+            let garb_results = tx.await.unwrap();
+            assert_eq!(garb_results.len(), N_EVAL_CIRCUITS);
+            (garb_results, eval_results)
+        };
+
+        // process table and prepare receipt
+        handle_evaluator_processes_table(&mut eval_state, &mut eval_actions, &mut eval_results)
+            .await;
+
+        let mut garb_actions = vec![];
+        handle_garbler_waits_for_receipt(&mut garb_state, &mut garb_actions, &mut garb_results)
+            .await;
+
+        let (mut garb_inputs, mut eval_results) = handle_evaluator_transfers_receipt(
+            &mut eval_actions,
+            &mut eval_exec,
+            &mut eval_state,
+            garbler_peer_id,
+            net_client_gabler.clone(),
+        )
+        .await;
+
+        handle_evaluator_consumes_receipt_ack(
+            &mut eval_results,
+            &mut eval_state,
+            &mut eval_actions,
+        )
+        .await;
+
+        handle_garbler_consumes_receipt_ack(&mut garb_inputs, &mut garb_state, &mut garb_actions)
+            .await;
+
+        tracing::info!("setup complete");
+
+        let deposit_id = {
+            let mut empty: [u8; 32] = [0; 32];
+            empty[0] = 7;
+            DepositId(Byte32::from(empty))
+        };
+        let sighashes =
+            [Sighash(Byte32::from([0u8; 32])); N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES];
+        let eval_keypair = KeyPair::rand(&mut eval_rng);
+
+        handle_garbler_inits_deposit(
+            HeapArray::from_vec(sighashes.to_vec()),
+            deposit_inputs,
+            eval_keypair.public_key(),
+            deposit_id,
+            &mut garb_state,
+            &mut garb_actions,
+        )
+        .await;
+
+        handle_evaluator_inits_deposit(
+            HeapArray::from_vec(sighashes.to_vec()),
+            eval_keypair.secret_key(),
+            deposit_inputs,
+            deposit_id,
+            &mut eval_state,
+            &mut eval_actions,
+            &mut eval_exec,
+            garbler_peer_id,
+        )
+        .await;
+
+        let (mut garb_inputs, mut eval_results) = handle_evaluator_sends_adaptors(
+            &mut eval_exec,
+            &mut eval_state,
+            &mut eval_actions,
+            deposit_id,
+            garbler_peer_id,
+            net_client_gabler.clone(),
+        )
+        .await;
+
+        handle_evaluator_is_deposit_ready(
+            &mut eval_state,
+            &mut eval_actions,
+            deposit_id,
+            &mut eval_results,
+        )
+        .await;
+
+        handle_garbler_starts_adaptor_verification_job(
+            &mut garb_actions,
+            &mut garb_inputs,
+            &mut garb_state,
+        )
+        .await;
+
+        let sp = DummyStorageProvider {
+            garb_state: garb_state.clone(),
+            eval_state: eval_state.clone(),
+        };
+        let prefix = "garbling-tables";
+        let local = LocalFileSystem::new_with_prefix(temp_dir.clone()).unwrap();
+        let ts = S3TableStore::new(Arc::new(local) as Arc<dyn ObjectStore>, prefix);
+        let mut garbler_exec =
+            MosaicExecutor::new(net_client_gabler.clone(), sp, ts, circuit_path.clone());
+        handle_garbler_verifies_adaptors(
+            &mut garbler_exec,
+            &mut garb_state,
+            &mut garb_actions,
+            eval_peer_id,
+            deposit_id,
+        )
+        .await;
+
+        tracing::info!("Withdrawal Stage");
+        // STARTING WITHDRAWAL STAGE for Disputed Withdrawal
+
+        tracing::info!("Withdrawal Stage");
+        // STARTING WITHDRAWAL STAGE for Disputed Withdrawal
+
+        let on_chain_sigs = handle_garbler_completes_signatures(
+            &mut garbler_exec,
+            &mut garb_actions,
+            &mut garb_state,
+            deposit_id,
+            withdrawal_input,
+            eval_peer_id,
+        )
+        .await;
+
+        handle_evaluator_finds_fault_secret(
+            &mut eval_exec,
+            on_chain_sigs,
+            &mut eval_state,
+            &mut eval_actions,
+            deposit_id,
+            garbler_peer_id,
+        )
+        .await;
+
+        match eval_state.clone().state.unwrap().step {
+            EvalStep::SetupConsumed {
+                deposit_id: deposit_idx,
+                slash,
+            } => {
+                assert_eq!(deposit_id, deposit_idx);
+                assert_eq!(slash.is_some(), reveals_secret);
+                if reveals_secret {
+                    use mosaic_cac_types::state_machine::evaluator::StateRead;
+                    let output_poly_commit = eval_state
+                        .get_output_polynomial_commitment()
+                        .await
+                        .unwrap()
+                        .unwrap()[0]
+                        .get_zeroth_coefficient();
+
+                    let share_commit = slash.unwrap().to_pubkey();
+                    assert_eq!(share_commit.0, output_poly_commit, "should be keypairs");
+                }
+            }
+            _ => panic!(),
+        };
+    }
 }
 
 struct DummyStorageProvider {
@@ -957,169 +1474,6 @@ impl StorageProvider for DummyStorageProvider {
     }
 }
 
-#[derive(Debug, Clone)]
-struct DummyTableStore {
-    dir: PathBuf,
-}
-
-#[allow(unused_variables)]
-impl TableStore for DummyTableStore {
-    type Error = std::io::Error;
-    type Writer = FileTableWriter;
-    type Reader = FileTableReader;
-
-    async fn create(&self, id: &mosaic_storage_api::TableId) -> Result<Self::Writer, Self::Error> {
-        let id = id.index.get();
-        let ct_path = self.dir.join(format!("ct_{id}.bin"));
-        let meta_path = self.dir.join(format!("meta_{id}.bin"));
-        let trans_path = self.dir.join(format!("trans_{id}.bin"));
-
-        let ct = File::create(ct_path).unwrap();
-        let meta = File::create(meta_path).unwrap();
-        let trans = File::create(trans_path).unwrap();
-        Ok(FileTableWriter { ct, meta, trans })
-    }
-
-    async fn open(&self, id: &mosaic_storage_api::TableId) -> Result<Self::Reader, Self::Error> {
-        let id = id.index.get();
-        let ct_path = self.dir.join(format!("ct_{id}.bin"));
-        let meta_path = self.dir.join(format!("meta_{id}.bin"));
-        let trans_path = self.dir.join(format!("trans_{id}.bin"));
-
-        let ct = File::open(ct_path).unwrap();
-        let meta = File::open(meta_path).unwrap();
-        let trans = File::open(trans_path).unwrap();
-        Ok(FileTableReader { ct, meta, trans })
-    }
-
-    async fn exists(&self, id: &mosaic_storage_api::TableId) -> Result<bool, Self::Error> {
-        let id = id.index.get();
-
-        let ct_path = self.dir.join(format!("ct_{id}.bin"));
-        let meta_path = self.dir.join(format!("meta_{id}.bin"));
-        let trans_path = self.dir.join(format!("trans_{id}.bin"));
-
-        let ct = std::fs::exists(ct_path).unwrap();
-        let meta = std::fs::exists(meta_path).unwrap();
-        let trans = std::fs::exists(trans_path).unwrap();
-        Ok(ct && meta && trans)
-    }
-
-    async fn delete(&self, id: &mosaic_storage_api::TableId) -> Result<(), Self::Error> {
-        let id = id.index.get();
-        println!("deleting file gc_{id}.bin");
-        //std::fs::remove_file(format!("gc_{id}.bin")).unwrap();
-        Ok(())
-    }
-}
-
-struct FileTableWriter {
-    ct: std::fs::File,
-    meta: std::fs::File,
-    trans: std::fs::File,
-}
-
-impl TableWriter for FileTableWriter {
-    type Error = std::io::Error;
-
-    async fn write_ciphertext(&mut self, data: &[u8]) -> Result<(), Self::Error> {
-        self.ct.write_all(data).unwrap();
-        self.ct.flush().unwrap();
-        Ok(())
-    }
-
-    async fn finish(
-        &mut self,
-        translation: &[u8],
-        metadata: mosaic_storage_api::TableMetadata,
-    ) -> Result<(), Self::Error> {
-        fn serialize_metadata(meta: &mosaic_storage_api::TableMetadata) -> Vec<u8> {
-            let mut buf = Vec::with_capacity(64);
-            buf.extend_from_slice(meta.output_label_ct.as_ref());
-            buf.extend_from_slice(&meta.aes_key);
-            buf.extend_from_slice(&meta.public_s);
-            buf
-        }
-
-        self.ct.flush().unwrap();
-        self.trans.write_all(translation).unwrap();
-        self.trans.flush().unwrap();
-        self.meta.write_all(&serialize_metadata(&metadata)).unwrap();
-        self.meta.flush().unwrap();
-        Ok(())
-    }
-}
-
-struct FileTableReader {
-    ct: std::fs::File,
-    meta: std::fs::File,
-    trans: std::fs::File,
-}
-
-impl TableReader for FileTableReader {
-    type Error = std::io::Error;
-
-    #[allow(clippy::unused_io_amount)]
-    async fn metadata(&mut self) -> Result<mosaic_storage_api::TableMetadata, Self::Error> {
-        let mut bytes = [0; 64];
-        self.meta.read(&mut bytes).unwrap();
-
-        let mut output_label_ct = [0u8; 32];
-        output_label_ct.copy_from_slice(&bytes[..32]);
-
-        let mut aes_key = [0u8; 16];
-        aes_key.copy_from_slice(&bytes[32..48]);
-
-        let mut public_s = [0u8; 16];
-        public_s.copy_from_slice(&bytes[48..64]);
-
-        Ok(TableMetadata {
-            output_label_ct: output_label_ct.into(),
-            aes_key,
-            public_s,
-        })
-    }
-
-    async fn read_translation(&mut self) -> Result<Vec<u8>, Self::Error> {
-        let mut translation_material: Vec<[[[u8; 16]; 8]; 256]> = Vec::new();
-
-        for _ in 0..N_WITHDRAWAL_INPUT_WIRES {
-            let mut material = [[[0; 16]; 8]; 256];
-            for byte_row in &mut material {
-                for ciphertext in byte_row {
-                    let mut ct_bytes = [0u8; 16];
-                    self.trans
-                        .read_exact(&mut ct_bytes)
-                        .expect("Failed to read translation material");
-                    *ciphertext = ct_bytes;
-                }
-            }
-            translation_material.push(material);
-        }
-        let flat: Vec<u8> = translation_material
-            .into_iter()
-            .flat_map(|lvl1| lvl1.into_iter())
-            .flat_map(|lvl2| lvl2.into_iter())
-            .flat_map(|arr16| arr16.into_iter())
-            .collect();
-        Ok(flat)
-    }
-
-    async fn read_ciphertext(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let mut total = 0;
-
-        while total < buf.len() {
-            let n = self.ct.read(&mut buf[total..]).unwrap(); // <-- async read
-            if n == 0 {
-                break; // EOF
-            }
-            total += n;
-        }
-
-        Ok(total)
-    }
-}
-
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
@@ -1131,7 +1485,7 @@ async fn mock_dispatch_garbler(
             GarblerTrackedActionTypes,
         >,
     >,
-    exec: &MosaicExecutor<DummyStorageProvider, DummyTableStore>,
+    exec: &MosaicExecutor<DummyStorageProvider, S3TableStore>,
     peer_id: &PeerId,
 ) -> Vec<mosaic_job_api::ActionCompletion> {
     let mut garb_results = vec![];
@@ -1189,7 +1543,7 @@ async fn mock_dispatch_garbler(
                         exec.complete_adaptor_signatures(peer_id, *deposit_id).await
                     }
                     _ => {
-                        println!("unhandled garbler action variant {:?}", action);
+                        tracing::info!("unhandled garbler action variant {:?}", action);
                         HandlerOutcome::Retry
                     }
                 }
@@ -1214,7 +1568,7 @@ async fn mock_dispatch_evaluator(
             EvaluatorTrackedActionTypes,
         >,
     >,
-    exec: &MosaicExecutor<DummyStorageProvider, DummyTableStore>,
+    exec: &MosaicExecutor<DummyStorageProvider, S3TableStore>,
     peer_id: &PeerId,
 ) -> Vec<ActionCompletion> {
     let mut eval_results = vec![];
@@ -1257,6 +1611,22 @@ async fn mock_dispatch_evaluator(
                     EvaluatorAction::DepositSendAdaptorMsgChunk(deposit_id, chunk) => {
                         exec.deposit_send_adaptor_msg_chunk(peer_id, *deposit_id, chunk)
                             .await
+                    }
+                    EvaluatorAction::EvaluateGarblingTable(circuit_index, commitment) => {
+                        let session = ExecuteEvaluatorJob::begin_evaluation(
+                            exec,
+                            peer_id,
+                            *circuit_index,
+                            *commitment,
+                        )
+                        .await
+                        .unwrap();
+                        if let EvaluatorCircuitSession::Evaluation(session) = session {
+                            let session: EvaluationSession = *session;
+                            garb_coordinator(&exec.circuit_path, session).await
+                        } else {
+                            panic!()
+                        }
                     }
                     _ => {
                         panic!("unhandled evaluator action variant");
