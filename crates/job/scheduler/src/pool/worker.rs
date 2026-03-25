@@ -107,6 +107,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
             .name(format!("worker-{id}"))
             .spawn(move || {
                 monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build monoio runtime")
                     .block_on(worker_loop(

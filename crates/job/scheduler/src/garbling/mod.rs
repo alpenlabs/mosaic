@@ -178,6 +178,7 @@ impl WorkerHandle {
             .name(format!("garbling-worker-{id}"))
             .spawn(move || {
                 monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build monoio runtime for garbling worker")
                     .block_on(worker_loop(
@@ -276,6 +277,7 @@ impl GarblingCoordinator {
             .name("garbling-coordinator".into())
             .spawn(move || {
                 monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build monoio runtime for garbling coordinator")
                     .block_on(coordinator_loop(config, factory, submit_rx, completion_tx));
