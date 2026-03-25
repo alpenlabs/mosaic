@@ -148,7 +148,7 @@ pub struct AdaptorMsgChunk {
 /// Message type for table transfer receipt
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct TableTransferReceiptMsg {
-    /// circuit index representing the table that was successfully reiceived
+    /// circuit index representing the table that was successfully received
     pub circuit_index: Index,
 }
 
