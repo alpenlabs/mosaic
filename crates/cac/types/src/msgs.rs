@@ -145,6 +145,13 @@ pub struct AdaptorMsgChunk {
     pub withdrawal_adaptors: WithdrawalAdaptorsChunk,
 }
 
+/// Message type for table transfer receipt
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct TableTransferReceiptMsg {
+    /// circuit index representing the table that was successfully received
+    pub circuit_index: Index,
+}
+
 // ============================================================================
 // Message Enum (for dispatching)
 // ============================================================================
@@ -165,7 +172,7 @@ pub enum Msg {
     /// Challenge message (Evaluator -> Garbler)
     Challenge(ChallengeMsg),
     /// Table Receipt (Evaluator -> Garbler)
-    TableTransferReceipt(Index),
+    TableTransferReceipt(TableTransferReceiptMsg),
     /// Challenge response header (Garbler -> Evaluator)
     ChallengeResponseHeader(ChallengeResponseMsgHeader),
     /// Challenge response chunk (Garbler -> Evaluator)
@@ -296,7 +303,11 @@ impl CanonicalDeserialize for Msg {
                 Ok(Msg::ChallengeResponseChunk(msg))
             }
             MsgVariant::TableTransferReceipt => {
-                let msg = Index::deserialize_with_mode(&mut reader, compress, validate)?;
+                let msg = TableTransferReceiptMsg::deserialize_with_mode(
+                    &mut reader,
+                    compress,
+                    validate,
+                )?;
                 Ok(Msg::TableTransferReceipt(msg))
             }
             MsgVariant::AdaptorChunk => {
@@ -361,8 +372,8 @@ impl From<AdaptorMsgChunk> for Msg {
     }
 }
 
-impl From<Index> for Msg {
-    fn from(value: Index) -> Self {
+impl From<TableTransferReceiptMsg> for Msg {
+    fn from(value: TableTransferReceiptMsg) -> Self {
         Msg::TableTransferReceipt(value)
     }
 }

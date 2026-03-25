@@ -6,9 +6,9 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
     OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
-    ReservedSetupInputShares, SecretKey, Seed, SetupInputs, WideLabelWirePolynomialCommitments,
-    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
-    WithdrawalInputs, state_machine::evaluator::*,
+    ReservedSetupInputShares, SecretKey, Seed, SetupInputs, TableTransferReceiptMsg,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
+    WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -944,7 +944,12 @@ async fn handle_table_received<S: StateMut>(
                 return Ok(());
             }
 
-            emit(actions, Action::SendTableTransferReceipt(index));
+            emit(
+                actions,
+                Action::SendTableTransferReceipt(TableTransferReceiptMsg {
+                    circuit_index: index,
+                }),
+            );
 
             received[pos] = true;
 

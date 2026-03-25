@@ -46,7 +46,7 @@ pub type CreateSessionFuture<'a> =
 pub use handle::{JobSchedulerHandle, SchedulerStopped};
 use mosaic_cac_types::{
     AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgHeader, CommitMsgHeader, DepositId,
-    GarblingSeed, GarblingTableCommitment, Seed,
+    GarblingSeed, GarblingTableCommitment, Seed, TableTransferReceiptMsg,
     state_machine::{evaluator::ChunkIndex, garbler::Wire},
 };
 use mosaic_net_svc_api::PeerId;
@@ -407,7 +407,7 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
     fn send_table_transfer_receipt(
         &self,
         peer_id: &PeerId,
-        msg: &Index,
+        msg: &TableTransferReceiptMsg,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
     /// Generate adaptor signatures for deposit wires (E5).

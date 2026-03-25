@@ -9,7 +9,7 @@ use ckt_gobble::{
 };
 use mosaic_cac_types::{
     Adaptor, ChallengeIndices, CircuitInputShares, DepositAdaptors, GarblingTableCommitment,
-    WideLabelWirePolynomialCommitments,
+    TableTransferReceiptMsg, WideLabelWirePolynomialCommitments,
     state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
 };
 use mosaic_common::constants::{
@@ -141,12 +141,12 @@ pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStor
 pub(crate) async fn handle_send_table_transfer_receipt<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
-    msg: &Index,
+    msg: &TableTransferReceiptMsg,
 ) -> HandlerOutcome {
     match ctx.net_client.send(*peer_id, *msg).await {
         Ok(_ack) => completed(
             ActionId::SendTableTransferReceipt(*msg),
-            ActionResult::GarblingTableTransferReceiptAcked(*msg),
+            ActionResult::GarblingTableTransferReceiptAcked(msg.circuit_index),
         ),
         Err(e) => {
             tracing::warn!(%e, "send garbling table transfer receipt msg failed, will retry");

@@ -8,11 +8,9 @@
 //! [`TrackedActionCompleted`](fasm::Input::TrackedActionCompleted) mechanism
 //! using the [`ActionResult`](super::ActionResult) type. See issue #69.
 
-use mosaic_vs3::Index;
-
 use crate::{
     AdaptorMsgChunk, ChallengeMsg, DepositId, DepositInputs, PubKey, Seed, SetupInputs, Sighashes,
-    WithdrawalInputs,
+    TableTransferReceiptMsg, WithdrawalInputs,
 };
 
 /// Garbler state machine external event inputs.
@@ -35,7 +33,7 @@ pub enum Input {
     RecvChallengeMsg(ChallengeMsg),
 
     /// Receive Table Transfer Receipt
-    RecvTableTransferReceipt(Index),
+    RecvTableTransferReceipt(TableTransferReceiptMsg),
 
     /// Initialize a new deposit for the specified deposit ID.
     ///

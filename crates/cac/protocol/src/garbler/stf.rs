@@ -132,7 +132,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
-        Input::RecvTableTransferReceipt(acked_index) => match &mut root_state.step {
+        Input::RecvTableTransferReceipt(acked) => match &mut root_state.step {
             Step::WaitForTableTransferReceipt { acked_indices } => {
                 let challenge_indices = state
                     .get_challenge_indices()
@@ -141,7 +141,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 let eval_indices = get_eval_indices(&challenge_indices);
 
                 let Some(pos) = eval_indices.iter().enumerate().find_map(|(pos, index)| {
-                    if *index == acked_index {
+                    if *index == acked.circuit_index {
                         Some(pos)
                     } else {
                         None
