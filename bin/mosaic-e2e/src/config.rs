@@ -88,7 +88,7 @@ pub(crate) fn decode_peer_id(hex: &str) -> Result<PeerId> {
     Ok(PeerId::from_bytes(bytes))
 }
 
-fn decode_exact_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N]> {
+pub(crate) fn decode_exact_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N]> {
     let value = value.trim();
     if value.len() != N * 2 {
         bail!(
