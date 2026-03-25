@@ -140,7 +140,8 @@ impl From<&garbler::Step> for TablesetStatus {
             | SendingCommit { .. }
             | WaitingForChallenge
             | SendingChallengeResponse { .. }
-            | TransferringGarblingTables { .. } => TablesetStatus::Incomplete {
+            | TransferringGarblingTables { .. }
+            | WaitForTableTransferReceipt { .. } => TablesetStatus::Incomplete {
                 details: step.step_name().into(),
             },
             SetupComplete => TablesetStatus::SetupComplete,
@@ -154,7 +155,6 @@ impl From<&garbler::Step> for TablesetStatus {
             Aborted { reason } => TablesetStatus::Aborted {
                 reason: reason.clone(),
             },
-            _ => unreachable!("all garbler::Step variants accounted for"),
         }
     }
 }

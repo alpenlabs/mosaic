@@ -5,7 +5,7 @@ use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
 use mosaic_cac_types::{
     DepositId, HeapArray, KeyPair, SecretKey, Seed, Sighashes, Signature,
     state_machine::{
-        Role, StateMachineExecutorInput, StateMachineId, StateMachineInput,
+        Role, StateMachineId,
         evaluator::{self, EvaluatorState, StateMut as EvaluatorStateMut},
         garbler::{self, GarblerState, StateMut as GarblerStateMut},
     },
@@ -15,6 +15,9 @@ use mosaic_common::{
     constants::{N_DEPOSIT_INPUT_WIRES, N_WITHDRAWAL_INPUT_WIRES},
 };
 use mosaic_net_svc_api::PeerId;
+use mosaic_sm_executor_api::{
+    DepositInitData, DisputedWithdrawalData, InitData, SmCommand, SmCommandKind, SmExecutorHandle,
+};
 use mosaic_storage_api::{Commit, StorageProviderMut};
 use mosaic_storage_inmemory::InMemoryStorageProvider;
 use mosaic_vs3::{Index, Polynomial, Share};
@@ -34,7 +37,7 @@ use crate::{
 struct TestHarness {
     api: DefaultMosaicApi<InMemoryStorageProvider, ChaCha20Rng>,
     storage: InMemoryStorageProvider,
-    rx: kanal::AsyncReceiver<StateMachineExecutorInput>,
+    rx: kanal::AsyncReceiver<SmCommand>,
     peer_id: PeerId,
 }
 
@@ -46,11 +49,18 @@ impl TestHarness {
 
     fn with_peers(other_peer_ids: Vec<PeerId>) -> Self {
         let storage = InMemoryStorageProvider::new();
-        let (tx, rx) = kanal::bounded_async::<StateMachineExecutorInput>(16);
+        let (tx, rx) = kanal::bounded_async::<SmCommand>(16);
+        let executor_handle = SmExecutorHandle::new(tx);
         let rng = ChaCha20Rng::seed_from_u64(42);
         let own_peer_id = PeerId::from([0u8; 32]);
         let peer_id = *other_peer_ids.first().unwrap_or(&PeerId::from([1u8; 32]));
-        let api = DefaultMosaicApi::new(own_peer_id, other_peer_ids, tx, storage.clone(), rng);
+        let api = DefaultMosaicApi::new(
+            own_peer_id,
+            other_peer_ids,
+            executor_handle,
+            storage.clone(),
+            rng,
+        );
         Self {
             api,
             storage,
@@ -140,11 +150,11 @@ impl TestHarness {
         session.commit().await.unwrap();
     }
 
-    async fn recv_input(&self) -> StateMachineExecutorInput {
+    async fn recv_command(&self) -> SmCommand {
         self.rx
             .recv()
             .await
-            .expect("expected a dispatched input on the executor channel")
+            .expect("expected a dispatched command on the executor channel")
     }
 
     fn assert_channel_empty(&self) {
@@ -200,9 +210,9 @@ async fn setup_tableset_garbler_dispatches_init() {
     let sm_id = h.api.setup_tableset(config).await.unwrap();
     assert_eq!(sm_id, h.garbler_sm_id());
 
-    let msg = h.recv_input().await;
-    match msg.input() {
-        StateMachineInput::Garbler(garbler::Input::Init(data)) => {
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::Init(InitData::Garbler(data)) => {
             assert_eq!(
                 data.setup_inputs,
                 [42u8; mosaic_common::constants::N_SETUP_INPUT_WIRES]
@@ -230,9 +240,9 @@ async fn setup_tableset_evaluator_dispatches_init() {
     let sm_id = h.api.setup_tableset(config).await.unwrap();
     assert_eq!(sm_id, h.evaluator_sm_id());
 
-    let msg = h.recv_input().await;
-    match msg.input() {
-        StateMachineInput::Evaluator(evaluator::Input::Init(data)) => {
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::Init(InitData::Evaluator(data)) => {
             assert_eq!(
                 data.setup_inputs,
                 [7u8; mosaic_common::constants::N_SETUP_INPUT_WIRES]
@@ -359,7 +369,7 @@ async fn get_tableset_status_garbler_setup_complete() {
     h.setup_garbler(garbler::Step::SetupComplete).await;
 
     let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
-    assert!(matches!(status, TablesetStatus::SetupComplete));
+    assert!(matches!(status, Some(TablesetStatus::SetupComplete)));
 }
 
 #[tokio::test]
@@ -378,14 +388,14 @@ async fn get_tableset_status_evaluator_consumed() {
         .await
         .unwrap();
     match status {
-        TablesetStatus::Consumed {
+        Some(TablesetStatus::Consumed {
             deposit_id: id,
             success,
-        } => {
+        }) => {
             assert_eq!(id, deposit_id);
             assert!(success);
         }
-        other => panic!("expected Consumed, got {other:?}"),
+        other => panic!("expected Some(Consumed), got {other:?}"),
     }
 }
 
@@ -399,42 +409,28 @@ async fn get_tableset_status_garbler_aborted() {
 
     let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
     match status {
-        TablesetStatus::Aborted { reason } => {
+        Some(TablesetStatus::Aborted { reason }) => {
             assert_eq!(reason, "protocol violation");
         }
-        other => panic!("expected Aborted, got {other:?}"),
+        other => panic!("expected Some(Aborted), got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn get_tableset_status_rejects_uninit() {
+async fn get_tableset_status_returns_none_for_uninit() {
     let h = TestHarness::new();
     h.setup_garbler(garbler::Step::Uninit).await;
 
-    let err = h
-        .api
-        .get_tableset_status(&h.garbler_sm_id())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, ServiceError::UnexpectedState(ref s) if s == "Uninit"),
-        "expected UnexpectedState(Uninit), got {err:?}"
-    );
+    let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
+    assert!(status.is_none(), "expected None, got {status:?}");
 }
 
 #[tokio::test]
-async fn get_tableset_status_not_found() {
+async fn get_tableset_status_returns_none_when_not_found() {
     let h = TestHarness::new();
     // No state committed for this peer
-    let err = h
-        .api
-        .get_tableset_status(&h.garbler_sm_id())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, ServiceError::StateMachineNotFound(_)),
-        "expected StateMachineNotFound, got {err:?}"
-    );
+    let status = h.api.get_tableset_status(&h.garbler_sm_id()).await.unwrap();
+    assert!(status.is_none(), "expected None, got {status:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -465,10 +461,13 @@ async fn init_garbler_deposit_dispatches_correct_input() {
         .await
         .unwrap();
 
-    let msg = h.recv_input().await;
-    match msg.input() {
-        StateMachineInput::Garbler(garbler::Input::DepositInit(id, data)) => {
-            assert_eq!(*id, deposit_id);
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::DepositInit {
+            deposit_id: id,
+            data: DepositInitData::Garbler(data),
+        } => {
+            assert_eq!(id, deposit_id);
             assert_eq!(data.pk, internal_pk);
             assert_eq!(data.sighashes, sighashes);
             assert_eq!(data.deposit_inputs, deposit_inputs);
@@ -604,10 +603,13 @@ async fn init_evaluator_deposit_dispatches_correct_input() {
         .await
         .unwrap();
 
-    let input = h.recv_input().await;
-    match input.input() {
-        StateMachineInput::Evaluator(evaluator::Input::DepositInit(id, data)) => {
-            assert_eq!(id, &deposit_id);
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::DepositInit {
+            deposit_id: id,
+            data: DepositInitData::Evaluator(data),
+        } => {
+            assert_eq!(id, deposit_id);
             assert_eq!(data.deposit_inputs, [0xCCu8; N_DEPOSIT_INPUT_WIRES]);
         }
         other => panic!("expected Evaluator DepositInit, got {other:?}"),
@@ -631,12 +633,12 @@ async fn mark_deposit_withdrawn_garbler_dispatches_undisputed() {
         .await
         .unwrap();
 
-    let msg = h.recv_input().await;
-    match msg.input() {
-        StateMachineInput::Garbler(garbler::Input::DepositUndisputedWithdrawal(id)) => {
-            assert_eq!(*id, deposit_id);
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::UndisputedWithdrawal { deposit_id: id } => {
+            assert_eq!(id, deposit_id);
         }
-        other => panic!("expected Garbler DepositUndisputedWithdrawal, got {other:?}"),
+        other => panic!("expected UndisputedWithdrawal, got {other:?}"),
     }
 }
 
@@ -653,12 +655,12 @@ async fn mark_deposit_withdrawn_evaluator_dispatches_undisputed() {
         .await
         .unwrap();
 
-    let msg = h.recv_input().await;
-    match msg.input() {
-        StateMachineInput::Evaluator(evaluator::Input::DepositUndisputedWithdrawal(id)) => {
-            assert_eq!(*id, deposit_id);
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::UndisputedWithdrawal { deposit_id: id } => {
+            assert_eq!(id, deposit_id);
         }
-        other => panic!("expected Evaluator DepositUndisputedWithdrawal, got {other:?}"),
+        other => panic!("expected UndisputedWithdrawal, got {other:?}"),
     }
 }
 
@@ -742,11 +744,14 @@ async fn complete_adaptor_sigs_garbler_dispatches_disputed_withdrawal() {
         .await
         .unwrap();
 
-    let msg = h.recv_input().await;
-    match msg.input() {
-        StateMachineInput::Garbler(garbler::Input::DisputedWithdrawal(id, wi)) => {
-            assert_eq!(*id, deposit_id);
-            assert_eq!(*wi, withdrawal_inputs);
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::DisputedWithdrawal {
+            deposit_id: id,
+            data: DisputedWithdrawalData::Garbler(wi),
+        } => {
+            assert_eq!(id, deposit_id);
+            assert_eq!(wi, withdrawal_inputs);
         }
         other => panic!("expected Garbler DisputedWithdrawal, got {other:?}"),
     }
@@ -908,10 +913,13 @@ async fn evaluate_tableset_dispatches_disputed_withdrawal() {
         .await
         .unwrap();
 
-    let msg = h.recv_input().await;
-    match msg.input() {
-        StateMachineInput::Evaluator(evaluator::Input::DisputedWithdrawal(id, _data)) => {
-            assert_eq!(*id, deposit_id);
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::DisputedWithdrawal {
+            deposit_id: id,
+            data: DisputedWithdrawalData::Evaluator(_),
+        } => {
+            assert_eq!(id, deposit_id);
         }
         other => panic!("expected Evaluator DisputedWithdrawal, got {other:?}"),
     }
@@ -1168,20 +1176,17 @@ async fn list_deposits_empty() {
 }
 
 #[tokio::test]
-async fn get_deposit_status_not_found() {
+async fn get_deposit_status_returns_none_when_not_found() {
     let h = TestHarness::new();
     h.setup_garbler(garbler::Step::SetupComplete).await;
 
-    let err = h
+    let status = h
         .api
         .get_deposit_status(&h.garbler_sm_id(), &test_deposit_id(99))
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(
-        matches!(err, ServiceError::DepositNotFound),
-        "expected DepositNotFound, got {err:?}"
-    );
+    assert!(status.is_none(), "expected None, got {status:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1308,9 +1313,12 @@ async fn init_evaluator_deposit_sk_matches_get_adaptor_pubkey() {
         .await
         .unwrap();
 
-    let input = h.recv_input().await;
-    match input.input() {
-        StateMachineInput::Evaluator(evaluator::Input::DepositInit(_id, data)) => {
+    let cmd = h.recv_command().await;
+    match cmd.kind {
+        SmCommandKind::DepositInit {
+            data: DepositInitData::Evaluator(data),
+            ..
+        } => {
             let derived_x_only = try_into_x_only_pubkey(data.sk.to_pubkey()).unwrap();
             assert_eq!(
                 derived_x_only, adaptor_pk,
@@ -1328,14 +1336,15 @@ async fn init_evaluator_deposit_sk_matches_get_adaptor_pubkey() {
 #[tokio::test]
 async fn dispatch_returns_executor_error_when_channel_closed() {
     let storage = InMemoryStorageProvider::new();
-    let (tx, rx) = kanal::bounded_async::<StateMachineExecutorInput>(16);
+    let (tx, rx) = kanal::bounded_async::<SmCommand>(16);
+    let executor_handle = SmExecutorHandle::new(tx);
     let rng = ChaCha20Rng::seed_from_u64(42);
     let peer_id = PeerId::from([1u8; 32]);
 
     let api = DefaultMosaicApi::new(
         PeerId::from([0u8; 32]),
         vec![peer_id],
-        tx,
+        executor_handle,
         storage.clone(),
         rng,
     );

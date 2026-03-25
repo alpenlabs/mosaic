@@ -50,9 +50,13 @@ pub trait MosaicRpc {
     async fn setup_tableset(&self, config: RpcSetupConfig) -> RpcResult<RpcTablesetId>;
 
     /// Gets current setup status of a tableset.
+    /// Returns None if the tableset does not exist.
     /// This should be polled to check when the setup is complete.
     #[method(name = "getTablesetStatus")]
-    async fn get_tableset_status(&self, tsid: RpcTablesetId) -> RpcResult<RpcTablesetStatus>;
+    async fn get_tableset_status(
+        &self,
+        tsid: RpcTablesetId,
+    ) -> RpcResult<Option<RpcTablesetStatus>>;
 
     /// Gets pubkey for the fault secret encoded in the garbling tables.
     /// Returns None if the tableset does not exist.
@@ -96,13 +100,14 @@ pub trait MosaicRpc {
     ) -> RpcResult<()>;
 
     /// Gets a deposit instance on a given tableset.
+    /// Returns None if the deposit does not exist.
     /// This should be polled to check if the deposit is ready to be used.
     #[method(name = "getDepositStatus")]
     async fn get_deposit_status(
         &self,
         tsid: RpcTablesetId,
         deposit_id: RpcDepositId,
-    ) -> RpcResult<DepositStatus>;
+    ) -> RpcResult<Option<DepositStatus>>;
 
     /// Marks that a deposit was succesfully withdrawn without contest. This deposit cannot be
     /// used afterwards and will be hidden from `getDeposits`.

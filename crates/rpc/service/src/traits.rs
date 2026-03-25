@@ -35,7 +35,10 @@ pub trait MosaicApi: Send + Sync + 'static {
     async fn setup_tableset(&self, config: SetupConfig) -> ServiceResult<StateMachineId>;
 
     /// Gets the current status of a tableset.
-    async fn get_tableset_status(&self, sm_id: &StateMachineId) -> ServiceResult<TablesetStatus>;
+    async fn get_tableset_status(
+        &self,
+        sm_id: &StateMachineId,
+    ) -> ServiceResult<Option<TablesetStatus>>;
 
     /// Gets the fault secret public key for a tableset.
     /// Dispatches internally based on the role encoded in `sm_id`.
@@ -78,11 +81,12 @@ pub trait MosaicApi: Send + Sync + 'static {
     async fn list_deposits(&self, sm_id: &StateMachineId) -> ServiceResult<Vec<DepositWithStatus>>;
 
     /// Gets the status of a specific deposit. Dispatches by role.
+    /// Returns `None` if the deposit does not exist.
     async fn get_deposit_status(
         &self,
         sm_id: &StateMachineId,
         deposit_id: &DepositId,
-    ) -> ServiceResult<DepositStatus>;
+    ) -> ServiceResult<Option<DepositStatus>>;
 
     /// Marks a deposit as withdrawn without contest.
     ///

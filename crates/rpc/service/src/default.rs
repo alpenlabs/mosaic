@@ -4,12 +4,11 @@
 use async_trait::async_trait;
 use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use futures::TryStreamExt as _;
-use kanal::AsyncSender;
 use mosaic_cac_protocol::derive_stage_seed;
 use mosaic_cac_types::{
     CompletedSignatures, DepositId, KeyPair, PubKey, SecretKey, Seed, WithdrawalInputs,
     state_machine::{
-        Role, StateMachineExecutorInput, StateMachineId, StateMachineInput,
+        Role, StateMachineId,
         evaluator::{
             self, EvaluatorDepositInitData, EvaluatorDisputedWithdrawalData, EvaluatorInitData,
             StateRead as _,
@@ -19,6 +18,7 @@ use mosaic_cac_types::{
 };
 use mosaic_common::{Byte32, constants::SEED_CONTEXT_INDEXED_DEPOSIT_KEYPAIR};
 use mosaic_net_svc_api::PeerId;
+use mosaic_sm_executor_api::{SmCommand, SmExecutorHandle};
 use mosaic_storage_api::StorageProvider;
 use mosaic_vs3::Index;
 use parking_lot::Mutex;
@@ -43,7 +43,7 @@ use crate::{
 pub struct DefaultMosaicApi<S: StorageProvider, R: CryptoRng + Rng + Send> {
     own_peer_id: PeerId,
     other_peer_ids: Vec<PeerId>,
-    executor_tx: AsyncSender<StateMachineExecutorInput>,
+    executor_handle: SmExecutorHandle,
     storage: S,
     rng: Mutex<R>,
 }
@@ -53,14 +53,14 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
     pub fn new(
         own_peer_id: PeerId,
         other_peer_ids: Vec<PeerId>,
-        executor_tx: AsyncSender<StateMachineExecutorInput>,
+        executor_handle: SmExecutorHandle,
         storage: S,
         rng: R,
     ) -> Self {
         Self {
             own_peer_id,
             other_peer_ids,
-            executor_tx,
+            executor_handle,
             storage,
             rng: Mutex::new(rng),
         }
@@ -70,9 +70,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
         Seed::rand(&mut *self.rng.lock())
     }
 
-    async fn dispatch(&self, sm_id: StateMachineId, input: StateMachineInput) -> ServiceResult<()> {
-        self.executor_tx
-            .send(StateMachineExecutorInput::new(sm_id, input))
+    async fn send_command(&self, cmd: SmCommand) -> ServiceResult<()> {
+        self.executor_handle
+            .send(cmd)
             .await
             .map_err(ServiceError::executor)
     }
@@ -139,7 +139,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
     }
 
     async fn setup_tableset(&self, config: SetupConfig) -> ServiceResult<StateMachineId> {
-        let (statemachine_id, input) = match config.role {
+        let (statemachine_id, cmd) = match config.role {
             Role::Garbler => {
                 let statemachine_id = StateMachineId::garbler(config.peer_id);
                 if self
@@ -152,11 +152,14 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                 {
                     return Ok(statemachine_id);
                 }
-                let input = StateMachineInput::Garbler(garbler::Input::Init(GarblerInitData {
-                    seed: self.generate_seed(),
-                    setup_inputs: config.setup_inputs,
-                }));
-                (statemachine_id, input)
+                let cmd = SmCommand::init_garbler(
+                    config.peer_id,
+                    GarblerInitData {
+                        seed: self.generate_seed(),
+                        setup_inputs: config.setup_inputs,
+                    },
+                );
+                (statemachine_id, cmd)
             }
             Role::Evaluator => {
                 let statemachine_id = StateMachineId::evaluator(config.peer_id);
@@ -170,23 +173,28 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                 {
                     return Ok(statemachine_id);
                 }
-                let input =
-                    StateMachineInput::Evaluator(evaluator::Input::Init(EvaluatorInitData {
+                let cmd = SmCommand::init_evaluator(
+                    config.peer_id,
+                    EvaluatorInitData {
                         seed: self.generate_seed(),
                         setup_inputs: config.setup_inputs,
-                    }));
-                (statemachine_id, input)
+                    },
+                );
+                (statemachine_id, cmd)
             }
         };
 
-        self.dispatch(statemachine_id, input).await?;
+        self.send_command(cmd).await?;
         Ok(statemachine_id)
     }
 
-    async fn get_tableset_status(&self, sm_id: &StateMachineId) -> ServiceResult<TablesetStatus> {
+    async fn get_tableset_status(
+        &self,
+        sm_id: &StateMachineId,
+    ) -> ServiceResult<Option<TablesetStatus>> {
         match sm_id.role() {
             Role::Garbler => {
-                let state = self
+                let Some(state) = self
                     .storage
                     .garbler_state(sm_id.peer_id())
                     .await
@@ -194,15 +202,17 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .get_root_state()
                     .await
                     .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::StateMachineNotFound(*sm_id))?;
+                else {
+                    return Ok(None);
+                };
 
                 if state.step == garbler::Step::Uninit {
-                    return Err(ServiceError::UnexpectedState("Uninit".into()));
+                    return Ok(None);
                 }
-                Ok(TablesetStatus::from(&state.step))
+                Ok(Some(TablesetStatus::from(&state.step)))
             }
             Role::Evaluator => {
-                let state = self
+                let Some(state) = self
                     .storage
                     .evaluator_state(sm_id.peer_id())
                     .await
@@ -210,12 +220,14 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .get_root_state()
                     .await
                     .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::StateMachineNotFound(*sm_id))?;
+                else {
+                    return Ok(None);
+                };
 
                 if state.step == evaluator::Step::Uninit {
-                    return Err(ServiceError::UnexpectedState("Uninit".into()));
+                    return Ok(None);
                 }
-                Ok(TablesetStatus::from(&state.step))
+                Ok(Some(TablesetStatus::from(&state.step)))
             }
         }
     }
@@ -307,9 +319,8 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             deposit_inputs: init.deposit_inputs,
         };
 
-        let input =
-            StateMachineInput::Garbler(garbler::Input::DepositInit(*deposit_id, deposit_init_data));
-        self.dispatch(*sm_id, input).await
+        let cmd = SmCommand::deposit_init_garbler(*sm_id.peer_id(), *deposit_id, deposit_init_data);
+        self.send_command(cmd).await
     }
 
     async fn init_evaluator_deposit(
@@ -354,11 +365,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             deposit_inputs: init.deposit_inputs,
         };
 
-        let input = StateMachineInput::Evaluator(evaluator::Input::DepositInit(
-            *deposit_id,
-            deposit_init_data,
-        ));
-        self.dispatch(*sm_id, input).await
+        let cmd =
+            SmCommand::deposit_init_evaluator(*sm_id.peer_id(), *deposit_id, deposit_init_data);
+        self.send_command(cmd).await
     }
 
     async fn list_deposits(&self, sm_id: &StateMachineId) -> ServiceResult<Vec<DepositWithStatus>> {
@@ -404,7 +413,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         &self,
         sm_id: &StateMachineId,
         deposit_id: &DepositId,
-    ) -> ServiceResult<DepositStatus> {
+    ) -> ServiceResult<Option<DepositStatus>> {
         match sm_id.role() {
             Role::Garbler => {
                 let deposit = self
@@ -412,10 +421,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .await?
                     .get_deposit(deposit_id)
                     .await
-                    .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::DepositNotFound)?;
+                    .map_err(ServiceError::storage)?;
 
-                Ok(DepositStatus::from(deposit))
+                Ok(deposit.map(DepositStatus::from))
             }
             Role::Evaluator => {
                 let deposit = self
@@ -423,10 +431,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .await?
                     .get_deposit(deposit_id)
                     .await
-                    .map_err(ServiceError::storage)?
-                    .ok_or(ServiceError::DepositNotFound)?;
+                    .map_err(ServiceError::storage)?;
 
-                Ok(DepositStatus::from(deposit))
+                Ok(deposit.map(DepositStatus::from))
             }
         }
     }
@@ -436,7 +443,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         sm_id: &StateMachineId,
         deposit_id: &DepositId,
     ) -> ServiceResult<()> {
-        let input = match sm_id.role() {
+        let cmd = match sm_id.role() {
             Role::Garbler => {
                 let statemachine = self
                     .garbler_state(sm_id.peer_id())
@@ -466,7 +473,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     ));
                 }
 
-                StateMachineInput::Garbler(garbler::Input::DepositUndisputedWithdrawal(*deposit_id))
+                SmCommand::undisputed_withdrawal_garbler(*sm_id.peer_id(), *deposit_id)
             }
             Role::Evaluator => {
                 let statemachine = self
@@ -497,13 +504,11 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     ));
                 }
 
-                StateMachineInput::Evaluator(evaluator::Input::DepositUndisputedWithdrawal(
-                    *deposit_id,
-                ))
+                SmCommand::undisputed_withdrawal_evaluator(*sm_id.peer_id(), *deposit_id)
             }
         };
 
-        self.dispatch(*sm_id, input).await
+        self.send_command(cmd).await
     }
 
     async fn complete_adaptor_sigs(
@@ -546,12 +551,13 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             ));
         }
 
-        let input = StateMachineInput::Garbler(garbler::Input::DisputedWithdrawal(
+        let cmd = SmCommand::disputed_withdrawal_garbler(
+            *sm_id.peer_id(),
             *deposit_id,
             withdrawal_inputs,
-        ));
+        );
 
-        self.dispatch(*sm_id, input).await
+        self.send_command(cmd).await
     }
 
     async fn get_completed_adaptor_sigs(
@@ -644,12 +650,13 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
 
         let withdrawal_data = EvaluatorDisputedWithdrawalData { signatures };
 
-        let input = StateMachineInput::Evaluator(evaluator::Input::DisputedWithdrawal(
+        let cmd = SmCommand::disputed_withdrawal_evaluator(
+            *sm_id.peer_id(),
             *deposit_id,
             withdrawal_data,
-        ));
+        );
 
-        self.dispatch(*sm_id, input).await
+        self.send_command(cmd).await
     }
 
     async fn sign_with_fault_secret(
