@@ -23,7 +23,7 @@ use mosaic_storage_api::{
     StorageProvider,
     table_store::{TableId, TableReader as _, TableStore, TableWriter as _},
 };
-use mosaic_vs3::{Index, Share, interpolate};
+use mosaic_vs3::{Index, Share, batch_verify_shares, interpolate};
 use tracing::{error, warn};
 
 use super::MosaicExecutor;
@@ -201,26 +201,34 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
         return HandlerOutcome::Retry;
     };
 
-    // Verify each opened share against its polynomial commitment.
-    // Any failure produces a reason string; success returns None.
-    let failure_reason = (|| {
-        for idx in 0..N_OPEN_CIRCUITS {
-            for wire in 0..N_INPUT_WIRES {
-                for val in 0..WIDE_LABEL_VALUE_COUNT {
-                    let share = opened_input_shares[idx][wire][val];
-                    if commitments[wire][val].verify_share(share).is_err() {
-                        return Some(format!(
-                            "verify failed for circuit {}, wire {}, value {}",
-                            challenge_indices[idx].get(),
-                            wire,
-                            val,
-                        ));
-                    }
-                }
+    // Batch-verify all opened shares against their polynomial commitments via RLC.
+    // Collects (commitment, shares) pairs and verifies in a single MSM.
+    #[allow(clippy::needless_range_loop)]
+    let failure_reason = {
+        let mut share_bufs: Vec<Vec<Share>> =
+            Vec::with_capacity(N_INPUT_WIRES * WIDE_LABEL_VALUE_COUNT);
+
+        for wire in 0..N_INPUT_WIRES {
+            for val in 0..WIDE_LABEL_VALUE_COUNT {
+                let wire_val_shares: Vec<Share> = (0..N_OPEN_CIRCUITS)
+                    .map(|idx| opened_input_shares[idx][wire][val])
+                    .collect();
+                share_bufs.push(wire_val_shares);
             }
         }
-        None
-    })();
+
+        let pairs: Vec<_> = (0..N_INPUT_WIRES)
+            .flat_map(|wire| (0..WIDE_LABEL_VALUE_COUNT).map(move |val| (wire, val)))
+            .zip(share_bufs.iter())
+            .map(|((wire, val), buf)| (&commitments[wire][val], buf.as_slice()))
+            .collect();
+
+        let mut rng = rand::rngs::OsRng;
+        match batch_verify_shares(&pairs, &mut rng) {
+            Ok(()) => None,
+            Err(_) => Some("batch verification of opened input shares failed".to_string()),
+        }
+    };
 
     completed(
         ActionId::VerifyOpenedInputShares,

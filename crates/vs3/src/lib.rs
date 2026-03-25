@@ -8,7 +8,10 @@ mod interpolate;
 mod polynomial;
 mod psm;
 
+// Used by benchmarks
 pub(crate) use constants::*;
+#[cfg(test)]
+use criterion as _;
 // Re-export error types
 pub use error::Error;
 // Re-export interpolation function
@@ -16,6 +19,7 @@ pub use interpolate::interpolate;
 // Re-export polynomial types
 pub use polynomial::{
     Index, Point, Polynomial, PolynomialCommitment, Scalar, Share, ShareCommitment,
+    batch_verify_shares,
 };
 // Re-export point scalar multiplication functions
 pub use psm::{gen_batch_mul, gen_mul, precomp};

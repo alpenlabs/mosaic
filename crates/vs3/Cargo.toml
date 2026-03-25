@@ -23,7 +23,12 @@ rand_chacha.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 rand.workspace = true
+
+[[bench]]
+name = "shares"
+harness = false
 
 [lints]
 workspace = true
