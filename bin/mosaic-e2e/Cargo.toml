@@ -11,14 +11,18 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+mosaic-common.workspace = true
 mosaic-net-svc.workspace = true
 mosaic-rpc-api.workspace = true
 mosaic-rpc-types.workspace = true
 
 anyhow.workspace = true
+bitcoin.workspace = true
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }
 jsonrpsee = { workspace = true, features = ["http-client"] }
+rand.workspace = true
+rand_chacha.workspace = true
 serde.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8"

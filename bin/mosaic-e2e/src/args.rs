@@ -35,7 +35,21 @@ pub(crate) enum Command {
     SetupAll,
 
     /// Initialise a deposit on a tableset.
-    Deposit,
+    Deposit {
+        /// Our role in the protocol.
+        #[arg(value_enum)]
+        role: Role,
+
+        /// Hex-encoded peer ID of the other mosaic node.
+        peer_id: String,
+
+        /// Deposit index — determines the deposit ID and all derived values deterministically.
+        deposit_idx: u32,
+
+        /// Hex-encoded x-only adaptor public key (required for garbler role).
+        #[arg(long)]
+        adaptor_pk: Option<String>,
+    },
 
     /// Exercise the withdrawal flow on a deposit.
     Withdrawal,

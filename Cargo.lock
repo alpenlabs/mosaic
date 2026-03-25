@@ -2406,12 +2406,16 @@ name = "mosaic-e2e"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bitcoin",
  "clap",
  "futures",
  "jsonrpsee",
+ "mosaic-common",
  "mosaic-net-svc",
  "mosaic-rpc-api",
  "mosaic-rpc-types",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "serde",
  "tokio",
  "toml",
