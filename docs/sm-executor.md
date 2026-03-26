@@ -210,6 +210,8 @@ For each event/completion/command:
 | `Challenge` | Garbler | `RecvChallengeMsg` |
 | `ChallengeResponseHeader` | Evaluator | `RecvChallengeResponseMsgHeader` |
 | `ChallengeResponseChunk` | Evaluator | `RecvChallengeResponseMsgChunk` |
+| `TableTransferRequest` | Garbler | `RecvTableTransferRequest` |
+| `TableTransferReceipt` | Garbler | `RecvTableTransferReceipt` |
 | `AdaptorChunk` | Garbler | `DepositRecvAdaptorMsgChunk` |
 
 ### Bridge command -> role/input

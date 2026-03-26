@@ -405,14 +405,14 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
         peer_id: &PeerId,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
-    /// Send table transfer request to garbler.
+    /// Send table transfer request to garbler (E9).
     fn send_table_transfer_request(
         &self,
         peer_id: &PeerId,
         msg: &TableTransferRequestMsg,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
-    /// Send table transfer receipt to garbler.
+    /// Send table transfer receipt to garbler (E10).
     fn send_table_transfer_receipt(
         &self,
         peer_id: &PeerId,
