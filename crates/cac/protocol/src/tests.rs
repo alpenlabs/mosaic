@@ -292,7 +292,7 @@ mod netcl {
                 }
             };
             let header = match &request.message {
-                Msg::TableTransferReceipt(index) => GarbInputs::RecvTableTransferReceipt(*index),
+                Msg::TableTransferReceipt(msg) => GarbInputs::RecvTableTransferReceipt(msg.clone()),
                 _ => panic!(),
             };
             request.ack().await.expect("ack failed");
@@ -1536,10 +1536,6 @@ async fn mock_dispatch_garbler(
                     GarblerAction::CompleteAdaptorSignatures(deposit_id) => {
                         exec.complete_adaptor_signatures(peer_id, *deposit_id).await
                     }
-                    _ => {
-                        tracing::info!("unhandled garbler action variant {:?}", action);
-                        HandlerOutcome::Retry
-                    }
                 }
             }
             _ => panic!(),
@@ -1592,8 +1588,11 @@ async fn mock_dispatch_evaluator(
                     EvaluatorAction::ReceiveGarblingTable(commitment) => {
                         exec.receive_garbling_table(peer_id, *commitment).await
                     }
-                    EvaluatorAction::SendTableTransferReceipt(idx) => {
-                        exec.send_table_transfer_receipt(peer_id, idx).await
+                    EvaluatorAction::SendTableTransferRequest(msg) => {
+                        exec.send_table_transfer_request(peer_id, msg).await
+                    }
+                    EvaluatorAction::SendTableTransferReceipt(msg) => {
+                        exec.send_table_transfer_receipt(peer_id, msg).await
                     }
                     EvaluatorAction::GenerateDepositAdaptors(deposit_id) => {
                         exec.generate_deposit_adaptors(peer_id, *deposit_id).await
@@ -1621,9 +1620,6 @@ async fn mock_dispatch_evaluator(
                         } else {
                             panic!()
                         }
-                    }
-                    _ => {
-                        panic!("unhandled evaluator action variant");
                     }
                 }
             }

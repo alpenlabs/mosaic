@@ -9,7 +9,7 @@ use ckt_gobble::{
 };
 use mosaic_cac_types::{
     Adaptor, ChallengeIndices, CircuitInputShares, DepositAdaptors, GarblingTableCommitment,
-    WideLabelWirePolynomialCommitments,
+    TableTransferReceiptMsg, TableTransferRequestMsg, WideLabelWirePolynomialCommitments,
     state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
 };
 use mosaic_common::constants::{
@@ -138,15 +138,32 @@ pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStor
     }
 }
 
+pub(crate) async fn handle_send_table_transfer_request<SP: StorageProvider, TS: TableStore>(
+    ctx: &MosaicExecutor<SP, TS>,
+    peer_id: &PeerId,
+    msg: &TableTransferRequestMsg,
+) -> HandlerOutcome {
+    match ctx.net_client.send(*peer_id, msg.clone()).await {
+        Ok(_ack) => completed(
+            ActionId::SendTableTransferRequest(msg.garbling_table_commitment),
+            ActionResult::TableTransferRequestAcked,
+        ),
+        Err(e) => {
+            tracing::warn!(%e, "send garbling table transfer request msg failed, will retry");
+            HandlerOutcome::Retry
+        }
+    }
+}
+
 pub(crate) async fn handle_send_table_transfer_receipt<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
-    msg: &Index,
+    msg: &TableTransferReceiptMsg,
 ) -> HandlerOutcome {
-    match ctx.net_client.send(*peer_id, *msg).await {
+    match ctx.net_client.send(*peer_id, msg.clone()).await {
         Ok(_ack) => completed(
-            ActionId::SendTableTransferReceipt(*msg),
-            ActionResult::GarblingTableTransferReceiptAcked(*msg),
+            ActionId::SendTableTransferReceipt(msg.garbling_table_commitment),
+            ActionResult::TableTransferReceiptAcked,
         ),
         Err(e) => {
             tracing::warn!(%e, "send garbling table transfer receipt msg failed, will retry");

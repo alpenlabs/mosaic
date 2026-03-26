@@ -8,11 +8,9 @@
 //! [`TrackedActionCompleted`](fasm::Input::TrackedActionCompleted) mechanism
 //! using the [`ActionResult`](super::ActionResult) type. See issue #69.
 
-use mosaic_vs3::Index;
-
 use crate::{
     AdaptorMsgChunk, ChallengeMsg, DepositId, DepositInputs, PubKey, Seed, SetupInputs, Sighashes,
-    WithdrawalInputs,
+    TableTransferReceiptMsg, TableTransferRequestMsg, WithdrawalInputs,
 };
 
 /// Garbler state machine external event inputs.
@@ -26,7 +24,6 @@ use crate::{
 /// delivered via [`fasm::Input::TrackedActionCompleted`] with an
 /// [`ActionId`](super::ActionId) and [`ActionResult`](super::ActionResult).
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum Input {
     /// Initialize the garbler state machine with seed and setup inputs.
     Init(GarblerInitData),
@@ -34,8 +31,11 @@ pub enum Input {
     /// Challenge message received from the evaluator via network.
     RecvChallengeMsg(ChallengeMsg),
 
+    /// Request to transfer a garbling table to evaluator.
+    RecvTableTransferRequest(TableTransferRequestMsg),
+
     /// Receive Table Transfer Receipt
-    RecvTableTransferReceipt(Index),
+    RecvTableTransferReceipt(TableTransferReceiptMsg),
 
     /// Initialize a new deposit for the specified deposit ID.
     ///

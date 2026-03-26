@@ -3,7 +3,8 @@ use mosaic_vs3::Index;
 
 use crate::{
     AdaptorMsgChunk, ChallengeMsg, CircuitOutputShare, DepositAdaptors, DepositId, GarblingSeed,
-    GarblingTableCommitment, WithdrawalAdaptorsChunk,
+    GarblingTableCommitment, TableTransferReceiptMsg, TableTransferRequestMsg,
+    WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -21,7 +22,6 @@ use crate::{
 /// one role. The SM Executor adds `StateMachineId` when submitting to the
 /// Job Scheduler.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ActionId {
     /// Identifies a [`Action::SendChallengeMsg`] action.
     SendChallengeMsg,
@@ -31,8 +31,10 @@ pub enum ActionId {
     GenerateTableCommitment(Index),
     /// Identifies a [`Action::ReceiveGarblingTable`] action by garbling table commitment.
     ReceiveGarblingTable(GarblingTableCommitment),
+    /// Identifies a [`Action::SendTableTransferRequest`] action by garbling table commitment.
+    SendTableTransferRequest(GarblingTableCommitment),
     /// Identifies a [`Action::SendTableTransferReceipt`] action by circuit index
-    SendTableTransferReceipt(Index),
+    SendTableTransferReceipt(GarblingTableCommitment),
     /// Identifies a [`Action::GenerateDepositAdaptors`] action by deposit.
     GenerateDepositAdaptors(DepositId),
     /// Identifies a [`Action::GenerateWithdrawalAdaptorsChunk`] action by deposit and chunk index.
@@ -64,7 +66,6 @@ impl PartialOrd for ActionId {
 /// Delivered to the STF via [`fasm::Input::TrackedActionCompleted`] alongside
 /// the corresponding [`ActionId`].
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum ActionResult {
     /// Challenge message was sent and acknowledged by the garbler.
     ChallengeMsgAcked,
@@ -75,8 +76,12 @@ pub enum ActionResult {
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Garbling table received from garbler and verified.
     GarblingTableReceived(Index, GarblingTableCommitment),
-    /// Garbling table receipt acked
-    GarblingTableTransferReceiptAcked(Index),
+    /// Garbling table transfer request was acknowledged by the garbler.
+    /// NOTE: ignored
+    TableTransferRequestAcked,
+    /// Garbling table transfer receipt was acknowledged by the garbler.
+    /// NOTE: ignored
+    TableTransferReceiptAcked,
     /// Adaptor signatures were generated for deposit wires.
     DepositAdaptorsGenerated(DepositId, DepositAdaptors),
     /// Adaptor signatures were generated for a chunk of withdrawal wires.
@@ -95,7 +100,6 @@ pub enum ActionResult {
 /// Actions emitted by the evaluator state machine for external execution.
 #[derive(Debug, PartialEq, Eq)]
 #[expect(clippy::large_enum_variant, reason = "AdaptorMsgChunk is large")]
-#[non_exhaustive]
 pub enum Action {
     /// Send challenge message with set of challenge indices.
     SendChallengeMsg(ChallengeMsg),
@@ -105,8 +109,10 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Receive evaluation garbling tables from garbler.
     ReceiveGarblingTable(GarblingTableCommitment),
-    /// Send Table Receipt
-    SendTableTransferReceipt(Index),
+    /// Send a request to Garbler to transfer a table.
+    SendTableTransferRequest(TableTransferRequestMsg),
+    /// Send a receipt to Garbler that the table has been received successfully.
+    SendTableTransferReceipt(TableTransferReceiptMsg),
     /// Generate adaptors of deposit wires for a deposit.
     GenerateDepositAdaptors(DepositId),
     /// Generate adaptors of a portion of withdrawal wires for a deposit.
@@ -126,7 +132,12 @@ impl Action {
             Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
             Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
-            Self::SendTableTransferReceipt(idx) => ActionId::SendTableTransferReceipt(*idx),
+            Self::SendTableTransferRequest(msg) => {
+                ActionId::SendTableTransferRequest(msg.garbling_table_commitment)
+            }
+            Self::SendTableTransferReceipt(msg) => {
+                ActionId::SendTableTransferReceipt(msg.garbling_table_commitment)
+            }
             Self::GenerateDepositAdaptors(id) => ActionId::GenerateDepositAdaptors(*id),
             Self::GenerateWithdrawalAdaptorsChunk(id, chunk_index) => {
                 ActionId::GenerateWithdrawalAdaptorsChunk(*id, chunk_index.0)
