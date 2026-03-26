@@ -1807,13 +1807,22 @@ async fn mock_dispatch_garbler<SP: StorageProvider + StorageProviderMut>(
                         exec.send_challenge_response_chunk(peer_id, chunk).await
                     }
                     GarblerAction::TransferGarblingTable(seed) => {
-                        let session = ExecuteGarblerJob::begin_table_transfer(exec, peer_id, *seed)
-                            .await
-                            .unwrap();
+                        // Retry transient failures (evaluator may not have registered
+                        // its bulk expectation yet).
+                        let session = loop {
+                            match ExecuteGarblerJob::begin_table_transfer(exec, peer_id, *seed)
+                                .await
+                            {
+                                Ok(s) => break s,
+                                Err(mosaic_job_api::CircuitError::TransientFailure(_)) => {
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                                    continue;
+                                }
+                                Err(e) => panic!("begin_table_transfer failed: {e:?}"),
+                            }
+                        };
                         if let GarblerCircuitSession::Transfer(session) = session {
-                            let r = garb_coordinator(&exec.circuit_path, *session).await;
-                            tokio::time::sleep(Duration::from_secs(1)).await; // added sleep to give time for transfer; else we get PeerFinished Error
-                            r
+                            garb_coordinator(&exec.circuit_path, *session).await
                         } else {
                             panic!()
                         }
