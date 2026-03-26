@@ -327,10 +327,6 @@ async fn dispatch_garbler<D: ExecuteGarblerJob>(
             );
             HandlerOutcome::Retry
         }
-        _ => {
-            tracing::error!("unhandled garbler action variant");
-            HandlerOutcome::Retry
-        }
     }
 }
 
@@ -361,6 +357,9 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
         EvaluatorAction::ReceiveGarblingTable(commitment) => {
             exec.receive_garbling_table(peer_id, *commitment).await
         }
+        EvaluatorAction::SendTableTransferRequest(msg) => {
+            exec.send_table_transfer_request(peer_id, msg).await
+        }
         EvaluatorAction::SendTableTransferReceipt(msg) => {
             exec.send_table_transfer_receipt(peer_id, msg).await
         }
@@ -370,10 +369,6 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
             tracing::error!(
                 "circuit action reached worker pool — should go to garbling coordinator"
             );
-            HandlerOutcome::Retry
-        }
-        _ => {
-            tracing::error!("unhandled evaluator action variant");
             HandlerOutcome::Retry
         }
     }

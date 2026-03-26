@@ -682,10 +682,17 @@ where
                     )
                     .await?;
                 }
+                Msg::TableTransferRequest(msg) => {
+                    self.apply_garbler_event(
+                        peer_id,
+                        garbler::Input::RecvTableTransferRequest(msg.clone()),
+                    )
+                    .await?;
+                }
                 Msg::TableTransferReceipt(msg) => {
                     self.apply_garbler_event(
                         peer_id,
-                        garbler::Input::RecvTableTransferReceipt(*msg),
+                        garbler::Input::RecvTableTransferReceipt(msg.clone()),
                     )
                     .await?;
                 }
@@ -970,6 +977,7 @@ fn msg_kind(msg: &Msg) -> &'static str {
         Msg::Challenge(_) => "Challenge",
         Msg::ChallengeResponseHeader(_) => "ChallengeResponseHeader",
         Msg::ChallengeResponseChunk(_) => "ChallengeResponseChunk",
+        Msg::TableTransferRequest(_) => "TableTransferRequest",
         Msg::TableTransferReceipt(_) => "TableTransferReceipt",
         Msg::AdaptorChunk(_) => "AdaptorChunk",
     }
@@ -991,7 +999,8 @@ fn garbler_input_kind(input: &garbler::Input) -> &'static str {
         garbler::Input::DepositRecvAdaptorMsgChunk(_, _) => "DepositRecvAdaptorMsgChunk",
         garbler::Input::DepositUndisputedWithdrawal(_) => "DepositUndisputedWithdrawal",
         garbler::Input::DisputedWithdrawal(_, _) => "DisputedWithdrawal",
-        _ => "Unknown",
+        garbler::Input::RecvTableTransferRequest(_) => "RecvTableTransferRequest",
+        garbler::Input::RecvTableTransferReceipt(_) => "RecvTableTransferReceipt",
     }
 }
 
@@ -1005,7 +1014,6 @@ fn evaluator_input_kind(input: &evaluator::Input) -> &'static str {
         evaluator::Input::DepositInit(_, _) => "DepositInit",
         evaluator::Input::DepositUndisputedWithdrawal(_) => "DepositUndisputedWithdrawal",
         evaluator::Input::DisputedWithdrawal(_, _) => "DisputedWithdrawal",
-        _ => "Unknown",
     }
 }
 

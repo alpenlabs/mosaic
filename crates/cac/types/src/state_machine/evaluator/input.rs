@@ -25,7 +25,6 @@ use crate::{
 /// delivered via [`fasm::Input::TrackedActionCompleted`] with an
 /// [`ActionId`](super::ActionId) and [`ActionResult`](super::ActionResult).
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum Input {
     /// Initialize the evaluator state machine with seed and setup inputs.
     Init(EvaluatorInitData),

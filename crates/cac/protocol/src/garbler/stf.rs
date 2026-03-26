@@ -14,6 +14,7 @@ use mosaic_common::constants::{
 };
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use tracing::{error, info};
 
 use super::emit;
 use crate::{
@@ -132,27 +133,54 @@ pub(crate) async fn handle_event<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
-        Input::RecvTableTransferReceipt(acked_index) => match &mut root_state.step {
-            Step::WaitForTableTransferReceipt { acked_indices } => {
-                let challenge_indices = state
-                    .get_challenge_indices()
-                    .await
-                    .require("expected challenge indices")?;
-                let eval_indices = get_eval_indices(&challenge_indices);
+        Input::RecvTableTransferRequest(request_msg) => match &root_state.step {
+            Step::TransferringGarblingTables {
+                eval_seeds,
+                eval_commitments,
+                transferred: _,
+            } => {
+                // Note: Not checking for already transferred tables here.
+                // Evaluator can request same table multiple times until it has notified that all
+                // tables have been read.
 
-                let Some(pos) = eval_indices.iter().enumerate().find_map(|(pos, index)| {
-                    if *index == acked_index {
-                        Some(pos)
-                    } else {
-                        None
-                    }
-                }) else {
+                let Some((seed, _commitment)) =
+                    eval_seeds
+                        .iter()
+                        .zip(eval_commitments)
+                        .find(|(_seed, commitment)| {
+                            commitment == &&request_msg.garbling_table_commitment
+                        })
+                else {
+                    error!(commitment = %request_msg.garbling_table_commitment, "Got table transfer request for invalid table commitment");
                     return Err(SMError::invalid_input_data());
                 };
 
-                acked_indices[pos] = true;
+                // Only begin table transfer after getting request from evaluator.
+                emit(actions, Action::TransferGarblingTable(*seed));
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
+        Input::RecvTableTransferReceipt(receipt_msg) => match &mut root_state.step {
+            Step::TransferringGarblingTables {
+                eval_commitments,
+                transferred,
+                ..
+            } => {
+                let Some((pos, _commitment)) =
+                    eval_commitments
+                        .iter()
+                        .enumerate()
+                        .find(|(_pos, commitment)| {
+                            commitment == &&receipt_msg.garbling_table_commitment
+                        })
+                else {
+                    error!(commitment = %receipt_msg.garbling_table_commitment, "Got table transfer receipt for invalid table commitment");
+                    return Err(SMError::invalid_input_data());
+                };
 
-                if acked_indices.all() {
+                transferred[pos] = true;
+
+                if transferred.all() {
                     root_state.step = Step::SetupComplete;
                 }
             }
@@ -256,7 +284,6 @@ pub(crate) async fn handle_event<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
-        _ => return Err(SMError::unexpected_input()),
     };
 
     state
@@ -423,7 +450,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 Step::TransferringGarblingTables {
                     eval_seeds,
                     eval_commitments,
-                    transferred,
+                    ..
                 } => {
                     let Some(index) = eval_seeds.iter().enumerate().find_map(|(idx, seed)| {
                         if seed == &garbling_seed {
@@ -439,15 +466,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         return Err(SMError::invalid_input_data());
                     }
 
-                    transferred[index] = true;
-
-                    if transferred.all() {
-                        // all tables are transferred, wait for table transfer receipt
-                        root_state.step = Step::WaitForTableTransferReceipt {
-                            acked_indices: HeapArray::from_elem(false),
-                        };
-                    }
-                    // else stay on same step and wait all tables to be transferred
+                    // Informational only. We mark a table as transferred once we get corresponding
+                    // [`TableTransferReceiptMsg`](mosaic_cac_types::TableTransferReceiptMsg) from
+                    // evaluator.
+                    info!(%commitment, "garbling table transferred")
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -496,7 +518,6 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 _ => return Err(SMError::unexpected_input()),
             }
         }
-        _ => return Err(SMError::unexpected_input()),
     };
 
     state
@@ -845,19 +866,11 @@ pub(crate) async fn restore<S: StateRead>(
                 }
             }
         }
-        Step::TransferringGarblingTables {
-            eval_seeds,
-            transferred,
-            ..
-        } => {
-            for (index, seed) in eval_seeds.iter().enumerate() {
-                if transferred[index] {
-                    continue;
-                }
-                emit(actions, Action::TransferGarblingTable(*seed));
-            }
+        Step::TransferringGarblingTables { .. } => {
+            // NOTE: we dont automatically start transferring garbling tables, but wait for
+            // corresponding [`TableTransferRequestMsg`](mosaic_cac_types::TableTransferRequestMsg)
+            // from evaluator to begin transfer.
         }
-        Step::WaitForTableTransferReceipt { .. } => {}
         Step::SetupComplete => {
             let mut all_deposits = pin!(state.stream_all_deposits());
             while let Some(res) = all_deposits.next().await {
@@ -897,7 +910,7 @@ pub(crate) async fn restore<S: StateRead>(
 async fn handle_post_sending_challenge_response<S: StateMut>(
     root_state: &mut GarblerState,
     state: &mut S,
-    actions: &mut ActionContainer,
+    _actions: &mut ActionContainer,
 ) -> SMResult<()> {
     let challenge_indices = state
         .get_challenge_indices()
@@ -916,10 +929,9 @@ async fn handle_post_sending_challenge_response<S: StateMut>(
     let garbling_seeds = generate_garbling_table_seeds(config.seed);
     let eval_seeds = get_eval_seeds(&eval_indices, &garbling_seeds);
 
-    for seed in &eval_seeds {
-        emit(actions, Action::TransferGarblingTable(*seed));
-    }
-
+    // NOTE: we dont automatically start transferring garbling tables, but wait for corresponding
+    // [`TableTransferRequestMsg`](mosaic_cac_types::TableTransferRequestMsg) from evaluator to
+    // begin transfer.
     root_state.step = Step::TransferringGarblingTables {
         eval_seeds,
         eval_commitments,

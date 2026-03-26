@@ -81,11 +81,6 @@ pub enum Step {
         /// Track transferred garbling tables
         transferred: HeapArray<bool, N_EVAL_CIRCUITS>,
     },
-    /// Wait For Table Transfer Receipt
-    WaitForTableTransferReceipt {
-        /// acked table index
-        acked_indices: HeapArray<bool, N_EVAL_CIRCUITS>,
-    },
     /// Setup is completed, ready to be used for deposits.
     /// Accepts deposit inputs
     SetupComplete,
@@ -119,7 +114,6 @@ impl Step {
             Step::WaitingForChallenge => "WaitingForChallenge",
             Step::SendingChallengeResponse { .. } => "SendingChallengeResponse",
             Step::TransferringGarblingTables { .. } => "TransferringGarblingTables",
-            Step::WaitForTableTransferReceipt { .. } => "WaitForTableTransferReceipt",
             Step::SetupComplete => "SetupComplete",
             Step::CompletingAdaptors { .. } => "CompletingAdaptors",
             Step::SetupConsumed { .. } => "SetupConsumed",

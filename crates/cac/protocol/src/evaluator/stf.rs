@@ -6,7 +6,8 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
     OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
-    ReservedSetupInputShares, SecretKey, Seed, SetupInputs, WideLabelWirePolynomialCommitments,
+    ReservedSetupInputShares, SecretKey, Seed, SetupInputs, TableTransferReceiptMsg,
+    TableTransferRequestMsg, WideLabelWirePolynomialCommitments,
     WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
     WithdrawalInputs, state_machine::evaluator::*,
 };
@@ -226,7 +227,6 @@ pub(crate) async fn handle_event<S: StateMut>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        _ => return Err(SMError::UnexpectedInput),
     };
 
     state
@@ -319,7 +319,11 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         ActionResult::GarblingTableReceived(index, table_commitment) => {
             handle_table_received(&mut root_state, state, index, table_commitment, actions).await?;
         }
-        ActionResult::GarblingTableTransferReceiptAcked(_) => {
+        ActionResult::TableTransferRequestAcked => {
+            // The request ack only confirms delivery to the garbler. The actual table arrival is
+            // tracked via `ActionResult::GarblingTableReceived`. No state change needed.
+        }
+        ActionResult::TableTransferReceiptAcked => {
             // The table transfer receipt message was sent. No further state change needed —
             // state was already advanced to SetupComplete when
             // we emitted the SendTableTransferReceipt action.
@@ -541,7 +545,6 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
-        _ => return Err(SMError::UnexpectedInput),
     };
 
     state
@@ -904,6 +907,12 @@ async fn handle_table_commitment_generated<S: StateMut>(
                 let eval_commitments = get_eval_commitments(&eval_indices, &garbling_commitments);
 
                 for commitment in &eval_commitments {
+                    // Request garbler to send these tables.
+                    emit(
+                        actions,
+                        Action::SendTableTransferRequest(TableTransferRequestMsg::new(*commitment)),
+                    );
+                    // Set network to accept these transfers.
                     emit(actions, Action::ReceiveGarblingTable(*commitment));
                 }
                 root_state.step = Step::ReceivingGarblingTables {
@@ -944,7 +953,10 @@ async fn handle_table_received<S: StateMut>(
                 return Ok(());
             }
 
-            emit(actions, Action::SendTableTransferReceipt(index));
+            emit(
+                actions,
+                Action::SendTableTransferReceipt(TableTransferReceiptMsg::new(table_commitment)),
+            );
 
             received[pos] = true;
 
@@ -1014,8 +1026,19 @@ pub(crate) async fn restore<S: StateRead>(
         } => {
             for (commitment, received) in eval_commitments.iter().zip(received.iter()) {
                 if *received {
+                    // Notify the garbler that these tables have been received already.
+                    emit(
+                        actions,
+                        Action::SendTableTransferReceipt(TableTransferReceiptMsg::new(*commitment)),
+                    );
                     continue;
                 }
+                // Request garbler to send these tables.
+                emit(
+                    actions,
+                    Action::SendTableTransferRequest(TableTransferRequestMsg::new(*commitment)),
+                );
+                // Set network to accept these transfers.
                 emit(actions, Action::ReceiveGarblingTable(*commitment));
             }
         }
