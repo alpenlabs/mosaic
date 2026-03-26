@@ -83,6 +83,8 @@ pub enum CircuitError {
     SetupFailed(String),
     /// Processing a chunk failed.
     ChunkFailed(String),
+    /// Peer not ready to receive payload
+    PeerNotReady,
 }
 
 /// A block of circuit gate data shared across concurrent sessions via [`Arc`].
