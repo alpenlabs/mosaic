@@ -2316,6 +2316,7 @@ dependencies = [
  "mosaic-net-svc-api",
  "mosaic-storage-api",
  "mosaic-storage-inmemory",
+ "mosaic-storage-kvstore",
  "mosaic-storage-s3",
  "mosaic-vs3",
  "object_store",
@@ -2323,7 +2324,6 @@ dependencies = [
  "rand_chacha 0.3.1",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]
