@@ -140,8 +140,7 @@ impl From<&garbler::Step> for TablesetStatus {
             | SendingCommit { .. }
             | WaitingForChallenge
             | SendingChallengeResponse { .. }
-            | TransferringGarblingTables { .. }
-            | WaitForTableTransferReceipt { .. } => TablesetStatus::Incomplete {
+            | TransferringGarblingTables { .. } => TablesetStatus::Incomplete {
                 details: step.step_name().into(),
             },
             SetupComplete => TablesetStatus::SetupComplete,

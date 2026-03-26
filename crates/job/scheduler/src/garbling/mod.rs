@@ -415,6 +415,16 @@ async fn coordinator_loop(
                         );
                         pending_retry.push(job);
                     }
+                    Err(CircuitError::TransientFailure(reason)) => {
+                        // Transient — e.g. peer not ready for bulk stream. Keep for retry.
+                        tracing::debug!(
+                            peer = ?job.peer_id,
+                            action = ?job.action,
+                            reason,
+                            "transient setup failure — will retry next pass"
+                        );
+                        pending_retry.push(job);
+                    }
                     Err(e) => {
                         // Permanent failure (SetupFailed, ChunkFailed during setup).
                         // This is a programming error — the action cannot be retried.

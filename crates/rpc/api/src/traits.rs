@@ -109,7 +109,7 @@ pub trait MosaicRpc {
         deposit_id: RpcDepositId,
     ) -> RpcResult<Option<DepositStatus>>;
 
-    /// Marks that a deposit was succesfully withdrawn without contest. This deposit cannot be
+    /// Marks that a deposit was successfully withdrawn without contest. This deposit cannot be
     /// used afterwards and will be hidden from `getDeposits`.
     #[method(name = "markDepositWithdrawn")]
     async fn mark_deposit_withdrawn(

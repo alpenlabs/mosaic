@@ -46,7 +46,7 @@ pub type CreateSessionFuture<'a> =
 pub use handle::{JobSchedulerHandle, SchedulerStopped};
 use mosaic_cac_types::{
     AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgHeader, CommitMsgHeader, DepositId,
-    GarblingSeed, GarblingTableCommitment, Seed,
+    GarblingSeed, GarblingTableCommitment, Seed, TableTransferReceiptMsg, TableTransferRequestMsg,
     state_machine::{evaluator::ChunkIndex, garbler::Wire},
 };
 use mosaic_net_svc_api::PeerId;
@@ -83,6 +83,8 @@ pub enum CircuitError {
     SetupFailed(String),
     /// Processing a chunk failed.
     ChunkFailed(String),
+    /// Transient network or I/O failure during session setup — retryable.
+    TransientFailure(String),
 }
 
 /// A block of circuit gate data shared across concurrent sessions via [`Arc`].
@@ -403,11 +405,18 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
         peer_id: &PeerId,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
-    /// Send table transfer receipt to garbler (E1).
+    /// Send table transfer request to garbler (E9).
+    fn send_table_transfer_request(
+        &self,
+        peer_id: &PeerId,
+        msg: &TableTransferRequestMsg,
+    ) -> impl Future<Output = HandlerOutcome> + Send;
+
+    /// Send table transfer receipt to garbler (E10).
     fn send_table_transfer_receipt(
         &self,
         peer_id: &PeerId,
-        msg: &Index,
+        msg: &TableTransferReceiptMsg,
     ) -> impl Future<Output = HandlerOutcome> + Send;
 
     /// Generate adaptor signatures for deposit wires (E5).

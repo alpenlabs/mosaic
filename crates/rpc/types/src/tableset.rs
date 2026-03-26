@@ -99,7 +99,7 @@ pub enum RpcTablesetStatus {
     ///
     /// CANNOT USE THIS SETUP AGAIN TO PROCESS DEPOSITS.
     Contest {
-        /// Deposit for which contested withdrawal is occuring.
+        /// Deposit for which contested withdrawal is occurring.
         deposit: RpcDepositId,
     },
 

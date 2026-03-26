@@ -23,7 +23,6 @@ use crate::{
 /// one role. The SM Executor adds `StateMachineId` when submitting to the
 /// Job Scheduler.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ActionId {
     /// Identifies a [`Action::GeneratePolynomialCommitments`] action.
     GeneratePolynomialCommitments(Seed, Wire),
@@ -69,7 +68,6 @@ impl PartialOrd for ActionId {
 /// Delivered to the STF via [`fasm::Input::TrackedActionCompleted`] alongside
 /// the corresponding [`ActionId`].
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum ActionResult {
     /// Polynomial commitments were generated from the base seed.
     PolynomialCommitmentsGenerated(GeneratedPolynomialCommitments),
@@ -100,7 +98,6 @@ pub enum ActionResult {
 
 /// Actions emitted by the garbler state machine for external execution.
 #[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Action {
     /// Generate polynomials from the base seed, compute and return commitments.
     /// Polynomials are cached job-side for subsequent [`Self::GenerateShares`] calls.
@@ -112,7 +109,7 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Send commit message header with garbling table commitments and output polynomial commitment.
     SendCommitMsgHeader(CommitMsgHeader),
-    /// Send commit message chunk for specified wire inded to evaluator.
+    /// Send commit message chunk for specified wire index to evaluator.
     SendCommitMsgChunk(u16),
     /// Send challenge response header with setup input shares, output shares and garbling seeds for
     /// opened circuits.
