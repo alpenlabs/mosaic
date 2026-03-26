@@ -19,7 +19,7 @@ pub enum StateMachineInput {
 pub struct StateMachineExecutorInput {
     /// Id of state machine
     sm_id: StateMachineId,
-    /// Input ot statemachine
+    /// Input to statemachine
     input: StateMachineInput,
 }
 

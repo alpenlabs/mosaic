@@ -52,7 +52,7 @@ pub enum RpcError {
     #[error("storage: {0}")]
     Storage(Box<dyn Error>),
 
-    /// Errot communicating with state machine executoe.
+    /// Error communicating with state machine executoe.
     #[error("executor: {0}")]
     SMExecutor(Box<dyn Error>),
 

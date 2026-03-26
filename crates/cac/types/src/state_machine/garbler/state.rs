@@ -61,7 +61,7 @@ pub trait StateRead {
         circuit_idx: &Index,
     ) -> impl Future<Output = Result<Option<CircuitOutputShare>, Self::Error>> + Send;
 
-    /// Retrives reserved setup input shares for all wide label values.
+    /// Retrieves reserved setup input shares for all wide label values.
     fn get_reserved_setup_input_shares(
         &self,
     ) -> impl Future<Output = Result<Option<ReservedSetupInputShares>, Self::Error>> + Send;

@@ -283,7 +283,7 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
     }
 
     async fn cleanup_tableset(&self, _tsid: RpcTablesetId) -> RpcResult<()> {
-        // This isnt needed for immediate integration. Will be implemented later.
+        // This isn't needed for immediate integration. Will be implemented later.
         return Err(RpcError::Unimplemented);
     }
 }

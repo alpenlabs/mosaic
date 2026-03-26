@@ -182,7 +182,7 @@ pub trait StateMut: StateRead {
         commitment: &OutputPolynomialCommitment,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Store zeroth coeffcients of all polynomial commitments for a single wire.
+    /// Store zeroth coefficients of all polynomial commitments for a single wire.
     fn put_input_polynomial_commitment_zeroth_coeffs(
         &mut self,
         wire_idx: u16,

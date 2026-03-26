@@ -15,7 +15,7 @@ use crate::{
 /// Extension trait providing common KV helpers to both evaluator and garbler
 /// storage structs.
 ///
-/// Implementors only need to provide [`store`](Self::store) and
+/// Implementers only need to provide [`store`](Self::store) and
 /// [`store_mut`](Self::store_mut); all other methods have default
 /// implementations.
 #[allow(unused, reason = "helper utilities")]
