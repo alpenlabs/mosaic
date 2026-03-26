@@ -83,6 +83,8 @@ pub enum CircuitError {
     SetupFailed(String),
     /// Processing a chunk failed.
     ChunkFailed(String),
+    /// Transient network or I/O failure during session setup — retryable.
+    TransientFailure(String),
 }
 
 /// A block of circuit gate data shared across concurrent sessions via [`Arc`].
