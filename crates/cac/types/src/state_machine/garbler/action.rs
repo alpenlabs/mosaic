@@ -109,7 +109,7 @@ pub enum Action {
     GenerateTableCommitment(Index, GarblingSeed),
     /// Send commit message header with garbling table commitments and output polynomial commitment.
     SendCommitMsgHeader(CommitMsgHeader),
-    /// Send commit message chunk for specified wire inded to evaluator.
+    /// Send commit message chunk for specified wire index to evaluator.
     SendCommitMsgChunk(u16),
     /// Send challenge response header with setup input shares, output shares and garbling seeds for
     /// opened circuits.

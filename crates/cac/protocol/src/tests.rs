@@ -290,9 +290,7 @@ mod netcl {
                 }
             };
             let header = match &request.message {
-                Msg::TableTransferRequest(msg) => {
-                    GarbInputs::RecvTableTransferRequest(msg.clone())
-                }
+                Msg::TableTransferRequest(msg) => GarbInputs::RecvTableTransferRequest(msg.clone()),
                 _ => panic!(),
             };
             request.ack().await.expect("ack failed");
@@ -449,7 +447,7 @@ async fn handle_garbler_prepares_commit_msg<SP: StorageProvider + StorageProvide
     assert_eq!(garb_actions.len(), 1 + N_INPUT_WIRES); // Action::SendCommitMsgHeader + Action::SendCommitMsgChunk
 }
 
-async fn handlle_garbler_transfers_commit_msg<SP: StorageProvider + StorageProviderMut>(
+async fn handle_garbler_transfers_commit_msg<SP: StorageProvider + StorageProviderMut>(
     garb_actions: &mut Vec<
         actions::Action<
             mosaic_cac_types::state_machine::garbler::UntrackedAction,
@@ -675,7 +673,7 @@ async fn handle_evaluator_sends_table_requests<SP: StorageProvider + StorageProv
     >,
     eval_exec: &mut MosaicExecutor<SP, S3TableStore>,
     garbler_peer_id: PeerId,
-    net_client_gabler: NetClient,
+    net_client_garbler: NetClient,
 ) -> (Vec<GarbInput>, Vec<ActionCompletion>) {
     // Separate request actions from receive actions.
     // eval_actions contains interleaved [SendTableTransferRequest, ReceiveGarblingTable] pairs.
@@ -698,14 +696,15 @@ async fn handle_evaluator_sends_table_requests<SP: StorageProvider + StorageProv
     *eval_actions = receive_actions;
 
     // Garbler listens for table transfer requests.
-    let ncl = net_client_gabler.clone();
+    let ncl = net_client_garbler.clone();
     let rx = tokio::spawn(async move {
         use crate::tests::netcl::handle_receive_table_transfer_request;
         handle_receive_table_transfer_request(&ncl).await
     });
 
     // Evaluator sends table transfer requests over the network.
-    let eval_results = mock_dispatch_evaluator(&mut request_actions, eval_exec, &garbler_peer_id).await;
+    let eval_results =
+        mock_dispatch_evaluator(&mut request_actions, eval_exec, &garbler_peer_id).await;
     assert_eq!(eval_results.len(), N_EVAL_CIRCUITS); // TableTransferRequestAcked
 
     // Garbler received all requests.
@@ -828,7 +827,8 @@ async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + Sto
             .await
             .unwrap();
     }
-    // Step::ReceivingGarblingTables emits SendTableTransferRequest + ReceiveGarblingTable per circuit.
+    // Step::ReceivingGarblingTables emits SendTableTransferRequest + ReceiveGarblingTable per
+    // circuit.
     assert_eq!(eval_actions.len(), 2 * N_EVAL_CIRCUITS);
 }
 
@@ -906,10 +906,10 @@ async fn handle_evaluator_transfers_receipt<SP: StorageProvider + StorageProvide
     >,
     eval_exec: &mut MosaicExecutor<SP, S3TableStore>,
     garbler_peer_id: PeerId,
-    net_client_gabler: NetClient,
+    net_client_garbler: NetClient,
 ) -> (Vec<GarbInput>, Vec<ActionCompletion>) {
     // garbler listens for table transfer receipt
-    let ncl = net_client_gabler.clone();
+    let ncl = net_client_garbler.clone();
     let tx = tokio::spawn(async move {
         use crate::tests::netcl::handle_receive_table_transfer_receipt;
         handle_receive_table_transfer_receipt(&ncl).await
@@ -1080,11 +1080,11 @@ async fn handle_evaluator_sends_adaptors<SP: StorageProvider + StorageProviderMu
     >,
     deposit_id: DepositId,
     garbler_peer_id: PeerId,
-    net_client_gabler: NetClient,
+    net_client_garbler: NetClient,
 ) -> (Vec<GarbInput>, Vec<ActionCompletion>) {
     println!("handle_receive_adaptor_msg_chunks");
     // adaptor chunks listener
-    let ncl = net_client_gabler.clone();
+    let ncl = net_client_garbler.clone();
     let challenge_msg_listener =
         tokio::spawn(async move { handle_receive_adaptor_msg_chunks(&ncl, deposit_id).await });
 
@@ -1383,7 +1383,7 @@ async fn test_e2e() {
             "expects v5c format ckt file on circuit_path"
         );
         let (peer_a, peer_b) = netcl::create_client_pair();
-        let (net_client_gabler, garbler_peer_id, net_client_evaluator, eval_peer_id) =
+        let (net_client_garbler, garbler_peer_id, net_client_evaluator, eval_peer_id) =
             (peer_a.client, peer_a.peer_id, peer_b.client, peer_b.peer_id);
 
         let garb_seed = rand_byte_array(&mut garb_rng).into();
@@ -1392,7 +1392,7 @@ async fn test_e2e() {
         // Run Garbler STF
         let garb_storage = BTreeMapStorageProvider::new();
         let mut garbler_exec = MosaicExecutor::new(
-            net_client_gabler.clone(),
+            net_client_garbler.clone(),
             garb_storage.clone(),
             ts,
             circuit_path.clone(),
@@ -1453,7 +1453,7 @@ async fn test_e2e() {
         .await;
 
         println!("spawn commit msg listener");
-        let (mut eval_inputs, mut garb_results) = handlle_garbler_transfers_commit_msg(
+        let (mut eval_inputs, mut garb_results) = handle_garbler_transfers_commit_msg(
             &mut garb_actions,
             &mut garbler_exec,
             eval_peer_id,
@@ -1484,7 +1484,7 @@ async fn test_e2e() {
             &mut eval_actions,
             &mut eval_exec,
             garbler_peer_id,
-            net_client_gabler.clone(),
+            net_client_garbler.clone(),
         )
         .await;
 
@@ -1546,7 +1546,7 @@ async fn test_e2e() {
             &mut eval_actions,
             &mut eval_exec,
             garbler_peer_id,
-            net_client_gabler.clone(),
+            net_client_garbler.clone(),
         )
         .await;
 
@@ -1588,7 +1588,7 @@ async fn test_e2e() {
         let local = LocalFileSystem::new_with_prefix(temp_dir.clone()).unwrap();
         let ts = S3TableStore::new(Arc::new(local) as Arc<dyn ObjectStore>, prefix);
         let mut garbler_exec = MosaicExecutor::new(
-            net_client_gabler.clone(),
+            net_client_garbler.clone(),
             garb_storage,
             ts,
             circuit_path.clone(),
@@ -1615,7 +1615,7 @@ async fn test_e2e() {
             &mut eval_actions,
             &mut eval_exec,
             garbler_peer_id,
-            net_client_gabler.clone(),
+            net_client_garbler.clone(),
         )
         .await;
 
@@ -1675,7 +1675,7 @@ async fn test_e2e() {
             &mut eval_actions,
             deposit_id,
             garbler_peer_id,
-            net_client_gabler.clone(),
+            net_client_garbler.clone(),
         )
         .await;
 
