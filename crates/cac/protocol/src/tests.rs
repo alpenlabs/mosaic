@@ -35,6 +35,7 @@ use mosaic_storage_api::StorageProvider;
 use mosaic_storage_inmemory::{evaluator::StoredEvaluatorState, garbler::StoredGarblerState};
 use mosaic_storage_s3::S3TableStore;
 use object_store::{ObjectStore, local::LocalFileSystem};
+use rand::RngCore;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
 use crate::{
@@ -1108,34 +1109,23 @@ async fn test_e2e() {
     use mosaic_common::constants::N_SETUP_INPUT_WIRES;
 
     let test_vector = {
-        // The current g16.v5c file ORs all input wires; so it yields false only if all inputs are
-        // false.
-        let setup_inputs = [0; N_SETUP_INPUT_WIRES];
-        let deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
-        let withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
-        let reveals_secret = true; // output is false
+        let mut test_vecs = vec![];
+        let mut rng = ChaCha20Rng::seed_from_u64(70);
 
-        let mut setup_inputs2 = [0; N_SETUP_INPUT_WIRES];
-        let mut deposit_input2 = [0u8; N_DEPOSIT_INPUT_WIRES];
-        let mut withdrawal_input2 = [0; N_WITHDRAWAL_INPUT_WIRES];
-        setup_inputs2[0] = 1;
-        deposit_input2[0] = 1;
-        withdrawal_input2[0] = 1;
-        let reveals_secret2 = false; // output is true
-        vec![
-            (
-                setup_inputs,
-                deposit_inputs,
-                withdrawal_input,
-                reveals_secret,
-            ),
-            (
-                setup_inputs2,
-                deposit_input2,
-                withdrawal_input2,
-                reveals_secret2,
-            ),
-        ]
+        let mut setup_inputs = [0; N_SETUP_INPUT_WIRES];
+        let mut deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
+        let mut withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
+        rng.fill_bytes(&mut setup_inputs);
+        rng.fill_bytes(&mut deposit_inputs);
+        rng.fill_bytes(&mut withdrawal_input);
+
+        deposit_inputs[0] = 0;
+        test_vecs.push((setup_inputs, deposit_inputs, withdrawal_input, true)); // reveal secret = true because output is 0
+
+        deposit_inputs[0] = 1;
+        test_vecs.push((setup_inputs, deposit_inputs, withdrawal_input, false)); // reveal secret = false because output is 1
+
+        test_vecs
     };
 
     for (iter, (setup_inputs, deposit_inputs, withdrawal_input, reveals_secret)) in
