@@ -35,6 +35,7 @@ use mosaic_storage_api::StorageProvider;
 use mosaic_storage_inmemory::{evaluator::StoredEvaluatorState, garbler::StoredGarblerState};
 use mosaic_storage_s3::S3TableStore;
 use object_store::{ObjectStore, local::LocalFileSystem};
+use rand::RngCore;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
 use crate::{
@@ -1093,9 +1094,12 @@ async fn handle_evaluator_finds_fault_secret(
 use fasm::StateMachine;
 #[tokio::test]
 // OPTIONAL steps to generate v5c file yourself:
-// 1. clone: g16 repo and switch to branch test/simple_circuit_postaudit
-// test/simple_circuit_postaudit branch generates small ckt file that does input validation
-// only; not the actually groth16 verification afterwards; Meant for test purposes only]
+// 1. Clone g16 repo and switch to branch test/simple_circuit_postaudit_smallest
+//   test/simple_circuit_postaudit_smallest branch generates sample ckt meant for test purposes
+//   only. The binary circuit's function is as follows:
+//   combine_all_wires <- AND(all_wires) // we use up all input wires
+//   wire_a <-XOR(combine_all_wires, combine_all_wires) // wire_a is now always zero
+//   output_wire <-  wire_a  OR deposit_id_lsb // result is dependent only on deposit_id_lsb
 // 2. generate v5a ckt file: cd g16gen && cargo run generate 6 && cargo run write-input-bits 6
 // 3. clone: ckt repo
 // 4. move g16gen/g16.ckt file to ckt/lvl/
@@ -1103,39 +1107,29 @@ use fasm::StateMachine;
 // 6. move lvl/g16.v5c to mosaic/cac/protocol/
 // 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
 //    --exact --show-output --nocapture
+
 async fn test_e2e() {
     use mosaic_cac_types::WithdrawalInputs;
     use mosaic_common::constants::N_SETUP_INPUT_WIRES;
 
     let test_vector = {
-        // The current g16.v5c file ORs all input wires; so it yields false only if all inputs are
-        // false.
-        let setup_inputs = [0; N_SETUP_INPUT_WIRES];
-        let deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
-        let withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
-        let reveals_secret = true; // output is false
+        let mut test_vecs = vec![];
+        let mut rng = ChaCha20Rng::seed_from_u64(70);
 
-        let mut setup_inputs2 = [0; N_SETUP_INPUT_WIRES];
-        let mut deposit_input2 = [0u8; N_DEPOSIT_INPUT_WIRES];
-        let mut withdrawal_input2 = [0; N_WITHDRAWAL_INPUT_WIRES];
-        setup_inputs2[0] = 1;
-        deposit_input2[0] = 1;
-        withdrawal_input2[0] = 1;
-        let reveals_secret2 = false; // output is true
-        vec![
-            (
-                setup_inputs,
-                deposit_inputs,
-                withdrawal_input,
-                reveals_secret,
-            ),
-            (
-                setup_inputs2,
-                deposit_input2,
-                withdrawal_input2,
-                reveals_secret2,
-            ),
-        ]
+        let mut setup_inputs = [0; N_SETUP_INPUT_WIRES];
+        let mut deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
+        let mut withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
+        rng.fill_bytes(&mut setup_inputs);
+        rng.fill_bytes(&mut deposit_inputs);
+        rng.fill_bytes(&mut withdrawal_input);
+
+        deposit_inputs[0] = 0;
+        test_vecs.push((setup_inputs, deposit_inputs, withdrawal_input, true)); // reveal secret = true because output is 0
+
+        deposit_inputs[0] = 1;
+        test_vecs.push((setup_inputs, deposit_inputs, withdrawal_input, false)); // reveal secret = false because output is 1
+
+        test_vecs
     };
 
     for (iter, (setup_inputs, deposit_inputs, withdrawal_input, reveals_secret)) in
