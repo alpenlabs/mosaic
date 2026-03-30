@@ -1094,9 +1094,12 @@ async fn handle_evaluator_finds_fault_secret(
 use fasm::StateMachine;
 #[tokio::test]
 // OPTIONAL steps to generate v5c file yourself:
-// 1. clone: g16 repo and switch to branch test/simple_circuit_postaudit
-// test/simple_circuit_postaudit branch generates small ckt file that does input validation
-// only; not the actually groth16 verification afterwards; Meant for test purposes only]
+// 1. Clone g16 repo and switch to branch test/simple_circuit_postaudit_smallest
+//   test/simple_circuit_postaudit_smallest branch generates sample ckt meant for test purposes
+//   only. The binary circuit's function is as follows:
+//   combine_all_wires <- AND(all_wires) // we use up all input wires
+//   wire_a <-XOR(combine_all_wires, combine_all_wires) // wire_a is now always zero
+//   output_wire <-  wire_a  OR deposit_id_lsb // result is dependent only on deposit_id_lsb
 // 2. generate v5a ckt file: cd g16gen && cargo run generate 6 && cargo run write-input-bits 6
 // 3. clone: ckt repo
 // 4. move g16gen/g16.ckt file to ckt/lvl/
@@ -1104,6 +1107,7 @@ use fasm::StateMachine;
 // 6. move lvl/g16.v5c to mosaic/cac/protocol/
 // 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
 //    --exact --show-output --nocapture
+
 async fn test_e2e() {
     use mosaic_cac_types::WithdrawalInputs;
     use mosaic_common::constants::N_SETUP_INPUT_WIRES;
