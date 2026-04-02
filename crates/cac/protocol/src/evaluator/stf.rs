@@ -6,10 +6,9 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
     OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
-    ReservedSetupInputShares, SecretKey, Seed, SetupInputs, TableTransferReceiptMsg,
-    TableTransferRequestMsg, WideLabelWirePolynomialCommitments,
-    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
-    WithdrawalInputs, state_machine::evaluator::*,
+    ReservedSetupInputShares, Seed, SetupInputs, TableTransferReceiptMsg, TableTransferRequestMsg,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
+    WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -492,7 +491,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
                     evaluated[idx] = true;
 
-                    let fault_secret = if let Some(output_share) = output_share {
+                    let success = if let Some(output_share) = output_share {
                         // output_share is Some only if the evaluation yielded False value as result
                         // Now interpolate to find share corresponding to reserved index of output
                         // wire
@@ -523,25 +522,23 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                                 .put_fault_secret_share(evals_at_zeroth_index)
                                 .await
                                 .map_err(SMError::storage)?;
+                            true
+                        } else {
+                            false
                         }
-
-                        fault_secret_found.then(|| SecretKey(evals_at_zeroth_index.value()))
                     } else {
-                        None
+                        false
                     };
 
-                    if fault_secret.is_some() || evaluated.all() {
+                    if success || evaluated.all() {
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
-                            slash: fault_secret,
+                            success,
                         };
                     }
                     // else stay on same step and wait for more evaluations
                 }
-                Step::SetupConsumed {
-                    deposit_id: _,
-                    slash: _,
-                } => {}
+                Step::SetupConsumed { .. } => {}
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
