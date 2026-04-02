@@ -75,18 +75,36 @@ impl FdbStorageProvider {
     pub async fn open(db: Database, config: FdbStorageConfig) -> Result<Self, FdbStorageError> {
         let directory_layer = DirectoryLayer::default();
         let root_path = root_path(&config);
-        let trx = db.create_trx()?;
-        let root = directory_layer
-            .create_or_open(&trx, &root_path, None, Some(ROOT_LAYER))
-            .await
-            .map_err(|err| FdbStorageError::Directory(directory_error_to_string(err)))?;
-        trx.commit().await?;
+        let root = Self::create_or_open_root(&db, &directory_layer, &root_path).await?;
 
         Ok(Self {
             db: Arc::new(db),
             root: Arc::new(root),
             prefix_cache: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Create or open the root directory, retrying on transaction conflicts.
+    async fn create_or_open_root(
+        db: &Database,
+        directory_layer: &DirectoryLayer,
+        root_path: &[String],
+    ) -> Result<DirectoryOutput, FdbStorageError> {
+        loop {
+            let trx = db.create_trx()?;
+            let root = directory_layer
+                .create_or_open(&trx, root_path, None, Some(ROOT_LAYER))
+                .await
+                .map_err(|err| FdbStorageError::Directory(directory_error_to_string(err)))?;
+            match trx.commit().await {
+                Ok(_) => return Ok(root),
+                Err(err) => {
+                    // on_error implements FDB's recommended retry backoff; it returns
+                    // Err if the error is not retryable.
+                    err.on_error().await?;
+                }
+            }
+        }
     }
 
     async fn garbler_state_handle(
@@ -128,17 +146,24 @@ impl FdbStorageProvider {
         }
 
         let path = role_path(peer_id, role);
-        let trx = self.db.create_trx()?;
-        let directory = self
-            .root
-            .create_or_open(&trx, &path, None, Some(role.layer()))
-            .await
-            .map_err(|err| FdbStorageError::Directory(directory_error_to_string(err)))?;
-        let prefix = directory
-            .bytes()
-            .map_err(|err| FdbStorageError::Directory(directory_error_to_string(err)))?
-            .to_vec();
-        trx.commit().await?;
+        let prefix = loop {
+            let trx = self.db.create_trx()?;
+            let directory = self
+                .root
+                .create_or_open(&trx, &path, None, Some(role.layer()))
+                .await
+                .map_err(|err| FdbStorageError::Directory(directory_error_to_string(err)))?;
+            let prefix = directory
+                .bytes()
+                .map_err(|err| FdbStorageError::Directory(directory_error_to_string(err)))?
+                .to_vec();
+            match trx.commit().await {
+                Ok(_) => break prefix,
+                Err(err) => {
+                    err.on_error().await?;
+                }
+            }
+        };
         self.prefix_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
