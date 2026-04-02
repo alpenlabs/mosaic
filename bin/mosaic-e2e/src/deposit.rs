@@ -21,14 +21,14 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Build a deterministic 32-byte deposit ID from a deposit index.
 /// Bytes [0..28] are zero, bytes [28..32] are the big-endian index.
-fn deposit_id_from_idx(idx: u32) -> RpcDepositId {
+pub(crate) fn deposit_id_from_idx(idx: u32) -> RpcDepositId {
     let mut bytes = [0u8; 32];
     bytes[28..32].copy_from_slice(&idx.to_be_bytes());
     RpcDepositId::new(bytes)
 }
 
 /// Build a deterministic ChaCha20Rng seeded from the deposit ID bytes.
-fn rng_from_deposit_id(deposit_id: &RpcDepositId) -> ChaCha20Rng {
+pub(crate) fn rng_from_deposit_id(deposit_id: &RpcDepositId) -> ChaCha20Rng {
     ChaCha20Rng::from_seed(*deposit_id.inner())
 }
 

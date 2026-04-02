@@ -65,7 +65,26 @@ pub(crate) enum Command {
     },
 
     /// Exercise the withdrawal flow on a deposit.
-    Withdrawal,
+    Withdrawal {
+        /// Our role in the protocol.
+        #[arg(value_enum)]
+        role: Role,
+
+        /// Hex-encoded peer ID of the other mosaic node.
+        peer_id: String,
+
+        /// Deposit index — determines the deposit ID and all derived values deterministically.
+        deposit_idx: u32,
+
+        /// Hex-encoded 128-byte withdrawal input wire values (garbler only, defaults to
+        /// deterministic derivation from deposit index).
+        #[arg(long)]
+        withdrawal_inputs: Option<String>,
+
+        /// Path to JSON file with EvaluatorWithdrawalConfig (required for evaluator).
+        #[arg(long)]
+        sigs_file: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

@@ -76,7 +76,25 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Command::Withdrawal => withdrawal::run(&client).await?,
+        Command::Withdrawal {
+            role,
+            peer_id,
+            deposit_idx,
+            withdrawal_inputs,
+            sigs_file,
+        } => {
+            let peer_id = config::decode_peer_id(&peer_id)?;
+            withdrawal::run(
+                &client,
+                role,
+                peer_id,
+                own_peer_id,
+                deposit_idx,
+                withdrawal_inputs,
+                sigs_file,
+            )
+            .await?;
+        }
     }
 
     tracing::info!("e2e run complete");

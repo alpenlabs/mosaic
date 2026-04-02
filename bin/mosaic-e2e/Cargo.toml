@@ -24,6 +24,7 @@ jsonrpsee = { workspace = true, features = ["http-client"] }
 rand.workspace = true
 rand_chacha.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8"
 tracing.workspace = true
