@@ -62,6 +62,17 @@ fn parse_adaptor_pk(hex: &str) -> Result<XOnlyPublicKey> {
     XOnlyPublicKey::from_slice(&bytes).context("adaptor_pk is not a valid x-only public key")
 }
 
+/// Parse optional hex-encoded deposit inputs override.
+fn parse_deposit_inputs_override(hex: Option<&str>) -> Result<Option<RpcDepositInputs>> {
+    match hex {
+        Some(h) => {
+            let bytes = decode_exact_hex::<N_DEPOSIT_INPUT_WIRES>(h, "deposit_inputs")?;
+            Ok(Some(RpcDepositInputs::new(bytes)))
+        }
+        None => Ok(None),
+    }
+}
+
 pub(crate) async fn run(
     client: &HttpClient,
     role: Role,
@@ -69,10 +80,12 @@ pub(crate) async fn run(
     _own_peer_id: PeerId,
     deposit_idx: u32,
     adaptor_pk_hex: Option<String>,
+    deposit_inputs_hex: Option<String>,
 ) -> Result<()> {
     let deposit_id = deposit_id_from_idx(deposit_idx);
     let sighashes = derive_sighashes(&deposit_id);
-    let deposit_inputs = derive_deposit_inputs(&deposit_id);
+    let deposit_inputs = parse_deposit_inputs_override(deposit_inputs_hex.as_deref())?
+        .unwrap_or_else(|| derive_deposit_inputs(&deposit_id));
 
     // Resolve the tableset ID for this (role, peer) pair.
     let cac_role = match role {
@@ -118,8 +131,6 @@ pub(crate) async fn run(
                 .context("init_evaluator_deposit failed")?;
         }
     }
-
-    tracing::info!("deposit initiated, polling for completion");
 
     loop {
         let Some(status) = client

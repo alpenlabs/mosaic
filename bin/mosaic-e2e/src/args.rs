@@ -29,10 +29,18 @@ pub(crate) enum Command {
 
         /// Hex-encoded peer ID of the other mosaic node.
         peer_id: String,
+
+        /// Hex-encoded 32-byte setup inputs (defaults to all zeroes).
+        #[arg(long)]
+        setup_inputs: Option<String>,
     },
 
     /// Run setup for all (peer, role) pairs from the config.
-    SetupAll,
+    SetupAll {
+        /// Hex-encoded 32-byte setup inputs (defaults to all zeroes).
+        #[arg(long)]
+        setup_inputs: Option<String>,
+    },
 
     /// Initialise a deposit on a tableset.
     Deposit {
@@ -49,6 +57,11 @@ pub(crate) enum Command {
         /// Hex-encoded x-only adaptor public key (required for garbler role).
         #[arg(long)]
         adaptor_pk: Option<String>,
+
+        /// Hex-encoded deposit input wire values (defaults to deterministic derivation from
+        /// deposit index).
+        #[arg(long)]
+        deposit_inputs: Option<String>,
     },
 
     /// Exercise the withdrawal flow on a deposit.

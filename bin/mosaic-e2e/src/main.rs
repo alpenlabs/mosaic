@@ -36,22 +36,45 @@ async fn main() -> Result<()> {
     let known_peer_ids = args.config.peer_ids()?;
 
     match args.command {
-        Command::Setup { role, peer_id } => {
+        Command::Setup {
+            role,
+            peer_id,
+            setup_inputs,
+        } => {
             let peer_id = config::decode_peer_id(&peer_id)?;
-            setup::run(&client, role, peer_id, own_peer_id, &known_peer_ids).await?;
+            let setup_inputs = setup::parse_setup_inputs_override(setup_inputs.as_deref())?;
+            setup::run(
+                &client,
+                role,
+                peer_id,
+                own_peer_id,
+                &known_peer_ids,
+                setup_inputs,
+            )
+            .await?;
         }
-        Command::SetupAll => {
-            setup::run_all(&client, own_peer_id, &known_peer_ids).await?;
+        Command::SetupAll { setup_inputs } => {
+            let setup_inputs = setup::parse_setup_inputs_override(setup_inputs.as_deref())?;
+            setup::run_all(&client, own_peer_id, &known_peer_ids, setup_inputs).await?;
         }
         Command::Deposit {
             role,
             peer_id,
             deposit_idx,
             adaptor_pk,
+            deposit_inputs,
         } => {
             let peer_id = config::decode_peer_id(&peer_id)?;
-            deposit::run(&client, role, peer_id, own_peer_id, deposit_idx, adaptor_pk)
-                .await?;
+            deposit::run(
+                &client,
+                role,
+                peer_id,
+                own_peer_id,
+                deposit_idx,
+                adaptor_pk,
+                deposit_inputs,
+            )
+            .await?;
         }
         Command::Withdrawal => withdrawal::run(&client).await?,
     }
