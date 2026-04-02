@@ -1729,10 +1729,10 @@ async fn test_e2e() {
         match eval_state.get_root_state().await.unwrap().unwrap().step {
             EvalStep::SetupConsumed {
                 deposit_id: deposit_idx,
-                slash,
+                success,
             } => {
                 assert_eq!(deposit_id, deposit_idx);
-                assert_eq!(slash.is_some(), reveals_secret);
+                assert_eq!(success, reveals_secret);
                 if reveals_secret {
                     let output_poly_commit = eval_state
                         .get_output_polynomial_commitment()
@@ -1741,8 +1741,11 @@ async fn test_e2e() {
                         .unwrap()[0]
                         .get_zeroth_coefficient();
 
-                    let share_commit = slash.unwrap().to_pubkey();
-                    assert_eq!(share_commit.0, output_poly_commit, "should be keypairs");
+                    let fault_secret_share =
+                        eval_state.get_fault_secret_share().await.unwrap().unwrap();
+
+                    let share_commit = fault_secret_share.commit().point();
+                    assert_eq!(share_commit, output_poly_commit, "should be keypairs");
                 }
             }
             _ => panic!(),

@@ -1,9 +1,8 @@
 //! Tests for [`DefaultMosaicApi`].
 
-use ark_ff::AdditiveGroup;
 use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
 use mosaic_cac_types::{
-    DepositId, HeapArray, KeyPair, SecretKey, Seed, Sighashes, Signature,
+    DepositId, HeapArray, KeyPair, Seed, Sighashes, Signature,
     state_machine::{
         Role, StateMachineId,
         evaluator::{self, EvaluatorState, StateMut as EvaluatorStateMut},
@@ -378,7 +377,7 @@ async fn get_tableset_status_evaluator_consumed() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: None,
+        success: true,
     })
     .await;
 
@@ -981,7 +980,7 @@ async fn sign_with_fault_secret_signs_when_successful() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: None,
+        success: true,
     })
     .await;
 
@@ -1027,7 +1026,7 @@ async fn sign_with_fault_secret_signs_with_tweak() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: None,
+        success: true,
     })
     .await;
 
@@ -1074,7 +1073,7 @@ async fn sign_with_fault_secret_returns_none_on_unsuccessful_consume() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: None,
+        success: false,
     })
     .await;
 
@@ -1093,7 +1092,7 @@ async fn sign_with_fault_secret_returns_none_when_secret_missing() {
     let deposit_id = test_deposit_id(1);
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id,
-        slash: Some(SecretKey(ark_secp256k1::Fr::ZERO)),
+        success: true, // slash: Some(SecretKey(ark_secp256k1::Fr::ZERO)),
     })
     .await;
     // No fault_secret_share written
