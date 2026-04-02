@@ -62,6 +62,7 @@ chunk_timeout_secs = 30
 
 [sm_executor]
 command_queue_size = 256
+restore_interval_secs = 60
 
 [rpc]
 bind_addr = "127.0.0.1:8001"

@@ -138,6 +138,13 @@ async fn recv_shutdown(
     }
 }
 
+async fn restore_timer_tick(interval: Option<std::time::Duration>) {
+    match interval {
+        Some(dur) => monoio::time::sleep(dur).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// SM executor.
 #[derive(Debug)]
 pub struct SmExecutor<S>
@@ -196,6 +203,7 @@ where
             .name("sm-executor".to_string())
             .spawn(move || {
                 let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build sm-executor monoio runtime");
                 let result = runtime.block_on(self.run_inner(Some(shutdown_rx)));
@@ -224,6 +232,12 @@ where
             tracing::info!("sm executor starting");
             self.restore_known_peers().await?;
             tracing::info!("sm executor restore completed; entering main loop");
+
+            let restore_interval = self
+                .config
+                .restore_interval_secs
+                .filter(|&s| s > 0)
+                .map(std::time::Duration::from_secs);
 
             loop {
                 monoio::select! {
@@ -299,6 +313,16 @@ where
                                 tracing::error!(source = "command", "executor command channel closed; stopping sm executor");
                                 return Err(SmExecutorError::SourceClosed("executor command channel"));
                             }
+                        }
+                    }
+                    _ = restore_timer_tick(restore_interval) => {
+                        tracing::info!(source = "restore_tick", "periodic restore_known_peers triggered");
+                        if let Err(err) = self.restore_known_peers().await {
+                            if Self::is_fatal_processing_error(&err) {
+                                tracing::error!(source = "restore_tick", error = ?err, "fatal error during periodic restore; stopping sm executor");
+                                return Err(err);
+                            }
+                            tracing::warn!(source = "restore_tick", error = ?err, "periodic restore_known_peers failed; will retry at next interval");
                         }
                     }
                 }
@@ -1082,6 +1106,7 @@ mod tests {
         F: Future<Output = ()> + 'static,
     {
         monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+            .enable_timer()
             .build()
             .expect("build monoio runtime")
             .block_on(future);
@@ -1309,6 +1334,7 @@ mod tests {
             let config = SmExecutorConfig {
                 command_queue_size: 8,
                 known_peers: vec![peer_id],
+                restore_interval_secs: None,
             };
             let (executor, _handle) = SmExecutor::new(config, provider, job_handle, net_client);
 
@@ -1359,6 +1385,7 @@ mod tests {
             let config = SmExecutorConfig {
                 command_queue_size: 8,
                 known_peers: vec![peer_id],
+                restore_interval_secs: None,
             };
             let (executor, _handle) = SmExecutor::new(config, provider, job_handle, net_client);
 
