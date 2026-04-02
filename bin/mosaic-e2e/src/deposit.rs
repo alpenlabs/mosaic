@@ -14,6 +14,7 @@ use mosaic_rpc_types::{
 };
 use rand::RngCore;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
+use tracing::warn;
 
 use crate::{args::Role, config::decode_exact_hex};
 
@@ -43,17 +44,8 @@ fn derive_sighashes(deposit_id: &RpcDepositId) -> RpcInputSighashes {
 }
 
 /// Derive deterministic deposit input wire values.
-fn derive_deposit_inputs(deposit_id: &RpcDepositId) -> RpcDepositInputs {
-    // Use a different stream by advancing past the sighash draws.
-    let mut rng = rng_from_deposit_id(deposit_id);
-    // Skip sighash bytes worth of random.
-    let skip = (N_DEPOSIT_INPUT_WIRES + N_WITHDRAWAL_INPUT_WIRES) * 32;
-    let mut discard = vec![0u8; skip];
-    rng.fill_bytes(&mut discard);
-
-    let mut inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
-    rng.fill_bytes(&mut inputs);
-    RpcDepositInputs::new(inputs)
+fn derive_deposit_inputs(deposit_idx: u32) -> RpcDepositInputs {
+    RpcDepositInputs::new(deposit_idx.to_le_bytes())
 }
 
 /// Parse a hex-encoded x-only public key.
@@ -85,7 +77,9 @@ pub(crate) async fn run(
     let deposit_id = deposit_id_from_idx(deposit_idx);
     let sighashes = derive_sighashes(&deposit_id);
     let deposit_inputs = parse_deposit_inputs_override(deposit_inputs_hex.as_deref())?
-        .unwrap_or_else(|| derive_deposit_inputs(&deposit_id));
+        .unwrap_or_else(|| derive_deposit_inputs(deposit_idx));
+
+    warn!(?deposit_inputs, "deposit inputs");
 
     // Resolve the tableset ID for this (role, peer) pair.
     let cac_role = match role {
