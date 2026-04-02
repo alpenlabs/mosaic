@@ -13,6 +13,8 @@ use anyhow::{Context, Result, bail};
 use config::{MosaicConfig, TableStoreBackend};
 use mimalloc::MiMalloc;
 use mosaic_cac_types::state_machine::{evaluator, garbler};
+// dependency to pass feature flag
+use mosaic_common as _;
 use mosaic_job_executors::MosaicExecutor;
 use mosaic_job_scheduler::JobScheduler;
 use mosaic_net_client::NetClient;
