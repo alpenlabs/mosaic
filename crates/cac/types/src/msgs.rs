@@ -12,12 +12,12 @@ use mosaic_common::{
     Byte32,
     constants::{N_CIRCUITS, N_EVAL_CIRCUITS},
 };
-use mosaic_vs3::Index;
 
 use crate::{
     Adaptor, AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, DepositId,
-    HeapArray, OpenedGarblingSeeds, OpenedOutputShares, OutputPolynomialCommitment,
-    ReservedSetupInputShares, WideLabelWirePolynomialCommitments, WithdrawalAdaptorsChunk,
+    GarblingTableCommitment, HeapArray, OpenedGarblingSeeds, OpenedOutputShares,
+    OutputPolynomialCommitment, ReservedSetupInputShares, WideLabelWirePolynomialCommitments,
+    WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -123,6 +123,50 @@ pub struct ChallengeResponseMsgChunk {
 }
 
 // ============================================================================
+// Table Transfer Request Message Type (Evaluator -> Garbler)
+// ============================================================================
+
+/// TableTransferRequestMsg: Evaluator -> Garbler
+///
+/// Requests transfer of a garbling table identified by its commitment.
+///
+/// Size: fits in single frame
+#[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct TableTransferRequestMsg {
+    /// Commitment identifying the garbling table to transfer.
+    pub garbling_table_commitment: GarblingTableCommitment,
+}
+
+impl TableTransferRequestMsg {
+    /// Creates a new [`TableTransferRequestMsg`] for the given garbling table commitment.
+    pub fn new(garbling_table_commitment: GarblingTableCommitment) -> Self {
+        Self {
+            garbling_table_commitment,
+        }
+    }
+}
+
+/// TableTransferReceiptMsg: Evaluator -> Garbler
+///
+/// Acknowledges receipt of a garbling table identified by its commitment.
+///
+/// Size: fits in single frame
+#[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct TableTransferReceiptMsg {
+    /// Commitment identifying the garbling table that was received.
+    pub garbling_table_commitment: GarblingTableCommitment,
+}
+
+impl TableTransferReceiptMsg {
+    /// Creates a new [`TableTransferReceiptMsg`] for the given garbling table commitment.
+    pub fn new(garbling_table_commitment: GarblingTableCommitment) -> Self {
+        Self {
+            garbling_table_commitment,
+        }
+    }
+}
+
+// ============================================================================
 // Adaptor Message Type (Evaluator -> Garbler)
 // ============================================================================
 
@@ -164,8 +208,10 @@ pub enum Msg {
     CommitChunk(CommitMsgChunk),
     /// Challenge message (Evaluator -> Garbler)
     Challenge(ChallengeMsg),
+    /// Table Transfer Request (Evaluator -> Garbler)
+    TableTransferRequest(TableTransferRequestMsg),
     /// Table Receipt (Evaluator -> Garbler)
-    TableTransferReceipt(Index),
+    TableTransferReceipt(TableTransferReceiptMsg),
     /// Challenge response header (Garbler -> Evaluator)
     ChallengeResponseHeader(ChallengeResponseMsgHeader),
     /// Challenge response chunk (Garbler -> Evaluator)
@@ -182,8 +228,9 @@ enum MsgVariant {
     Challenge = 2,
     ChallengeResponseHeader = 3,
     ChallengeResponseChunk = 4,
-    TableTransferReceipt = 5,
-    AdaptorChunk = 6,
+    TableTransferRequest = 5,
+    TableTransferReceipt = 6,
+    AdaptorChunk = 7,
 }
 
 impl TryFrom<u8> for MsgVariant {
@@ -196,8 +243,9 @@ impl TryFrom<u8> for MsgVariant {
             2 => Ok(MsgVariant::Challenge),
             3 => Ok(MsgVariant::ChallengeResponseHeader),
             4 => Ok(MsgVariant::ChallengeResponseChunk),
-            5 => Ok(MsgVariant::TableTransferReceipt),
-            6 => Ok(MsgVariant::AdaptorChunk),
+            5 => Ok(MsgVariant::TableTransferRequest),
+            6 => Ok(MsgVariant::TableTransferReceipt),
+            7 => Ok(MsgVariant::AdaptorChunk),
             _ => Err(SerializationError::InvalidData),
         }
     }
@@ -220,6 +268,11 @@ impl CanonicalSerialize for Msg {
             }
             Msg::Challenge(msg) => {
                 (MsgVariant::Challenge as u8).serialize_with_mode(&mut writer, compress)?;
+                msg.serialize_with_mode(&mut writer, compress)
+            }
+            Msg::TableTransferRequest(msg) => {
+                (MsgVariant::TableTransferRequest as u8)
+                    .serialize_with_mode(&mut writer, compress)?;
                 msg.serialize_with_mode(&mut writer, compress)
             }
             Msg::TableTransferReceipt(msg) => {
@@ -251,6 +304,7 @@ impl CanonicalSerialize for Msg {
             Msg::Challenge(msg) => msg.serialized_size(compress),
             Msg::ChallengeResponseHeader(msg) => msg.serialized_size(compress),
             Msg::ChallengeResponseChunk(msg) => msg.serialized_size(compress),
+            Msg::TableTransferRequest(msg) => msg.serialized_size(compress),
             Msg::TableTransferReceipt(msg) => msg.serialized_size(compress),
             Msg::AdaptorChunk(msg) => msg.serialized_size(compress),
         }
@@ -295,8 +349,20 @@ impl CanonicalDeserialize for Msg {
                 )?;
                 Ok(Msg::ChallengeResponseChunk(msg))
             }
+            MsgVariant::TableTransferRequest => {
+                let msg = TableTransferRequestMsg::deserialize_with_mode(
+                    &mut reader,
+                    compress,
+                    validate,
+                )?;
+                Ok(Msg::TableTransferRequest(msg))
+            }
             MsgVariant::TableTransferReceipt => {
-                let msg = Index::deserialize_with_mode(&mut reader, compress, validate)?;
+                let msg = TableTransferReceiptMsg::deserialize_with_mode(
+                    &mut reader,
+                    compress,
+                    validate,
+                )?;
                 Ok(Msg::TableTransferReceipt(msg))
             }
             MsgVariant::AdaptorChunk => {
@@ -315,6 +381,7 @@ impl Valid for Msg {
             Msg::Challenge(msg) => msg.check(),
             Msg::ChallengeResponseHeader(msg) => msg.check(),
             Msg::ChallengeResponseChunk(msg) => msg.check(),
+            Msg::TableTransferRequest(msg) => msg.check(),
             Msg::TableTransferReceipt(msg) => msg.check(),
             Msg::AdaptorChunk(msg) => msg.check(),
         }
@@ -361,8 +428,14 @@ impl From<AdaptorMsgChunk> for Msg {
     }
 }
 
-impl From<Index> for Msg {
-    fn from(value: Index) -> Self {
-        Msg::TableTransferReceipt(value)
+impl From<TableTransferRequestMsg> for Msg {
+    fn from(msg: TableTransferRequestMsg) -> Self {
+        Msg::TableTransferRequest(msg)
+    }
+}
+
+impl From<TableTransferReceiptMsg> for Msg {
+    fn from(msg: TableTransferReceiptMsg) -> Self {
+        Msg::TableTransferReceipt(msg)
     }
 }

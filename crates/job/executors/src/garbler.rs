@@ -574,11 +574,15 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         .try_into()
         .expect("commitment is 32 bytes");
 
+    // Why TransientFailure: the evaluator may not have registered its bulk
+    // expectation yet (race between SendTableTransferRequest delivery and
+    // ReceiveGarblingTable dispatch). The scheduler retries on the next pass.
+
     let mut stream = ctx
         .net_client
         .open_bulk_sender(*peer_id, identifier, -1)
         .await
-        .map_err(|e| CircuitError::SetupFailed(format!("bulk stream open: {e:?}")))?;
+        .map_err(|e| CircuitError::TransientFailure(format!("bulk stream open: {e:?}")))?;
 
     // Send translation material before the coordinator starts reading blocks.
     //
@@ -593,7 +597,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         let _ = stream
             .write(chunk.to_vec())
             .await
-            .map_err(|e| CircuitError::SetupFailed(format!("translation send: {e:?}")))?;
+            .map_err(|e| CircuitError::TransientFailure(format!("translation send: {e:?}")))?;
     }
 
     Ok(TransferSession::new(

@@ -479,9 +479,6 @@ impl Classify for GarblerAction {
             | Self::GenerateShares(..)
             | Self::DepositVerifyAdaptors(..)
             | Self::CompleteAdaptorSignatures(..) => ActionCategory::Heavy,
-
-            // Non-exhaustive fallback
-            _ => ActionCategory::Heavy,
         }
     }
 
@@ -504,6 +501,8 @@ impl Classify for EvaluatorAction {
         match self {
             // Light (outbound protocol sends + network receive)
             Self::SendChallengeMsg(_)
+            | Self::SendTableTransferRequest(_)
+            | Self::SendTableTransferReceipt(_)
             | Self::DepositSendAdaptorMsgChunk(..)
             | Self::ReceiveGarblingTable(_) => ActionCategory::Light,
 
@@ -516,9 +515,6 @@ impl Classify for EvaluatorAction {
             Self::VerifyOpenedInputShares
             | Self::GenerateDepositAdaptors(_)
             | Self::GenerateWithdrawalAdaptorsChunk(..) => ActionCategory::Heavy,
-
-            // Non-exhaustive fallback
-            _ => ActionCategory::Heavy,
         }
     }
 
