@@ -1,0 +1,75 @@
+name: build
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  extract-rust-version:
+    name: Extract toolchain version
+    runs-on: ubuntu-latest
+    outputs:
+      nightly-version: ${{ steps.extract-version.outputs.nightly-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Extract Rust version
+        id: extract-version
+        uses: ./.github/actions/extract-rust-version
+
+  crate-checks:
+    name: Check that crates compile on their own
+    runs-on: ubuntu-latest
+    needs: extract-rust-version
+    timeout-minutes: 90 # cold run takes a lot of time as each crate is compiled separately
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        env:
+          RUST_NIGHTLY: ${{ needs.extract-rust-version.outputs.nightly-version }}
+        run: |
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal
+          rustup default "$RUST_NIGHTLY"
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@81ecf985428d5c2ea81dbf079bceca32bc9604ab # cargo-hack v2.62.43
+        with:
+          tool: cargo-hack
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo  "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        with:
+          version: "v0.10.0" # sccache version
+
+      - name: Install FoundationDB client library
+        uses: ./.github/actions/setup-foundationdb-client
+
+      - name: Check crates compile
+        run: cargo hack check
+        env:
+          DATABASE_URL: sqlite://./operator.db
