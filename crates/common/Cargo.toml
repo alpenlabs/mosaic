@@ -14,7 +14,7 @@ keywords.workspace = true
 reduced-circuits = []
 
 [dependencies]
-ark-serialize.workspace = true
+ark-serialize = { workspace = true, features = ["derive"] }
 serde.workspace = true
 
 [lints]
