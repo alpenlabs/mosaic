@@ -94,3 +94,9 @@ Logs are written in tests data directory:
             └── 🧾 logs/              # Logs per test module
                 └── 📄 fn_rpc_test.log
 ```
+
+## Test Circuit
+
+The custom [circuit](./functional-tests/artifacts/mosaic_depositidx_ckt.v5c) used in the functional tests mirrors the full circuit's input/output wire structure but with simplified logic: its output is determined entirely by the least significant bit (LSB) of the deposit inputs. This allows valid and invalid counter-proofs to be trivially simulated for tests by choosing odd or even deposit indices.
+
+The circuit was generated from [g16@`2cc9a03`](https://github.com/alpenlabs/g16/commit/2cc9a03682833c68a2f64fa0098b0ec46f8d8a15).
