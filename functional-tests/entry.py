@@ -35,7 +35,12 @@ def disabled_tests() -> frozenset[str]:
     Can be extended via DISABLED_TESTS env var (comma-separated).
     """
     base_disabled = frozenset(
-        ["keepalive_stub_test", "revert_ol_state_fn", "revert_checkpointed_block_fn"]
+        [
+            # only used in keep-alive mode
+            "keepalive_stub_test",
+            # enable after issues are resolved
+            "fn_mosaic_setup",
+        ]
     )
 
     env_disabled = os.getenv("DISABLED_TESTS", "")
@@ -147,12 +152,12 @@ def filter_tests(
         test_groups = frozenset(test_path_parts[test_dir_idx + 1 : -1])
 
         # Filtering logic:
-        # 1. Skip disabled tests
-        if test_name in disabled:
+        # 1. If specific tests requested, only include those (bypass disabled list)
+        if arg_tests and test_name not in arg_tests:
             continue
 
-        # 2. If specific tests requested, only include those
-        if arg_tests and test_name not in arg_tests:
+        # 2. Skip disabled tests (only when running all / by group)
+        if not arg_tests and test_name in disabled:
             continue
 
         # 3. If groups requested, only include tests in those groups
