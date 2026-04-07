@@ -1,8 +1,9 @@
 use mosaic_cac_types::{
-    Adaptor, AdaptorMsgChunk, DepositId, HeapArray, Index, KeyPair, Polynomial, SecretKey,
-    WideLabelWireAdaptors, WithdrawalAdaptorsChunk,
+    Adaptor, AdaptorMsgChunk, ChallengeMsg, DepositId, HeapArray, Index, KeyPair, Polynomial,
+    SecretKey, TableTransferReceiptMsg, TableTransferRequestMsg, WideLabelWireAdaptors,
+    WithdrawalAdaptorsChunk,
     state_machine::garbler::{
-        Action, ActionId, ActionResult, Config, DepositStep, GarblerDepositInitData,
+        Action, ActionId, ActionResult, Config, DepositState, DepositStep, GarblerDepositInitData,
         GarblerInitData, GarblerState, GarblingMetadata, Input, StateMut, StateRead, Step,
     },
 };
@@ -287,4 +288,244 @@ async fn sending_commit_requires_header_and_chunks_acked_before_transition() {
         matches!(root_state.step, Step::WaitingForChallenge),
         "must transition once header and all chunks are acked"
     );
+}
+
+// ============================================================================
+// "Ack and ignore" tests
+//
+// Each test puts the STF in a step where the incoming message is no longer
+// relevant (the machine already advanced past it), and asserts that
+// handle_event returns Ok(()) with an empty action queue.
+// ============================================================================
+
+/// Helper: build a valid `ChallengeMsg` whose indices are all non-reserved.
+fn dummy_challenge_msg() -> ChallengeMsg {
+    ChallengeMsg {
+        challenge_indices: HeapArray::new(|i| Index::new(i + 1).unwrap()),
+    }
+}
+
+#[tokio::test]
+async fn challenge_after_sending_challenge_response_is_ack_and_ignore() {
+    let mut state = StoredGarblerState::default();
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::SendingChallengeResponse {
+                header_acked: false,
+                chunk_acked: HeapArray::from_elem(false),
+            },
+        })
+        .await
+        .unwrap();
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvChallengeMsg(dummy_challenge_msg()),
+        &mut actions,
+    )
+    .await;
+
+    assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
+    assert!(actions.is_empty(), "should produce no actions");
+}
+
+#[tokio::test]
+async fn table_transfer_request_after_setup_complete_is_ack_and_ignore() {
+    let mut state = StoredGarblerState::default();
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::SetupComplete,
+        })
+        .await
+        .unwrap();
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvTableTransferRequest(TableTransferRequestMsg {
+            garbling_table_commitment: [0xAA; 32].into(),
+        }),
+        &mut actions,
+    )
+    .await;
+
+    assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
+    assert!(actions.is_empty(), "should produce no actions");
+}
+
+#[tokio::test]
+async fn table_transfer_receipt_after_setup_complete_is_ack_and_ignore() {
+    let mut state = StoredGarblerState::default();
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::SetupComplete,
+        })
+        .await
+        .unwrap();
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvTableTransferReceipt(TableTransferReceiptMsg {
+            garbling_table_commitment: [0xBB; 32].into(),
+        }),
+        &mut actions,
+    )
+    .await;
+
+    assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
+    assert!(actions.is_empty(), "should produce no actions");
+}
+
+#[tokio::test]
+async fn adaptor_chunk_after_deposit_past_waiting_is_ack_and_ignore() {
+    let mut state = StoredGarblerState::default();
+    let deposit_id = DepositId::from([0x01; 32]);
+    let pk = SecretKey::from_raw_bytes(&[5; 32]).to_pubkey();
+
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::SetupComplete,
+        })
+        .await
+        .unwrap();
+
+    // Put deposit in VerifyingAdaptors (past WaitingForAdaptors).
+    state
+        .put_deposit(
+            deposit_id,
+            &DepositState {
+                step: DepositStep::VerifyingAdaptors,
+                pk,
+            },
+        )
+        .await
+        .unwrap();
+
+    let chunk = AdaptorMsgChunk {
+        deposit_id,
+        chunk_index: 0,
+        deposit_adaptor: sample_adaptor(),
+        withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {
+            WideLabelWireAdaptors::new(|_| sample_adaptor())
+        }),
+    };
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::DepositRecvAdaptorMsgChunk(deposit_id, chunk),
+        &mut actions,
+    )
+    .await;
+
+    assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
+    assert!(actions.is_empty(), "should produce no actions");
+}
+
+#[tokio::test]
+async fn duplicate_adaptor_chunk_is_ack_and_ignore() {
+    let mut state = StoredGarblerState::default();
+    let deposit_id = DepositId::from([0x02; 32]);
+    let pk = SecretKey::from_raw_bytes(&[5; 32]).to_pubkey();
+
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::SetupComplete,
+        })
+        .await
+        .unwrap();
+
+    // Put deposit in WaitingForAdaptors with chunk 0 already received.
+    let mut chunks = HeapArray::from_elem(false);
+    chunks[0] = true;
+    state
+        .put_deposit(
+            deposit_id,
+            &DepositState {
+                step: DepositStep::WaitingForAdaptors { chunks },
+                pk,
+            },
+        )
+        .await
+        .unwrap();
+
+    let chunk = AdaptorMsgChunk {
+        deposit_id,
+        chunk_index: 0, // duplicate
+        deposit_adaptor: sample_adaptor(),
+        withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {
+            WideLabelWireAdaptors::new(|_| sample_adaptor())
+        }),
+    };
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::DepositRecvAdaptorMsgChunk(deposit_id, chunk),
+        &mut actions,
+    )
+    .await;
+
+    assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
+    assert!(actions.is_empty(), "should produce no actions");
+}
+
+#[tokio::test]
+async fn adaptor_chunk_when_root_completing_adaptors_is_ack_and_ignore() {
+    let mut state = StoredGarblerState::default();
+    let deposit_id = DepositId::from([0x03; 32]);
+    let other_deposit_id = DepositId::from([0x04; 32]);
+    let pk = SecretKey::from_raw_bytes(&[5; 32]).to_pubkey();
+
+    // Root state has moved to CompletingAdaptors for a different deposit.
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::CompletingAdaptors {
+                deposit_id: other_deposit_id,
+            },
+        })
+        .await
+        .unwrap();
+
+    // The target deposit still exists in storage.
+    state
+        .put_deposit(
+            deposit_id,
+            &DepositState {
+                step: DepositStep::WaitingForAdaptors {
+                    chunks: HeapArray::from_elem(false),
+                },
+                pk,
+            },
+        )
+        .await
+        .unwrap();
+
+    let chunk = AdaptorMsgChunk {
+        deposit_id,
+        chunk_index: 0,
+        deposit_adaptor: sample_adaptor(),
+        withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {
+            WideLabelWireAdaptors::new(|_| sample_adaptor())
+        }),
+    };
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::DepositRecvAdaptorMsgChunk(deposit_id, chunk),
+        &mut actions,
+    )
+    .await;
+
+    assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
+    assert!(actions.is_empty(), "should produce no actions");
 }
