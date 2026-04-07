@@ -33,7 +33,7 @@ class MosaicEnv(flexitest.EnvConfig):
         # Create mosaic instances based on configuration
         for i in range(self.network_size):
             factory = ectx.get_factory("mosaic")
-            mosaic_service = factory.create_mosaic_service(i, mosaic_factory_config)
+            mosaic_service = factory.create_mosaic_service(ectx.name, i, mosaic_factory_config)
 
             # register services
             svcs[f"mosaic_{i}"] = mosaic_service
