@@ -1,0 +1,105 @@
+import os
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+import flexitest
+import toml
+
+from common.mosaic_config import PeerConfig
+from common.rpc_inject import inject_service_create_rpc
+from services import ProcServiceWithEnv, get_fdb_env
+
+from .mosaic_config import *
+
+
+@dataclass
+class MosaicFactoryConfig:
+    circuit_path: str
+    storage_cluster_file: str
+    all_peers: dict[int, PeerConfig]
+
+
+class MosaicFactory(flexitest.Factory):
+    def __init__(self, port_range: range):
+        super().__init__(list(port_range))
+
+    @flexitest.with_ectx("ctx")
+    def create_mosaic_service(
+        self,
+        storage_prefix: str,
+        mosaic_idx: int,
+        config: MosaicFactoryConfig,
+        ctx: flexitest.EnvContext,
+    ) -> flexitest.Service:
+        service_name = f"mosaic-{mosaic_idx}"
+        datadir = ctx.make_service_dir(service_name)
+
+        rpc_port = self.next_port()
+        rpc_url = f"http://127.0.0.1:{rpc_port}"
+
+        # write config
+        config_toml = str((Path(datadir) / "config.toml").resolve())
+        generate_config(
+            storage_prefix,
+            config_toml,
+            operator_idx=mosaic_idx,
+            config=config,
+            rpc_port=rpc_port,
+            fs_storage_root=datadir,
+        )
+
+        logfile = os.path.join(datadir, "service.log")
+
+        cmd = [
+            "mosaic",
+            config_toml,
+        ]
+
+        props = {
+            "rpc_port": rpc_port,
+            "rpc_url": rpc_url,
+        }
+
+        svc = ProcServiceWithEnv(
+            props,
+            cmd,
+            stdout=logfile,
+            env=get_fdb_env(),
+        )
+
+        svc.start()
+        inject_service_create_rpc(svc, rpc_url, service_name)
+
+        return svc
+
+
+def generate_config(
+    storage_prefix: str,
+    output_path: str,
+    operator_idx: int,
+    config: MosaicFactoryConfig,
+    rpc_port: int,
+    fs_storage_root,
+):
+    own_peer = config.all_peers[operator_idx]
+    other_peers = [config.all_peers[idx] for idx in config.all_peers if idx != operator_idx]
+    mosaic_config = MosaicConfig(
+        circuit=CircuitConfig(path=config.circuit_path),
+        network=NetworkConfig(
+            signing_key_hex=own_peer.signing_key,
+            bind_addr=f"127.0.0.1:{own_peer.port}",
+            peers=[
+                PeerEntry(peer_id_hex=peer.peer_id, addr=f"127.0.0.1:{peer.port}")
+                for peer in other_peers
+            ],
+        ),
+        storage=StorageConfig(
+            cluster_file=config.storage_cluster_file,
+            global_path=[storage_prefix, f"mosaic-{operator_idx}"],
+        ),
+        table_store=LocalFilesystemBackend(root=fs_storage_root),
+        rpc=RpcConfig(bind_addr=f"127.0.0.1:{rpc_port}"),
+    )
+
+    with open(output_path, "w") as f:
+        toml.dump(asdict(mosaic_config), f)
