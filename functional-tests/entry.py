@@ -4,11 +4,11 @@ Functional test runner.
 
 Usage:
     ./entry.py                          # Run all tests
-    ./entry.py -t test_node_version     # Run specific test
-    ./entry.py -t tests/test_node_version.py  # Run specific test by path
-    ./entry.py tests/test_node_version.py     # Run specific test (positional)
-    ./entry.py -g bridge                # Run test group (directory-based)
-    ./entry.py -e basic                 # Keep-alive mode for debugging
+    ./entry.py -t fn_mosaic_setup       # Run specific test
+    ./entry.py -t tests/fn_mosaic_setup.py  # Run specific test by path
+    ./entry.py tests/fn_mosaic_setup.py     # Run specific test (positional)
+    ./entry.py -g e2e                   # Run test group (directory-based)
+    ./entry.py --keep-alive basic       # Keep-alive mode for debugging
     ./entry.py --list                   # List all tests
 """
 
