@@ -240,14 +240,6 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
         evaluator::handle_verify_opened_input_shares(self, peer_id)
     }
 
-    fn send_table_transfer_request(
-        &self,
-        peer_id: &PeerId,
-        msg: &mosaic_cac_types::TableTransferRequestMsg,
-    ) -> impl Future<Output = HandlerOutcome> + Send {
-        evaluator::handle_send_table_transfer_request(self, peer_id, msg)
-    }
-
     fn send_table_transfer_receipt(
         &self,
         peer_id: &PeerId,

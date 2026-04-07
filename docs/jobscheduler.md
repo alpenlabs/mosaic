@@ -13,7 +13,7 @@ crates/job/
 
 **job-api** defines the interface: executor traits (`ExecuteGarblerJob`, `ExecuteEvaluatorJob`), `CircuitSession`, `SessionFactory`, `HandlerOutcome`, and the submission/completion types. The SM Scheduler depends only on this crate.
 
-**job-executors** provides `MosaicExecutor<SP, TS>`, the concrete implementation of both executor traits. Contains all 18 handler implementations, the `GarblingSession` core, `PolynomialCache`, and three `CircuitSession` types (commitment, transfer, evaluation). Generic over `StorageProvider` and `TableStore`.
+**job-executors** provides `MosaicExecutor<SP, TS>`, the concrete implementation of both executor traits. Contains all 17 handler implementations, the `GarblingSession` core, `PolynomialCache`, and three `CircuitSession` types (commitment, transfer, evaluation). Generic over `StorageProvider` and `TableStore`.
 
 **job-scheduler** contains the scheduling infrastructure: light pool, heavy pool, multi-threaded garbling coordinator, action classification, priority queue, and worker retry logic. Generic over the executor traits — has no compile-time dependency on `job-executors`.
 
@@ -63,13 +63,13 @@ The garbling coordinator runs on a dedicated main thread that reads the circuit 
 
 | Category | Time | Pool | Examples |
 |----------|------|------|----------|
-| Light | Milliseconds | FIFO, 1 thread | SendCommitMsgChunk, SendChallengeMsg, SendTableTransferRequest, ReceiveGarblingTable |
+| Light | Milliseconds | FIFO, 1 thread | SendCommitMsgChunk, SendChallengeMsg, ReceiveGarblingTable |
 | Heavy | Seconds–minutes | Priority, 2 threads | VerifyOpenedInputShares, DepositVerifyAdaptors |
 | Garbling | Minutes | Coordinator, N threads | GenerateTableCommitment, TransferGarblingTable, EvaluateGarblingTable |
 
 Light actions are I/O-bound (outbound protocol sends via net-client, inbound bulk receives). Heavy actions are CPU-bound. Garbling actions are CPU-bound and require coordinated sequential reads of a ~130 GB circuit file.
 
-## All 20 Actions
+## All 19 Actions
 
 ### Garbler Actions (10)
 
@@ -86,20 +86,19 @@ Light actions are I/O-bound (outbound protocol sends via net-client, inbound bul
 | G9 | `DepositVerifyAdaptors(DepositId)` | Heavy | High | Verify deposit + withdrawal adaptors |
 | G10 | `CompleteAdaptorSignatures(DepositId)` | Heavy | Critical | Complete with reserved shares |
 
-### Evaluator Actions (10)
+### Evaluator Actions (9)
 
 | # | Action | Category | Priority | Handler |
 |---|--------|----------|----------|---------|
 | E1 | `SendChallengeMsg(ChallengeMsg)` | Light | Normal | Net send + retry |
 | E2 | `VerifyOpenedInputShares` | Heavy | Normal | Verify 7.7M shares against polynomial commitments |
 | E3 | `GenerateTableCommitment(Index, GarblingSeed)` | Garbling | Normal | CommitmentSession — re-garble to verify commitment |
-| E4 | `ReceiveGarblingTable(GarblingTableCommitment)` | Light | Normal | Bulk receive + hash verify + store to TableStore |
+| E4 | `ReceiveGarblingTable(GarblingTableCommitment)` | Light | Normal | Register bulk expectation, send transfer request, receive stream, hash verify, store to TableStore |
 | E5 | `GenerateDepositAdaptors(DepositId)` | Heavy | High | Generate adaptors from zeroth-coefficient commitments |
 | E6 | `GenerateWithdrawalAdaptorsChunk(DepositId, ChunkIndex)` | Heavy | High | Chunked withdrawal adaptor generation |
 | E7 | `DepositSendAdaptorMsgChunk(DepositId, AdaptorMsgChunk)` | Light | High | Net send + retry |
 | E8 | `EvaluateGarblingTable(Index, GarblingTableCommitment)` | Garbling | Critical | EvaluationSession — evaluate with stored ciphertexts |
-| E9 | `SendTableTransferRequest(TableTransferRequestMsg)` | Light | Normal | Net send + retry — requests garbler to begin table transfer |
-| E10 | `SendTableTransferReceipt(TableTransferReceiptMsg)` | Light | Normal | Net send + retry — acknowledges table received |
+| E9 | `SendTableTransferReceipt(TableTransferReceiptMsg)` | Light | Normal | Net send + retry — acknowledges table received |
 
 ## API
 
@@ -139,7 +138,6 @@ pub trait ExecuteEvaluatorJob: Send + Sync + 'static {
     fn generate_deposit_adaptors(&self, ...) -> impl Future<Output = HandlerOutcome> + Send;
     fn generate_withdrawal_adaptors_chunk(&self, ...) -> impl Future<Output = HandlerOutcome> + Send;
     fn deposit_send_adaptor_msg_chunk(&self, ...) -> impl Future<Output = HandlerOutcome> + Send;
-    fn send_table_transfer_request(&self, ...) -> impl Future<Output = HandlerOutcome> + Send;
     fn send_table_transfer_receipt(&self, ...) -> impl Future<Output = HandlerOutcome> + Send;
 
     // Circuit actions
@@ -236,7 +234,6 @@ These are plain data descriptors that can be stored, retried, and resubmitted. T
 | VerifyOpenedInputShares | VerifyOpenedInputSharesResult |
 | GenerateTableCommitment | TableCommitmentGenerated |
 | ReceiveGarblingTable | GarblingTableReceived |
-| SendTableTransferRequest | TableTransferRequestAcked |
 | SendTableTransferReceipt | TableTransferReceiptAcked |
 | GenerateDepositAdaptors | DepositAdaptorsGenerated |
 | GenerateWithdrawalAdaptorsChunk | WithdrawalAdaptorsChunkGenerated |
@@ -245,7 +242,7 @@ These are plain data descriptors that can be stored, retried, and resubmitted. T
 
 ## Light Pool
 
-Handles I/O-bound work: outbound protocol sends (G4–G7, E1, E7, E9, E10) and inbound bulk receives (E4). Workers pull from a FIFO queue. High concurrency (32 per worker) lets it multiplex many tasks waiting on network.
+Handles I/O-bound work: outbound protocol sends (G4–G7, E1, E7, E9) and combined request-send + bulk receives (E4). Workers pull from a FIFO queue. High concurrency (32 per worker) lets it multiplex many tasks waiting on network.
 
 E4 (`ReceiveGarblingTable`) is classified as Light because it receives data from the network and writes to the table store — it does not need the shared circuit reader.
 

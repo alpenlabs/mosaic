@@ -574,9 +574,8 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         .try_into()
         .expect("commitment is 32 bytes");
 
-    // Why TransientFailure: the evaluator may not have registered its bulk
-    // expectation yet (race between SendTableTransferRequest delivery and
-    // ReceiveGarblingTable dispatch). The scheduler retries on the next pass.
+    // If the bulk stream open or transfer fails for any reason,
+    // the scheduler retries on the next pass.
 
     let mut stream = ctx
         .net_client
