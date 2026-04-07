@@ -1,6 +1,6 @@
 import flexitest
 
-from common.mosaic import get_circuit_path, get_peer_configs
+from common.mosaic_config import get_circuit_path, get_peer_configs
 from factories.fdb import generate_fdb_root_directory
 from factories.mosaic import MosaicFactoryConfig
 

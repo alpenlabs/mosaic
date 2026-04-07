@@ -5,7 +5,7 @@ from pathlib import Path
 import flexitest
 import toml
 
-from common.mosaic import PeerConfig
+from common.mosaic_config import PeerConfig
 from common.rpc_inject import inject_service_create_rpc
 from services import ProcServiceWithEnv, get_fdb_env
 
@@ -21,7 +21,7 @@ class MosaicFactoryConfig:
 
 class MosaicFactory(flexitest.Factory):
     def __init__(self, port_range: range):
-        super().__init__(port_range)
+        super().__init__(list(port_range))
 
     @flexitest.with_ectx("ctx")
     def create_mosaic_service(

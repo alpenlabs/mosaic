@@ -75,7 +75,7 @@ class FdbFactory(flexitest.Factory):
     """
 
     def __init__(self, port_range: range):
-        super().__init__(port_range)
+        super().__init__(list(port_range))
         self._datadir_root: str | None = None
 
     @flexitest.with_ectx("ctx")
