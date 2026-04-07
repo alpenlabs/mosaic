@@ -5,10 +5,10 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
-    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
-    ReservedSetupInputShares, Seed, SetupInputs, TableTransferReceiptMsg,
-    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
-    WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
+    OpenedGarblingTableCommitments, PubKey, ReservedSetupInputShares, Seed, SetupInputs,
+    TableTransferReceiptMsg, TableTransferRequestMsg, WideLabelWirePolynomialCommitments,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -581,6 +581,11 @@ async fn handle_commit_msg_header<S: StateMut>(
 ) -> SMResult<()> {
     match &mut state.step {
         Step::WaitingForCommit { header, chunks, .. } => {
+            if *header {
+                warn!("evaluator received duplicate commit header, ack and ignore");
+                return Ok(());
+            }
+
             if !is_valid_commit_header(&commit_msg_header) {
                 warn!("evaluator received invalid commit msg header, aborting");
                 state.step = Step::Aborted {
@@ -631,6 +636,17 @@ async fn handle_commit_msg_header<S: StateMut>(
 
             post_handle_commit_msg(state, artifact_store, actions).await
         }
+        Step::WaitingForChallengeResponse { .. }
+        | Step::VerifyingOpenedInputShares
+        | Step::VerifyingTableCommitments { .. }
+        | Step::ReceivingGarblingTables { .. }
+        | Step::SetupComplete
+        | Step::EvaluatingTables { .. }
+        | Step::SetupConsumed { .. }
+        | Step::Aborted { .. } => {
+            warn!("evaluator received commit header after completion, ack and ignore");
+            Ok(())
+        }
         _ => Err(SMError::UnexpectedInput),
     }
 }
@@ -643,14 +659,6 @@ async fn handle_commit_msg_chunk<S: StateMut>(
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::WaitingForCommit { header, chunks } => {
-            if !is_valid_commit_chunk(&commit_msg_chunk) {
-                warn!("evaluator received invalid commit msg chunk, aborting");
-                root_state.step = Step::Aborted {
-                    reason: "invalid commit msg chunk".into(),
-                };
-                return Ok(());
-            }
-
             let chunk_idx = commit_msg_chunk.wire_index as usize;
             match chunks.get(chunk_idx) {
                 Some(false) => {
@@ -658,7 +666,8 @@ async fn handle_commit_msg_chunk<S: StateMut>(
                 }
                 Some(true) => {
                     // already seen chunk
-                    return Err(SMError::InvalidInputData);
+                    warn!(%chunk_idx, "evaluator received duplicate commit chunk, ack and ignore");
+                    return Ok(());
                 }
                 None => {
                     // unexpected chunk idx
@@ -696,6 +705,17 @@ async fn handle_commit_msg_chunk<S: StateMut>(
 
             post_handle_commit_msg(root_state, state, actions).await
         }
+        Step::WaitingForChallengeResponse { .. }
+        | Step::VerifyingOpenedInputShares
+        | Step::VerifyingTableCommitments { .. }
+        | Step::ReceivingGarblingTables { .. }
+        | Step::SetupComplete
+        | Step::EvaluatingTables { .. }
+        | Step::SetupConsumed { .. }
+        | Step::Aborted { .. } => {
+            warn!("evaluator received commit chunk after completion, ack and ignore");
+            Ok(())
+        }
         _ => Err(SMError::UnexpectedInput),
     }
 }
@@ -718,7 +738,7 @@ async fn post_handle_commit_msg<S: StateMut>(
     info!("evaluator commit msg complete, sending challenge");
     root_state.step = Step::WaitingForChallengeResponse {
         header: false,
-        chunks: HeapArray::from_elem(false),
+        remaining_chunks: get_remaining_challenge_response_chunks(&challenge_indices),
     };
 
     let challenge_msg = ChallengeMsg { challenge_indices };
@@ -733,14 +753,17 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
-        Step::WaitingForChallengeResponse { header, chunks } => {
-            if !is_valid_challenge_response_header(&response_msg_header) {
-                warn!("evaluator received invalid challenge response header, aborting");
-                root_state.step = Step::Aborted {
-                    reason: "invalid challenge response message header".into(),
-                };
+        Step::WaitingForChallengeResponse {
+            header,
+            remaining_chunks,
+        } => {
+            if *header {
+                warn!("evaluator received duplicate challenge response header, ack and ignore");
                 return Ok(());
             }
+
+            // NOTE: header validity is checked after header and all chunks are received.
+
             let challenge_idxs = state
                 .get_challenge_indices()
                 .await
@@ -773,11 +796,21 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
 
             *header = true;
             debug!("evaluator challenge response header received");
-            if chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
+            if remaining_chunks.count_ones() > 0 {
                 return Ok(());
             }
 
             post_handle_challenge_response(root_state, state, actions).await
+        }
+        Step::VerifyingOpenedInputShares
+        | Step::VerifyingTableCommitments { .. }
+        | Step::ReceivingGarblingTables { .. }
+        | Step::SetupComplete
+        | Step::EvaluatingTables { .. }
+        | Step::SetupConsumed { .. }
+        | Step::Aborted { .. } => {
+            warn!("evaluator received challenge response header after completion, ack and ignore");
+            Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
     }
@@ -790,34 +823,32 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
-        Step::WaitingForChallengeResponse { header, chunks } => {
-            let challenge_idxs = state
-                .get_challenge_indices()
-                .await
-                .require("expected challenge indices")?;
-
-            if !is_valid_challenge_response_chunk(&response_msg_chunk, &challenge_idxs) {
-                warn!(
-                    circuit_index = response_msg_chunk.circuit_index,
-                    "evaluator received invalid challenge response chunk, aborting"
-                );
-                root_state.step = Step::Aborted {
-                    reason: "invalid challenge response message".into(),
-                };
-                return Ok(());
-            }
-
+        Step::WaitingForChallengeResponse {
+            header,
+            remaining_chunks,
+        } => {
             let chunk_idx = (response_msg_chunk.circuit_index as usize)
                 .checked_sub(1)
                 .unwrap();
-            if chunks[chunk_idx] {
-                return Err(SMError::InvalidInputData);
-            }
-            chunks[chunk_idx] = true;
+            match remaining_chunks.get(chunk_idx) {
+                Some(true) => {
+                    // expected chunk
+                }
+                Some(false) => {
+                    // already seen chunk
+                    warn!(%chunk_idx, "evaluator received duplicate commit chunk, ack and ignore");
+                    return Ok(());
+                }
+                None => {
+                    // unexpected chunk idx
+                    return Err(SMError::InvalidInputData);
+                }
+            };
+            remaining_chunks[chunk_idx] = false;
             debug!(
                 circuit_index = response_msg_chunk.circuit_index,
-                done = chunks.count_ones(),
-                total = chunks.len(),
+                remaining = remaining_chunks.count_ones(),
+                total = remaining_chunks.len(),
                 "evaluator challenge response chunk received"
             );
 
@@ -829,11 +860,21 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                 .await
                 .map_err(SMError::storage)?;
 
-            if !*header || chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
+            if !*header || remaining_chunks.count_ones() > 0 {
                 return Ok(());
             }
 
             post_handle_challenge_response(root_state, state, actions).await
+        }
+        Step::VerifyingOpenedInputShares
+        | Step::VerifyingTableCommitments { .. }
+        | Step::ReceivingGarblingTables { .. }
+        | Step::SetupComplete
+        | Step::EvaluatingTables { .. }
+        | Step::SetupConsumed { .. }
+        | Step::Aborted { .. } => {
+            warn!("evaluator received challenge response chunk after completion, ack and ignore");
+            Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
     }
@@ -845,29 +886,6 @@ async fn post_handle_challenge_response<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     // all chunks received
-    let opened_output_shares = state
-        .get_opened_output_shares()
-        .await
-        .require("expected opened output shares")?;
-
-    let output_polynomial_commitment = state
-        .get_output_polynomial_commitment()
-        .await
-        .require("expected output polynomial commitment")?;
-
-    if let Some(failure_reason) =
-        verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
-    {
-        warn!(reason = %failure_reason, "evaluator opened output share verification failed, aborting");
-        root_state.step = Step::Aborted {
-            reason: format!(
-                "opened output share verification failed: {}",
-                failure_reason
-            ),
-        };
-        return Ok(());
-    }
-
     let config = require_config(root_state)?;
     let reserved_setup_input_shares = state
         .get_reserved_setup_input_shares()
@@ -1033,11 +1051,14 @@ pub(crate) async fn restore<S: StateRead>(
     match &root_state.step {
         Step::Uninit => {}
         Step::WaitingForCommit { .. } => {}
-        Step::WaitingForChallengeResponse { header, chunks } => {
+        Step::WaitingForChallengeResponse {
+            header,
+            remaining_chunks,
+        } => {
             // Replay challenge send only if no response material was observed yet.
             // Once any response data is stored, re-sending can cause duplicate
             // challenge handling on the garbler side.
-            if !header && chunks.iter().all(|seen| !*seen) {
+            if !header && remaining_chunks.count_ones() == N_CHALLENGE_RESPONSE_CHUNKS {
                 let challenge_indices = state
                     .get_challenge_indices()
                     .await
@@ -1192,11 +1213,6 @@ fn is_valid_commit_header(commit_header: &CommitMsgHeader) -> bool {
     PubKey(poly).valid()
 }
 
-#[expect(unused_variables)]
-fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
-    true // validated when challenge response is received
-}
-
 fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
     let seed = derive_stage_seed(base_seed, SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES, None);
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
@@ -1209,29 +1225,6 @@ fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
     );
     challenge_indices.sort_by_key(|k| k.get());
     challenge_indices
-}
-
-#[expect(unused_variables)]
-fn is_valid_challenge_response_header(response_msg_header: &ChallengeResponseMsgHeader) -> bool {
-    true // validated by jobs
-}
-
-fn is_valid_challenge_response_chunk(
-    response_msg_chunk: &ChallengeResponseMsgChunk,
-    challenge_idxs: &ChallengeIndices,
-) -> bool {
-    challenge_idxs
-        .iter()
-        .any(|x| x.get() == response_msg_chunk.circuit_index as usize)
-}
-
-/// Verify opened output shares against polynomial commitments and return failure reason or None.
-#[expect(unused_variables)]
-fn verify_opened_output_shares(
-    opened_output_shares: &OpenedOutputShares,
-    output_polynomial_commitment: &OutputPolynomialCommitment,
-) -> Option<String> {
-    None
 }
 
 /// Verify reserved setup input shares and return failure reason or None.
@@ -1260,6 +1253,20 @@ fn get_opened_commitments(
         let seed_idx = challenge_indices[i].get() - 1;
         garbling_commitments[seed_idx]
     })
+}
+
+/// Returns a boolean mask over chunks, where `true` marks chunks that still
+/// need to be received. Challenge indices are 1-based, so each is decremented
+/// by 1 to map to the 0-based chunk index.
+pub(super) fn get_remaining_challenge_response_chunks(
+    challenge_indices: &ChallengeIndices,
+) -> HeapArray<bool, N_CIRCUITS> {
+    let mut remaining_chunks = HeapArray::from_elem(false);
+    challenge_indices.iter().for_each(|challenge_idx| {
+        let chunk_idx = challenge_idx.get().checked_sub(1).expect("non zero");
+        remaining_chunks[chunk_idx] = true;
+    });
+    remaining_chunks
 }
 
 fn is_sorted<T: Ord>(slice: &[T]) -> bool {

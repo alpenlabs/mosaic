@@ -9,6 +9,7 @@ use mosaic_common::constants::N_EVAL_CIRCUITS;
 use mosaic_storage_inmemory::evaluator::StoredEvaluatorState;
 
 use super::stf::restore;
+use crate::evaluator::stf::get_remaining_challenge_response_chunks;
 
 #[tokio::test]
 async fn restore_evaluating_tables_replays_only_pending_tables() {
@@ -117,12 +118,13 @@ async fn restore_waiting_for_challenge_response_replays_only_before_receipt() {
         .expect("store challenge indices");
 
     let mut actions = Vec::new();
+    let all_chunks_remaining = get_remaining_challenge_response_chunks(&challenge_indices);
     state
         .put_root_state(&EvaluatorState {
             config: None,
             step: Step::WaitingForChallengeResponse {
                 header: false,
-                chunks: HeapArray::from_elem(false),
+                remaining_chunks: all_chunks_remaining,
             },
         })
         .await
@@ -144,14 +146,18 @@ async fn restore_waiting_for_challenge_response_replays_only_before_receipt() {
     }
 
     actions.clear();
-    let mut received_chunks = HeapArray::from_elem(false);
-    received_chunks[0] = true;
+    let mut remaining_chunks = get_remaining_challenge_response_chunks(&challenge_indices);
+    let remaining_idx = remaining_chunks
+        .iter()
+        .position(|&v| v)
+        .expect("must exist");
+    remaining_chunks[remaining_idx] = false;
     state
         .put_root_state(&EvaluatorState {
             config: None,
             step: Step::WaitingForChallengeResponse {
                 header: true,
-                chunks: received_chunks,
+                remaining_chunks,
             },
         })
         .await

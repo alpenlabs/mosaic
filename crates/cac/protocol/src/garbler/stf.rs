@@ -88,62 +88,68 @@ pub(crate) async fn handle_event<S: StateMut>(
                 }
             }
         }
-        Input::RecvChallengeMsg(challenge_msg) => {
-            match root_state.step {
-                Step::SendingCommit { .. } | Step::WaitingForChallenge => {
-                    if is_valid_challenge(&challenge_msg) {
-                        info!("garbler received valid challenge, sending response");
+        Input::RecvChallengeMsg(challenge_msg) => match root_state.step {
+            Step::SendingCommit { .. } | Step::WaitingForChallenge => {
+                if is_valid_challenge(&challenge_msg) {
+                    info!("garbler received valid challenge, sending response");
 
-                        let reserved_setup_input_shares = state
-                            .get_reserved_setup_input_shares()
-                            .await
-                            .require("expected reserved setup input shares")?;
-                        let output_shares = state
-                            .get_output_shares()
-                            .await
-                            .require("expected output shares")?;
-                        let config = require_config(&root_state)?;
-                        let seeds = generate_garbling_table_seeds(config.seed);
+                    let reserved_setup_input_shares = state
+                        .get_reserved_setup_input_shares()
+                        .await
+                        .require("expected reserved setup input shares")?;
+                    let output_shares = state
+                        .get_output_shares()
+                        .await
+                        .require("expected output shares")?;
+                    let config = require_config(&root_state)?;
+                    let seeds = generate_garbling_table_seeds(config.seed);
 
-                        let all_output_label_cts = state
-                            .get_all_output_label_cts()
-                            .await
-                            .require("expected garbling table metadata")?;
+                    let all_output_label_cts = state
+                        .get_all_output_label_cts()
+                        .await
+                        .require("expected garbling table metadata")?;
 
-                        let challenge_indices = challenge_msg.challenge_indices;
+                    let challenge_indices = challenge_msg.challenge_indices;
 
-                        let header = create_challenge_response_msg_header(
-                            &challenge_indices,
-                            reserved_setup_input_shares,
-                            &output_shares,
-                            seeds,
-                            all_output_label_cts,
-                        );
-                        state
-                            .put_challenge_indices(&challenge_indices)
-                            .await
-                            .map_err(SMError::storage)?;
+                    let header = create_challenge_response_msg_header(
+                        &challenge_indices,
+                        reserved_setup_input_shares,
+                        &output_shares,
+                        seeds,
+                        all_output_label_cts,
+                    );
+                    state
+                        .put_challenge_indices(&challenge_indices)
+                        .await
+                        .map_err(SMError::storage)?;
 
-                        root_state.step = Step::SendingChallengeResponse {
-                            header_acked: false,
-                            chunk_acked: HeapArray::from_elem(false),
-                        };
+                    root_state.step = Step::SendingChallengeResponse {
+                        header_acked: false,
+                        chunk_acked: HeapArray::from_elem(false),
+                    };
 
-                        emit(actions, Action::SendChallengeResponseMsgHeader(header));
-                        for circuit_idx in challenge_indices {
-                            emit(actions, Action::SendChallengeResponseMsgChunk(circuit_idx));
-                        }
-                    } else {
-                        // TODO: should this abort, or just ignore and stay at same state ?
-                        warn!("garbler received invalid challenge, aborting");
-                        root_state.step = Step::Aborted {
-                            reason: "invalid challenge msg".into(),
-                        };
+                    emit(actions, Action::SendChallengeResponseMsgHeader(header));
+                    for circuit_idx in challenge_indices {
+                        emit(actions, Action::SendChallengeResponseMsgChunk(circuit_idx));
                     }
+                } else {
+                    warn!("garbler received invalid challenge, aborting");
+                    root_state.step = Step::Aborted {
+                        reason: "invalid challenge msg".into(),
+                    };
                 }
-                _ => return Err(SMError::unexpected_input()),
             }
-        }
+            // ack on all steps after WaitingForChallenge
+            Step::SendingChallengeResponse { .. }
+            | Step::TransferringGarblingTables { .. }
+            | Step::SetupComplete
+            | Step::CompletingAdaptors { .. }
+            | Step::SetupConsumed { .. }
+            | Step::Aborted { .. } => {
+                warn!("garbler received challenge after completion, ack and ignore");
+            }
+            _ => return Err(SMError::unexpected_input()),
+        },
         Input::RecvTableTransferRequest(request_msg) => match &root_state.step {
             Step::TransferringGarblingTables {
                 eval_seeds,
@@ -169,6 +175,12 @@ pub(crate) async fn handle_event<S: StateMut>(
                 // Only begin table transfer after getting request from evaluator.
                 debug!(commitment = %request_msg.garbling_table_commitment, "garbler received table transfer request");
                 emit(actions, Action::TransferGarblingTable(*seed));
+            }
+            Step::SetupComplete
+            | Step::CompletingAdaptors { .. }
+            | Step::SetupConsumed { .. }
+            | Step::Aborted { .. } => {
+                warn!("garbler received table transfer request after completion, ack and ignore");
             }
             _ => return Err(SMError::unexpected_input()),
         },
@@ -202,6 +214,12 @@ pub(crate) async fn handle_event<S: StateMut>(
                     info!("all garbling tables transferred, setup complete");
                     root_state.step = Step::SetupComplete;
                 }
+            }
+            Step::SetupComplete
+            | Step::CompletingAdaptors { .. }
+            | Step::SetupConsumed { .. }
+            | Step::Aborted { .. } => {
+                warn!("garbler received table transfer receipt after completion, ack and ignore");
             }
             _ => return Err(SMError::unexpected_input()),
         },
@@ -762,13 +780,19 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
 
             let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
-            let all_chunks_received = if let DepositStep::WaitingForAdaptors { chunks } =
-                &mut deposit_state.step
-            {
+            let all_chunks_received = {
+                let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step else {
+                    // WaitingForAdaptors is first step of deposit state machine. All other steps
+                    // are after it.
+                    warn!("garbler received adaptor chunk after completion, ack and ignore");
+                    return Ok(());
+                };
+
                 let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
                 if chunks[chunk_idx] {
-                    return Err(SMError::invalid_input_data());
+                    warn!("garbler received duplicate adaptor chunk, ack and ignore");
+                    return Ok(());
                 }
 
                 state
@@ -780,8 +804,6 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
                 debug!(%deposit_id, chunk_idx, done = chunks.count_ones(), total = chunks.len(), "adaptor chunk received");
 
                 chunks.all()
-            } else {
-                false
             };
 
             if all_chunks_received {
@@ -796,9 +818,15 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
                 .map_err(SMError::storage)?;
 
             if !all_chunks_received {
+                // stay on same step and wait for more
+                debug!("waiting for adaptor chunks");
                 return Ok(());
             }
         }
+        Step::CompletingAdaptors { .. } | Step::SetupConsumed { .. } | Step::Aborted { .. } => {
+            warn!("garbler received adaptor chunk after completion, ack and ignore");
+        }
+
         _ => return Err(SMError::unexpected_input()),
     };
 

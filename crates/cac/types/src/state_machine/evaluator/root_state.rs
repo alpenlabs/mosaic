@@ -41,8 +41,8 @@ pub enum Step {
     WaitingForChallengeResponse {
         /// Track if header is received
         header: bool,
-        /// Track received challenge response chunks
-        chunks: HeapArray<bool, N_CIRCUITS>,
+        /// Track expected challenge response chunks
+        remaining_chunks: HeapArray<bool, N_CIRCUITS>,
     },
     /// Verifying opened input shares from challenge response.
     VerifyingOpenedInputShares,
