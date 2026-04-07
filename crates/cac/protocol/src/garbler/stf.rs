@@ -14,7 +14,7 @@ use mosaic_common::constants::{
 };
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use super::emit;
 use crate::{
@@ -45,6 +45,8 @@ pub(crate) async fn handle_event<S: StateMut>(
         Input::Init(data) => {
             match root_state.step {
                 Step::Uninit => {
+                    info!("garbler init: generating polynomial commitments");
+
                     // state update
                     root_state.config = Some(Config {
                         seed: data.seed,
@@ -77,13 +79,21 @@ pub(crate) async fn handle_event<S: StateMut>(
                         );
                     }
                 }
-                _ => return Err(SMError::unexpected_input()),
+                _ => {
+                    warn!(
+                        step = root_state.step.step_name(),
+                        "garbler init in unexpected step"
+                    );
+                    return Err(SMError::unexpected_input());
+                }
             }
         }
         Input::RecvChallengeMsg(challenge_msg) => {
             match root_state.step {
                 Step::SendingCommit { .. } | Step::WaitingForChallenge => {
                     if is_valid_challenge(&challenge_msg) {
+                        info!("garbler received valid challenge, sending response");
+
                         let reserved_setup_input_shares = state
                             .get_reserved_setup_input_shares()
                             .await
@@ -125,6 +135,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                         }
                     } else {
                         // TODO: should this abort, or just ignore and stay at same state ?
+                        warn!("garbler received invalid challenge, aborting");
                         root_state.step = Step::Aborted {
                             reason: "invalid challenge msg".into(),
                         };
@@ -156,6 +167,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 };
 
                 // Only begin table transfer after getting request from evaluator.
+                debug!(commitment = %request_msg.garbling_table_commitment, "garbler received table transfer request");
                 emit(actions, Action::TransferGarblingTable(*seed));
             }
             _ => return Err(SMError::unexpected_input()),
@@ -179,8 +191,15 @@ pub(crate) async fn handle_event<S: StateMut>(
                 };
 
                 transferred[pos] = true;
+                debug!(
+                    pos,
+                    done = transferred.count_ones(),
+                    total = transferred.len(),
+                    "garbler received table transfer receipt"
+                );
 
                 if transferred.all() {
+                    info!("all garbling tables transferred, setup complete");
                     root_state.step = Step::SetupComplete;
                 }
             }
@@ -201,10 +220,11 @@ pub(crate) async fn handle_event<S: StateMut>(
                     .map_err(SMError::storage)?
                     .is_some()
                 {
-                    // deposit already exists
+                    warn!(%deposit_id, "garbler deposit already exists");
                     return Err(SMError::deposit_already_exists(deposit_id));
                 }
 
+                info!(%deposit_id, "garbler initializing deposit");
                 let deposit_state = DepositState {
                     step: DepositStep::WaitingForAdaptors {
                         chunks: HeapArray::from_elem(false),
@@ -244,6 +264,7 @@ pub(crate) async fn handle_event<S: StateMut>(
 
                 match &mut deposit_state.step {
                     DepositStep::DepositReady => {
+                        info!(%deposit_id, "garbler deposit undisputed withdrawal");
                         deposit_state.step = DepositStep::WithdrawnUndisputed;
                     }
                     _ => return Err(SMError::unexpected_input()),
@@ -263,6 +284,7 @@ pub(crate) async fn handle_event<S: StateMut>(
 
                     match &mut deposit_state.step {
                         DepositStep::DepositReady => {
+                            info!(%deposit_id, "garbler disputed withdrawal, completing adaptors");
                             // next step
                             root_state.step = Step::CompletingAdaptors { deposit_id };
 
@@ -358,8 +380,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     }
 
                     *header = true;
+                    debug!("garbler commit msg header acked");
 
                     if chunk_acked.all() {
+                        info!("all commit msg parts acked, waiting for challenge");
                         root_state.step = Step::WaitingForChallenge;
                     }
                 }
@@ -382,8 +406,15 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     }
 
                     acked[idx] = true;
+                    debug!(
+                        wire_index,
+                        done = acked.count_ones(),
+                        total = acked.len(),
+                        "garbler commit msg chunk acked"
+                    );
 
                     if *header && acked.all() {
+                        info!("all commit msg parts acked, waiting for challenge");
                         root_state.step = Step::WaitingForChallenge;
                     }
                 }
@@ -403,6 +434,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     }
 
                     *header_acked = true;
+                    debug!("garbler challenge response header acked");
 
                     if chunk_acked.all() {
                         handle_post_sending_challenge_response(&mut root_state, state, actions)
@@ -436,6 +468,12 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     }
 
                     chunk_acked[challenge_index_pos] = true;
+                    debug!(
+                        circuit_index,
+                        done = chunk_acked.count_ones(),
+                        total = chunk_acked.len(),
+                        "garbler challenge response chunk acked"
+                    );
 
                     if *header_acked && chunk_acked.all() {
                         handle_post_sending_challenge_response(&mut root_state, state, actions)
@@ -482,8 +520,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     match &mut deposit_state.step {
                         DepositStep::VerifyingAdaptors => {
                             if verification_success {
+                                info!(%deposit_id, "garbler adaptor verification succeeded, deposit ready");
                                 deposit_state.step = DepositStep::DepositReady;
                             } else {
+                                warn!(%deposit_id, "garbler adaptor verification failed, aborting deposit");
                                 deposit_state.step = DepositStep::Aborted {
                                     reason: "adaptor verification failed".into(),
                                 };
@@ -512,6 +552,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         .await
                         .map_err(SMError::storage)?;
 
+                    info!(%deposit_id, "garbler adaptor signatures completed, setup consumed");
                     // next step
                     root_state.step = Step::SetupConsumed { deposit_id };
                 }
@@ -550,6 +591,12 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
                         return Err(SMError::duplicate_action());
                     }
                     inputs[wire as usize] = true;
+                    debug!(
+                        wire,
+                        done = inputs.count_ones(),
+                        total = inputs.len(),
+                        "polynomial commitment generated (input)"
+                    );
                     state
                         .put_input_polynomial_commitments_chunk(wire, &commitments)
                         .await
@@ -561,6 +608,7 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
                         return Err(SMError::duplicate_action());
                     }
                     *output = true;
+                    debug!("polynomial commitment generated (output)");
                     state
                         .put_output_polynomial_commitment(&output_commitment)
                         .await
@@ -584,6 +632,7 @@ async fn handle_polynomial_commitments_generated<S: StateMut>(
                 let index = Index::new(idx).expect("valid ckt index");
                 emit(actions, Action::GenerateShares(stage_seed, index));
             }
+            info!("all polynomial commitments generated, generating shares");
             root_state.step = Step::GeneratingShares {
                 generated: HeapArray::from_elem(false),
             };
@@ -610,6 +659,7 @@ async fn handle_shares_generated<S: StateMut>(
 
             // state update
             generated[index.get()] = true;
+            debug!(%index, done = generated.count_ones(), total = generated.len(), "shares generated");
             state
                 .put_shares_for_index(index, &input_shares, &output_share)
                 .await
@@ -631,6 +681,7 @@ async fn handle_shares_generated<S: StateMut>(
                 emit(actions, Action::GenerateTableCommitment(index, *seed));
             }
 
+            info!("all shares generated, generating table commitments");
             root_state.step = Step::GeneratingTableCommitments {
                 seeds,
                 generated: HeapArray::from_elem(false),
@@ -662,6 +713,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
 
             // state update
             generated[idx] = true;
+            debug!(%index, done = generated.count_ones(), total = generated.len(), "table commitment generated");
             state
                 .put_garbling_table_commitment(index, &commitment)
                 .await
@@ -675,6 +727,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
                 // wait for all commitments to be generated.
                 return Ok(());
             }
+            info!("all table commitments generated, sending commit msg");
             root_state.step = Step::SendingCommit {
                 header_acked: false,
                 chunk_acked: HeapArray::from_elem(false),
@@ -709,27 +762,30 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
 
             let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
-            let all_chunks_received =
-                if let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step {
-                    let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
+            let all_chunks_received = if let DepositStep::WaitingForAdaptors { chunks } =
+                &mut deposit_state.step
+            {
+                let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
-                    if chunks[chunk_idx] {
-                        return Err(SMError::invalid_input_data());
-                    }
+                if chunks[chunk_idx] {
+                    return Err(SMError::invalid_input_data());
+                }
 
-                    state
-                        .put_adaptor_msg_chunk_for_deposit(&deposit_id, &adaptor_msg_chunk)
-                        .await
-                        .map_err(SMError::storage)?;
+                state
+                    .put_adaptor_msg_chunk_for_deposit(&deposit_id, &adaptor_msg_chunk)
+                    .await
+                    .map_err(SMError::storage)?;
 
-                    chunks[chunk_idx] = true;
+                chunks[chunk_idx] = true;
+                debug!(%deposit_id, chunk_idx, done = chunks.count_ones(), total = chunks.len(), "adaptor chunk received");
 
-                    chunks.all()
-                } else {
-                    false
-                };
+                chunks.all()
+            } else {
+                false
+            };
 
             if all_chunks_received {
+                info!(%deposit_id, "all adaptor chunks received, verifying");
                 deposit_state.step = DepositStep::VerifyingAdaptors;
                 emit(actions, Action::DepositVerifyAdaptors(deposit_id));
             }
@@ -762,6 +818,11 @@ pub(crate) async fn restore<S: StateRead>(
         .await
         .map_err(SMError::storage)?
         .unwrap_or_default();
+
+    info!(
+        step = root_state.step.step_name(),
+        "garbler restoring state"
+    );
 
     match &root_state.step {
         Step::Uninit => {}
@@ -932,6 +993,10 @@ async fn handle_post_sending_challenge_response<S: StateMut>(
     // NOTE: we dont automatically start transferring garbling tables, but wait for corresponding
     // [`TableTransferRequestMsg`](mosaic_cac_types::TableTransferRequestMsg) from evaluator to
     // begin transfer.
+    info!(
+        eval_count = eval_seeds.len(),
+        "challenge response complete, ready for table transfers"
+    );
     root_state.step = Step::TransferringGarblingTables {
         eval_seeds,
         eval_commitments,

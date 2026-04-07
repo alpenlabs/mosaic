@@ -17,6 +17,7 @@ use mosaic_common::constants::{
 };
 use mosaic_vs3::{Share, interpolate};
 use rand::SeedableRng;
+use tracing::{debug, info, warn};
 
 use super::emit;
 use crate::{
@@ -46,6 +47,7 @@ pub(crate) async fn handle_event<S: StateMut>(
     match input {
         Input::Init(data) => match root_state.step {
             Step::Uninit => {
+                info!("evaluator init: waiting for commit");
                 root_state.config = Some(Config {
                     seed: data.seed,
                     setup_inputs: data.setup_inputs,
@@ -55,7 +57,13 @@ pub(crate) async fn handle_event<S: StateMut>(
                     chunks: HeapArray::from_elem(false),
                 };
             }
-            _ => return Err(SMError::UnexpectedInput),
+            _ => {
+                warn!(
+                    step = root_state.step.step_name(),
+                    "evaluator init in unexpected step"
+                );
+                return Err(SMError::UnexpectedInput);
+            }
         },
         Input::RecvCommitMsgHeader(commit_msg_header) => {
             handle_commit_msg_header(&mut root_state, state, commit_msg_header, actions).await?;
@@ -91,10 +99,11 @@ pub(crate) async fn handle_event<S: StateMut>(
                     .map_err(SMError::storage)?
                     .is_some()
                 {
-                    // deposit already exists
+                    warn!(%deposit_id, "evaluator deposit already exists");
                     return Err(SMError::deposit_already_exists(deposit_id));
                 }
 
+                info!(%deposit_id, "evaluator initializing deposit, generating adaptors");
                 let deposit_state = DepositState {
                     step: DepositStep::GeneratingAdaptors {
                         deposit: false,
@@ -136,6 +145,7 @@ pub(crate) async fn handle_event<S: StateMut>(
 
                 match deposit_state.step {
                     DepositStep::DepositReady => {
+                        info!(%deposit_id, "evaluator deposit undisputed withdrawal");
                         deposit_state.step = DepositStep::WithdrawnUndisputed;
                     }
                     _ => return Err(SMError::UnexpectedInput),
@@ -155,6 +165,7 @@ pub(crate) async fn handle_event<S: StateMut>(
 
                     match deposit_state.step {
                         DepositStep::DepositReady => {
+                            info!(%deposit_id, "evaluator disputed withdrawal, evaluating tables");
                             state
                                 .put_completed_signatures(&deposit_id, &signatures)
                                 .await
@@ -266,10 +277,12 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         ActionResult::VerifyOpenedInputSharesResult(failure) => match root_state.step {
             Step::VerifyingOpenedInputShares => {
                 if let Some(failure_reason) = failure {
+                    warn!(reason = %failure_reason, "evaluator opened input shares verification failed, aborting");
                     root_state.step = Step::Aborted {
                         reason: format!("invalid opened input shares: {}", failure_reason),
                     };
                 } else {
+                    info!("evaluator opened input shares verified, verifying table commitments");
                     let opened_indices = state
                         .get_challenge_indices()
                         .await
@@ -339,8 +352,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                                 .map_err(SMError::storage)?;
 
                             *deposit = true;
+                            debug!(%deposit_id, "evaluator deposit adaptors generated");
 
                             if withdrawal_chunks.all() {
+                                info!(%deposit_id, "all adaptors generated, sending");
                                 deposit_state.step = DepositStep::SendingAdaptors {
                                     acked: HeapArray::from_elem(false),
                                 };
@@ -405,8 +420,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                             .map_err(SMError::storage)?;
 
                         withdrawal_chunks[chunk_idx.get() as usize] = true;
+                        debug!(%deposit_id, chunk = chunk_idx.get(), done = withdrawal_chunks.count_ones(), total = withdrawal_chunks.len(), "evaluator withdrawal adaptor chunk generated");
 
                         if *deposit && withdrawal_chunks.all() {
+                            info!(%deposit_id, "all adaptors generated, sending");
                             deposit_state.step = DepositStep::SendingAdaptors {
                                 acked: HeapArray::from_elem(false),
                             };
@@ -458,8 +475,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         }
 
                         acked[idx] = true;
+                        debug!(%deposit_id, chunk = idx, done = acked.count_ones(), total = acked.len(), "evaluator adaptor chunk sent");
 
                         if acked.all() {
+                            info!(%deposit_id, "all adaptor chunks sent, deposit ready");
                             deposit_state.step = DepositStep::DepositReady;
                         }
                     }
@@ -486,6 +505,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     };
 
                     evaluated[idx] = true;
+                    debug!(%commitment, done = evaluated.count_ones(), total = evaluated.len(), "evaluator table evaluation result");
 
                     let success = if let Some(output_share) = output_share {
                         // output_share is Some only if the evaluation yielded False value as result
@@ -527,6 +547,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     };
 
                     if success || evaluated.all() {
+                        info!(%deposit_id, success, "evaluator table evaluations complete, setup consumed");
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
                             success,
@@ -561,6 +582,7 @@ async fn handle_commit_msg_header<S: StateMut>(
     match &mut state.step {
         Step::WaitingForCommit { header, chunks, .. } => {
             if !is_valid_commit_header(&commit_msg_header) {
+                warn!("evaluator received invalid commit msg header, aborting");
                 state.step = Step::Aborted {
                     reason: "invalid commit msg header".into(),
                 };
@@ -601,6 +623,7 @@ async fn handle_commit_msg_header<S: StateMut>(
                 .map_err(SMError::storage)?;
 
             *header = true;
+            debug!("evaluator commit msg header received");
 
             if !chunks.all() {
                 return Ok(());
@@ -621,6 +644,7 @@ async fn handle_commit_msg_chunk<S: StateMut>(
     match &mut root_state.step {
         Step::WaitingForCommit { header, chunks } => {
             if !is_valid_commit_chunk(&commit_msg_chunk) {
+                warn!("evaluator received invalid commit msg chunk, aborting");
                 root_state.step = Step::Aborted {
                     reason: "invalid commit msg chunk".into(),
                 };
@@ -643,6 +667,12 @@ async fn handle_commit_msg_chunk<S: StateMut>(
             };
 
             chunks[chunk_idx] = true;
+            debug!(
+                wire = chunk_idx,
+                done = chunks.count_ones(),
+                total = chunks.len(),
+                "evaluator commit msg chunk received"
+            );
 
             state
                 .put_input_polynomial_commitment_zeroth_coeffs(
@@ -685,6 +715,7 @@ async fn post_handle_commit_msg<S: StateMut>(
         .await
         .map_err(SMError::storage)?;
 
+    info!("evaluator commit msg complete, sending challenge");
     root_state.step = Step::WaitingForChallengeResponse {
         header: false,
         chunks: HeapArray::from_elem(false),
@@ -704,6 +735,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
     match &mut root_state.step {
         Step::WaitingForChallengeResponse { header, chunks } => {
             if !is_valid_challenge_response_header(&response_msg_header) {
+                warn!("evaluator received invalid challenge response header, aborting");
                 root_state.step = Step::Aborted {
                     reason: "invalid challenge response message header".into(),
                 };
@@ -740,6 +772,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 .map_err(SMError::storage)?;
 
             *header = true;
+            debug!("evaluator challenge response header received");
             if chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
                 return Ok(());
             }
@@ -764,6 +797,10 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                 .require("expected challenge indices")?;
 
             if !is_valid_challenge_response_chunk(&response_msg_chunk, &challenge_idxs) {
+                warn!(
+                    circuit_index = response_msg_chunk.circuit_index,
+                    "evaluator received invalid challenge response chunk, aborting"
+                );
                 root_state.step = Step::Aborted {
                     reason: "invalid challenge response message".into(),
                 };
@@ -777,6 +814,12 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                 return Err(SMError::InvalidInputData);
             }
             chunks[chunk_idx] = true;
+            debug!(
+                circuit_index = response_msg_chunk.circuit_index,
+                done = chunks.count_ones(),
+                total = chunks.len(),
+                "evaluator challenge response chunk received"
+            );
 
             state
                 .put_opened_input_shares_chunk(
@@ -815,6 +858,7 @@ async fn post_handle_challenge_response<S: StateMut>(
     if let Some(failure_reason) =
         verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
     {
+        warn!(reason = %failure_reason, "evaluator opened output share verification failed, aborting");
         root_state.step = Step::Aborted {
             reason: format!(
                 "opened output share verification failed: {}",
@@ -840,6 +884,7 @@ async fn post_handle_challenge_response<S: StateMut>(
         &config.setup_inputs,
         &setup_wire_zeroth_coefficients,
     ) {
+        warn!(reason = %failure_reason, "evaluator reserved input share verification failed, aborting");
         root_state.step = Step::Aborted {
             reason: format!(
                 "reserved input share verification failed: {}",
@@ -849,6 +894,7 @@ async fn post_handle_challenge_response<S: StateMut>(
         return Ok(());
     }
 
+    info!("evaluator challenge response verified, verifying opened input shares");
     root_state.step = Step::VerifyingOpenedInputShares;
 
     emit(actions, Action::VerifyOpenedInputShares);
@@ -880,6 +926,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
 
             let expected_commitment = opened_commitments[idx];
             if table_commitment != expected_commitment {
+                warn!(%index, "evaluator table commitment mismatch, aborting");
                 root_state.step = Step::Aborted {
                     reason: format!("invalid table seed for index {}", index),
                 };
@@ -887,8 +934,10 @@ async fn handle_table_commitment_generated<S: StateMut>(
             }
 
             verified[idx] = true;
+            debug!(%index, done = verified.count_ones(), total = verified.len(), "evaluator table commitment verified");
 
             if verified.all() {
+                info!("all table commitments verified, requesting garbling tables");
                 let eval_indices = get_eval_indices(opened_indices);
                 debug_assert!(is_sorted(&eval_indices));
 
@@ -936,6 +985,7 @@ async fn handle_table_received<S: StateMut>(
 
             let expected_commitment = eval_commitments[pos];
             if table_commitment != expected_commitment {
+                warn!(%index, "evaluator received garbling table with mismatched commitment, aborting");
                 root_state.step = Step::Aborted {
                     reason: format!("invalid table for index {}", index),
                 };
@@ -948,8 +998,10 @@ async fn handle_table_received<S: StateMut>(
             );
 
             received[pos] = true;
+            debug!(%index, done = received.count_ones(), total = received.len(), "evaluator garbling table received");
 
             if received.all() {
+                info!("all garbling tables received, setup complete");
                 root_state.step = Step::SetupComplete;
             }
 
@@ -972,6 +1024,11 @@ pub(crate) async fn restore<S: StateRead>(
         .await
         .map_err(SMError::storage)?
         .unwrap_or_default();
+
+    info!(
+        step = root_state.step.step_name(),
+        "evaluator restoring state"
+    );
 
     match &root_state.step {
         Step::Uninit => {}
