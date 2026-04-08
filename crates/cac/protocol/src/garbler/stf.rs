@@ -89,6 +89,8 @@ pub(crate) async fn handle_event<S: StateMut>(
             }
         }
         Input::RecvChallengeMsg(challenge_msg) => match root_state.step {
+            // Final commit chunk ack and challenge message is sent in same step by evaluator, so
+            // allow challenge to be received early if it is valid.
             Step::SendingCommit { .. } | Step::WaitingForChallenge => {
                 if is_valid_challenge(&challenge_msg) {
                     info!("garbler received valid challenge, sending response");
@@ -405,6 +407,9 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         root_state.step = Step::WaitingForChallenge;
                     }
                 }
+                step if step.phase() > StepPhase::SendingCommit => {
+                    warn!("garbler received commit header ack after completion, ignore");
+                }
                 _ => return Err(SMError::unexpected_input()),
             }
         }
@@ -435,6 +440,9 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         info!("all commit msg parts acked, waiting for challenge");
                         root_state.step = Step::WaitingForChallenge;
                     }
+                }
+                step if step.phase() > StepPhase::SendingCommit => {
+                    warn!("garbler received commit chunk ack after completion, ignore");
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
