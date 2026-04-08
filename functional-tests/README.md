@@ -86,9 +86,6 @@ Logs are written in tests data directory:
         │   ├── 📁 data/             # FDB on-disk storage
         │   └── 📁 logs/             # FDB internal logs
         └── 🌍 <env_name>/           # Environment (e.g., "basic", "network")
-            ├── ₿ bitcoin/
-            │   └── 📄 service.log
-
             ├── 👷 <mosaic-i>/     # Mosaic instance (e.g., mosaic-0, mosaic-1)
             │   └── 📄 service.log
             └── 🧾 logs/              # Logs per test module
