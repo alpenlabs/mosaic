@@ -13,10 +13,10 @@ keywords.workspace = true
 [features]
 default = []
 test-utils = [
-    "mosaic-cac-types/test-utils",
-    "dep:rand_chacha",
-    "dep:tokio",
-    "dep:futures",
+  "mosaic-cac-types/test-utils",
+  "dep:rand_chacha",
+  "dep:tokio",
+  "dep:futures",
 ]
 
 [dependencies]

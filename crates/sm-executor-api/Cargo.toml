@@ -11,9 +11,9 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
+kanal = "0.1.1"
 mosaic-cac-types.workspace = true
 mosaic-net-svc-api.workspace = true
-kanal = "0.1.1"
 
 [lints]
 workspace = true
