@@ -1,3 +1,5 @@
+# NOTE: On first run, initialize FDB storage with: ./init-fdb.sh
+
 x-base-mosaic-svc: &base-mosaic-svc
   build:
     context: ..
