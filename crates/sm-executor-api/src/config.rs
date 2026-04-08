@@ -7,6 +7,9 @@ pub struct SmExecutorConfig {
     pub command_queue_size: usize,
     /// Peers to restore at startup.
     pub known_peers: Vec<PeerId>,
+    /// Interval in seconds between periodic `restore_known_peers` runs.
+    /// `None` or `Some(0)` disables periodic restore.
+    pub restore_interval_secs: Option<u64>,
 }
 
 impl Default for SmExecutorConfig {
@@ -14,6 +17,7 @@ impl Default for SmExecutorConfig {
         Self {
             command_queue_size: 256,
             known_peers: Vec::new(),
+            restore_interval_secs: None,
         }
     }
 }

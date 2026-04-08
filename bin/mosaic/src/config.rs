@@ -70,6 +70,7 @@ impl MosaicConfig {
         SmExecutorConfig {
             command_queue_size: self.sm_executor.command_queue_size,
             known_peers,
+            restore_interval_secs: self.sm_executor.restore_interval_secs,
         }
     }
 
@@ -352,6 +353,8 @@ impl Default for GarblingSection {
 pub(crate) struct SmExecutorSection {
     #[serde(default = "default_command_queue_size")]
     pub(crate) command_queue_size: usize,
+    /// Seconds between periodic `restore_known_peers` calls. Omitted or `0` disables.
+    pub(crate) restore_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
