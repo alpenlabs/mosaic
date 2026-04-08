@@ -124,3 +124,60 @@ impl Valid for StateMachineId {
         Ok(())
     }
 }
+
+/// Generates a fieldless "phase" enum from a step enum definition.
+///
+/// For each variant in the step enum, a corresponding fieldless variant is
+/// created in the phase enum. The phase enum derives `PartialOrd`/`Ord` from
+/// declaration order, so variants declared earlier are "less than" variants
+/// declared later.
+///
+/// Also generates:
+/// - `step_name() -> &'static str` on the step enum
+/// - `phase() -> $Phase` on the step enum
+macro_rules! define_step_phase {
+    (
+        $Phase:ident;
+        $(#[$enum_meta:meta])*
+        $vis:vis enum $Step:ident {
+            $(
+                $(#[$variant_meta:meta])*
+                $variant:ident $({ $($(#[$field_meta:meta])* $field:ident : $fty:ty),* $(,)? })?
+            ),*
+            $(,)?
+        }
+    ) => {
+        /// Fieldless mirror of the step enum for ordering comparisons.
+        #[allow(missing_docs, reason = "variants mirror the Step enum and share its documentation")]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        $vis enum $Phase {
+            $($variant,)*
+        }
+
+        $(#[$enum_meta])*
+        $vis enum $Step {
+            $(
+                $(#[$variant_meta])*
+                $variant $({ $($(#[$field_meta])* $field : $fty),* })?,
+            )*
+        }
+
+        impl $Step {
+            /// Name of step.
+            pub fn step_name(&self) -> &'static str {
+                match self {
+                    $(Self::$variant { .. } => stringify!($variant),)*
+                }
+            }
+
+            /// Returns the fieldless phase variant for ordering comparisons.
+            pub fn phase(&self) -> $Phase {
+                match self {
+                    $(Self::$variant { .. } => $Phase::$variant,)*
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use define_step_phase;
