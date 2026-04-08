@@ -1,0 +1,50 @@
+x-base-mosaic-svc: &base-mosaic-svc
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  depends_on:
+    foundationdb:
+      condition: service_healthy
+
+services:
+  foundationdb:
+    image: foundationdb/foundationdb:7.3.75
+    environment:
+      - FDB_NETWORKING_MODE=container
+      - FDB_CLUSTER_FILE=/var/fdb/fdb.cluster
+    volumes:
+      - ./vol/fdb/fdb.cluster:/var/fdb/fdb.cluster:rw
+      - ./vol/fdb/data:/var/fdb/data
+    ports:
+      # Keep this port in sync with ./vol/fdb/fdb.cluster
+      - "4500:4500"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "fdbcli --no-status --exec 'status minimal' 2>/dev/null | grep -q 'The database is available' || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  mosaic_1:
+    <<: *base-mosaic-svc
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ../artifacts/g16.v5c:/etc/mosaic/circuit.v5c:ro
+      - ./vol/fdb/fdb.cluster:/etc/foundationdb/fdb.cluster:ro
+      - ./vol/mosaic-1/config.toml:/etc/mosaic/config.toml:ro
+      - ./vol/mosaic-1/tables:/etc/mosaic/tables:rw
+
+  mosaic_2:
+    <<: *base-mosaic-svc
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ../artifacts/g16.v5c:/etc/mosaic/circuit.v5c:ro
+      - ./vol/fdb/fdb.cluster:/etc/foundationdb/fdb.cluster:ro
+      - ./vol/mosaic-2/config.toml:/etc/mosaic/config.toml:ro
+      - ./vol/mosaic-2/tables:/etc/mosaic/tables:rw
