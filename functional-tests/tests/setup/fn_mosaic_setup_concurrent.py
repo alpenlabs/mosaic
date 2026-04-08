@@ -10,7 +10,7 @@ NETWORK_SIZE = 5
 
 
 @flexitest.register
-class MosaicSetupTest(BaseTest):
+class MosaicSetupConcurrentTest(BaseTest):
     """
     Tests mosaic setup across multiple nodes:
     """

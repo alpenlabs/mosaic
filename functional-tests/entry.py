@@ -39,7 +39,8 @@ def disabled_tests() -> frozenset[str]:
             # only used in keep-alive mode
             "keepalive_stub_test",
             # enable after issues are resolved
-            "fn_mosaic_setup",
+            "fn_mosaic_setup_concurrent",
+            "fn_mosaic_setup_staggered",
         ]
     )
 
