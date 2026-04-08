@@ -397,8 +397,6 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
 mod tests {
     use std::{future::Future, sync::Arc, time::Duration};
 
-    use super::*;
-    use crate::priority::Priority;
     use mosaic_cac_types::{
         AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgHeader, CommitMsgHeader, DepositId,
         GarblingSeed, Index, Seed, TableTransferReceiptMsg, TableTransferRequestMsg,
@@ -411,6 +409,9 @@ mod tests {
         ActionCompletion, CircuitError, CircuitSession, ExecuteEvaluatorJob, ExecuteGarblerJob,
         HandlerOutcome, OwnedChunk,
     };
+
+    use super::*;
+    use crate::priority::Priority;
 
     struct DummySession;
 
