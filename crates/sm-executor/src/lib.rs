@@ -402,7 +402,7 @@ where
             .handle_job_completion(completion.completion.clone())
             .await
         {
-            return Self::requeue_failed_completion(pending_completions, completion, err);
+            return Self::handle_failed_completion(pending_completions, completion, err);
         }
         Ok(())
     }
@@ -1068,7 +1068,7 @@ where
         matches!(err, SmExecutorError::JobSubmission { .. })
     }
 
-    fn requeue_failed_completion(
+    fn handle_failed_completion(
         pending_completions: &mut VecDeque<PendingJobCompletion>,
         mut completion: PendingJobCompletion,
         err: SmExecutorError,
@@ -1488,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_error_policy_requeues_only_transient_apply_failures() {
+    fn completion_error_policy_requeues_transient_failures_and_drops_stf_errors() {
         let peer_id = PeerId::from([6; 32]);
 
         let storage_err =
@@ -1534,7 +1534,7 @@ mod tests {
         });
         let mut pending = VecDeque::new();
 
-        SmExecutor::<TestStorage>::requeue_failed_completion(
+        SmExecutor::<TestStorage>::handle_failed_completion(
             &mut pending,
             completion,
             SmExecutorError::Commit {
