@@ -102,7 +102,7 @@ impl JobActions {
 ///
 /// The peer ID on [`JobCompletion`] plus the variant here (garbler vs
 /// evaluator) identifies which SM to deliver to.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ActionCompletion {
     /// Garbler tracked action completed.
     Garbler {
@@ -180,7 +180,7 @@ impl ActionCompletion {
 ///
 /// Jobs always retry internally until they succeed — every submitted action
 /// eventually produces exactly one completion. There is no failure variant.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JobCompletion {
     /// The peer whose SM this result should be routed to.
     pub peer_id: PeerId,

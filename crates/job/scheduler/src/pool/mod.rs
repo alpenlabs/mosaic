@@ -17,7 +17,7 @@ use self::{
     queue::JobQueue,
     worker::{Worker, WorkerJob},
 };
-use crate::priority::Priority;
+use crate::{SchedulerFault, priority::Priority};
 
 /// A job waiting in the pool's shared queue.
 ///
@@ -91,6 +91,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
         config: PoolConfig,
         dispatcher: Arc<D>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
+        fault_tx: kanal::AsyncSender<SchedulerFault>,
     ) -> Self {
         let queue = Arc::new(JobQueue::new(config.priority_queue));
 
@@ -101,6 +102,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
                     Arc::clone(&dispatcher),
                     Arc::clone(&queue),
                     completion_tx.clone(),
+                    fault_tx.clone(),
                     config.concurrency_per_worker,
                 )
             })

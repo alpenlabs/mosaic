@@ -20,6 +20,7 @@ use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
 
 use super::{PoolJob, queue::JobQueue};
+use crate::SchedulerFault;
 
 /// Initial backoff delay before requeuing a job that returned
 /// [`ExecuteResult::Retry`].
@@ -101,6 +102,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
         dispatcher: Arc<D>,
         queue: Arc<JobQueue>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
+        fault_tx: kanal::AsyncSender<SchedulerFault>,
         concurrency: usize,
     ) -> Self {
         let handle = std::thread::Builder::new()
@@ -115,6 +117,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
                         dispatcher,
                         queue,
                         completion_tx,
+                        fault_tx,
                         concurrency,
                     ));
             })
@@ -156,6 +159,7 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
     dispatcher: Arc<D>,
     queue: Arc<JobQueue>,
     completion_tx: kanal::AsyncSender<JobCompletion>,
+    fault_tx: kanal::AsyncSender<SchedulerFault>,
     concurrency: usize,
 ) {
     // Permit pool: bounded channel pre-filled with `concurrency` tokens.
@@ -188,6 +192,7 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
             let dispatcher = Arc::clone(&dispatcher);
             let queue = Arc::clone(&queue);
             let completion_tx = completion_tx.clone();
+            let fault_tx = fault_tx.clone();
             let permit_tx = permit_tx.clone();
 
             // 3. Spawn local task. The permit is returned when the task completes, regardless of
@@ -199,7 +204,20 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
                     match result {
                         ExecuteResult::Complete(completion) => {
                             tracing::debug!("worker job completed");
-                            let _ = completion_tx.send(*completion).await;
+                            if completion_tx.send(*completion).await.is_err() {
+                                tracing::error!(
+                                    worker = id,
+                                    ?peer_id,
+                                    "completion channel closed; signaling fatal scheduler fault"
+                                );
+                                queue.close();
+                                let _ = fault_tx
+                                    .send(SchedulerFault::CompletionChannelClosed {
+                                        source: "pool_worker",
+                                        peer_id,
+                                    })
+                                    .await;
+                            }
                         }
                         ExecuteResult::Retry => {
                             let mut job = pool_job;
@@ -371,5 +389,288 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
             );
             HandlerOutcome::Retry
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::manual_async_fn)]
+mod tests {
+    use std::{future::Future, sync::Arc, time::Duration};
+
+    use super::*;
+    use crate::priority::Priority;
+    use mosaic_cac_types::{
+        AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgHeader, CommitMsgHeader, DepositId,
+        GarblingSeed, Index, Seed, TableTransferReceiptMsg, TableTransferRequestMsg,
+        state_machine::{
+            evaluator::ChunkIndex,
+            garbler::{self, Action as GarblerAction, Wire},
+        },
+    };
+    use mosaic_job_api::{
+        ActionCompletion, CircuitError, CircuitSession, ExecuteEvaluatorJob, ExecuteGarblerJob,
+        HandlerOutcome, OwnedChunk,
+    };
+
+    struct DummySession;
+
+    impl CircuitSession for DummySession {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn finish(
+            self: Box<Self>,
+        ) -> std::pin::Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async { HandlerOutcome::Retry })
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct TestDispatcher;
+
+    impl ExecuteGarblerJob for TestDispatcher {
+        type Session = DummySession;
+
+        fn generate_polynomial_commitments(
+            &self,
+            _peer_id: &PeerId,
+            seed: Seed,
+            wire: Wire,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async move {
+                HandlerOutcome::Done(ActionCompletion::Garbler {
+                    id: garbler::ActionId::GeneratePolynomialCommitments(seed, wire),
+                    result: garbler::ActionResult::CommitMsgChunkAcked,
+                })
+            }
+        }
+
+        fn generate_shares(
+            &self,
+            _peer_id: &PeerId,
+            _seed: Seed,
+            _index: Index,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn send_commit_msg_header(
+            &self,
+            _peer_id: &PeerId,
+            _header: &CommitMsgHeader,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn send_commit_msg_chunk(
+            &self,
+            _peer_id: &PeerId,
+            wire_idx: u16,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async move {
+                HandlerOutcome::Done(ActionCompletion::Garbler {
+                    id: garbler::ActionId::SendCommitMsgChunk(wire_idx),
+                    result: garbler::ActionResult::CommitMsgChunkAcked,
+                })
+            }
+        }
+
+        fn send_challenge_response_header(
+            &self,
+            _peer_id: &PeerId,
+            _header: &ChallengeResponseMsgHeader,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn send_challenge_response_chunk(
+            &self,
+            _peer_id: &PeerId,
+            _index: &Index,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn deposit_verify_adaptors(
+            &self,
+            _peer_id: &PeerId,
+            _deposit_id: DepositId,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn complete_adaptor_signatures(
+            &self,
+            _peer_id: &PeerId,
+            _deposit_id: DepositId,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn begin_table_commitment(
+            &self,
+            _peer_id: &PeerId,
+            _index: Index,
+            _seed: GarblingSeed,
+        ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+            async { Ok(DummySession) }
+        }
+
+        fn begin_table_transfer(
+            &self,
+            _peer_id: &PeerId,
+            _seed: GarblingSeed,
+        ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+            async { Ok(DummySession) }
+        }
+    }
+
+    impl ExecuteEvaluatorJob for TestDispatcher {
+        type Session = DummySession;
+
+        fn send_challenge_msg(
+            &self,
+            _peer_id: &PeerId,
+            _msg: &ChallengeMsg,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn verify_opened_input_shares(
+            &self,
+            _peer_id: &PeerId,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn send_table_transfer_request(
+            &self,
+            _peer_id: &PeerId,
+            _msg: &TableTransferRequestMsg,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn send_table_transfer_receipt(
+            &self,
+            _peer_id: &PeerId,
+            _msg: &TableTransferReceiptMsg,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn generate_deposit_adaptors(
+            &self,
+            _peer_id: &PeerId,
+            _deposit_id: DepositId,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn generate_withdrawal_adaptors_chunk(
+            &self,
+            _peer_id: &PeerId,
+            _deposit_id: DepositId,
+            _chunk_idx: &ChunkIndex,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn deposit_send_adaptor_msg_chunk(
+            &self,
+            _peer_id: &PeerId,
+            _deposit_id: DepositId,
+            _chunk: &AdaptorMsgChunk,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn receive_garbling_table(
+            &self,
+            _peer_id: &PeerId,
+            _commitment: mosaic_cac_types::GarblingTableCommitment,
+        ) -> impl Future<Output = HandlerOutcome> + Send {
+            async { HandlerOutcome::Retry }
+        }
+
+        fn begin_table_commitment(
+            &self,
+            _peer_id: &PeerId,
+            _index: Index,
+            _seed: GarblingSeed,
+        ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+            async { Ok(DummySession) }
+        }
+
+        fn begin_evaluation(
+            &self,
+            _peer_id: &PeerId,
+            _index: Index,
+            _commitment: mosaic_cac_types::GarblingTableCommitment,
+        ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
+            async { Ok(DummySession) }
+        }
+    }
+
+    fn run_monoio<F>(future: F)
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+            .enable_timer()
+            .build()
+            .expect("build monoio runtime")
+            .block_on(future);
+    }
+
+    #[test]
+    fn closed_completion_channel_reports_scheduler_fault() {
+        run_monoio(async {
+            let peer_id = PeerId::from_bytes([9; 32]);
+            let queue = Arc::new(JobQueue::new(false));
+            let dispatcher = Arc::new(TestDispatcher);
+            let (completion_tx, completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, fault_rx) = kanal::bounded_async(1);
+            drop(completion_rx);
+
+            let worker = monoio::spawn(worker_loop(
+                0,
+                dispatcher,
+                Arc::clone(&queue),
+                completion_tx,
+                fault_tx,
+                1,
+            ));
+
+            queue.push(PoolJob {
+                priority: Priority::Normal,
+                job: WorkerJob::Garbler {
+                    peer_id,
+                    action: GarblerAction::SendCommitMsgChunk(0),
+                },
+                attempts: 0,
+            });
+
+            let fault = monoio::time::timeout(Duration::from_secs(2), fault_rx.recv())
+                .await
+                .expect("timed out waiting for scheduler fault")
+                .expect("fault channel should stay open");
+            assert!(matches!(
+                fault,
+                SchedulerFault::CompletionChannelClosed {
+                    source: "pool_worker",
+                    peer_id: fault_peer,
+                } if fault_peer == peer_id
+            ));
+
+            queue.close();
+            monoio::time::timeout(Duration::from_secs(2), worker)
+                .await
+                .expect("timed out waiting for worker shutdown");
+        });
     }
 }

@@ -58,6 +58,8 @@ use mosaic_job_api::{
 use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
 
+use crate::SchedulerFault;
+
 /// Size of each v5c gate record in bytes (3 × u32).
 const GATE_SIZE: usize = 12;
 
@@ -259,10 +261,11 @@ impl GarblingCoordinator {
     /// Jobs submitted via [`submit`](Self::submit) are collected into batches,
     /// sessions are created via the `factory`, and workers process them
     /// concurrently.
-    pub fn new(
+    pub(crate) fn new(
         config: GarblingConfig,
         factory: Arc<dyn SessionFactory>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
+        fault_tx: kanal::AsyncSender<SchedulerFault>,
     ) -> Self {
         let (submit_tx, submit_rx) = kanal::bounded_async(config.max_concurrent * 2);
 
@@ -273,7 +276,13 @@ impl GarblingCoordinator {
                     .enable_timer()
                     .build()
                     .expect("failed to build monoio runtime for garbling coordinator")
-                    .block_on(coordinator_loop(config, factory, submit_rx, completion_tx));
+                    .block_on(coordinator_loop(
+                        config,
+                        factory,
+                        submit_rx,
+                        completion_tx,
+                        fault_tx,
+                    ));
             })
             .expect("failed to spawn garbling coordinator thread");
 
@@ -319,6 +328,7 @@ async fn coordinator_loop(
     factory: Arc<dyn SessionFactory>,
     submit_rx: kanal::AsyncReceiver<PendingCircuitJob>,
     completion_tx: kanal::AsyncSender<JobCompletion>,
+    fault_tx: kanal::AsyncSender<SchedulerFault>,
 ) {
     let span = tracing::info_span!(
         "job_scheduler.garbling_coordinator",
@@ -450,6 +460,7 @@ async fn coordinator_loop(
                 sessions,
                 &mut workers,
                 &completion_tx,
+                &fault_tx,
                 &mut pending_retry,
             )
             .instrument(tracing::info_span!(
@@ -491,6 +502,7 @@ async fn run_pass(
     sessions: Vec<ActiveSession>,
     workers: &mut [WorkerHandle],
     completion_tx: &kanal::AsyncSender<JobCompletion>,
+    fault_tx: &kanal::AsyncSender<SchedulerFault>,
     pending_retry: &mut Vec<PendingCircuitJob>,
 ) {
     let n_workers = workers.len();
@@ -545,6 +557,7 @@ async fn run_pass(
                 &mut active_jobs_by_worker,
                 workers,
                 completion_tx,
+                fault_tx,
                 pending_retry,
             )
             .await;
@@ -615,6 +628,7 @@ async fn run_pass(
         &mut active_jobs_by_worker,
         workers,
         completion_tx,
+        fault_tx,
         Duration::from_secs(60),
         pending_retry,
     )
@@ -680,6 +694,7 @@ async fn collect_finish_reports(
     active_jobs_by_worker: &mut HashMap<usize, Vec<PendingCircuitJob>>,
     workers: &mut [WorkerHandle],
     completion_tx: &kanal::AsyncSender<JobCompletion>,
+    fault_tx: &kanal::AsyncSender<SchedulerFault>,
     pending_retry: &mut Vec<PendingCircuitJob>,
 ) {
     collect_finish_reports_with_timeout(
@@ -687,6 +702,7 @@ async fn collect_finish_reports(
         active_jobs_by_worker,
         workers,
         completion_tx,
+        fault_tx,
         Duration::from_secs(60),
         pending_retry,
     )
@@ -700,6 +716,7 @@ async fn collect_finish_reports_with_timeout(
     active_jobs_by_worker: &mut HashMap<usize, Vec<PendingCircuitJob>>,
     workers: &mut [WorkerHandle],
     completion_tx: &kanal::AsyncSender<JobCompletion>,
+    fault_tx: &kanal::AsyncSender<SchedulerFault>,
     finish_timeout: Duration,
     pending_retry: &mut Vec<PendingCircuitJob>,
 ) {
@@ -719,11 +736,18 @@ async fn collect_finish_reports_with_timeout(
             Some(WorkerReport::FinishDone(report)) => {
                 active_jobs_by_worker.remove(&wid);
                 for completion in report.completions {
+                    let peer_id = completion.peer_id;
                     if completion_tx.send(completion).await.is_err() {
                         tracing::error!(
                             worker = wid,
                             "completion channel closed while forwarding finish report"
                         );
+                        let _ = fault_tx
+                            .send(SchedulerFault::CompletionChannelClosed {
+                                source: "garbling_coordinator",
+                                peer_id,
+                            })
+                            .await;
                         return;
                     }
                 }
@@ -756,7 +780,7 @@ async fn collect_finish_reports_with_timeout(
 ///
 /// Receives sessions and chunk commands from the coordinator's main thread.
 /// Processes sessions sequentially per chunk (parallel across workers).
-/// Sends completions directly to the SM via `completion_tx`.
+/// Reports completed results back to the coordinator.
 async fn worker_loop(
     id: usize,
     chunk_timeout: Duration,
@@ -959,7 +983,7 @@ fn convert_block(block: &Block, num_gates: usize) -> OwnedBlock {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, pin::Pin, sync::Arc};
+    use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
     use mosaic_cac_types::{
         GarblingSeed, Seed,
@@ -1045,6 +1069,7 @@ mod tests {
             }];
 
             let (completion_tx, _completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(1);
             let mut pending_retry = Vec::new();
             run_pass(
                 &GarblingConfig {
@@ -1057,6 +1082,7 @@ mod tests {
                 sessions,
                 &mut workers,
                 &completion_tx,
+                &fault_tx,
                 &mut pending_retry,
             )
             .await;
@@ -1123,6 +1149,7 @@ mod tests {
 
             let mut active_jobs_by_worker = HashMap::from([(0usize, vec![sample_job(5)])]);
             let (completion_tx, completion_rx) = kanal::bounded_async(2);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(1);
             let mut pending_retry = Vec::new();
 
             collect_finish_reports(
@@ -1130,6 +1157,7 @@ mod tests {
                 &mut active_jobs_by_worker,
                 &mut workers,
                 &completion_tx,
+                &fault_tx,
                 &mut pending_retry,
             )
             .await;
@@ -1162,6 +1190,7 @@ mod tests {
             let job = sample_job(6);
             let mut active_jobs_by_worker = HashMap::from([(0usize, vec![job.clone()])]);
             let (completion_tx, _completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(1);
             let mut pending_retry = Vec::new();
 
             collect_finish_reports_with_timeout(
@@ -1169,6 +1198,7 @@ mod tests {
                 &mut active_jobs_by_worker,
                 &mut workers,
                 &completion_tx,
+                &fault_tx,
                 Duration::from_millis(1),
                 &mut pending_retry,
             )
@@ -1177,6 +1207,72 @@ mod tests {
             assert!(active_jobs_by_worker.is_empty());
             assert_eq!(pending_retry.len(), 1);
             assert_eq!(pending_retry[0].peer_id, job.peer_id);
+        });
+    }
+
+    #[test]
+    fn closed_completion_channel_reports_scheduler_fault() {
+        run_monoio(async {
+            let peer_id = PeerId::from([11; 32]);
+            let (command_tx, _command_rx) = kanal::bounded_async(2);
+            let (report_tx, report_rx) = kanal::bounded_async(2);
+            let (completion_tx, completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, fault_rx) = kanal::bounded_async(1);
+            drop(completion_rx);
+
+            report_tx
+                .send(WorkerReport::FinishDone(FinishReport {
+                    completions: vec![JobCompletion {
+                        peer_id,
+                        completion: ActionCompletion::Garbler {
+                            id: ActionId::SendCommitMsgChunk(0),
+                            result: ActionResult::CommitMsgChunkAcked,
+                        },
+                    }],
+                    retry_jobs: vec![],
+                }))
+                .await
+                .expect("send finish report");
+
+            let mut workers = vec![WorkerHandle {
+                id: 0,
+                command_tx,
+                report_rx,
+                thread: None,
+            }];
+            let mut active_jobs_by_worker = HashMap::from([(
+                0usize,
+                vec![PendingCircuitJob {
+                    peer_id,
+                    action: CircuitAction::GarblerTransfer {
+                        seed: GarblingSeed::from([5; 32]),
+                    },
+                }],
+            )]);
+            let mut pending_retry = Vec::new();
+
+            collect_finish_reports_with_timeout(
+                &[0],
+                &mut active_jobs_by_worker,
+                &mut workers,
+                &completion_tx,
+                &fault_tx,
+                Duration::from_millis(1),
+                &mut pending_retry,
+            )
+            .await;
+
+            let fault = monoio::time::timeout(Duration::from_secs(2), fault_rx.recv())
+                .await
+                .expect("timed out waiting for scheduler fault")
+                .expect("fault channel should stay open");
+            assert!(matches!(
+                fault,
+                SchedulerFault::CompletionChannelClosed {
+                    source: "garbling_coordinator",
+                    peer_id: fault_peer,
+                } if fault_peer == peer_id
+            ));
         });
     }
 }
