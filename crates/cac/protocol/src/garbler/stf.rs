@@ -142,13 +142,9 @@ pub(crate) async fn handle_event<S: StateMut>(
                 }
             }
             // ack on all steps after WaitingForChallenge
-            Step::SendingChallengeResponse { .. }
-            | Step::TransferringGarblingTables { .. }
-            | Step::SetupComplete
-            | Step::CompletingAdaptors { .. }
-            | Step::SetupConsumed { .. }
-            | Step::Aborted { .. } => {
+            step if step.phase() > StepPhase::WaitingForChallenge => {
                 warn!("garbler received challenge after completion, ack and ignore");
+                return Ok(());
             }
             _ => return Err(SMError::unexpected_input()),
         },
@@ -178,11 +174,9 @@ pub(crate) async fn handle_event<S: StateMut>(
                 debug!(commitment = %request_msg.garbling_table_commitment, "garbler received table transfer request");
                 emit(actions, Action::TransferGarblingTable(*seed));
             }
-            Step::SetupComplete
-            | Step::CompletingAdaptors { .. }
-            | Step::SetupConsumed { .. }
-            | Step::Aborted { .. } => {
+            step if step.phase() > StepPhase::TransferringGarblingTables => {
                 warn!("garbler received table transfer request after completion, ack and ignore");
+                return Ok(());
             }
             _ => return Err(SMError::unexpected_input()),
         },
@@ -217,11 +211,9 @@ pub(crate) async fn handle_event<S: StateMut>(
                     root_state.step = Step::SetupComplete;
                 }
             }
-            Step::SetupComplete
-            | Step::CompletingAdaptors { .. }
-            | Step::SetupConsumed { .. }
-            | Step::Aborted { .. } => {
+            step if step.phase() > StepPhase::TransferringGarblingTables => {
                 warn!("garbler received table transfer receipt after completion, ack and ignore");
+                return Ok(());
             }
             _ => return Err(SMError::unexpected_input()),
         },
@@ -831,8 +823,9 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
                 return Ok(());
             }
         }
-        Step::CompletingAdaptors { .. } | Step::SetupConsumed { .. } | Step::Aborted { .. } => {
+        step if step.phase() > StepPhase::SetupComplete => {
             warn!("garbler received adaptor chunk after completion, ack and ignore");
+            return Ok(());
         }
 
         _ => return Err(SMError::unexpected_input()),

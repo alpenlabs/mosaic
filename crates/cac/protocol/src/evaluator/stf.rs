@@ -636,14 +636,7 @@ async fn handle_commit_msg_header<S: StateMut>(
 
             post_handle_commit_msg(state, artifact_store, actions).await
         }
-        Step::WaitingForChallengeResponse { .. }
-        | Step::VerifyingOpenedInputShares
-        | Step::VerifyingTableCommitments { .. }
-        | Step::ReceivingGarblingTables { .. }
-        | Step::SetupComplete
-        | Step::EvaluatingTables { .. }
-        | Step::SetupConsumed { .. }
-        | Step::Aborted { .. } => {
+        step if step.phase() > StepPhase::WaitingForCommit => {
             warn!("evaluator received commit header after completion, ack and ignore");
             Ok(())
         }
@@ -705,14 +698,7 @@ async fn handle_commit_msg_chunk<S: StateMut>(
 
             post_handle_commit_msg(root_state, state, actions).await
         }
-        Step::WaitingForChallengeResponse { .. }
-        | Step::VerifyingOpenedInputShares
-        | Step::VerifyingTableCommitments { .. }
-        | Step::ReceivingGarblingTables { .. }
-        | Step::SetupComplete
-        | Step::EvaluatingTables { .. }
-        | Step::SetupConsumed { .. }
-        | Step::Aborted { .. } => {
+        step if step.phase() > StepPhase::WaitingForCommit => {
             warn!("evaluator received commit chunk after completion, ack and ignore");
             Ok(())
         }
@@ -802,13 +788,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
 
             post_handle_challenge_response(root_state, state, actions).await
         }
-        Step::VerifyingOpenedInputShares
-        | Step::VerifyingTableCommitments { .. }
-        | Step::ReceivingGarblingTables { .. }
-        | Step::SetupComplete
-        | Step::EvaluatingTables { .. }
-        | Step::SetupConsumed { .. }
-        | Step::Aborted { .. } => {
+        step if step.phase() > StepPhase::WaitingForChallengeResponse => {
             warn!("evaluator received challenge response header after completion, ack and ignore");
             Ok(())
         }
@@ -866,13 +846,7 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
 
             post_handle_challenge_response(root_state, state, actions).await
         }
-        Step::VerifyingOpenedInputShares
-        | Step::VerifyingTableCommitments { .. }
-        | Step::ReceivingGarblingTables { .. }
-        | Step::SetupComplete
-        | Step::EvaluatingTables { .. }
-        | Step::SetupConsumed { .. }
-        | Step::Aborted { .. } => {
+        step if step.phase() > StepPhase::WaitingForChallengeResponse => {
             warn!("evaluator received challenge response chunk after completion, ack and ignore");
             Ok(())
         }
