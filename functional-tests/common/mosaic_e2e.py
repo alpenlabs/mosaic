@@ -120,7 +120,7 @@ def handle_withdrawal(
     )
     completed_adaptor_sigs = garbler.mosaic_getCompletedAdaptorSigs(garbler_tsid)
 
-    evaluator.mosaic_evaluate_tableset(
+    evaluator.mosaic_evaluateTableset(
         evaluator_tsid,
         deposit_id,
         {
