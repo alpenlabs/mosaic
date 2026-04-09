@@ -1569,7 +1569,7 @@ mod tests {
         });
         let mut pending = VecDeque::new();
 
-        SmExecutor::<TestStorage>::requeue_failed_completion(
+        SmExecutor::<TestStorage>::handle_failed_completion(
             &mut pending,
             completion,
             SmExecutorError::Stf {
