@@ -94,3 +94,7 @@ coverage.xml
 
 # fuzz target logs
 fuzz-*.log
+
+# Docker volume data
+docker/vol/fdb/data/
+docker/vol/mosaic-*/tables/
