@@ -531,7 +531,6 @@ impl Classify for EvaluatorAction {
         match self {
             // Light (outbound protocol sends + network receive)
             Self::SendChallengeMsg(_)
-            | Self::SendTableTransferRequest(_)
             | Self::SendTableTransferReceipt(_)
             | Self::DepositSendAdaptorMsgChunk(..)
             | Self::ReceiveGarblingTable(_) => ActionCategory::Light,

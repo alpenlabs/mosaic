@@ -3,8 +3,7 @@ use mosaic_vs3::Index;
 
 use crate::{
     AdaptorMsgChunk, ChallengeMsg, CircuitOutputShare, DepositAdaptors, DepositId, GarblingSeed,
-    GarblingTableCommitment, TableTransferReceiptMsg, TableTransferRequestMsg,
-    WithdrawalAdaptorsChunk,
+    GarblingTableCommitment, TableTransferReceiptMsg, WithdrawalAdaptorsChunk,
 };
 
 // ============================================================================
@@ -31,8 +30,6 @@ pub enum ActionId {
     GenerateTableCommitment(Index),
     /// Identifies a [`Action::ReceiveGarblingTable`] action by garbling table commitment.
     ReceiveGarblingTable(GarblingTableCommitment),
-    /// Identifies a [`Action::SendTableTransferRequest`] action by garbling table commitment.
-    SendTableTransferRequest(GarblingTableCommitment),
     /// Identifies a [`Action::SendTableTransferReceipt`] action by circuit index
     SendTableTransferReceipt(GarblingTableCommitment),
     /// Identifies a [`Action::GenerateDepositAdaptors`] action by deposit.
@@ -76,9 +73,6 @@ pub enum ActionResult {
     TableCommitmentGenerated(Index, GarblingTableCommitment),
     /// Garbling table received from garbler and verified.
     GarblingTableReceived(Index, GarblingTableCommitment),
-    /// Garbling table transfer request was acknowledged by the garbler.
-    /// NOTE: ignored
-    TableTransferRequestAcked,
     /// Garbling table transfer receipt was acknowledged by the garbler.
     /// NOTE: ignored
     TableTransferReceiptAcked,
@@ -107,10 +101,12 @@ pub enum Action {
     VerifyOpenedInputShares,
     /// Generate single table's garbling table commitment from seeds and shares.
     GenerateTableCommitment(Index, GarblingSeed),
-    /// Receive evaluation garbling tables from garbler.
+    /// Request and receive a garbling table from the garbler.
+    ///
+    /// This is a combined action that registers a bulk-transfer expectation,
+    /// sends the transfer request to the garbler, then receives, verifies,
+    /// and persists the table.
     ReceiveGarblingTable(GarblingTableCommitment),
-    /// Send a request to Garbler to transfer a table.
-    SendTableTransferRequest(TableTransferRequestMsg),
     /// Send a receipt to Garbler that the table has been received successfully.
     SendTableTransferReceipt(TableTransferReceiptMsg),
     /// Generate adaptors of deposit wires for a deposit.
@@ -132,9 +128,6 @@ impl Action {
             Self::VerifyOpenedInputShares => ActionId::VerifyOpenedInputShares,
             Self::GenerateTableCommitment(idx, _) => ActionId::GenerateTableCommitment(*idx),
             Self::ReceiveGarblingTable(commitment) => ActionId::ReceiveGarblingTable(*commitment),
-            Self::SendTableTransferRequest(msg) => {
-                ActionId::SendTableTransferRequest(msg.garbling_table_commitment)
-            }
             Self::SendTableTransferReceipt(msg) => {
                 ActionId::SendTableTransferReceipt(msg.garbling_table_commitment)
             }

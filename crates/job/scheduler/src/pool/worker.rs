@@ -375,9 +375,6 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
         EvaluatorAction::ReceiveGarblingTable(commitment) => {
             exec.receive_garbling_table(peer_id, *commitment).await
         }
-        EvaluatorAction::SendTableTransferRequest(msg) => {
-            exec.send_table_transfer_request(peer_id, msg).await
-        }
         EvaluatorAction::SendTableTransferReceipt(msg) => {
             exec.send_table_transfer_receipt(peer_id, msg).await
         }
@@ -399,7 +396,7 @@ mod tests {
 
     use mosaic_cac_types::{
         AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgHeader, CommitMsgHeader, DepositId,
-        GarblingSeed, Index, Seed, TableTransferReceiptMsg, TableTransferRequestMsg,
+        GarblingSeed, Index, Seed, TableTransferReceiptMsg,
         state_machine::{
             evaluator::ChunkIndex,
             garbler::{self, Action as GarblerAction, Wire},
@@ -544,14 +541,6 @@ mod tests {
         fn verify_opened_input_shares(
             &self,
             _peer_id: &PeerId,
-        ) -> impl Future<Output = HandlerOutcome> + Send {
-            async { HandlerOutcome::Retry }
-        }
-
-        fn send_table_transfer_request(
-            &self,
-            _peer_id: &PeerId,
-            _msg: &TableTransferRequestMsg,
         ) -> impl Future<Output = HandlerOutcome> + Send {
             async { HandlerOutcome::Retry }
         }

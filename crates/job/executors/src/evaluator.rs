@@ -138,23 +138,6 @@ pub(crate) async fn handle_send_challenge_msg<SP: StorageProvider, TS: TableStor
     }
 }
 
-pub(crate) async fn handle_send_table_transfer_request<SP: StorageProvider, TS: TableStore>(
-    ctx: &MosaicExecutor<SP, TS>,
-    peer_id: &PeerId,
-    msg: &TableTransferRequestMsg,
-) -> HandlerOutcome {
-    match ctx.net_client.send(*peer_id, msg.clone()).await {
-        Ok(_ack) => completed(
-            ActionId::SendTableTransferRequest(msg.garbling_table_commitment),
-            ActionResult::TableTransferRequestAcked,
-        ),
-        Err(e) => {
-            tracing::warn!(%e, "send garbling table transfer request msg failed, will retry");
-            HandlerOutcome::Retry
-        }
-    }
-}
-
 pub(crate) async fn handle_send_table_transfer_receipt<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
@@ -305,6 +288,13 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     let Ok(expectation) = expectation else {
         return HandlerOutcome::Retry;
     };
+
+    // Registration succeeded — now tell the garbler to start the transfer.
+    let request_msg = TableTransferRequestMsg::new(expected_commitment);
+    if let Err(e) = ctx.net_client.send(*peer_id, request_msg).await {
+        tracing::warn!(%e, "send table transfer request failed, will retry");
+        return HandlerOutcome::Retry;
+    }
 
     // Wait for the garbler to open the stream.
     let Ok(mut stream) = expectation.recv().await else {

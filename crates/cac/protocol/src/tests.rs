@@ -665,56 +665,6 @@ async fn handle_garbler_prepares_for_table_transfer<SP: StorageProviderMut + Sto
 /// Evaluator sends TableTransferRequest messages over the network; garbler receives them.
 ///
 /// Returns: (garbler inputs from received requests, evaluator action results from sending)
-async fn handle_evaluator_sends_table_requests<SP: StorageProvider + StorageProviderMut>(
-    eval_actions: &mut Vec<
-        actions::Action<
-            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
-            EvaluatorTrackedActionTypes,
-        >,
-    >,
-    eval_exec: &mut MosaicExecutor<SP, S3TableStore>,
-    garbler_peer_id: PeerId,
-    net_client_garbler: NetClient,
-) -> (Vec<GarbInput>, Vec<ActionCompletion>) {
-    // Separate request actions from receive actions.
-    // eval_actions contains interleaved [SendTableTransferRequest, ReceiveGarblingTable] pairs.
-    let mut request_actions = vec![];
-    let mut receive_actions = vec![];
-    while let Some(action) = eval_actions.pop() {
-        match &action {
-            fasm::actions::Action::Tracked(tracked) => match tracked.action() {
-                EvaluatorAction::SendTableTransferRequest(_) => request_actions.push(action),
-                EvaluatorAction::ReceiveGarblingTable(_) => receive_actions.push(action),
-                other => panic!("unexpected action in table transfer phase: {:?}", other),
-            },
-            _ => panic!("expected tracked action"),
-        }
-    }
-    assert_eq!(request_actions.len(), N_EVAL_CIRCUITS);
-    assert_eq!(receive_actions.len(), N_EVAL_CIRCUITS);
-
-    // Put receive actions back — they'll be dispatched during the actual table transfer.
-    *eval_actions = receive_actions;
-
-    // Garbler listens for table transfer requests.
-    let ncl = net_client_garbler.clone();
-    let rx = tokio::spawn(async move {
-        use crate::tests::netcl::handle_receive_table_transfer_request;
-        handle_receive_table_transfer_request(&ncl).await
-    });
-
-    // Evaluator sends table transfer requests over the network.
-    let eval_results =
-        mock_dispatch_evaluator(&mut request_actions, eval_exec, &garbler_peer_id).await;
-    assert_eq!(eval_results.len(), N_EVAL_CIRCUITS); // TableTransferRequestAcked
-
-    // Garbler received all requests.
-    let garb_inputs = rx.await.unwrap();
-    assert_eq!(garb_inputs.len(), N_EVAL_CIRCUITS);
-
-    (garb_inputs, eval_results)
-}
-
 /// Garbler processes received TableTransferRequest inputs, emitting TransferGarblingTable actions.
 async fn handle_garbler_processes_table_requests<SP: StorageProvider + StorageProviderMut>(
     garbler_exec: &mut MosaicExecutor<SP, S3TableStore>,
@@ -738,39 +688,6 @@ async fn handle_garbler_processes_table_requests<SP: StorageProvider + StoragePr
             .unwrap();
     }
     assert_eq!(garb_actions.len(), N_EVAL_CIRCUITS); // Action::TransferGarblingTable per request
-}
-
-/// Evaluator consumes TableTransferRequestAcked results (no-op for state machine).
-async fn handle_evaluator_consumes_request_ack<SP: StorageProvider + StorageProviderMut>(
-    eval_results: &mut Vec<ActionCompletion>,
-    eval_exec: &mut MosaicExecutor<SP, S3TableStore>,
-    garbler_peer_id: &PeerId,
-    eval_actions: &mut Vec<
-        actions::Action<
-            mosaic_cac_types::state_machine::evaluator::UntrackedAction,
-            EvaluatorTrackedActionTypes,
-        >,
-    >,
-) {
-    let mut eval_state = eval_exec
-        .storage
-        .evaluator_state_mut(garbler_peer_id)
-        .await
-        .unwrap();
-    let prev_len = eval_actions.len();
-    while let Some(completion) = eval_results.pop() {
-        let (action_id, action_result) = completion.as_evaluator().unwrap();
-        let tracked_input: fasm::Input<EvaluatorTrackedActionTypes, EvalInput> =
-            fasm::Input::TrackedActionCompleted {
-                id: action_id.clone(),
-                result: action_result.clone(),
-            };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
-            .await
-            .unwrap();
-    }
-    // TableTransferRequestAcked is a no-op — no new actions emitted.
-    assert_eq!(eval_actions.len(), prev_len);
 }
 
 async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + StorageProviderMut>(
@@ -828,9 +745,8 @@ async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + Sto
             .await
             .unwrap();
     }
-    // Step::ReceivingGarblingTables emits SendTableTransferRequest + ReceiveGarblingTable per
-    // circuit.
-    assert_eq!(eval_actions.len(), 2 * N_EVAL_CIRCUITS);
+    // Step::ReceivingGarblingTables emits ReceiveGarblingTable per circuit.
+    assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS);
 }
 
 async fn handle_evaluator_processes_table<SP: StorageProvider + StorageProviderMut>(
@@ -1523,60 +1439,88 @@ async fn test_e2e() {
         .await;
 
         // =====================================================================
-        // Table Transfer (pull-based):
-        //   1. Evaluator sends TableTransferRequest, garbler receives them
-        //   2. Evaluator consumes request acks (no-op)
-        //   3. Garbler processes requests → emits TransferGarblingTable actions
-        //   4. Garbler transfers tables + evaluator receives tables (concurrent)
-        //   5. Garbler consumes transfer results (informational)
-        //   6. Evaluator processes received tables → emits SendTableTransferReceipt
-        //   7. Evaluator sends receipts, garbler receives them
-        //   8. Evaluator consumes receipt acks (no-op)
-        //   9. Garbler processes receipts → transitions to SetupComplete
+        // Table Transfer (pull-based, combined action):
+        //   1. Evaluator dispatches ReceiveGarblingTable (registers expectation, sends request,
+        //      waits for stream) — concurrent with garbler receiving requests, processing them, and
+        //      transferring tables.
+        //   2. Garbler consumes transfer results (informational)
+        //   3. Evaluator processes received tables → emits SendTableTransferReceipt
+        //   4. Evaluator sends receipts, garbler receives them
+        //   5. Evaluator consumes receipt acks (no-op)
+        //   6. Garbler processes receipts → transitions to SetupComplete
         // =====================================================================
 
-        // Step 1: Evaluator sends table transfer requests; garbler receives them.
-        let (mut garb_inputs, mut eval_results) = handle_evaluator_sends_table_requests(
-            &mut eval_actions,
-            &mut eval_exec,
-            garbler_peer_id,
-            net_client_garbler.clone(),
-        )
-        .await;
-
-        // Step 2: Evaluator consumes TableTransferRequestAcked (no-op).
-        handle_evaluator_consumes_request_ack(
-            &mut eval_results,
-            &mut eval_exec,
-            &garbler_peer_id,
-            &mut eval_actions,
-        )
-        .await;
-
-        // Step 3: Garbler processes requests → emits TransferGarblingTable actions.
-        let mut garb_actions = vec![];
-        handle_garbler_processes_table_requests(
-            &mut garbler_exec,
-            eval_peer_id,
-            &mut garb_actions,
-            &mut garb_inputs,
-        )
-        .await;
-
-        // Step 4: Garbler transfers tables + evaluator receives tables (concurrent).
+        // Step 1: Concurrent — evaluator dispatches ReceiveGarblingTable (which
+        // internally registers expectation, sends the request, then waits for
+        // the stream). Each action must run concurrently because the handler
+        // blocks waiting for its stream — if run sequentially only one request
+        // would be sent before blocking and the garbler (which collects all
+        // requests before processing) would deadlock.
         let (mut garb_results, mut eval_results) = {
-            let tx = tokio::spawn(async move {
-                mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await
+            let ncl = net_client_garbler.clone();
+            let garbler_task = tokio::spawn(async move {
+                // Garbler receives table transfer requests sent by the evaluator's
+                // ReceiveGarblingTable handlers.
+                use crate::tests::netcl::handle_receive_table_transfer_request;
+                let mut garb_inputs = handle_receive_table_transfer_request(&ncl).await;
+                assert_eq!(garb_inputs.len(), N_EVAL_CIRCUITS);
+
+                // Process requests through garbler STF → emits TransferGarblingTable actions.
+                let mut garb_actions = vec![];
+                handle_garbler_processes_table_requests(
+                    &mut garbler_exec,
+                    eval_peer_id,
+                    &mut garb_actions,
+                    &mut garb_inputs,
+                )
+                .await;
+
+                // Dispatch the transfers (opens bulk streams and sends table data).
+                let garb_results =
+                    mock_dispatch_garbler(&mut garb_actions, &garbler_exec, &eval_peer_id).await;
+                assert_eq!(garb_results.len(), N_EVAL_CIRCUITS); // GarblingTableTransferred
+                garb_results
             });
-            let eval_results =
-                mock_dispatch_evaluator(&mut eval_actions, &eval_exec, &garbler_peer_id).await;
+
+            // Dispatch all ReceiveGarblingTable actions concurrently — each handler
+            // blocks on stream reception, so they must all run in parallel.
+            // Extract commitments from actions, then dispatch concurrently.
+            let commitments: Vec<_> = eval_actions
+                .drain(..)
+                .map(|fasm_action| match &fasm_action {
+                    fasm::actions::Action::Tracked(tracked) => match tracked.action() {
+                        EvaluatorAction::ReceiveGarblingTable(commitment) => *commitment,
+                        other => panic!(
+                            "expected ReceiveGarblingTable in table transfer phase, got {:?}",
+                            other
+                        ),
+                    },
+                    _ => panic!("expected tracked action"),
+                })
+                .collect();
+            let peer = garbler_peer_id;
+            let exec_ref = &eval_exec;
+            let eval_futures: Vec<_> = commitments
+                .iter()
+                .map(|commitment| {
+                    let c = *commitment;
+                    async move {
+                        let outcome = exec_ref.receive_garbling_table(&peer, c).await;
+                        match outcome {
+                            HandlerOutcome::Done(completion) => completion,
+                            other => panic!("expected Done, got {:?}", other),
+                        }
+                    }
+                })
+                .collect();
+            let eval_results = futures::future::join_all(eval_futures).await;
             assert_eq!(eval_results.len(), N_EVAL_CIRCUITS); // GarblingTableReceived
-            let garb_results = tx.await.unwrap();
-            assert_eq!(garb_results.len(), N_EVAL_CIRCUITS); // GarblingTableTransferred
+
+            let garb_results = garbler_task.await.unwrap();
             (garb_results, eval_results)
         };
 
-        // Step 5: Garbler consumes transfer results (informational, no state change).
+        // Step 2: Garbler consumes transfer results (informational, no state change).
         let mut garb_actions = vec![];
         let prefix = "garbling-tables";
         let local = LocalFileSystem::new_with_prefix(temp_dir.clone()).unwrap();
@@ -1595,7 +1539,7 @@ async fn test_e2e() {
         )
         .await;
 
-        // Step 6: Evaluator processes received tables → emits SendTableTransferReceipt.
+        // Step 3: Evaluator processes received tables → emits SendTableTransferReceipt.
         handle_evaluator_processes_table(
             &mut eval_exec,
             &garbler_peer_id,
@@ -1604,7 +1548,7 @@ async fn test_e2e() {
         )
         .await;
 
-        // Step 7: Evaluator sends receipts; garbler receives them.
+        // Step 4: Evaluator sends receipts; garbler receives them.
         let (mut garb_inputs, mut eval_results) = handle_evaluator_transfers_receipt(
             &mut eval_actions,
             &mut eval_exec,
@@ -1613,7 +1557,7 @@ async fn test_e2e() {
         )
         .await;
 
-        // Step 8: Evaluator consumes TableTransferReceiptAcked (no-op).
+        // Step 5: Evaluator consumes TableTransferReceiptAcked (no-op).
         handle_evaluator_consumes_receipt_ack(
             &mut eval_results,
             &mut eval_exec,
@@ -1622,7 +1566,7 @@ async fn test_e2e() {
         )
         .await;
 
-        // Step 9: Garbler processes receipts → transitions to SetupComplete.
+        // Step 6: Garbler processes receipts → transitions to SetupComplete.
         handle_garbler_consumes_receipt_ack(
             &mut garb_inputs,
             &mut garbler_exec,
@@ -1881,9 +1825,6 @@ async fn mock_dispatch_evaluator<SP: StorageProvider + StorageProviderMut>(
                     }
                     EvaluatorAction::ReceiveGarblingTable(commitment) => {
                         exec.receive_garbling_table(peer_id, *commitment).await
-                    }
-                    EvaluatorAction::SendTableTransferRequest(msg) => {
-                        exec.send_table_transfer_request(peer_id, msg).await
                     }
                     EvaluatorAction::SendTableTransferReceipt(msg) => {
                         exec.send_table_transfer_receipt(peer_id, msg).await
