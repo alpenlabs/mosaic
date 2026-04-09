@@ -20,6 +20,16 @@ pub mod scheduler;
 
 pub(crate) mod priority;
 
+use mosaic_net_svc_api::PeerId;
+
+#[derive(Debug, Clone)]
+pub(crate) enum SchedulerFault {
+    CompletionChannelClosed {
+        source: &'static str,
+        peer_id: PeerId,
+    },
+}
+
 // Re-export the API crate for convenience.
 pub use garbling::GarblingConfig;
 pub use mosaic_job_api;

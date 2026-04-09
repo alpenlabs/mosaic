@@ -1,6 +1,6 @@
 //! SM executor implementation.
 
-use std::{panic::AssertUnwindSafe, thread::JoinHandle};
+use std::{collections::VecDeque, panic::AssertUnwindSafe, thread::JoinHandle, time::Duration};
 
 use fasm::{Input as FasmInput, StateMachine};
 use futures::FutureExt;
@@ -18,6 +18,52 @@ use mosaic_sm_executor_api::{
 };
 use mosaic_storage_api::{Commit, StorageProviderError, StorageProviderMut};
 use tracing::Instrument;
+
+/// Initial backoff before retrying a completion that failed to apply.
+const COMPLETION_RETRY_BACKOFF_BASE: Duration = Duration::from_millis(100);
+
+/// Maximum backoff between repeated completion-application attempts.
+const COMPLETION_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(10);
+
+/// Compute exponential backoff with cap: `min(base * 2^attempts, max)`.
+fn completion_retry_backoff(attempts: u32) -> Duration {
+    let multiplier = 1u32.checked_shl(attempts).unwrap_or(u32::MAX);
+    let backoff = COMPLETION_RETRY_BACKOFF_BASE.saturating_mul(multiplier);
+    backoff.min(COMPLETION_RETRY_BACKOFF_MAX)
+}
+
+#[derive(Debug)]
+struct PendingJobCompletion {
+    completion: JobCompletion,
+    attempts: u32,
+}
+
+impl PendingJobCompletion {
+    fn new(completion: JobCompletion) -> Self {
+        Self {
+            completion,
+            attempts: 0,
+        }
+    }
+
+    fn role(&self) -> SmRole {
+        completion_role(&self.completion.completion)
+    }
+
+    fn action_id(&self) -> String {
+        match &self.completion.completion {
+            ActionCompletion::Garbler { id, .. } => format!("{id:?}"),
+            ActionCompletion::Evaluator { id, .. } => format!("{id:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionErrorAction {
+    Requeue,
+    Drop,
+    Fatal,
+}
 
 /// SM executor error.
 #[derive(Debug, thiserror::Error)]
@@ -196,6 +242,7 @@ where
             .name("sm-executor".to_string())
             .spawn(move || {
                 let mut runtime = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                    .enable_timer()
                     .build()
                     .expect("failed to build sm-executor monoio runtime");
                 let result = runtime.block_on(self.run_inner(Some(shutdown_rx)));
@@ -221,6 +268,7 @@ where
         );
         async move {
             let shutdown_rx = shutdown_rx;
+            let mut pending_completions: VecDeque<PendingJobCompletion> = VecDeque::new();
             tracing::info!("sm executor starting");
             self.restore_known_peers().await?;
             tracing::info!("sm executor restore completed; entering main loop");
@@ -234,6 +282,9 @@ where
             let mut command_fut = Box::pin(self.command_rx.recv());
 
             loop {
+                let retry_delay = pending_completions
+                    .front()
+                    .map(|completion| completion_retry_backoff(completion.attempts));
                 monoio::select! {
                     shutdown = &mut shutdown_fut => {
                         match shutdown {
@@ -244,18 +295,41 @@ where
                             None => unreachable!("shutdown receiver helper never returns None"),
                         }
                     }
+                    _ = async {
+                        match retry_delay {
+                            Some(delay) => monoio::time::sleep(delay).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        let completion = pending_completions
+                            .pop_front()
+                            .expect("retry branch only fires when a completion is pending");
+                        tracing::debug!(
+                            source = "job_completion_retry",
+                            peer = ?completion.completion.peer_id,
+                            role = ?completion.role(),
+                            attempts = completion.attempts,
+                            "retrying queued job completion"
+                        );
+                        if let Err(err) = self.process_job_completion(&mut pending_completions, completion).await {
+                            tracing::error!(source = "job_completion_retry", error = ?err, "fatal queued completion processing error; stopping sm executor");
+                            return Err(err);
+                        }
+                    }
                     completion = &mut completion_fut => {
                         completion_fut = Box::pin(self.job_handle.recv());
                         match completion {
                             Ok(c) => {
-                                let role = completion_role(&c.completion);
-                                tracing::debug!(source = "job_completion", peer = ?c.peer_id, role = ?role, "received job completion");
-                                if let Err(err) = self.handle_job_completion(c).await {
-                                    if Self::is_fatal_processing_error(&err) {
-                                        tracing::error!(source = "job_completion", error = ?err, "fatal completion handling error; stopping sm executor");
-                                        return Err(err);
-                                    }
-                                    tracing::warn!(source = "job_completion", error = ?err, "job completion handling failed; dropping completion");
+                                let completion = PendingJobCompletion::new(c);
+                                tracing::debug!(
+                                    source = "job_completion",
+                                    peer = ?completion.completion.peer_id,
+                                    role = ?completion.role(),
+                                    "received job completion"
+                                );
+                                if let Err(err) = self.process_job_completion(&mut pending_completions, completion).await {
+                                    tracing::error!(source = "job_completion", error = ?err, "fatal completion handling error; stopping sm executor");
+                                    return Err(err);
                                 }
                             }
                             Err(_) => {
@@ -317,6 +391,20 @@ where
         }
         .instrument(span)
         .await
+    }
+
+    async fn process_job_completion(
+        &self,
+        pending_completions: &mut VecDeque<PendingJobCompletion>,
+        completion: PendingJobCompletion,
+    ) -> Result<(), SmExecutorError> {
+        if let Err(err) = self
+            .handle_job_completion(completion.completion.clone())
+            .await
+        {
+            return Self::handle_failed_completion(pending_completions, completion, err);
+        }
+        Ok(())
     }
 
     async fn restore_known_peers(&self) -> Result<(), SmExecutorError> {
@@ -979,6 +1067,57 @@ where
     fn is_fatal_processing_error(err: &SmExecutorError) -> bool {
         matches!(err, SmExecutorError::JobSubmission { .. })
     }
+
+    fn handle_failed_completion(
+        pending_completions: &mut VecDeque<PendingJobCompletion>,
+        mut completion: PendingJobCompletion,
+        err: SmExecutorError,
+    ) -> Result<(), SmExecutorError> {
+        match Self::completion_error_action(&err) {
+            CompletionErrorAction::Fatal => Err(err),
+            CompletionErrorAction::Requeue => {
+                completion.attempts = completion.attempts.saturating_add(1);
+                tracing::warn!(
+                    source = "job_completion",
+                    error = ?err,
+                    peer = ?completion.completion.peer_id,
+                    role = ?completion.role(),
+                    action_id = %completion.action_id(),
+                    attempts = completion.attempts,
+                    backoff_ms = completion_retry_backoff(completion.attempts).as_millis(),
+                    "job completion handling failed; requeueing completion"
+                );
+                pending_completions.push_back(completion);
+                Ok(())
+            }
+            CompletionErrorAction::Drop => {
+                tracing::warn!(
+                    source = "job_completion",
+                    error = ?err,
+                    peer = ?completion.completion.peer_id,
+                    role = ?completion.role(),
+                    action_id = %completion.action_id(),
+                    "job completion handling failed; dropping completion"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    fn completion_error_action(err: &SmExecutorError) -> CompletionErrorAction {
+        match err {
+            SmExecutorError::Storage { .. } | SmExecutorError::Commit { .. } => {
+                CompletionErrorAction::Requeue
+            }
+            SmExecutorError::Stf { .. } => CompletionErrorAction::Drop,
+            SmExecutorError::JobSubmission { .. }
+            | SmExecutorError::RoleMismatch(_)
+            | SmExecutorError::StfPanic { .. }
+            | SmExecutorError::SourceClosed(_)
+            | SmExecutorError::NetRecv(_)
+            | SmExecutorError::Ack { .. } => CompletionErrorAction::Fatal,
+        }
+    }
 }
 
 fn msg_kind(msg: &Msg) -> &'static str {
@@ -1041,17 +1180,24 @@ fn command_kind(kind: &SmCommandKind) -> &'static str {
 mod tests {
     use std::{
         future::Future,
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
         task::{Context, Poll},
+        time::Duration,
     };
 
     use ark_serialize::{CanonicalSerialize, Compress, SerializationError};
     use ed25519_dalek::SigningKey;
     use futures::task::noop_waker_ref;
     use mosaic_cac_types::{
-        ChallengeIndices, ChallengeMsg, HeapArray, Index, Msg,
+        AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, HeapArray, Index, Msg,
         state_machine::{
-            evaluator::{self, EvaluatorInitData, StateRead as EvaluatorStateRead},
+            evaluator::{
+                self, EvaluatorInitData, StateMut as EvaluatorStateMut,
+                StateRead as EvaluatorStateRead,
+            },
             garbler::StateMut as GarblerStateMut,
         },
     };
@@ -1062,9 +1208,12 @@ mod tests {
         api::{NetCommand, StreamRequest},
     };
     use mosaic_sm_executor_api::{InitData, SmTarget};
-    use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut};
+    use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut, StorageProviderResult};
     use mosaic_storage_inmemory::{
-        InMemoryStorageProvider, evaluator::StoredEvaluatorState, garbler::StoredGarblerState,
+        InMemoryStorageProvider,
+        evaluator::StoredEvaluatorState,
+        garbler::StoredGarblerState,
+        provider::{InMemoryEvaluatorSession, InMemoryGarblerSession},
     };
 
     use super::*;
@@ -1093,11 +1242,75 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct FailOnceEvaluatorStateMutProvider {
+        inner: InMemoryStorageProvider,
+        fail_next_evaluator_state_mut: Arc<AtomicBool>,
+    }
+
+    impl FailOnceEvaluatorStateMutProvider {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryStorageProvider::new(),
+                fail_next_evaluator_state_mut: Arc::new(AtomicBool::new(true)),
+            }
+        }
+    }
+
+    impl StorageProvider for FailOnceEvaluatorStateMutProvider {
+        type GarblerState = StoredGarblerState;
+        type EvaluatorState = StoredEvaluatorState;
+
+        fn garbler_state(
+            &self,
+            peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>> + Send {
+            self.inner.garbler_state(peer_id)
+        }
+
+        fn evaluator_state(
+            &self,
+            peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>> + Send {
+            self.inner.evaluator_state(peer_id)
+        }
+    }
+
+    impl StorageProviderMut for FailOnceEvaluatorStateMutProvider {
+        type GarblerState = InMemoryGarblerSession;
+        type EvaluatorState = InMemoryEvaluatorSession;
+
+        fn garbler_state_mut(
+            &self,
+            peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>> {
+            self.inner.garbler_state_mut(peer_id)
+        }
+
+        fn evaluator_state_mut(
+            &self,
+            peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>> {
+            let inner = self.inner.clone();
+            let peer_id = *peer_id;
+            let fail_next = Arc::clone(&self.fail_next_evaluator_state_mut);
+            async move {
+                if fail_next.swap(false, Ordering::AcqRel) {
+                    return Err(StorageProviderError::Other(
+                        "transient evaluator state acquisition failure".into(),
+                    ));
+                }
+                inner.evaluator_state_mut(&peer_id).await
+            }
+        }
+    }
+
     fn run_monoio<F>(future: F)
     where
         F: Future<Output = ()> + 'static,
     {
         monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+            .enable_timer()
             .build()
             .expect("build monoio runtime")
             .block_on(future);
@@ -1272,6 +1485,197 @@ mod tests {
             &SmExecutorError::RoleMismatch("mismatch"),
         );
         assert!(!non_fatal);
+    }
+
+    #[test]
+    fn completion_error_policy_requeues_transient_failures_and_drops_stf_errors() {
+        let peer_id = PeerId::from([6; 32]);
+
+        let storage_err =
+            SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Storage {
+                peer_id,
+                role: SmRole::Evaluator,
+                source: StorageProviderError::Other("temporary".into()),
+            });
+        assert_eq!(storage_err, CompletionErrorAction::Requeue);
+
+        let commit_err =
+            SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Commit {
+                peer_id,
+                role: SmRole::Garbler,
+                reason: "temporary".into(),
+            });
+        assert_eq!(commit_err, CompletionErrorAction::Requeue);
+
+        let stf_err = SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Stf {
+            peer_id,
+            role: SmRole::Evaluator,
+            source: SMError::UnexpectedInput,
+        });
+        assert_eq!(stf_err, CompletionErrorAction::Drop);
+
+        let submission_err =
+            SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::JobSubmission {
+                peer_id,
+                source: mosaic_job_api::SchedulerStopped,
+            });
+        assert_eq!(submission_err, CompletionErrorAction::Fatal);
+    }
+
+    #[test]
+    fn transient_completion_failure_is_requeued() {
+        let peer_id = PeerId::from([7; 32]);
+        let completion = PendingJobCompletion::new(JobCompletion {
+            peer_id,
+            completion: ActionCompletion::Evaluator {
+                id: evaluator::ActionId::VerifyOpenedInputShares,
+                result: evaluator::ActionResult::VerifyOpenedInputSharesResult(None),
+            },
+        });
+        let mut pending = VecDeque::new();
+
+        SmExecutor::<TestStorage>::handle_failed_completion(
+            &mut pending,
+            completion,
+            SmExecutorError::Commit {
+                peer_id,
+                role: SmRole::Evaluator,
+                reason: "temporary".into(),
+            },
+        )
+        .expect("commit failures should be requeued");
+
+        let queued = pending.pop_front().expect("completion should be queued");
+        assert_eq!(queued.attempts, 1);
+        assert_eq!(queued.completion.peer_id, peer_id);
+        assert!(matches!(
+            queued.completion.completion,
+            ActionCompletion::Evaluator {
+                id: evaluator::ActionId::VerifyOpenedInputShares,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stf_completion_failure_is_dropped() {
+        let peer_id = PeerId::from([11; 32]);
+        let completion = PendingJobCompletion::new(JobCompletion {
+            peer_id,
+            completion: ActionCompletion::Evaluator {
+                id: evaluator::ActionId::VerifyOpenedInputShares,
+                result: evaluator::ActionResult::VerifyOpenedInputSharesResult(None),
+            },
+        });
+        let mut pending = VecDeque::new();
+
+        SmExecutor::<TestStorage>::handle_failed_completion(
+            &mut pending,
+            completion,
+            SmExecutorError::Stf {
+                peer_id,
+                role: SmRole::Evaluator,
+                source: SMError::UnexpectedInput,
+            },
+        )
+        .expect("stf failures should be dropped, not crash the executor");
+
+        assert!(pending.is_empty(), "stf failures should not be requeued");
+    }
+
+    #[test]
+    fn executor_loop_retries_completion_after_transient_storage_failure() {
+        run_monoio(async {
+            let provider = FailOnceEvaluatorStateMutProvider::new();
+            let peer_id = PeerId::from([10; 32]);
+
+            {
+                let mut state = provider
+                    .inner
+                    .evaluator_state_mut(&peer_id)
+                    .await
+                    .expect("acquire evaluator state");
+                state
+                    .put_root_state(&evaluator::EvaluatorState {
+                        config: None,
+                        step: evaluator::Step::VerifyingOpenedInputShares,
+                    })
+                    .await
+                    .expect("write root state");
+                state
+                    .put_challenge_indices(&ChallengeIndices::new(|i| {
+                        Index::new(i + 1).expect("valid challenge index")
+                    }))
+                    .await
+                    .expect("write challenge indices");
+                state
+                    .put_opened_garbling_seeds(&mosaic_cac_types::OpenedGarblingSeeds::new(|_| {
+                        [3; 32].into()
+                    }))
+                    .await
+                    .expect("write opened seeds");
+                state
+                    .put_garbling_table_commitments(&AllGarblingTableCommitments::new(|_| {
+                        [4; 32].into()
+                    }))
+                    .await
+                    .expect("write table commitments");
+                state.commit().await.expect("commit seeded evaluator state");
+            }
+
+            let (job_handle, submit_rx, completion_tx) = make_job_handle();
+            let (net_client, _protocol_tx) = make_net_client();
+            let (executor, _handle) = SmExecutor::new(
+                SmExecutorConfig::default(),
+                provider.clone(),
+                job_handle,
+                net_client,
+            );
+            let (shutdown_tx, shutdown_rx) = kanal::bounded_async(1);
+            let executor_task =
+                monoio::spawn(async move { executor.run_inner(Some(shutdown_rx)).await });
+
+            completion_tx
+                .send(JobCompletion {
+                    peer_id,
+                    completion: ActionCompletion::Evaluator {
+                        id: evaluator::ActionId::VerifyOpenedInputShares,
+                        result: evaluator::ActionResult::VerifyOpenedInputSharesResult(None),
+                    },
+                })
+                .await
+                .expect("send completion");
+
+            let submitted = monoio::time::timeout(Duration::from_secs(2), submit_rx.recv())
+                .await
+                .expect("timed out waiting for retried completion")
+                .expect("job batch submitted");
+            assert_eq!(submitted.peer_id, peer_id);
+            assert!(submitted.actions.is_evaluator());
+            assert!(
+                !submitted.actions.is_empty(),
+                "completion retry should emit follow-up evaluator work"
+            );
+
+            let committed = provider
+                .evaluator_state(&peer_id)
+                .await
+                .expect("acquire evaluator state")
+                .get_root_state()
+                .await
+                .expect("read evaluator state")
+                .expect("committed evaluator state should exist");
+            assert!(matches!(
+                committed.step,
+                evaluator::Step::VerifyingTableCommitments { .. }
+            ));
+
+            shutdown_tx.send(()).await.expect("send shutdown");
+            monoio::time::timeout(Duration::from_secs(2), executor_task)
+                .await
+                .expect("timed out waiting for executor shutdown")
+                .expect("executor exits cleanly");
+        });
     }
 
     #[test]
