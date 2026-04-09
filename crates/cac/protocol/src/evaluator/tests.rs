@@ -397,6 +397,10 @@ async fn duplicate_challenge_response_chunk_is_ack_and_ignore() {
     let first_challenge_idx = challenge_indices[0].get() - 1;
     remaining[first_challenge_idx] = false;
     state
+        .put_challenge_indices(&challenge_indices)
+        .await
+        .unwrap();
+    state
         .put_root_state(&EvaluatorState {
             config: None,
             step: Step::WaitingForChallengeResponse {
@@ -419,6 +423,41 @@ async fn duplicate_challenge_response_chunk_is_ack_and_ignore() {
     .await;
 
     assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
+    assert!(actions.is_empty(), "should produce no actions");
+}
+
+#[tokio::test]
+async fn unchallenged_in_range_challenge_response_chunk_is_invalid() {
+    let mut state = StoredEvaluatorState::default();
+    let challenge_indices = ChallengeIndices::new(|i| Index::new((i * 2) + 1).unwrap());
+    let remaining = get_remaining_challenge_response_chunks(&challenge_indices);
+    state
+        .put_challenge_indices(&challenge_indices)
+        .await
+        .unwrap();
+    state
+        .put_root_state(&EvaluatorState {
+            config: None,
+            step: Step::WaitingForChallengeResponse {
+                header: false,
+                remaining_chunks: remaining,
+            },
+        })
+        .await
+        .unwrap();
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvChallengeResponseMsgChunk(dummy_challenge_response_chunk(2)),
+        &mut actions,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(crate::error::SMError::InvalidInputData)),
+        "unchallenged in-range chunk must be rejected, got: {result:?}"
+    );
     assert!(actions.is_empty(), "should produce no actions");
 }
 

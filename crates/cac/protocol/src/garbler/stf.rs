@@ -143,7 +143,7 @@ pub(crate) async fn handle_event<S: StateMut>(
             }
             // ack on all steps after WaitingForChallenge
             step if step.phase() > StepPhase::WaitingForChallenge => {
-                warn!("garbler received challenge after completion, ack and ignore");
+                debug!("garbler received challenge after completion, ack and ignore");
                 return Ok(());
             }
             _ => return Err(SMError::unexpected_input()),
@@ -175,7 +175,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 emit(actions, Action::TransferGarblingTable(*seed));
             }
             step if step.phase() > StepPhase::TransferringGarblingTables => {
-                warn!("garbler received table transfer request after completion, ack and ignore");
+                debug!("garbler received table transfer request after completion, ack and ignore");
                 return Ok(());
             }
             _ => return Err(SMError::unexpected_input()),
@@ -212,7 +212,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 }
             }
             step if step.phase() > StepPhase::TransferringGarblingTables => {
-                warn!("garbler received table transfer receipt after completion, ack and ignore");
+                debug!("garbler received table transfer receipt after completion, ack and ignore");
                 return Ok(());
             }
             _ => return Err(SMError::unexpected_input()),
@@ -400,7 +400,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     }
                 }
                 step if step.phase() > StepPhase::SendingCommit => {
-                    warn!("garbler received commit header ack after completion, ignore");
+                    debug!("garbler received commit header ack after completion, ignore");
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -434,7 +434,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     }
                 }
                 step if step.phase() > StepPhase::SendingCommit => {
-                    warn!("garbler received commit chunk ack after completion, ignore");
+                    debug!("garbler received commit chunk ack after completion, ignore");
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -525,7 +525,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     // Informational only. We mark a table as transferred once we get corresponding
                     // [`TableTransferReceiptMsg`](mosaic_cac_types::TableTransferReceiptMsg) from
                     // evaluator.
-                    info!(%commitment, "garbling table transferred")
+                    debug!(%commitment, "garbling table transferred")
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -784,14 +784,14 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
                 let DepositStep::WaitingForAdaptors { chunks } = &mut deposit_state.step else {
                     // WaitingForAdaptors is first step of deposit state machine. All other steps
                     // are after it.
-                    warn!("garbler received adaptor chunk after completion, ack and ignore");
+                    debug!("garbler received adaptor chunk after completion, ack and ignore");
                     return Ok(());
                 };
 
                 let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
 
                 if chunks[chunk_idx] {
-                    warn!("garbler received duplicate adaptor chunk, ack and ignore");
+                    debug!("garbler received duplicate adaptor chunk, ack and ignore");
                     return Ok(());
                 }
 
@@ -824,7 +824,7 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
             }
         }
         step if step.phase() > StepPhase::SetupComplete => {
-            warn!("garbler received adaptor chunk after completion, ack and ignore");
+            debug!("garbler received adaptor chunk after completion, ack and ignore");
             return Ok(());
         }
 

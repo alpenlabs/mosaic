@@ -6,7 +6,7 @@ use mosaic_cac_types::{
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
     OpenedGarblingTableCommitments, PubKey, ReservedSetupInputShares, Seed, SetupInputs,
-    TableTransferReceiptMsg, TableTransferRequestMsg, WideLabelWirePolynomialCommitments,
+    TableTransferReceiptMsg, WideLabelWirePolynomialCommitments,
     WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
     WithdrawalInputs, state_machine::evaluator::*,
 };
@@ -582,7 +582,7 @@ async fn handle_commit_msg_header<S: StateMut>(
     match &mut state.step {
         Step::WaitingForCommit { header, chunks, .. } => {
             if *header {
-                warn!("evaluator received duplicate commit header, ack and ignore");
+                debug!("evaluator received duplicate commit header, ack and ignore");
                 return Ok(());
             }
 
@@ -637,7 +637,7 @@ async fn handle_commit_msg_header<S: StateMut>(
             post_handle_commit_msg(state, artifact_store, actions).await
         }
         step if step.phase() > StepPhase::WaitingForCommit => {
-            warn!("evaluator received commit header after completion, ack and ignore");
+            debug!("evaluator received commit header after completion, ack and ignore");
             Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
@@ -659,7 +659,7 @@ async fn handle_commit_msg_chunk<S: StateMut>(
                 }
                 Some(true) => {
                     // already seen chunk
-                    warn!(%chunk_idx, "evaluator received duplicate commit chunk, ack and ignore");
+                    debug!(%chunk_idx, "evaluator received duplicate commit chunk, ack and ignore");
                     return Ok(());
                 }
                 None => {
@@ -699,7 +699,7 @@ async fn handle_commit_msg_chunk<S: StateMut>(
             post_handle_commit_msg(root_state, state, actions).await
         }
         step if step.phase() > StepPhase::WaitingForCommit => {
-            warn!("evaluator received commit chunk after completion, ack and ignore");
+            debug!("evaluator received commit chunk after completion, ack and ignore");
             Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
@@ -744,7 +744,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
             remaining_chunks,
         } => {
             if *header {
-                warn!("evaluator received duplicate challenge response header, ack and ignore");
+                debug!("evaluator received duplicate challenge response header, ack and ignore");
                 return Ok(());
             }
 
@@ -789,7 +789,7 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
             post_handle_challenge_response(root_state, state, actions).await
         }
         step if step.phase() > StepPhase::WaitingForChallengeResponse => {
-            warn!("evaluator received challenge response header after completion, ack and ignore");
+            debug!("evaluator received challenge response header after completion, ack and ignore");
             Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
@@ -807,6 +807,18 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
             header,
             remaining_chunks,
         } => {
+            let challenge_idxs = state
+                .get_challenge_indices()
+                .await
+                .require("expected challenge indices")?;
+
+            if !challenge_idxs
+                .iter()
+                .any(|idx| idx.get() == response_msg_chunk.circuit_index as usize)
+            {
+                return Err(SMError::InvalidInputData);
+            }
+
             let chunk_idx = (response_msg_chunk.circuit_index as usize)
                 .checked_sub(1)
                 .unwrap();
@@ -815,8 +827,11 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                     // expected chunk
                 }
                 Some(false) => {
-                    // already seen chunk
-                    warn!(%chunk_idx, "evaluator received duplicate commit chunk, ack and ignore");
+                    // already seen expected chunk
+                    debug!(
+                        %chunk_idx,
+                        "evaluator received duplicate challenge response chunk, ack and ignore"
+                    );
                     return Ok(());
                 }
                 None => {
@@ -847,7 +862,7 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
             post_handle_challenge_response(root_state, state, actions).await
         }
         step if step.phase() > StepPhase::WaitingForChallengeResponse => {
-            warn!("evaluator received challenge response chunk after completion, ack and ignore");
+            debug!("evaluator received challenge response chunk after completion, ack and ignore");
             Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
