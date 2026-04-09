@@ -38,8 +38,8 @@
 //!    broadcasting to all workers.
 //! 5. Workers process their sessions concurrently. Per-session timeout evicts slow consumers (e.g.
 //!    G8 with a congested peer) without blocking others. Evicted actions go to the retry list.
-//! 6. After all blocks: workers finalize sessions, report completions, and
-//!    the coordinator forwards them to the SM.
+//! 6. After all blocks: workers finalize sessions, report completions, and the coordinator forwards
+//!    them to the SM.
 //!
 //! [`ReaderV5c`]: ckt_fmtv5_types::v5::c::ReaderV5c
 //! [`CircuitSession`]: mosaic_job_api::CircuitSession
