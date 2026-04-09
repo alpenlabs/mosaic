@@ -14,31 +14,34 @@ pub struct DepositState {
     pub sk: SecretKey,
 }
 
-/// Steps in the evaluator's deposit state machine.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DepositStep {
-    /// Generating adaptor signatures for deposit and withdrawal.
-    GeneratingAdaptors {
-        /// Whether the deposit adaptor has been generated.
-        deposit: bool,
-        /// Which withdrawal message chunks have been generated.
-        withdrawal_chunks: HeapArray<bool, N_ADAPTOR_MSG_CHUNKS>,
-    },
-    /// Sending adaptor message chunks to the garbler.
-    /// Transitions to `DepositReady` when all chunks are acked.
-    SendingAdaptors {
-        /// Track which adaptor message chunks have been acked.
-        acked: HeapArray<bool, N_ADAPTOR_MSG_CHUNKS>,
-    },
-    /// Deposit is ready and waiting for completion.
-    DepositReady,
-    /// Funds have been withdrawn without dispute.
-    WithdrawnUndisputed,
-    /// Deposit operation was aborted.
-    Aborted {
-        /// Reason for the abort.
-        reason: String,
-    },
+crate::state_machine::define_step_phase! {
+    DepositStepPhase;
+    /// Steps in the evaluator's deposit state machine.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum DepositStep {
+        /// Generating adaptor signatures for deposit and withdrawal.
+        GeneratingAdaptors {
+            /// Whether the deposit adaptor has been generated.
+            deposit: bool,
+            /// Which withdrawal message chunks have been generated.
+            withdrawal_chunks: HeapArray<bool, N_ADAPTOR_MSG_CHUNKS>,
+        },
+        /// Sending adaptor message chunks to the garbler.
+        /// Transitions to `DepositReady` when all chunks are acked.
+        SendingAdaptors {
+            /// Track which adaptor message chunks have been acked.
+            acked: HeapArray<bool, N_ADAPTOR_MSG_CHUNKS>,
+        },
+        /// Deposit is ready and waiting for completion.
+        DepositReady,
+        /// Funds have been withdrawn without dispute.
+        WithdrawnUndisputed,
+        /// Deposit operation was aborted.
+        Aborted {
+            /// Reason for the abort.
+            reason: String,
+        },
+    }
 }
 
 impl Default for DepositStep {
@@ -46,19 +49,6 @@ impl Default for DepositStep {
         DepositStep::GeneratingAdaptors {
             deposit: false,
             withdrawal_chunks: HeapArray::from_elem(false),
-        }
-    }
-}
-
-impl DepositStep {
-    /// Name of step
-    pub fn step_name(&self) -> &'static str {
-        match &self {
-            DepositStep::GeneratingAdaptors { .. } => "GeneratingAdaptors",
-            DepositStep::SendingAdaptors { .. } => "SendingAdaptors",
-            DepositStep::DepositReady => "DepositReady",
-            DepositStep::WithdrawnUndisputed => "WithdrawnUndisputed",
-            DepositStep::Aborted { .. } => "Aborted",
         }
     }
 }

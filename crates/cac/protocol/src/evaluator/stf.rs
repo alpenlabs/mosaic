@@ -5,10 +5,10 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
-    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
-    ReservedSetupInputShares, Seed, SetupInputs, TableTransferReceiptMsg,
-    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
-    WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
+    OpenedGarblingTableCommitments, PubKey, ReservedSetupInputShares, Seed, SetupInputs,
+    TableTransferReceiptMsg, WideLabelWirePolynomialCommitments,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -17,6 +17,7 @@ use mosaic_common::constants::{
 };
 use mosaic_vs3::{Share, interpolate};
 use rand::SeedableRng;
+use tracing::{debug, info, warn};
 
 use super::emit;
 use crate::{
@@ -46,6 +47,7 @@ pub(crate) async fn handle_event<S: StateMut>(
     match input {
         Input::Init(data) => match root_state.step {
             Step::Uninit => {
+                info!("evaluator init: waiting for commit");
                 root_state.config = Some(Config {
                     seed: data.seed,
                     setup_inputs: data.setup_inputs,
@@ -55,7 +57,13 @@ pub(crate) async fn handle_event<S: StateMut>(
                     chunks: HeapArray::from_elem(false),
                 };
             }
-            _ => return Err(SMError::UnexpectedInput),
+            _ => {
+                warn!(
+                    step = root_state.step.step_name(),
+                    "evaluator init in unexpected step"
+                );
+                return Err(SMError::UnexpectedInput);
+            }
         },
         Input::RecvCommitMsgHeader(commit_msg_header) => {
             handle_commit_msg_header(&mut root_state, state, commit_msg_header, actions).await?;
@@ -91,10 +99,11 @@ pub(crate) async fn handle_event<S: StateMut>(
                     .map_err(SMError::storage)?
                     .is_some()
                 {
-                    // deposit already exists
+                    warn!(%deposit_id, "evaluator deposit already exists");
                     return Err(SMError::deposit_already_exists(deposit_id));
                 }
 
+                info!(%deposit_id, "evaluator initializing deposit, generating adaptors");
                 let deposit_state = DepositState {
                     step: DepositStep::GeneratingAdaptors {
                         deposit: false,
@@ -136,6 +145,7 @@ pub(crate) async fn handle_event<S: StateMut>(
 
                 match deposit_state.step {
                     DepositStep::DepositReady => {
+                        info!(%deposit_id, "evaluator deposit undisputed withdrawal");
                         deposit_state.step = DepositStep::WithdrawnUndisputed;
                     }
                     _ => return Err(SMError::UnexpectedInput),
@@ -155,6 +165,7 @@ pub(crate) async fn handle_event<S: StateMut>(
 
                     match deposit_state.step {
                         DepositStep::DepositReady => {
+                            info!(%deposit_id, "evaluator disputed withdrawal, evaluating tables");
                             state
                                 .put_completed_signatures(&deposit_id, &signatures)
                                 .await
@@ -266,10 +277,12 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         ActionResult::VerifyOpenedInputSharesResult(failure) => match root_state.step {
             Step::VerifyingOpenedInputShares => {
                 if let Some(failure_reason) = failure {
+                    warn!(reason = %failure_reason, "evaluator opened input shares verification failed, aborting");
                     root_state.step = Step::Aborted {
                         reason: format!("invalid opened input shares: {}", failure_reason),
                     };
                 } else {
+                    info!("evaluator opened input shares verified, verifying table commitments");
                     let opened_indices = state
                         .get_challenge_indices()
                         .await
@@ -339,8 +352,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                                 .map_err(SMError::storage)?;
 
                             *deposit = true;
+                            debug!(%deposit_id, "evaluator deposit adaptors generated");
 
                             if withdrawal_chunks.all() {
+                                info!(%deposit_id, "all adaptors generated, sending");
                                 deposit_state.step = DepositStep::SendingAdaptors {
                                     acked: HeapArray::from_elem(false),
                                 };
@@ -405,8 +420,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                             .map_err(SMError::storage)?;
 
                         withdrawal_chunks[chunk_idx.get() as usize] = true;
+                        debug!(%deposit_id, chunk = chunk_idx.get(), done = withdrawal_chunks.count_ones(), total = withdrawal_chunks.len(), "evaluator withdrawal adaptor chunk generated");
 
                         if *deposit && withdrawal_chunks.all() {
+                            info!(%deposit_id, "all adaptors generated, sending");
                             deposit_state.step = DepositStep::SendingAdaptors {
                                 acked: HeapArray::from_elem(false),
                             };
@@ -458,8 +475,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         }
 
                         acked[idx] = true;
+                        debug!(%deposit_id, chunk = idx, done = acked.count_ones(), total = acked.len(), "evaluator adaptor chunk sent");
 
                         if acked.all() {
+                            info!(%deposit_id, "all adaptor chunks sent, deposit ready");
                             deposit_state.step = DepositStep::DepositReady;
                         }
                     }
@@ -486,6 +505,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     };
 
                     evaluated[idx] = true;
+                    debug!(%commitment, done = evaluated.count_ones(), total = evaluated.len(), "evaluator table evaluation result");
 
                     let success = if let Some(output_share) = output_share {
                         // output_share is Some only if the evaluation yielded False value as result
@@ -527,6 +547,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                     };
 
                     if success || evaluated.all() {
+                        info!(%deposit_id, success, "evaluator table evaluations complete, setup consumed");
                         root_state.step = Step::SetupConsumed {
                             deposit_id: *deposit_id,
                             success,
@@ -560,7 +581,13 @@ async fn handle_commit_msg_header<S: StateMut>(
 ) -> SMResult<()> {
     match &mut state.step {
         Step::WaitingForCommit { header, chunks, .. } => {
+            if *header {
+                debug!("evaluator received duplicate commit header, ack and ignore");
+                return Ok(());
+            }
+
             if !is_valid_commit_header(&commit_msg_header) {
+                warn!("evaluator received invalid commit msg header, aborting");
                 state.step = Step::Aborted {
                     reason: "invalid commit msg header".into(),
                 };
@@ -601,12 +628,17 @@ async fn handle_commit_msg_header<S: StateMut>(
                 .map_err(SMError::storage)?;
 
             *header = true;
+            debug!("evaluator commit msg header received");
 
             if !chunks.all() {
                 return Ok(());
             }
 
             post_handle_commit_msg(state, artifact_store, actions).await
+        }
+        step if step.phase() > StepPhase::WaitingForCommit => {
+            debug!("evaluator received commit header after completion, ack and ignore");
+            Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
     }
@@ -620,13 +652,6 @@ async fn handle_commit_msg_chunk<S: StateMut>(
 ) -> SMResult<()> {
     match &mut root_state.step {
         Step::WaitingForCommit { header, chunks } => {
-            if !is_valid_commit_chunk(&commit_msg_chunk) {
-                root_state.step = Step::Aborted {
-                    reason: "invalid commit msg chunk".into(),
-                };
-                return Ok(());
-            }
-
             let chunk_idx = commit_msg_chunk.wire_index as usize;
             match chunks.get(chunk_idx) {
                 Some(false) => {
@@ -634,7 +659,8 @@ async fn handle_commit_msg_chunk<S: StateMut>(
                 }
                 Some(true) => {
                     // already seen chunk
-                    return Err(SMError::InvalidInputData);
+                    debug!(%chunk_idx, "evaluator received duplicate commit chunk, ack and ignore");
+                    return Ok(());
                 }
                 None => {
                     // unexpected chunk idx
@@ -643,6 +669,12 @@ async fn handle_commit_msg_chunk<S: StateMut>(
             };
 
             chunks[chunk_idx] = true;
+            debug!(
+                wire = chunk_idx,
+                done = chunks.count_ones(),
+                total = chunks.len(),
+                "evaluator commit msg chunk received"
+            );
 
             state
                 .put_input_polynomial_commitment_zeroth_coeffs(
@@ -666,6 +698,10 @@ async fn handle_commit_msg_chunk<S: StateMut>(
 
             post_handle_commit_msg(root_state, state, actions).await
         }
+        step if step.phase() > StepPhase::WaitingForCommit => {
+            debug!("evaluator received commit chunk after completion, ack and ignore");
+            Ok(())
+        }
         _ => Err(SMError::UnexpectedInput),
     }
 }
@@ -685,9 +721,10 @@ async fn post_handle_commit_msg<S: StateMut>(
         .await
         .map_err(SMError::storage)?;
 
+    info!("evaluator commit msg complete, sending challenge");
     root_state.step = Step::WaitingForChallengeResponse {
         header: false,
-        chunks: HeapArray::from_elem(false),
+        remaining_chunks: get_remaining_challenge_response_chunks(&challenge_indices),
     };
 
     let challenge_msg = ChallengeMsg { challenge_indices };
@@ -702,13 +739,17 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
-        Step::WaitingForChallengeResponse { header, chunks } => {
-            if !is_valid_challenge_response_header(&response_msg_header) {
-                root_state.step = Step::Aborted {
-                    reason: "invalid challenge response message header".into(),
-                };
+        Step::WaitingForChallengeResponse {
+            header,
+            remaining_chunks,
+        } => {
+            if *header {
+                debug!("evaluator received duplicate challenge response header, ack and ignore");
                 return Ok(());
             }
+
+            // NOTE: header validity is checked after header and all chunks are received.
+
             let challenge_idxs = state
                 .get_challenge_indices()
                 .await
@@ -740,11 +781,16 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 .map_err(SMError::storage)?;
 
             *header = true;
-            if chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
+            debug!("evaluator challenge response header received");
+            if remaining_chunks.count_ones() > 0 {
                 return Ok(());
             }
 
             post_handle_challenge_response(root_state, state, actions).await
+        }
+        step if step.phase() > StepPhase::WaitingForChallengeResponse => {
+            debug!("evaluator received challenge response header after completion, ack and ignore");
+            Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
     }
@@ -757,26 +803,49 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
-        Step::WaitingForChallengeResponse { header, chunks } => {
+        Step::WaitingForChallengeResponse {
+            header,
+            remaining_chunks,
+        } => {
             let challenge_idxs = state
                 .get_challenge_indices()
                 .await
                 .require("expected challenge indices")?;
 
-            if !is_valid_challenge_response_chunk(&response_msg_chunk, &challenge_idxs) {
-                root_state.step = Step::Aborted {
-                    reason: "invalid challenge response message".into(),
-                };
-                return Ok(());
+            if !challenge_idxs
+                .iter()
+                .any(|idx| idx.get() == response_msg_chunk.circuit_index as usize)
+            {
+                return Err(SMError::InvalidInputData);
             }
 
             let chunk_idx = (response_msg_chunk.circuit_index as usize)
                 .checked_sub(1)
                 .unwrap();
-            if chunks[chunk_idx] {
-                return Err(SMError::InvalidInputData);
-            }
-            chunks[chunk_idx] = true;
+            match remaining_chunks.get(chunk_idx) {
+                Some(true) => {
+                    // expected chunk
+                }
+                Some(false) => {
+                    // already seen expected chunk
+                    debug!(
+                        %chunk_idx,
+                        "evaluator received duplicate challenge response chunk, ack and ignore"
+                    );
+                    return Ok(());
+                }
+                None => {
+                    // unexpected chunk idx
+                    return Err(SMError::InvalidInputData);
+                }
+            };
+            remaining_chunks[chunk_idx] = false;
+            debug!(
+                circuit_index = response_msg_chunk.circuit_index,
+                remaining = remaining_chunks.count_ones(),
+                total = remaining_chunks.len(),
+                "evaluator challenge response chunk received"
+            );
 
             state
                 .put_opened_input_shares_chunk(
@@ -786,11 +855,15 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                 .await
                 .map_err(SMError::storage)?;
 
-            if !*header || chunks.count_ones() != N_CHALLENGE_RESPONSE_CHUNKS {
+            if !*header || remaining_chunks.count_ones() > 0 {
                 return Ok(());
             }
 
             post_handle_challenge_response(root_state, state, actions).await
+        }
+        step if step.phase() > StepPhase::WaitingForChallengeResponse => {
+            debug!("evaluator received challenge response chunk after completion, ack and ignore");
+            Ok(())
         }
         _ => Err(SMError::UnexpectedInput),
     }
@@ -802,28 +875,6 @@ async fn post_handle_challenge_response<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     // all chunks received
-    let opened_output_shares = state
-        .get_opened_output_shares()
-        .await
-        .require("expected opened output shares")?;
-
-    let output_polynomial_commitment = state
-        .get_output_polynomial_commitment()
-        .await
-        .require("expected output polynomial commitment")?;
-
-    if let Some(failure_reason) =
-        verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
-    {
-        root_state.step = Step::Aborted {
-            reason: format!(
-                "opened output share verification failed: {}",
-                failure_reason
-            ),
-        };
-        return Ok(());
-    }
-
     let config = require_config(root_state)?;
     let reserved_setup_input_shares = state
         .get_reserved_setup_input_shares()
@@ -840,6 +891,7 @@ async fn post_handle_challenge_response<S: StateMut>(
         &config.setup_inputs,
         &setup_wire_zeroth_coefficients,
     ) {
+        warn!(reason = %failure_reason, "evaluator reserved input share verification failed, aborting");
         root_state.step = Step::Aborted {
             reason: format!(
                 "reserved input share verification failed: {}",
@@ -849,6 +901,7 @@ async fn post_handle_challenge_response<S: StateMut>(
         return Ok(());
     }
 
+    info!("evaluator challenge response verified, verifying opened input shares");
     root_state.step = Step::VerifyingOpenedInputShares;
 
     emit(actions, Action::VerifyOpenedInputShares);
@@ -880,6 +933,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
 
             let expected_commitment = opened_commitments[idx];
             if table_commitment != expected_commitment {
+                warn!(%index, "evaluator table commitment mismatch, aborting");
                 root_state.step = Step::Aborted {
                     reason: format!("invalid table seed for index {}", index),
                 };
@@ -887,8 +941,10 @@ async fn handle_table_commitment_generated<S: StateMut>(
             }
 
             verified[idx] = true;
+            debug!(%index, done = verified.count_ones(), total = verified.len(), "evaluator table commitment verified");
 
             if verified.all() {
+                info!("all table commitments verified, requesting garbling tables");
                 let eval_indices = get_eval_indices(opened_indices);
                 debug_assert!(is_sorted(&eval_indices));
 
@@ -936,6 +992,7 @@ async fn handle_table_received<S: StateMut>(
 
             let expected_commitment = eval_commitments[pos];
             if table_commitment != expected_commitment {
+                warn!(%index, "evaluator received garbling table with mismatched commitment, aborting");
                 root_state.step = Step::Aborted {
                     reason: format!("invalid table for index {}", index),
                 };
@@ -948,8 +1005,10 @@ async fn handle_table_received<S: StateMut>(
             );
 
             received[pos] = true;
+            debug!(%index, done = received.count_ones(), total = received.len(), "evaluator garbling table received");
 
             if received.all() {
+                info!("all garbling tables received, setup complete");
                 root_state.step = Step::SetupComplete;
             }
 
@@ -973,14 +1032,22 @@ pub(crate) async fn restore<S: StateRead>(
         .map_err(SMError::storage)?
         .unwrap_or_default();
 
+    info!(
+        step = root_state.step.step_name(),
+        "evaluator restoring state"
+    );
+
     match &root_state.step {
         Step::Uninit => {}
         Step::WaitingForCommit { .. } => {}
-        Step::WaitingForChallengeResponse { header, chunks } => {
+        Step::WaitingForChallengeResponse {
+            header,
+            remaining_chunks,
+        } => {
             // Replay challenge send only if no response material was observed yet.
             // Once any response data is stored, re-sending can cause duplicate
             // challenge handling on the garbler side.
-            if !header && chunks.iter().all(|seen| !*seen) {
+            if !header && remaining_chunks.count_ones() == N_CHALLENGE_RESPONSE_CHUNKS {
                 let challenge_indices = state
                     .get_challenge_indices()
                     .await
@@ -1135,11 +1202,6 @@ fn is_valid_commit_header(commit_header: &CommitMsgHeader) -> bool {
     PubKey(poly).valid()
 }
 
-#[expect(unused_variables)]
-fn is_valid_commit_chunk(commit_msg: &CommitMsgChunk) -> bool {
-    true // validated when challenge response is received
-}
-
 fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
     let seed = derive_stage_seed(base_seed, SEED_CONTEXT_SAMPLE_CHALLENGE_INDICES, None);
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed.into());
@@ -1152,29 +1214,6 @@ fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
     );
     challenge_indices.sort_by_key(|k| k.get());
     challenge_indices
-}
-
-#[expect(unused_variables)]
-fn is_valid_challenge_response_header(response_msg_header: &ChallengeResponseMsgHeader) -> bool {
-    true // validated by jobs
-}
-
-fn is_valid_challenge_response_chunk(
-    response_msg_chunk: &ChallengeResponseMsgChunk,
-    challenge_idxs: &ChallengeIndices,
-) -> bool {
-    challenge_idxs
-        .iter()
-        .any(|x| x.get() == response_msg_chunk.circuit_index as usize)
-}
-
-/// Verify opened output shares against polynomial commitments and return failure reason or None.
-#[expect(unused_variables)]
-fn verify_opened_output_shares(
-    opened_output_shares: &OpenedOutputShares,
-    output_polynomial_commitment: &OutputPolynomialCommitment,
-) -> Option<String> {
-    None
 }
 
 /// Verify reserved setup input shares and return failure reason or None.
@@ -1203,6 +1242,20 @@ fn get_opened_commitments(
         let seed_idx = challenge_indices[i].get() - 1;
         garbling_commitments[seed_idx]
     })
+}
+
+/// Returns a boolean mask over chunks, where `true` marks chunks that still
+/// need to be received. Challenge indices are 1-based, so each is decremented
+/// by 1 to map to the 0-based chunk index.
+pub(super) fn get_remaining_challenge_response_chunks(
+    challenge_indices: &ChallengeIndices,
+) -> HeapArray<bool, N_CIRCUITS> {
+    let mut remaining_chunks = HeapArray::from_elem(false);
+    challenge_indices.iter().for_each(|challenge_idx| {
+        let chunk_idx = challenge_idx.get().checked_sub(1).expect("non zero");
+        remaining_chunks[chunk_idx] = true;
+    });
+    remaining_chunks
 }
 
 fn is_sorted<T: Ord>(slice: &[T]) -> bool {

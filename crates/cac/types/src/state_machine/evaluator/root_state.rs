@@ -24,90 +24,75 @@ pub struct Config {
     pub setup_inputs: SetupInputs,
 }
 
-/// Valid states.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Step {
-    #[default]
-    /// Not initialized; Default
-    Uninit,
-    /// Waiting for commit message from garbler.
-    WaitingForCommit {
-        /// Track if header is received
-        header: bool,
-        /// Track received commit message chunks
-        chunks: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
-    },
-    /// Challenge sent, waiting for challenge response from garbler.
-    WaitingForChallengeResponse {
-        /// Track if header is received
-        header: bool,
-        /// Track received challenge response chunks
-        chunks: HeapArray<bool, N_CIRCUITS>,
-    },
-    /// Verifying opened input shares from challenge response.
-    VerifyingOpenedInputShares,
-    /// Verifying opened table commitments match opened seeds.
-    VerifyingTableCommitments {
-        /// Indices of circuits to verify
-        opened_indices: ChallengeIndices,
-        /// Seeds for opened circuits
-        opened_seeds: OpenedGarblingSeeds,
-        /// Commitments for opened circuits
-        opened_commitments: OpenedGarblingTableCommitments,
-        /// Track verified table commitments
-        verified: HeapArray<bool, N_OPEN_CIRCUITS>,
-    },
-    /// Receiving garbling tables for evaluation circuits.
-    ReceivingGarblingTables {
-        /// Indices of circuits to evaluate
-        eval_indices: EvaluationIndices,
-        /// Expected commitments of garbling tables
-        eval_commitments: EvalGarblingTableCommitments,
-        /// Track received garbling tables
-        received: HeapArray<bool, N_EVAL_CIRCUITS>,
-    },
-    /// Setup is completed, ready to be used for deposits.
-    /// Accepts deposit inputs
-    SetupComplete,
-    /// Evaluating garbling tables for a deposit.
-    EvaluatingTables {
-        /// Deposit being evaluated
-        deposit_id: DepositId,
-        /// Indices of circuits to evaluate
-        eval_indices: EvaluationIndices,
-        /// Expected commitments of garbling tables
-        eval_commitments: EvalGarblingTableCommitments,
-        /// Track evaluated tables
-        evaluated: HeapArray<bool, N_EVAL_CIRCUITS>,
-    },
-    /// Setup is consumed by a withdrawal dispute. Cannot be reused.
-    SetupConsumed {
-        /// Disputed withdrawal for deposit
-        deposit_id: DepositId,
-        /// If final secret was extracted and can be used to sign transaction (evaluator)
-        success: bool,
-    },
-    /// Setup was aborted due to a protocol violation.
-    Aborted {
-        /// Abort reason
-        reason: String,
-    },
-}
-
-impl Step {
-    /// Name of step
-    pub fn step_name(&self) -> &'static str {
-        match self {
-            Step::Uninit => "Uninit",
-            Step::WaitingForCommit { .. } => "WaitingForCommit",
-            Step::WaitingForChallengeResponse { .. } => "WaitingForChallengeResponse",
-            Step::VerifyingOpenedInputShares => "VerifyingOpenedInputShares",
-            Step::VerifyingTableCommitments { .. } => "VerifyingTableCommitments",
-            Step::ReceivingGarblingTables { .. } => "ReceivingGarblingTables",
-            Step::SetupComplete => "SetupComplete",
-            Step::EvaluatingTables { .. } => "EvaluatingTables",
-            Step::SetupConsumed { .. } => "SetupConsumed",
-            Step::Aborted { .. } => "Aborted",
-        }
+crate::state_machine::define_step_phase! {
+    StepPhase;
+    /// Valid states.
+    #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Step {
+        #[default]
+        /// Not initialized; Default
+        Uninit,
+        /// Waiting for commit message from garbler.
+        WaitingForCommit {
+            /// Track if header is received
+            header: bool,
+            /// Track received commit message chunks
+            chunks: HeapArray<bool, N_COMMIT_MSG_CHUNKS>,
+        },
+        /// Challenge sent, waiting for challenge response from garbler.
+        WaitingForChallengeResponse {
+            /// Track if header is received
+            header: bool,
+            /// Track expected challenge response chunks
+            remaining_chunks: HeapArray<bool, N_CIRCUITS>,
+        },
+        /// Verifying opened input shares from challenge response.
+        VerifyingOpenedInputShares,
+        /// Verifying opened table commitments match opened seeds.
+        VerifyingTableCommitments {
+            /// Indices of circuits to verify
+            opened_indices: ChallengeIndices,
+            /// Seeds for opened circuits
+            opened_seeds: OpenedGarblingSeeds,
+            /// Commitments for opened circuits
+            opened_commitments: OpenedGarblingTableCommitments,
+            /// Track verified table commitments
+            verified: HeapArray<bool, N_OPEN_CIRCUITS>,
+        },
+        /// Receiving garbling tables for evaluation circuits.
+        ReceivingGarblingTables {
+            /// Indices of circuits to evaluate
+            eval_indices: EvaluationIndices,
+            /// Expected commitments of garbling tables
+            eval_commitments: EvalGarblingTableCommitments,
+            /// Track received garbling tables
+            received: HeapArray<bool, N_EVAL_CIRCUITS>,
+        },
+        /// Setup is completed, ready to be used for deposits.
+        /// Accepts deposit inputs
+        SetupComplete,
+        /// Evaluating garbling tables for a deposit.
+        EvaluatingTables {
+            /// Deposit being evaluated
+            deposit_id: DepositId,
+            /// Indices of circuits to evaluate
+            eval_indices: EvaluationIndices,
+            /// Expected commitments of garbling tables
+            eval_commitments: EvalGarblingTableCommitments,
+            /// Track evaluated tables
+            evaluated: HeapArray<bool, N_EVAL_CIRCUITS>,
+        },
+        /// Setup is consumed by a withdrawal dispute. Cannot be reused.
+        SetupConsumed {
+            /// Disputed withdrawal for deposit
+            deposit_id: DepositId,
+            /// If final secret was extracted and can be used to sign transaction (evaluator)
+            success: bool,
+        },
+        /// Setup was aborted due to a protocol violation.
+        Aborted {
+            /// Abort reason
+            reason: String,
+        },
     }
 }

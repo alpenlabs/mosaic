@@ -4,7 +4,7 @@ from dataclasses import (
 )
 
 # Defaults matching mosaic config.rs constants
-DEFAULT_LOG_FILTER = "debug"
+DEFAULT_LOG_FILTER = "debug,h2=warn,hyper=warn,soketto=warn,jsonrpsee=warn"
 DEFAULT_KEEP_ALIVE_INTERVAL_SECS = 5
 DEFAULT_IDLE_TIMEOUT_SECS = 30
 DEFAULT_RECONNECT_BACKOFF_SECS = 1

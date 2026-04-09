@@ -69,12 +69,6 @@ def handle_deposit(
 
     sighashes = generate_sighashes(adaptor_pk)
 
-    evaluator.mosaic_initEvaluatorDeposit(
-        evaluator_tsid,
-        deposit_id,
-        {"deposit_inputs": deposit_inputs, "sighashes": sighashes},
-    )
-
     garbler.mosaic_initGarblerDeposit(
         garbler_tsid,
         deposit_id,
@@ -83,6 +77,12 @@ def handle_deposit(
             "sighashes": sighashes,
             "adaptor_pk": adaptor_pk,
         },
+    )
+
+    evaluator.mosaic_initEvaluatorDeposit(
+        evaluator_tsid,
+        deposit_id,
+        {"deposit_inputs": deposit_inputs, "sighashes": sighashes},
     )
 
     def check_both_deposit_ready():

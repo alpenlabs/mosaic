@@ -34,11 +34,14 @@ class MosaicSetupConcurrentTest(BaseTest):
         # Get peer IDs
         peer_ids = {i: rpcs[i].mosaic_getRpcPeerId() for i in range(NETWORK_SIZE)}
 
-        # Setup garbler + evaluator for every unordered pair.
+        # Setup garbler + evaluator for pair of mosaic nodes.
         # Garbler and evaluator share the same random setup_inputs.
         setups = []
         for garbler in range(NETWORK_SIZE):
-            for evaluator in range(garbler + 1, NETWORK_SIZE):
+            for evaluator in range(NETWORK_SIZE):
+                if garbler == evaluator:
+                    continue
+
                 setup_inputs = secrets.token_hex(32)
 
                 tsid_g = rpcs[garbler].mosaic_setupTableset(
