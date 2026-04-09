@@ -21,8 +21,8 @@ mosaic-storage-api.workspace = true
 
 fasm.workspace = true
 futures.workspace = true
-monoio.workspace = true
 kanal = "0.1.1"
+monoio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

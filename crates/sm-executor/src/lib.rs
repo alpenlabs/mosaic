@@ -225,9 +225,17 @@ where
             self.restore_known_peers().await?;
             tracing::info!("sm executor restore completed; entering main loop");
 
+            // `kanal::recv()` is not cancel-safe in the direct-handoff case. Keep
+            // these receive futures alive across loop iterations so a ready item
+            // cannot be lost just because another select branch wins first.
+            let mut shutdown_fut = Box::pin(recv_shutdown(shutdown_rx.as_ref()));
+            let mut completion_fut = Box::pin(self.job_handle.recv());
+            let mut inbound_fut = Box::pin(self.net_client.recv());
+            let mut command_fut = Box::pin(self.command_rx.recv());
+
             loop {
                 monoio::select! {
-                    shutdown = recv_shutdown(shutdown_rx.as_ref()) => {
+                    shutdown = &mut shutdown_fut => {
                         match shutdown {
                             Some(Ok(())) | Some(Err(_)) => {
                                 tracing::info!("sm executor shutdown requested");
@@ -236,7 +244,8 @@ where
                             None => unreachable!("shutdown receiver helper never returns None"),
                         }
                     }
-                    completion = self.job_handle.recv() => {
+                    completion = &mut completion_fut => {
+                        completion_fut = Box::pin(self.job_handle.recv());
                         match completion {
                             Ok(c) => {
                                 let role = completion_role(&c.completion);
@@ -255,7 +264,8 @@ where
                             }
                         }
                     }
-                    inbound = self.net_client.recv() => {
+                    inbound = &mut inbound_fut => {
+                        inbound_fut = Box::pin(self.net_client.recv());
                         match inbound {
                             Ok(req) => {
                                 tracing::debug!(
@@ -277,7 +287,8 @@ where
                             }
                         }
                     }
-                    command = self.command_rx.recv() => {
+                    command = &mut command_fut => {
+                        command_fut = Box::pin(self.command_rx.recv());
                         match command {
                             Ok(cmd) => {
                                 tracing::debug!(
@@ -1028,10 +1039,15 @@ fn command_kind(kind: &SmCommandKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, sync::Arc};
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll},
+    };
 
     use ark_serialize::{CanonicalSerialize, Compress, SerializationError};
     use ed25519_dalek::SigningKey;
+    use futures::task::noop_waker_ref;
     use mosaic_cac_types::{
         ChallengeIndices, ChallengeMsg, HeapArray, Index, Msg,
         state_machine::{
@@ -1099,6 +1115,51 @@ mod tests {
             submit_rx,
             completion_tx,
         )
+    }
+
+    #[test]
+    fn kanal_waiting_recv_drop_loses_direct_handoff_message() {
+        let (tx, rx) = kanal::bounded_async::<u64>(1);
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+
+        let mut recv_fut = Box::pin(rx.recv());
+        assert!(matches!(recv_fut.as_mut().poll(&mut cx), Poll::Pending));
+
+        let mut send_fut = Box::pin(tx.send(7));
+        assert!(matches!(
+            send_fut.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+
+        drop(recv_fut);
+
+        assert!(
+            matches!(rx.try_recv(), Ok(None)),
+            "dropping a waiting recv future after direct handoff loses the message"
+        );
+    }
+
+    #[test]
+    fn persistent_recv_future_preserves_direct_handoff_message() {
+        let (tx, rx) = kanal::bounded_async::<u64>(1);
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+
+        let mut recv_fut = Box::pin(rx.recv());
+        assert!(matches!(recv_fut.as_mut().poll(&mut cx), Poll::Pending));
+
+        let mut send_fut = Box::pin(tx.send(9));
+        assert!(matches!(
+            send_fut.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+
+        assert!(matches!(
+            recv_fut.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(9))
+        ));
+        assert!(matches!(rx.try_recv(), Ok(None)));
     }
 
     fn make_net_client() -> (NetClient, kanal::AsyncSender<Stream>) {
