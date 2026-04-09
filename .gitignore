@@ -64,6 +64,7 @@ target/
 # Tests artifacts
 mutants.out*
 lcov.info
+functional-tests/_dd_parallel_shard*/
 
 # Unit test / coverage reports
 htmlcov/
