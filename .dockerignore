@@ -1,0 +1,11 @@
+target/
+.git/
+.idea/
+.helix/
+.DS_Store
+*.bak
+fuzz/
+docs/
+mutants.out*
+lcov.info
+docker/vol/

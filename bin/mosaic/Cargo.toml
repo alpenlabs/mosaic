@@ -15,9 +15,9 @@ default = []
 reduced-circuits = ["mosaic-common/reduced-circuits"]
 
 [dependencies]
-mosaic-common.workspace = true
 anyhow.workspace = true
 mosaic-cac-types.workspace = true
+mosaic-common.workspace = true
 mosaic-job-executors.workspace = true
 mosaic-job-scheduler.workspace = true
 mosaic-net-client.workspace = true

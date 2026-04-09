@@ -361,9 +361,16 @@ pub(crate) struct RpcConfig {
 }
 
 fn parse_socket_addr(value: &str) -> Result<SocketAddr> {
+    // Try direct parse first (IP:port), fall back to DNS resolution (hostname:port).
+    if let Ok(addr) = value.parse() {
+        return Ok(addr);
+    }
+    use std::net::ToSocketAddrs;
     value
-        .parse()
-        .with_context(|| format!("invalid socket address `{value}`"))
+        .to_socket_addrs()
+        .with_context(|| format!("failed to resolve address `{value}`"))?
+        .next()
+        .with_context(|| format!("no addresses found for `{value}`"))
 }
 
 fn decode_signing_key(value: &str) -> Result<SigningKey> {

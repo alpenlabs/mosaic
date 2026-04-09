@@ -19,6 +19,7 @@ use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
 
 use crate::{
+    SchedulerFault,
     garbling::{GarblingConfig, GarblingCoordinator},
     pool::{JobThreadPool, PoolConfig, worker::WorkerJob},
     priority::Priority,
@@ -74,6 +75,8 @@ pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     garbling: Option<GarblingCoordinator>,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
+    /// Internal fatal faults reported by workers/coordinator.
+    fault_rx: kanal::AsyncReceiver<SchedulerFault>,
 }
 
 /// Controller for graceful scheduler shutdown.
@@ -127,6 +130,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
 
         // Channel for Job Scheduler → SM Scheduler (completed results).
         let (completion_tx, completion_rx) = kanal::bounded_async(config.completion_queue_size);
+        let (fault_tx, fault_rx) = kanal::bounded_async(16);
 
         let executor = Arc::new(dispatcher);
 
@@ -135,9 +139,19 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         // We erase the concrete type so the coordinator is not generic over D.
         let factory: Arc<dyn SessionFactory> = Arc::clone(&executor) as Arc<dyn SessionFactory>;
 
-        let light = JobThreadPool::new(config.light, Arc::clone(&executor), completion_tx.clone());
-        let heavy = JobThreadPool::new(config.heavy, Arc::clone(&executor), completion_tx.clone());
-        let garbling = GarblingCoordinator::new(config.garbling, factory, completion_tx);
+        let light = JobThreadPool::new(
+            config.light,
+            Arc::clone(&executor),
+            completion_tx.clone(),
+            fault_tx.clone(),
+        );
+        let heavy = JobThreadPool::new(
+            config.heavy,
+            Arc::clone(&executor),
+            completion_tx.clone(),
+            fault_tx.clone(),
+        );
+        let garbling = GarblingCoordinator::new(config.garbling, factory, completion_tx, fault_tx);
 
         let handle = JobSchedulerHandle::new(submit_tx, completion_rx);
 
@@ -146,6 +160,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             heavy: Some(heavy),
             garbling: Some(garbling),
             submission_rx,
+            fault_rx,
         };
 
         (scheduler, handle)
@@ -201,6 +216,21 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                         Ok(()) | Err(_) => {
                             tracing::info!("job scheduler shutdown requested");
                             break;
+                        }
+                    }
+                }
+                recv = this.fault_rx.recv() => {
+                    match recv {
+                        Ok(SchedulerFault::CompletionChannelClosed { source, peer_id }) => {
+                            tracing::error!(
+                                source,
+                                peer = ?peer_id,
+                                "job scheduler completion delivery failed; shutting down fail-closed"
+                            );
+                            break;
+                        }
+                        Err(_) => {
+                            tracing::debug!("job scheduler fault channel closed");
                         }
                     }
                 }

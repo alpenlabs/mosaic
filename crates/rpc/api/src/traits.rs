@@ -140,7 +140,7 @@ pub trait MosaicRpc {
     /// Uses completed adaptor signatures to initiate tableset evaluation.
     /// The tableset can no longer be used after this.
     /// Only valid on an evaluator tableset.
-    #[method(name = "evaluate_tableset")]
+    #[method(name = "evaluateTableset")]
     async fn evaluate_tableset(
         &self,
         tsid: RpcTablesetId,

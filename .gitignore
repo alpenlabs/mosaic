@@ -64,6 +64,7 @@ target/
 # Tests artifacts
 mutants.out*
 lcov.info
+functional-tests/_dd_parallel_shard*/
 
 # Unit test / coverage reports
 htmlcov/
@@ -94,3 +95,7 @@ coverage.xml
 
 # fuzz target logs
 fuzz-*.log
+
+# Docker volume data
+docker/vol/fdb/data/
+docker/vol/mosaic-*/tables/

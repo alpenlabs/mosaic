@@ -193,7 +193,7 @@ pub enum CircuitAction {
 /// Submitted by the scheduler via the coordinator's async channel. The
 /// coordinator collects these into batches, creates sessions, and drives
 /// them through the circuit file.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PendingCircuitJob {
     /// The peer this action belongs to.
     pub peer_id: PeerId,

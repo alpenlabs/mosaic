@@ -1,0 +1,146 @@
+name: Functional tests
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  lint:
+    name: Lint functional test files
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          working-directory: functional-tests
+          activate-environment: true
+          enable-cache: true
+          cache-suffix: "functional-tests"
+          python-version: "3.12"
+
+      - name: Check formatting
+        working-directory: functional-tests
+        run: uv run ruff format --check
+
+      - name: Check types
+        working-directory: functional-tests
+        run: uv run ty check
+
+      - name: Lint
+        working-directory: functional-tests
+        run: uv run ruff check
+
+  run:
+    name: Run functional tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OPENSSL_VERSION: "3.5.0"
+      OPENSSL_CACHE_VERSION: "v2" # update this to refresh cache
+      OPENSSL_INSTALL_DIR: ${{ github.workspace }}/.cache/openssl-3.5.0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Cleanup space
+        uses: ./.github/actions/cleanup # zizmor: ignore[unpinned-uses]
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install nightly --profile minimal --component clippy
+          rustup default nightly
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          working-directory: functional-tests
+          activate-environment: true
+          enable-cache: true
+          cache-suffix: "functional-tests"
+
+      - name: Install FoundationDB client library
+        uses: ./.github/actions/setup-foundationdb-client
+
+      - name: Install and run FoundationDB server
+        uses: ./.github/actions/setup-foundationdb-server
+
+      - name: Build Cargo project
+        run: |
+          cargo build --locked --release -F reduced-circuits --bin mosaic
+          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+
+      - name: Run functional tests
+        id: funcTestsRun
+        continue-on-error: true
+        env:
+          NO_COLOR: "1"
+          LOG_LEVEL: "info"
+          PYTHON_VERSION: "3.12"
+        shell: bash
+        run: |
+          echo "Making sure built binaries are available"
+          which mosaic
+          cd functional-tests
+          source ./env.bash
+          uv run --python "$PYTHON_VERSION" python entry.py
+
+      - name: Zip log files on failure
+        if: steps.funcTestsRun.outcome == 'failure'
+        # Create a zip archive (logs.zip) that includes only service.log files,
+        # preserving the folder structure starting from functional-tests/_dd
+        # NOTE: (MdTeach) Entire _dd could end up hundreds of MBs, so keep only logs
+        run: |
+          # service logs
+          find functional-tests/_dd -type f -name "service.log" | zip -@ logs.zip
+          # functional test logs
+          zip -r logs.zip functional-tests/_dd -i '*/logs/*.log'
+
+      - name: Upload logs as build artifact on failure
+        if: steps.funcTestsRun.outcome == 'failure'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: fntest_dd
+          path: logs.zip
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0 # already compressed
+
+      - name: Fail job if functional tests fail
+        if: steps.funcTestsRun.outcome == 'failure'
+        run: |
+          echo "Functional tests failed"
+          exit 1
+
+  functional-tests-success:
+    name: Check that all checks pass
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint, run]
+    timeout-minutes: 60
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}

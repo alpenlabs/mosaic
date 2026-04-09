@@ -38,7 +38,8 @@
 //!    broadcasting to all workers.
 //! 5. Workers process their sessions concurrently. Per-session timeout evicts slow consumers (e.g.
 //!    G8 with a congested peer) without blocking others. Evicted actions go to the retry list.
-//! 6. After all blocks: workers finalize sessions, send completions to SM.
+//! 6. After all blocks: workers finalize sessions, report completions, and the coordinator forwards
+//!    them to the SM.
 //!
 //! [`ReaderV5c`]: ckt_fmtv5_types::v5::c::ReaderV5c
 //! [`CircuitSession`]: mosaic_job_api::CircuitSession
@@ -47,7 +48,7 @@
 //! [`CircuitAction`]: mosaic_job_api::CircuitAction
 //! [`Arc<OwnedChunk>`]: mosaic_job_api::OwnedChunk
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use mosaic_job_api::{
@@ -56,6 +57,8 @@ use mosaic_job_api::{
 };
 use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
+
+use crate::SchedulerFault;
 
 /// Size of each v5c gate record in bytes (3 × u32).
 const GATE_SIZE: usize = 12;
@@ -140,12 +143,14 @@ enum WorkerReport {
 struct ChunkReport {
     /// Jobs whose sessions were evicted (timeout or error).
     evicted_jobs: Vec<PendingCircuitJob>,
-    /// Number of sessions still active on this worker.
-    remaining_sessions: usize,
+    /// Jobs whose sessions remain active on this worker after the chunk.
+    remaining_jobs: Vec<PendingCircuitJob>,
 }
 
 /// Sent after finalizing all sessions at end of pass.
 struct FinishReport {
+    /// Completed results produced during finish.
+    completions: Vec<JobCompletion>,
     /// Jobs whose sessions finished with [`HandlerOutcome::Retry`].
     retry_jobs: Vec<PendingCircuitJob>,
 }
@@ -164,11 +169,7 @@ struct WorkerHandle {
 
 impl WorkerHandle {
     /// Spawn a new worker thread with its own monoio runtime.
-    fn spawn(
-        id: usize,
-        chunk_timeout: Duration,
-        completion_tx: kanal::AsyncSender<JobCompletion>,
-    ) -> Self {
+    fn spawn(id: usize, chunk_timeout: Duration) -> Self {
         // Bounded channels: main sends at most 1 command before waiting for
         // a report, so capacity 2 provides adequate headroom.
         let (command_tx, command_rx) = kanal::bounded_async(2);
@@ -181,13 +182,7 @@ impl WorkerHandle {
                     .enable_timer()
                     .build()
                     .expect("failed to build monoio runtime for garbling worker")
-                    .block_on(worker_loop(
-                        id,
-                        chunk_timeout,
-                        command_rx,
-                        report_tx,
-                        completion_tx,
-                    ));
+                    .block_on(worker_loop(id, chunk_timeout, command_rx, report_tx));
             })
             .expect("failed to spawn garbling worker thread");
 
@@ -266,10 +261,11 @@ impl GarblingCoordinator {
     /// Jobs submitted via [`submit`](Self::submit) are collected into batches,
     /// sessions are created via the `factory`, and workers process them
     /// concurrently.
-    pub fn new(
+    pub(crate) fn new(
         config: GarblingConfig,
         factory: Arc<dyn SessionFactory>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
+        fault_tx: kanal::AsyncSender<SchedulerFault>,
     ) -> Self {
         let (submit_tx, submit_rx) = kanal::bounded_async(config.max_concurrent * 2);
 
@@ -280,7 +276,13 @@ impl GarblingCoordinator {
                     .enable_timer()
                     .build()
                     .expect("failed to build monoio runtime for garbling coordinator")
-                    .block_on(coordinator_loop(config, factory, submit_rx, completion_tx));
+                    .block_on(coordinator_loop(
+                        config,
+                        factory,
+                        submit_rx,
+                        completion_tx,
+                        fault_tx,
+                    ));
             })
             .expect("failed to spawn garbling coordinator thread");
 
@@ -326,6 +328,7 @@ async fn coordinator_loop(
     factory: Arc<dyn SessionFactory>,
     submit_rx: kanal::AsyncReceiver<PendingCircuitJob>,
     completion_tx: kanal::AsyncSender<JobCompletion>,
+    fault_tx: kanal::AsyncSender<SchedulerFault>,
 ) {
     let span = tracing::info_span!(
         "job_scheduler.garbling_coordinator",
@@ -337,7 +340,7 @@ async fn coordinator_loop(
         // Spawn persistent worker threads.
         let n_workers = config.worker_threads.max(1);
         let mut workers: Vec<WorkerHandle> = (0..n_workers)
-            .map(|id| WorkerHandle::spawn(id, config.chunk_timeout, completion_tx.clone()))
+            .map(|id| WorkerHandle::spawn(id, config.chunk_timeout))
             .collect();
 
         tracing::info!(
@@ -452,12 +455,19 @@ async fn coordinator_loop(
 
             // ── 3. Run the pass ──────────────────────────────────────────
             let session_count = sessions.len();
-            run_pass(&config, sessions, &mut workers, &mut pending_retry)
-                .instrument(tracing::info_span!(
-                    "job_scheduler.garbling_pass",
-                    sessions = session_count
-                ))
-                .await;
+            run_pass(
+                &config,
+                sessions,
+                &mut workers,
+                &completion_tx,
+                &fault_tx,
+                &mut pending_retry,
+            )
+            .instrument(tracing::info_span!(
+                "job_scheduler.garbling_pass",
+                sessions = session_count
+            ))
+            .await;
         }
 
         // ── Shutdown workers ─────────────────────────────────────────────
@@ -491,6 +501,8 @@ async fn run_pass(
     config: &GarblingConfig,
     sessions: Vec<ActiveSession>,
     workers: &mut [WorkerHandle],
+    completion_tx: &kanal::AsyncSender<JobCompletion>,
+    fault_tx: &kanal::AsyncSender<SchedulerFault>,
     pending_retry: &mut Vec<PendingCircuitJob>,
 ) {
     let n_workers = workers.len();
@@ -504,19 +516,22 @@ async fn run_pass(
 
     // Send assignments to workers and track which ones have sessions.
     let mut active_worker_ids: Vec<usize> = Vec::with_capacity(n_workers);
+    let mut active_jobs_by_worker: HashMap<usize, Vec<PendingCircuitJob>> = HashMap::new();
     for (wid, assignment) in assignments.into_iter().enumerate() {
         if !assignment.is_empty() {
             let count = assignment.len();
+            let tracked_jobs: Vec<PendingCircuitJob> =
+                assignment.iter().map(|active| active.job.clone()).collect();
             if workers[wid]
                 .send(WorkerCommand::AssignSessions(assignment))
                 .await
             {
                 active_worker_ids.push(wid);
+                active_jobs_by_worker.insert(wid, tracked_jobs);
                 tracing::debug!(worker = wid, sessions = count, "assigned sessions");
             } else {
                 tracing::error!(worker = wid, "failed to assign sessions — worker dead");
-                // Sessions are lost — their jobs can't be recovered here because
-                // they were moved into the assignment vec. Log for visibility.
+                pending_retry.extend(tracked_jobs);
             }
         }
     }
@@ -537,7 +552,15 @@ async fn run_pass(
             // Tell workers to finish immediately (they have sessions assigned
             // but no chunks to process). The sessions will call finish() which
             // may return Retry — those get collected.
-            collect_finish_reports(&active_worker_ids, workers, pending_retry).await;
+            collect_finish_reports(
+                &active_worker_ids,
+                &mut active_jobs_by_worker,
+                workers,
+                completion_tx,
+                fault_tx,
+                pending_retry,
+            )
+            .await;
             return;
         }
     };
@@ -584,39 +607,14 @@ async fn run_pass(
         }
 
         // ── Barrier: wait for all workers to report ──────────────────
-        let mut still_active: Vec<usize> = Vec::with_capacity(active_worker_ids.len());
-
-        for &wid in &active_worker_ids {
-            match workers[wid].recv_report(report_timeout).await {
-                Some(WorkerReport::ChunkDone(report)) => {
-                    pending_retry.extend(report.evicted_jobs);
-                    if report.remaining_sessions > 0 {
-                        still_active.push(wid);
-                    } else {
-                        tracing::debug!(
-                            worker = wid,
-                            "all sessions evicted — worker idle for rest of pass"
-                        );
-                    }
-                }
-                Some(WorkerReport::FinishDone(_)) => {
-                    // Unexpected — worker sent finish report during chunk phase.
-                    tracing::error!(
-                        worker = wid,
-                        "unexpected FinishDone during chunk processing"
-                    );
-                }
-                None => {
-                    // Worker dead or timed out. Its sessions are lost.
-                    tracing::error!(
-                        worker = wid,
-                        "worker failed to report — sessions on this worker are lost"
-                    );
-                }
-            }
-        }
-
-        active_worker_ids = still_active;
+        active_worker_ids = collect_chunk_reports(
+            &active_worker_ids,
+            &mut active_jobs_by_worker,
+            workers,
+            report_timeout,
+            pending_retry,
+        )
+        .await;
 
         if active_worker_ids.is_empty() {
             tracing::warn!("all workers idle — ending pass early");
@@ -625,40 +623,150 @@ async fn run_pass(
     }
 
     // ── Finalize surviving sessions ──────────────────────────────────
-    collect_finish_reports(&active_worker_ids, workers, pending_retry).await;
+    collect_finish_reports_with_timeout(
+        &active_worker_ids,
+        &mut active_jobs_by_worker,
+        workers,
+        completion_tx,
+        fault_tx,
+        Duration::from_secs(60),
+        pending_retry,
+    )
+    .await;
+}
+
+/// Collect chunk-phase reports from all active workers.
+///
+/// Returns the set of workers that still have active sessions after processing
+/// the chunk. Any worker that fails to report has its tracked jobs requeued.
+async fn collect_chunk_reports(
+    active_worker_ids: &[usize],
+    active_jobs_by_worker: &mut HashMap<usize, Vec<PendingCircuitJob>>,
+    workers: &mut [WorkerHandle],
+    report_timeout: Duration,
+    pending_retry: &mut Vec<PendingCircuitJob>,
+) -> Vec<usize> {
+    let mut still_active: Vec<usize> = Vec::with_capacity(active_worker_ids.len());
+
+    for &wid in active_worker_ids {
+        match workers[wid].recv_report(report_timeout).await {
+            Some(WorkerReport::ChunkDone(report)) => {
+                pending_retry.extend(report.evicted_jobs);
+                if report.remaining_jobs.is_empty() {
+                    active_jobs_by_worker.remove(&wid);
+                    tracing::debug!(
+                        worker = wid,
+                        "all sessions evicted — worker idle for rest of pass"
+                    );
+                } else {
+                    active_jobs_by_worker.insert(wid, report.remaining_jobs);
+                    still_active.push(wid);
+                }
+            }
+            Some(WorkerReport::FinishDone(_)) => {
+                tracing::error!(
+                    worker = wid,
+                    "unexpected FinishDone during chunk processing"
+                );
+                if let Some(jobs) = active_jobs_by_worker.remove(&wid) {
+                    pending_retry.extend(jobs);
+                }
+            }
+            None => {
+                tracing::error!(
+                    worker = wid,
+                    "worker failed to report — requeueing sessions assigned to this worker"
+                );
+                if let Some(jobs) = active_jobs_by_worker.remove(&wid) {
+                    pending_retry.extend(jobs);
+                }
+            }
+        }
+    }
+
+    still_active
 }
 
 /// Send [`WorkerCommand::FinishPass`] to all active workers and collect
 /// their [`FinishReport`]s.
 async fn collect_finish_reports(
     active_worker_ids: &[usize],
+    active_jobs_by_worker: &mut HashMap<usize, Vec<PendingCircuitJob>>,
     workers: &mut [WorkerHandle],
+    completion_tx: &kanal::AsyncSender<JobCompletion>,
+    fault_tx: &kanal::AsyncSender<SchedulerFault>,
+    pending_retry: &mut Vec<PendingCircuitJob>,
+) {
+    collect_finish_reports_with_timeout(
+        active_worker_ids,
+        active_jobs_by_worker,
+        workers,
+        completion_tx,
+        fault_tx,
+        Duration::from_secs(60),
+        pending_retry,
+    )
+    .await;
+}
+
+/// Send [`WorkerCommand::FinishPass`] to all active workers and collect
+/// their [`FinishReport`]s, using the provided timeout.
+async fn collect_finish_reports_with_timeout(
+    active_worker_ids: &[usize],
+    active_jobs_by_worker: &mut HashMap<usize, Vec<PendingCircuitJob>>,
+    workers: &mut [WorkerHandle],
+    completion_tx: &kanal::AsyncSender<JobCompletion>,
+    fault_tx: &kanal::AsyncSender<SchedulerFault>,
+    finish_timeout: Duration,
     pending_retry: &mut Vec<PendingCircuitJob>,
 ) {
     // Send finish command to all active workers.
     for &wid in active_worker_ids {
         if !workers[wid].send(WorkerCommand::FinishPass).await {
             tracing::error!(worker = wid, "failed to send FinishPass — worker dead");
+            if let Some(jobs) = active_jobs_by_worker.remove(&wid) {
+                pending_retry.extend(jobs);
+            }
         }
     }
-
-    // Generous timeout for finish: sessions may do network I/O (G8 stream close).
-    let finish_timeout = Duration::from_secs(60);
 
     // Collect finish reports.
     for &wid in active_worker_ids {
         match workers[wid].recv_report(finish_timeout).await {
             Some(WorkerReport::FinishDone(report)) => {
+                active_jobs_by_worker.remove(&wid);
+                for completion in report.completions {
+                    let peer_id = completion.peer_id;
+                    if completion_tx.send(completion).await.is_err() {
+                        tracing::error!(
+                            worker = wid,
+                            "completion channel closed while forwarding finish report"
+                        );
+                        let _ = fault_tx
+                            .send(SchedulerFault::CompletionChannelClosed {
+                                source: "garbling_coordinator",
+                                peer_id,
+                            })
+                            .await;
+                        return;
+                    }
+                }
                 pending_retry.extend(report.retry_jobs);
             }
             Some(WorkerReport::ChunkDone(_)) => {
                 tracing::error!(worker = wid, "unexpected ChunkDone during finish phase");
+                if let Some(jobs) = active_jobs_by_worker.remove(&wid) {
+                    pending_retry.extend(jobs);
+                }
             }
             None => {
                 tracing::error!(
                     worker = wid,
-                    "worker failed to report finish — sessions on this worker are lost"
+                    "worker failed to report finish — requeueing sessions assigned to this worker"
                 );
+                if let Some(jobs) = active_jobs_by_worker.remove(&wid) {
+                    pending_retry.extend(jobs);
+                }
             }
         }
     }
@@ -672,13 +780,12 @@ async fn collect_finish_reports(
 ///
 /// Receives sessions and chunk commands from the coordinator's main thread.
 /// Processes sessions sequentially per chunk (parallel across workers).
-/// Sends completions directly to the SM via `completion_tx`.
+/// Reports completed results back to the coordinator.
 async fn worker_loop(
     id: usize,
     chunk_timeout: Duration,
     command_rx: kanal::AsyncReceiver<WorkerCommand>,
     report_tx: kanal::AsyncSender<WorkerReport>,
-    completion_tx: kanal::AsyncSender<JobCompletion>,
 ) {
     async move {
         tracing::debug!(
@@ -747,7 +854,7 @@ async fn worker_loop(
 
                     let report = WorkerReport::ChunkDone(ChunkReport {
                         evicted_jobs,
-                        remaining_sessions: sessions.len(),
+                        remaining_jobs: sessions.iter().map(|active| active.job.clone()).collect(),
                     });
                     if report_tx.send(report).await.is_err() {
                         tracing::error!(worker = id, "report channel closed — exiting");
@@ -756,6 +863,7 @@ async fn worker_loop(
                 }
 
                 WorkerCommand::FinishPass => {
+                    let mut completions: Vec<JobCompletion> = Vec::new();
                     let mut retry_jobs: Vec<PendingCircuitJob> = Vec::new();
 
                     for active in sessions.drain(..) {
@@ -769,20 +877,10 @@ async fn worker_loop(
 
                         match outcome {
                             HandlerOutcome::Done(completion) => {
-                                if completion_tx
-                                    .send(JobCompletion {
-                                        peer_id,
-                                        completion,
-                                    })
-                                    .await
-                                    .is_err()
-                                {
-                                    tracing::error!(
-                                        worker = id,
-                                        ?peer_id,
-                                        "completion channel closed — completion lost"
-                                    );
-                                }
+                                completions.push(JobCompletion {
+                                    peer_id,
+                                    completion,
+                                });
                             }
                             HandlerOutcome::Retry => {
                                 tracing::debug!(
@@ -795,7 +893,10 @@ async fn worker_loop(
                         }
                     }
 
-                    let report = WorkerReport::FinishDone(FinishReport { retry_jobs });
+                    let report = WorkerReport::FinishDone(FinishReport {
+                        completions,
+                        retry_jobs,
+                    });
                     if report_tx.send(report).await.is_err() {
                         tracing::error!(worker = id, "report channel closed — exiting");
                         break;
@@ -810,12 +911,12 @@ async fn worker_loop(
         }
 
         // If we exit with sessions still assigned (e.g. channel closed mid-pass),
-        // they are dropped. The coordinator logs a warning about lost sessions.
+        // the coordinator still holds recoverable job ownership and can requeue them.
         if !sessions.is_empty() {
             tracing::warn!(
                 worker = id,
                 count = sessions.len(),
-                "worker exiting with active sessions — these sessions are lost"
+                "worker exiting with active sessions"
             );
         }
 
@@ -877,5 +978,301 @@ fn convert_block(block: &Block, num_gates: usize) -> OwnedBlock {
         gate_data,
         gate_types,
         num_gates,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+
+    use mosaic_cac_types::{
+        GarblingSeed, Seed,
+        state_machine::garbler::{ActionId, ActionResult},
+    };
+    use mosaic_job_api::{ActionCompletion, CircuitAction, HandlerOutcome, PendingCircuitJob};
+
+    use super::*;
+
+    struct NoopSession;
+
+    impl CircuitSession for NoopSession {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async {
+                HandlerOutcome::Done(ActionCompletion::Garbler {
+                    id: ActionId::SendCommitMsgHeader,
+                    result: ActionResult::CommitMsgHeaderAcked,
+                })
+            })
+        }
+    }
+
+    fn run_monoio<F>(future: F)
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+            .enable_timer()
+            .build()
+            .expect("build monoio runtime")
+            .block_on(future);
+    }
+
+    fn sample_job(peer_byte: u8) -> PendingCircuitJob {
+        PendingCircuitJob {
+            peer_id: PeerId::from([peer_byte; 32]),
+            action: CircuitAction::GarblerTransfer {
+                seed: GarblingSeed::from([peer_byte; 32]),
+            },
+        }
+    }
+
+    fn sample_completion(peer_id: PeerId) -> JobCompletion {
+        JobCompletion {
+            peer_id,
+            completion: ActionCompletion::Garbler {
+                id: ActionId::GeneratePolynomialCommitments(
+                    Seed::from([9; 32]),
+                    mosaic_cac_types::state_machine::garbler::Wire::Output,
+                ),
+                result: ActionResult::CommitMsgHeaderAcked,
+            },
+        }
+    }
+
+    #[test]
+    fn run_pass_requeues_jobs_when_assignment_fails() {
+        run_monoio(async {
+            let (command_tx, _command_rx) = kanal::bounded_async(1);
+            let (report_tx, report_rx) = kanal::bounded_async(1);
+            let _ = command_tx.close();
+            drop(report_tx);
+
+            let mut workers = vec![WorkerHandle {
+                id: 0,
+                command_tx,
+                report_rx,
+                thread: None,
+            }];
+
+            let job = sample_job(1);
+            let sessions = vec![ActiveSession {
+                peer_id: job.peer_id,
+                job: job.clone(),
+                session: Box::new(NoopSession),
+            }];
+
+            let (completion_tx, _completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(1);
+            let mut pending_retry = Vec::new();
+            run_pass(
+                &GarblingConfig {
+                    worker_threads: 1,
+                    max_concurrent: 1,
+                    circuit_path: PathBuf::new(),
+                    batch_timeout: Duration::from_millis(1),
+                    chunk_timeout: Duration::from_millis(1),
+                },
+                sessions,
+                &mut workers,
+                &completion_tx,
+                &fault_tx,
+                &mut pending_retry,
+            )
+            .await;
+
+            assert_eq!(pending_retry.len(), 1);
+            assert_eq!(pending_retry[0].peer_id, job.peer_id);
+        });
+    }
+
+    #[test]
+    fn collect_chunk_reports_requeues_jobs_when_worker_misses_report() {
+        run_monoio(async {
+            let (command_tx, _command_rx) = kanal::bounded_async(1);
+            let (_report_tx, report_rx) = kanal::bounded_async(1);
+
+            let mut workers = vec![WorkerHandle {
+                id: 0,
+                command_tx,
+                report_rx,
+                thread: None,
+            }];
+
+            let job = sample_job(2);
+            let mut active_jobs_by_worker = HashMap::from([(0usize, vec![job.clone()])]);
+            let mut pending_retry = Vec::new();
+            let still_active = collect_chunk_reports(
+                &[0],
+                &mut active_jobs_by_worker,
+                &mut workers,
+                Duration::from_millis(1),
+                &mut pending_retry,
+            )
+            .await;
+
+            assert!(still_active.is_empty());
+            assert!(active_jobs_by_worker.is_empty());
+            assert_eq!(pending_retry.len(), 1);
+            assert_eq!(pending_retry[0].peer_id, job.peer_id);
+        });
+    }
+
+    #[test]
+    fn collect_finish_reports_forwards_completions_and_requeues_retries() {
+        run_monoio(async {
+            let (command_tx, _command_rx) = kanal::bounded_async(1);
+            let (report_tx, report_rx) = kanal::bounded_async(1);
+
+            let peer_id = PeerId::from([3; 32]);
+            let retry_job = sample_job(4);
+            report_tx
+                .send(WorkerReport::FinishDone(FinishReport {
+                    completions: vec![sample_completion(peer_id)],
+                    retry_jobs: vec![retry_job.clone()],
+                }))
+                .await
+                .expect("send finish report");
+
+            let mut workers = vec![WorkerHandle {
+                id: 0,
+                command_tx,
+                report_rx,
+                thread: None,
+            }];
+
+            let mut active_jobs_by_worker = HashMap::from([(0usize, vec![sample_job(5)])]);
+            let (completion_tx, completion_rx) = kanal::bounded_async(2);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(1);
+            let mut pending_retry = Vec::new();
+
+            collect_finish_reports(
+                &[0],
+                &mut active_jobs_by_worker,
+                &mut workers,
+                &completion_tx,
+                &fault_tx,
+                &mut pending_retry,
+            )
+            .await;
+
+            assert!(active_jobs_by_worker.is_empty());
+            assert_eq!(pending_retry.len(), 1);
+            assert_eq!(pending_retry[0].peer_id, retry_job.peer_id);
+
+            let forwarded = completion_rx
+                .recv()
+                .await
+                .expect("receive forwarded completion");
+            assert_eq!(forwarded.peer_id, peer_id);
+        });
+    }
+
+    #[test]
+    fn collect_finish_reports_requeues_jobs_when_worker_misses_finish_report() {
+        run_monoio(async {
+            let (command_tx, _command_rx) = kanal::bounded_async(1);
+            let (_report_tx, report_rx) = kanal::bounded_async(1);
+
+            let mut workers = vec![WorkerHandle {
+                id: 0,
+                command_tx,
+                report_rx,
+                thread: None,
+            }];
+
+            let job = sample_job(6);
+            let mut active_jobs_by_worker = HashMap::from([(0usize, vec![job.clone()])]);
+            let (completion_tx, _completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(1);
+            let mut pending_retry = Vec::new();
+
+            collect_finish_reports_with_timeout(
+                &[0],
+                &mut active_jobs_by_worker,
+                &mut workers,
+                &completion_tx,
+                &fault_tx,
+                Duration::from_millis(1),
+                &mut pending_retry,
+            )
+            .await;
+
+            assert!(active_jobs_by_worker.is_empty());
+            assert_eq!(pending_retry.len(), 1);
+            assert_eq!(pending_retry[0].peer_id, job.peer_id);
+        });
+    }
+
+    #[test]
+    fn closed_completion_channel_reports_scheduler_fault() {
+        run_monoio(async {
+            let peer_id = PeerId::from([11; 32]);
+            let (command_tx, _command_rx) = kanal::bounded_async(2);
+            let (report_tx, report_rx) = kanal::bounded_async(2);
+            let (completion_tx, completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, fault_rx) = kanal::bounded_async(1);
+            drop(completion_rx);
+
+            report_tx
+                .send(WorkerReport::FinishDone(FinishReport {
+                    completions: vec![JobCompletion {
+                        peer_id,
+                        completion: ActionCompletion::Garbler {
+                            id: ActionId::SendCommitMsgChunk(0),
+                            result: ActionResult::CommitMsgChunkAcked,
+                        },
+                    }],
+                    retry_jobs: vec![],
+                }))
+                .await
+                .expect("send finish report");
+
+            let mut workers = vec![WorkerHandle {
+                id: 0,
+                command_tx,
+                report_rx,
+                thread: None,
+            }];
+            let mut active_jobs_by_worker = HashMap::from([(
+                0usize,
+                vec![PendingCircuitJob {
+                    peer_id,
+                    action: CircuitAction::GarblerTransfer {
+                        seed: GarblingSeed::from([5; 32]),
+                    },
+                }],
+            )]);
+            let mut pending_retry = Vec::new();
+
+            collect_finish_reports_with_timeout(
+                &[0],
+                &mut active_jobs_by_worker,
+                &mut workers,
+                &completion_tx,
+                &fault_tx,
+                Duration::from_millis(1),
+                &mut pending_retry,
+            )
+            .await;
+
+            let fault = monoio::time::timeout(Duration::from_secs(2), fault_rx.recv())
+                .await
+                .expect("timed out waiting for scheduler fault")
+                .expect("fault channel should stay open");
+            assert!(matches!(
+                fault,
+                SchedulerFault::CompletionChannelClosed {
+                    source: "garbling_coordinator",
+                    peer_id: fault_peer,
+                } if fault_peer == peer_id
+            ));
+        });
     }
 }
