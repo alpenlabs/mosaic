@@ -1,12 +1,10 @@
-# NOTE: On first run, initialize FDB storage with: ./init-fdb.sh
-
 x-base-mosaic-svc: &base-mosaic-svc
   build:
     context: ..
     dockerfile: docker/Dockerfile
   depends_on:
-    foundationdb:
-      condition: service_healthy
+    fdb-init:
+      condition: service_completed_successfully
 
 services:
   foundationdb:
@@ -15,7 +13,7 @@ services:
       - FDB_NETWORKING_MODE=container
       - FDB_CLUSTER_FILE=/var/fdb/fdb.cluster
     volumes:
-      - ./vol/fdb/fdb.cluster:/var/fdb/fdb.cluster:rw
+      - ./vol/fdb/fdb.cluster:/var/fdb/fdb.cluster:ro
       - ./vol/fdb/data:/var/fdb/data
     ports:
       # Keep this port in sync with ./vol/fdb/fdb.cluster
@@ -30,6 +28,29 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  fdb-init:
+    image: foundationdb/foundationdb:7.3.75
+    volumes:
+      - ./vol/fdb/fdb.cluster:/var/fdb/fdb.cluster:ro
+    depends_on:
+      foundationdb:
+        condition: service_started
+    entrypoint:
+      - bash
+      - -c
+      - |
+        if fdbcli -C /var/fdb/fdb.cluster --no-status --exec "status minimal" 2>/dev/null | grep -q "The database is available"; then
+          echo "FoundationDB already configured, skipping..."
+        else
+          echo "Waiting for FDB to be reachable..."
+          until fdbcli -C /var/fdb/fdb.cluster --exec "configure new single ssd" 2>/dev/null; do
+            echo "FDB not ready, retrying in 2s..."
+            sleep 2
+          done
+          echo -e "\n======== FDB_INITIALIZED ========\n"
+        fi
+    restart: "no"
 
   mosaic_1:
     <<: *base-mosaic-svc
