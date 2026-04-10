@@ -1,5 +1,5 @@
 [logging]
-filter = "info"
+filter = "debug,h2=warn,hyper=warn,soketto=warn,jsonrpsee=warn"
 
 [circuit]
 path = "/etc/mosaic/circuit.v5c"
