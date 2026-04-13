@@ -8,9 +8,9 @@ FROM ubuntu:24.04 AS builder
 # Install build dependencies and Rust nightly toolchain.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         adduser build-essential ca-certificates clang curl libclang-dev pkg-config \
+    adduser build-essential ca-certificates clang curl libclang-dev pkg-config \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-         | sh -s -- -y --default-toolchain nightly --profile minimal \
+    | sh -s -- -y --default-toolchain nightly --profile minimal \
     && rm -rf /var/lib/apt/lists/*
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -33,7 +33,7 @@ COPY bin bin
 COPY crates crates
 
 # Build the release binary
-RUN cargo build --release --bin mosaic \
+RUN cargo build --release --features=reduced-circuits --bin mosaic \
     && strip --strip-debug target/release/mosaic
 
 # ------------------------------------------------------------------------------
