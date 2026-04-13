@@ -150,6 +150,7 @@ impl MosaicConfig {
             endpoint,
             access_key_id,
             secret_access_key,
+            session_token,
             request_timeout_secs,
             connect_timeout_secs,
             ..
@@ -163,12 +164,34 @@ impl MosaicConfig {
                 bail!("table_store.region must not be empty");
             }
 
-            if access_key_id.is_empty() {
-                bail!("table_store.access_key_id must not be empty");
+            match (access_key_id.as_deref(), secret_access_key.as_deref()) {
+                (Some(access_key_id), Some(secret_access_key)) => {
+                    if access_key_id.is_empty() {
+                        bail!("table_store.access_key_id must not be empty when provided");
+                    }
+
+                    if secret_access_key.is_empty() {
+                        bail!("table_store.secret_access_key must not be empty when provided");
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    bail!(
+                        "table_store.access_key_id and table_store.secret_access_key must either both be set or both be omitted"
+                    );
+                }
             }
 
-            if secret_access_key.is_empty() {
-                bail!("table_store.secret_access_key must not be empty");
+            if let Some(session_token) = session_token {
+                if session_token.is_empty() {
+                    bail!("table_store.session_token must not be empty when provided");
+                }
+
+                if access_key_id.is_none() || secret_access_key.is_none() {
+                    bail!(
+                        "table_store.session_token requires table_store.access_key_id and table_store.secret_access_key"
+                    );
+                }
             }
 
             if *request_timeout_secs == 0 {
@@ -283,8 +306,8 @@ pub(crate) enum TableStoreBackend {
         bucket: String,
         region: String,
         prefix: String,
-        access_key_id: String,
-        secret_access_key: String,
+        access_key_id: Option<String>,
+        secret_access_key: Option<String>,
         endpoint: Option<String>,
         session_token: Option<String>,
         #[serde(default = "default_s3_request_timeout_secs")]
