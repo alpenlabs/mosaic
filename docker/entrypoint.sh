@@ -8,6 +8,8 @@
 # The config file's [circuit] section should reference:
 #   path = "/etc/mosaic/circuit.v5c"
 #
+# Set MOSAIC_REDUCED_CIRCUITS=1 to run the reduced-circuits build.
+#
 # Any extra arguments are forwarded to the mosaic binary.
 
 set -euo pipefail
@@ -20,4 +22,12 @@ if [ ! -f "$CONFIG_PATH" ]; then
     exit 1
 fi
 
-exec /usr/local/bin/mosaic "$CONFIG_PATH" "$@"
+MOSAIC_BIN="/usr/local/bin/mosaic"
+
+case "${MOSAIC_REDUCED_CIRCUITS:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+        MOSAIC_BIN="/usr/local/bin/mosaic-reduced"
+        ;;
+esac
+
+exec "$MOSAIC_BIN" "$CONFIG_PATH" "$@"

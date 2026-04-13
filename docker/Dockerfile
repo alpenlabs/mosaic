@@ -32,9 +32,12 @@ COPY .cargo .cargo
 COPY bin bin
 COPY crates crates
 
-# Build the release binary
-RUN cargo build --release --features=reduced-circuits --bin mosaic \
-    && strip --strip-debug target/release/mosaic
+# Build both release binaries so runtime can switch via env var.
+RUN cargo build --release --bin mosaic \
+    && cp target/release/mosaic target/release/mosaic-default \
+    && cargo build --release --features=reduced-circuits --bin mosaic \
+    && mv target/release/mosaic target/release/mosaic-reduced \
+    && strip --strip-debug target/release/mosaic-default target/release/mosaic-reduced
 
 # ------------------------------------------------------------------------------
 # Stage 2: Minimal runtime image
@@ -62,7 +65,8 @@ RUN FDB_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "amd64") \
 #   FDB cluster file                   – path configured via storage.cluster_file in config.toml
 RUN mkdir -p /etc/mosaic && chown ubuntu:ubuntu /etc/mosaic
 
-COPY --from=builder /build/target/release/mosaic /usr/local/bin/mosaic
+COPY --from=builder /build/target/release/mosaic-default /usr/local/bin/mosaic
+COPY --from=builder /build/target/release/mosaic-reduced /usr/local/bin/mosaic-reduced
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
