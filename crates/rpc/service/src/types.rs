@@ -5,7 +5,7 @@
 
 use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use mosaic_cac_types::{
-    DepositId, DepositInputs, SetupInputs, Sighashes, WithdrawalInputs,
+    DepositId, DepositInputs, HeapArray, SetupInputs, Sighashes, WithdrawalInputs,
     state_machine::{
         Role,
         evaluator::{self},
@@ -129,19 +129,61 @@ pub struct EvaluatorWithdrawalData {
 
 // --- From impls: garbler/evaluator state -> service domain types ---
 
+/// Format progress of a `HeapArray<bool, N>` as `"done/total"`.
+fn arr_progress<const N: usize>(arr: &HeapArray<bool, N>) -> String {
+    format!("{}/{}", arr.count_ones(), arr.len())
+}
+
+/// Format progress of a single `bool` flag as `"0/1"` or `"1/1"`.
+fn bool_progress(b: bool) -> &'static str {
+    if b { "1/1" } else { "0/1" }
+}
+
 impl From<&garbler::Step> for TablesetStatus {
     fn from(step: &garbler::Step) -> Self {
         use garbler::Step::*;
         match step {
-            Uninit
-            | GeneratingPolynomialCommitments { .. }
-            | GeneratingShares { .. }
-            | GeneratingTableCommitments { .. }
-            | SendingCommit { .. }
-            | WaitingForChallenge
-            | SendingChallengeResponse { .. }
-            | TransferringGarblingTables { .. } => TablesetStatus::Incomplete {
+            Uninit | WaitingForChallenge => TablesetStatus::Incomplete {
                 details: step.step_name().into(),
+            },
+            GeneratingPolynomialCommitments { inputs, output } => TablesetStatus::Incomplete {
+                details: format!(
+                    "{} (inputs: {}, output: {})",
+                    step.step_name(),
+                    arr_progress(inputs),
+                    bool_progress(*output),
+                ),
+            },
+            GeneratingShares { generated } => TablesetStatus::Incomplete {
+                details: format!("{} ({})", step.step_name(), arr_progress(generated)),
+            },
+            GeneratingTableCommitments { generated, .. } => TablesetStatus::Incomplete {
+                details: format!("{} ({})", step.step_name(), arr_progress(generated)),
+            },
+            SendingCommit {
+                header_acked,
+                chunk_acked,
+            } => TablesetStatus::Incomplete {
+                details: format!(
+                    "{} (header: {}, chunks: {})",
+                    step.step_name(),
+                    bool_progress(*header_acked),
+                    arr_progress(chunk_acked),
+                ),
+            },
+            SendingChallengeResponse {
+                header_acked,
+                chunk_acked,
+            } => TablesetStatus::Incomplete {
+                details: format!(
+                    "{} (header: {}, chunks: {})",
+                    step.step_name(),
+                    bool_progress(*header_acked),
+                    arr_progress(chunk_acked),
+                ),
+            },
+            TransferringGarblingTables { transferred, .. } => TablesetStatus::Incomplete {
+                details: format!("{} ({})", step.step_name(), arr_progress(transferred)),
             },
             SetupComplete => TablesetStatus::SetupComplete,
             CompletingAdaptors { deposit_id } => TablesetStatus::Contest {
@@ -162,13 +204,33 @@ impl From<&evaluator::Step> for TablesetStatus {
     fn from(step: &evaluator::Step) -> Self {
         use evaluator::Step::*;
         match step {
-            Uninit
-            | WaitingForCommit { .. }
-            | WaitingForChallengeResponse { .. }
-            | VerifyingOpenedInputShares
-            | VerifyingTableCommitments { .. }
-            | ReceivingGarblingTables { .. } => TablesetStatus::Incomplete {
+            Uninit | VerifyingOpenedInputShares => TablesetStatus::Incomplete {
                 details: step.step_name().into(),
+            },
+            WaitingForCommit { header, chunks } => TablesetStatus::Incomplete {
+                details: format!(
+                    "{} (header: {}, chunks: {})",
+                    step.step_name(),
+                    bool_progress(*header),
+                    arr_progress(chunks),
+                ),
+            },
+            WaitingForChallengeResponse {
+                header,
+                remaining_chunks,
+            } => TablesetStatus::Incomplete {
+                details: format!(
+                    "{} (header: {}, chunks: {})",
+                    step.step_name(),
+                    bool_progress(*header),
+                    arr_progress(remaining_chunks),
+                ),
+            },
+            VerifyingTableCommitments { verified, .. } => TablesetStatus::Incomplete {
+                details: format!("{} ({})", step.step_name(), arr_progress(verified)),
+            },
+            ReceivingGarblingTables { received, .. } => TablesetStatus::Incomplete {
+                details: format!("{} ({})", step.step_name(), arr_progress(received)),
             },
             SetupComplete => TablesetStatus::SetupComplete,
             EvaluatingTables { deposit_id, .. } => TablesetStatus::Contest {
@@ -191,8 +253,10 @@ impl From<&evaluator::Step> for TablesetStatus {
 impl From<garbler::DepositState> for DepositStatus {
     fn from(deposit: garbler::DepositState) -> Self {
         match deposit.step {
-            garbler::DepositStep::WaitingForAdaptors { .. }
-            | garbler::DepositStep::VerifyingAdaptors => DepositStatus::Incomplete {
+            garbler::DepositStep::WaitingForAdaptors { ref chunks } => DepositStatus::Incomplete {
+                details: format!("{} ({})", deposit.step.step_name(), arr_progress(chunks),),
+            },
+            garbler::DepositStep::VerifyingAdaptors => DepositStatus::Incomplete {
                 details: deposit.step.step_name().into(),
             },
             garbler::DepositStep::DepositReady => DepositStatus::Ready,
@@ -205,9 +269,19 @@ impl From<garbler::DepositState> for DepositStatus {
 impl From<evaluator::DepositState> for DepositStatus {
     fn from(deposit: evaluator::DepositState) -> Self {
         match deposit.step {
-            evaluator::DepositStep::GeneratingAdaptors { .. }
-            | evaluator::DepositStep::SendingAdaptors { .. } => DepositStatus::Incomplete {
-                details: deposit.step.step_name().into(),
+            evaluator::DepositStep::GeneratingAdaptors {
+                deposit: ref dep,
+                ref withdrawal_chunks,
+            } => DepositStatus::Incomplete {
+                details: format!(
+                    "{} (deposit: {}, withdrawal: {})",
+                    deposit.step.step_name(),
+                    bool_progress(*dep),
+                    arr_progress(withdrawal_chunks),
+                ),
+            },
+            evaluator::DepositStep::SendingAdaptors { ref acked } => DepositStatus::Incomplete {
+                details: format!("{} ({})", deposit.step.step_name(), arr_progress(acked),),
             },
             evaluator::DepositStep::DepositReady => DepositStatus::Ready,
             evaluator::DepositStep::WithdrawnUndisputed => DepositStatus::UncontestedWithdrawal,
