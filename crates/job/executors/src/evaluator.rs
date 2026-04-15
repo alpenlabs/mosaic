@@ -249,11 +249,15 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 
     let eval_state = match ctx.storage.evaluator_state(peer_id).await {
         Ok(state) => state,
-        Err(_) => return HandlerOutcome::Retry,
+        Err(e) => {
+            warn!(%peer_id, %e, "failed to load evaluator state for receive_garbling_table");
+            return HandlerOutcome::Retry;
+        }
     };
 
     // Resolve the commitment → circuit index from the evaluator root state.
     let Some(root_state) = eval_state.get_root_state().await.ok().flatten() else {
+        warn!(%peer_id, "root state not available for receive_garbling_table");
         return HandlerOutcome::Retry;
     };
     let (eval_indices, eval_commitments) = match &root_state.step {
@@ -262,7 +266,10 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
             eval_commitments,
             ..
         } => (*eval_indices, eval_commitments.clone()),
-        _ => return HandlerOutcome::Retry,
+        _ => {
+            warn!(%peer_id, step = ?root_state.step, "unexpected step in receive_garbling_table");
+            return HandlerOutcome::Retry;
+        }
     };
 
     let Some(pos) = eval_commitments
@@ -270,6 +277,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         .position(|c| *c == expected_commitment)
     else {
         // Commitment not found — stale action or state mismatch.
+        warn!(%peer_id, "commitment not found in eval_commitments for receive_garbling_table");
         return HandlerOutcome::Retry;
     };
     let index = eval_indices[pos];
@@ -286,6 +294,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         .await;
 
     let Ok(expectation) = expectation else {
+        warn!(%peer_id, "bulk receiver registration failed for receive_garbling_table");
         return HandlerOutcome::Retry;
     };
 
@@ -298,6 +307,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 
     // Wait for the garbler to open the stream.
     let Ok(mut stream) = expectation.recv().await else {
+        warn!(%peer_id, "bulk stream receive failed for receive_garbling_table");
         return HandlerOutcome::Retry;
     };
 
@@ -312,6 +322,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     };
     let writer = ctx.table_store.create(&table_id).await;
     let Ok(mut writer) = writer else {
+        warn!(%peer_id, "table writer creation failed for receive_garbling_table");
         return HandlerOutcome::Retry;
     };
 
@@ -344,6 +355,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
             if !ct_part.is_empty() {
                 ct_hasher.update(ct_part);
                 if writer.write_ciphertext(ct_part).await.is_err() {
+                    error!(%peer_id, "ciphertext write failed (translation overflow) for receive_garbling_table");
                     let _ = ctx.table_store.delete(&table_id).await;
                     return HandlerOutcome::Retry;
                 }
@@ -352,6 +364,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
             // All translation received — remaining data is ciphertext.
             ct_hasher.update(&chunk);
             if writer.write_ciphertext(&chunk).await.is_err() {
+                error!(%peer_id, "ciphertext write failed for receive_garbling_table");
                 let _ = ctx.table_store.delete(&table_id).await;
                 return HandlerOutcome::Retry;
             }
@@ -360,6 +373,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 
     // Verify we received enough translation data.
     if translation_remaining > 0 {
+        error!(%peer_id, translation_remaining, "incomplete translation data for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     }
@@ -370,14 +384,17 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     // CommitMsgHeader (aes keys, public S) and ChallengeResponseMsgHeader
     // (output label ciphertexts) were processed by the STF.
     let Some(aes_key) = eval_state.get_aes128_key(index).await.ok().flatten() else {
+        warn!(%peer_id, ?index, "aes128_key not available for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     };
     let Some(public_s) = eval_state.get_public_s(index).await.ok().flatten() else {
+        warn!(%peer_id, ?index, "public_s not available for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     };
     let Some(output_label_ct) = eval_state.get_output_label_ct(index).await.ok().flatten() else {
+        warn!(%peer_id, ?index, "output_label_ct not available for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     };
@@ -387,6 +404,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         .ok()
         .flatten()
     else {
+        warn!(%peer_id, ?index, "constant_zero_label not available for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     };
@@ -396,6 +414,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         .ok()
         .flatten()
     else {
+        warn!(%peer_id, ?index, "constant_one_label not available for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     };
@@ -403,6 +422,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     let params_hash = hash_garbling_params(&aes_key, &public_s, &constant_one, &constant_zero);
     let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct, &params_hash);
     if computed != expected_commitment {
+        error!(%peer_id, ?index, "commitment mismatch in receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     }
@@ -413,6 +433,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     };
 
     if writer.finish(&translation_buf, metadata).await.is_err() {
+        error!(%peer_id, ?index, "table writer finish failed for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     }
