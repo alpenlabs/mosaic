@@ -383,6 +383,16 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     // Load metadata from evaluator state. These were stored when the garbler's
     // CommitMsgHeader (aes keys, public S) and ChallengeResponseMsgHeader
     // (output label ciphertexts) were processed by the STF.
+
+    // fdb txn will have timed out by now, so create a new txn
+    let eval_state = match ctx.storage.evaluator_state(peer_id).await {
+        Ok(state) => state,
+        Err(e) => {
+            warn!(%peer_id, %e, "failed to load evaluator state for receive_garbling_table");
+            return HandlerOutcome::Retry;
+        }
+    };
+
     let Some(aes_key) = eval_state.get_aes128_key(index).await.ok().flatten() else {
         warn!(%peer_id, ?index, "aes128_key not available for receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
