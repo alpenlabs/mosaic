@@ -10,7 +10,7 @@ use ckt_gobble::{
 use mosaic_cac_types::{
     Adaptor, ChallengeIndices, CircuitInputShares, DepositAdaptors, GarblingTableCommitment,
     TableTransferReceiptMsg, TableTransferRequestMsg, WideLabelWirePolynomialCommitments,
-    state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
+    state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead, Step},
 };
 use mosaic_common::constants::{
     N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
@@ -40,13 +40,11 @@ fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
 
 /// Load opened input shares for challenged circuits, retrying with a fresh
 /// transaction on FDB transaction expiry.
-pub(crate) async fn load_opened_input_shares_with_retry<SP: StorageProvider>(
-    storage: &SP,
-    peer_id: &PeerId,
+pub(crate) async fn load_opened_input_shares(
+    state: &impl StateRead,
     challenge_indices: &ChallengeIndices,
 ) -> Result<Vec<CircuitInputShares>, CircuitError> {
     let mut items = Vec::with_capacity(N_OPEN_CIRCUITS);
-    let state = RetryEvalState::new(storage, peer_id).await?;
 
     for challenge_idx in challenge_indices {
         let circuit_idx = challenge_idx.get() as u16;
@@ -63,12 +61,10 @@ pub(crate) async fn load_opened_input_shares_with_retry<SP: StorageProvider>(
 
 /// Load input polynomial commitments for all wires, retrying with a fresh
 /// transaction on FDB transaction expiry.
-pub(crate) async fn load_polynomial_commitments_with_retry<SP: StorageProvider>(
-    storage: &SP,
-    peer_id: &PeerId,
+pub(crate) async fn load_polynomial_commitments(
+    state: &impl StateRead,
 ) -> Result<Vec<WideLabelWirePolynomialCommitments>, CircuitError> {
     let mut items = Vec::with_capacity(N_INPUT_WIRES);
-    let state = RetryEvalState::new(storage, peer_id).await?;
 
     for wire_idx in 0..N_INPUT_WIRES as u16 {
         let commitment = state
@@ -150,14 +146,12 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
     let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
         return HandlerOutcome::Retry;
     };
-    let Ok(opened_input_shares) =
-        load_opened_input_shares_with_retry(&ctx.storage, peer_id, &challenge_indices).await
+    let Ok(opened_input_shares) = load_opened_input_shares(&eval_state, &challenge_indices).await
     else {
         return HandlerOutcome::Retry;
     };
 
-    let Ok(commitments) = load_polynomial_commitments_with_retry(&ctx.storage, peer_id).await
-    else {
+    let Ok(commitments) = load_polynomial_commitments(&eval_state).await else {
         return HandlerOutcome::Retry;
     };
 
@@ -648,8 +642,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .ok()
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
-    let opened_input_shares =
-        load_opened_input_shares_with_retry(&ctx.storage, peer_id, &challenge_indices).await?;
+    let opened_input_shares = load_opened_input_shares(&eval_state, &challenge_indices).await?;
     // ── Build selected input values (which value index per wire) ────────
     let mut selected_input: [u8; N_INPUT_WIRES] = [0; N_INPUT_WIRES];
     selected_input[..N_SETUP_INPUT_WIRES].copy_from_slice(&setup_input);
