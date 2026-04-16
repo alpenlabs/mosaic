@@ -46,7 +46,20 @@ impl S3TableReader {
         rt_handle: tokio::runtime::Handle,
         root_paths: TableRootPaths,
     ) -> Result<Self, S3Error> {
-        let version = fetch_committed_version(&store, &root_paths.committed).await?;
+        // Fetch committed version via tokio runtime.
+        let (ver_tx, ver_rx) = kanal::bounded_async(1);
+        {
+            let store = Arc::clone(&store);
+            let committed_path = root_paths.committed.clone();
+            rt_handle.spawn(async move {
+                let result = fetch_committed_version(&store, &committed_path).await;
+                let _ = ver_tx.send(result).await;
+            });
+        }
+        let version = ver_rx
+            .recv()
+            .await
+            .map_err(|_| S3Error::Channel("committed version fetch task gone".into()))??;
         let paths = root_paths.version_paths(version);
 
         // Fetch metadata and translation eagerly via the tokio runtime.
