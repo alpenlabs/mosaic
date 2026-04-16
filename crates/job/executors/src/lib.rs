@@ -21,6 +21,7 @@ pub mod evaluator;
 pub mod garbler;
 pub mod garbling;
 pub mod polynomial_cache;
+pub(crate) mod retry_state;
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::state_machine::{evaluator::StateRead as _, garbler::StateRead as _};

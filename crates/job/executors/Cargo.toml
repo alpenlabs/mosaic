@@ -25,6 +25,7 @@ bitvec = "1.0"
 blake3.workspace = true
 ckt-fmtv5-types.workspace = true
 ckt-gobble.workspace = true
+futures.workspace = true
 parking_lot = "0.12"
 rand.workspace = true
 rand_chacha.workspace = true
