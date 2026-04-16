@@ -306,6 +306,12 @@ pub(crate) enum TableStoreBackend {
         bucket: String,
         region: String,
         prefix: String,
+<<<<<<< HEAD
+=======
+        /// When both `access_key_id` and `secret_access_key` are omitted, the
+        /// AWS credential chain is used: IRSA web-identity token → ECS task
+        /// creds → EC2 instance profile.
+>>>>>>> 3e11546 (remove IRSA backend, allow optional access_key, secret in S3Compatible backend for IRSA)
         access_key_id: Option<String>,
         secret_access_key: Option<String>,
         endpoint: Option<String>,
@@ -319,6 +325,7 @@ pub(crate) enum TableStoreBackend {
         #[serde(default)]
         virtual_hosted_style_request: bool,
     },
+<<<<<<< HEAD
 }
 
 impl TableStoreBackend {
@@ -336,6 +343,8 @@ impl TableStoreBackend {
             Self::LocalFilesystem { .. } => None,
         }
     }
+=======
+>>>>>>> 3e11546 (remove IRSA backend, allow optional access_key, secret in S3Compatible backend for IRSA)
 }
 
 #[derive(Debug, Clone, Deserialize)]

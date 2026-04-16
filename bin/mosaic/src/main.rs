@@ -154,6 +154,14 @@ where
                 builder = builder.with_secret_access_key(secret_access_key);
             }
 
+            // When credentials are omitted the builder falls through to the
+            // AWS credential chain: IRSA web-identity → ECS task → instance profile.
+            if let (Some(key_id), Some(secret)) = (access_key_id, secret_access_key) {
+                builder = builder
+                    .with_access_key_id(key_id)
+                    .with_secret_access_key(secret);
+            }
+
             if let Some(endpoint) = endpoint {
                 builder = builder.with_endpoint(endpoint);
             }
