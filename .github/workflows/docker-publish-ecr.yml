@@ -1,0 +1,218 @@
+name: Docker Publish to ECR
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git branch, tag, or commit SHA to build. Defaults to the selected branch in the UI.
+        required: false
+        type: string
+      image_tag:
+        description: Optional image tag override. Defaults to the resolved short SHA.
+        required: false
+        type: string
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '888577024788.dkr.ecr.us-east-1.amazonaws.com' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'tn1/mosaic' }}
+  DOCKER_PLATFORM: linux/amd64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-ecr-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Resolve Build Plan
+    runs-on: ubuntu-latest
+    outputs:
+      checkout_ref: ${{ steps.plan.outputs.checkout_ref }}
+      resolved_sha: ${{ steps.plan.outputs.resolved_sha }}
+      image_tag: ${{ steps.plan.outputs.image_tag }}
+    steps:
+      - name: Validate manual inputs
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_REF}" ]]; then
+            if [[ "${INPUT_REF}" =~ [[:space:]] ]]; then
+              echo "::error::ref must not contain whitespace"
+              exit 1
+            fi
+            if [[ ! "${INPUT_REF}" =~ ^[A-Za-z0-9._/@:-]+$ ]]; then
+              echo "::error::ref contains unsupported characters"
+              exit 1
+            fi
+          fi
+
+          if [[ -n "${INPUT_IMAGE_TAG}" ]]; then
+            if [[ "${INPUT_IMAGE_TAG}" =~ [[:space:]] ]]; then
+              echo "::error::image_tag must not contain whitespace"
+              exit 1
+            fi
+            if [[ ! "${INPUT_IMAGE_TAG}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+              echo "::error::image_tag must match [A-Za-z0-9._-]{1,128}"
+              exit 1
+            fi
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+
+      - name: Resolve plan
+        id: plan
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          resolved_sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=8 HEAD)"
+          checkout_ref="${INPUT_REF:-${GITHUB_REF}}"
+          image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
+
+          {
+            echo "checkout_ref=${checkout_ref}"
+            echo "resolved_sha=${resolved_sha}"
+            echo "image_tag=${image_tag}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build_and_publish:
+    name: Build and Publish Mosaic Image
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: AWS
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.resolved_sha }}
+
+      - name: Cleanup space
+        uses: ./.github/actions/cleanup # zizmor: ignore[unpinned-uses]
+
+      - name: Validate AWS publish configuration
+        env:
+          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+        run: |
+          if [[ -z "${AWS_ROLE_TO_ASSUME}" ]]; then
+            echo "::error::Repository variable AWS_ROLE_TO_ASSUME is required for ECR publishing"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build Mosaic image
+        env:
+          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          local_image="mosaic-local:${IMAGE_TAG}"
+          docker buildx build \
+            --platform "${DOCKER_PLATFORM}" \
+            --file docker/Dockerfile \
+            --tag "${local_image}" \
+            --load \
+            .
+
+      - name: Scan Mosaic image with Trivy
+        env:
+          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p trivy-results
+          local_image="mosaic-local:${IMAGE_TAG}"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.65.0 \
+            image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 0 \
+            --no-progress \
+            "${local_image}" > trivy-results/mosaic.txt
+
+      - name: Upload Trivy results artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-mosaic-${{ needs.plan.outputs.image_tag }}
+          path: trivy-results/mosaic.txt
+          if-no-files-found: error
+
+      - name: Tag and push Mosaic image
+        env:
+          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          local_image="mosaic-local:${IMAGE_TAG}"
+          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker tag "${local_image}" "${image_ref}"
+          docker push "${image_ref}"
+
+      - name: Resolve pushed image digest
+        id: digest
+        env:
+          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          digest="$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Append publish summary
+        if: always()
+        env:
+          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+          RESOLVED_SHA: ${{ needs.plan.outputs.resolved_sha }}
+          CHECKOUT_REF: ${{ needs.plan.outputs.checkout_ref }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          {
+            echo "## Mosaic image publish"
+            echo
+            echo "- Checkout ref: \`${CHECKOUT_REF}\`"
+            echo "- Resolved SHA: \`${RESOLVED_SHA}\`"
+            echo "- Image: \`${image_ref}\`"
+            echo "- Digest: \`${IMAGE_DIGEST}\`"
+            echo "- Trivy artifact: \`trivy-mosaic-${IMAGE_TAG}\`"
+            echo
+            echo "### Trivy summary"
+            echo
+            echo '```text'
+            sed -n '1,120p' trivy-results/mosaic.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
