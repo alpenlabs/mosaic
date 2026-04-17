@@ -23,14 +23,14 @@ env:
   PUBLIC_ECR_NAMESPACE: z5c7y9u9
   PUBLIC_ECR_REPOSITORY: mosaic
   PUBLIC_ECR_REGION: us-east-1
-  DEFAULT_BUILD_REF: bae62a54
+  DEFAULT_BUILD_REF: bae62a54b7137e811653d5dd89975e10f0e71676
   DOCKER_PLATFORMS: linux/amd64,linux/arm64
 
 permissions:
   contents: read
 
 concurrency:
-  group: docker-publish-ecr-${{ inputs.ref || 'bae62a54' }}
+  group: docker-publish-ecr-${{ inputs.ref || 'bae62a54b7137e811653d5dd89975e10f0e71676' }}
   cancel-in-progress: false
 
 jobs:
