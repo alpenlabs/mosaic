@@ -1,6 +1,9 @@
 name: Docker Publish to ECR
 
 on:
+  push:
+    branches:
+      - feat/str-3103-mosaic-ci
   workflow_dispatch:
     inputs:
       ref:
