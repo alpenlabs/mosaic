@@ -138,7 +138,12 @@ where
                 .with_access_key_id(access_key_id)
                 .with_secret_access_key(secret_access_key)
                 .with_allow_http(*allow_http)
-                .with_virtual_hosted_style_request(*virtual_hosted_style_request);
+                .with_virtual_hosted_style_request(*virtual_hosted_style_request)
+                // Disable the default 30-second request timeout. Ciphertext
+                // objects are tens of GB and streamed over long-lived HTTP
+                // connections. The S3TableReader handles connection drops
+                // internally via resume-from-offset.
+                .with_client_options(object_store::ClientOptions::new().with_timeout_disabled());
 
             if let Some(endpoint) = endpoint {
                 builder = builder.with_endpoint(endpoint);
