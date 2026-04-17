@@ -2,17 +2,23 @@
 //!
 //! Reads garbling table components from object storage. Metadata and
 //! translation material are fetched eagerly on construction (they're small).
-//! Ciphertext data is streamed lazily via a background tokio task that
-//! pre-fetches chunks through a bounded channel.
+//! Ciphertext data is streamed via a background tokio task that pre-fetches
+//! chunks through a bounded channel. If the HTTP connection drops mid-transfer,
+//! the background task automatically resumes from the last successfully
+//! delivered byte offset.
 
 use std::{future::Future, sync::Arc};
 
+use futures::StreamExt;
 use mosaic_common::Byte32;
 use mosaic_storage_api::table_store::{TableMetadata, TableReader};
-use object_store::ObjectStore;
+use object_store::{GetOptions, GetRange, ObjectStore};
 use tracing::{debug, error, warn};
 
 use crate::{error::S3Error, paths::TableRootPaths};
+
+/// Maximum retries when opening or resuming a ciphertext stream.
+const STREAM_MAX_RETRIES: u32 = 3;
 
 /// Reads a garbling table from object storage.
 ///
@@ -20,6 +26,9 @@ use crate::{error::S3Error, paths::TableRootPaths};
 /// Ciphertext data is streamed on demand via [`read_ciphertext`](Self::read_ciphertext),
 /// backed by a background tokio task that pre-fetches chunks from the object
 /// store through a bounded channel.
+///
+/// If the underlying HTTP connection drops, the background task automatically
+/// resumes from the last delivered byte offset.
 #[derive(Debug)]
 pub struct S3TableReader {
     /// Table metadata (loaded eagerly).
@@ -253,98 +262,107 @@ async fn fetch_translation(
     Ok(bytes.to_vec())
 }
 
-/// Size of each range request when streaming ciphertexts from S3.
-///
-/// Using range requests instead of a single streaming GET avoids problems
-/// with long-lived HTTP connections: multiple concurrent 44 GB streams on a
-/// single-threaded tokio runtime can starve each other, causing body-read
-/// errors. Each range request is a short, independent HTTP roundtrip.
-const RANGE_CHUNK_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
-
-/// Maximum retries per range request before giving up.
-const RANGE_MAX_RETRIES: u32 = 3;
-
 /// Background task that streams ciphertext data from object storage
 /// through a bounded channel.
 ///
-/// Uses sequential range requests rather than a single streaming GET.
-/// Each range is a short-lived HTTP request, avoiding issues with
-/// long-lived connections on a shared single-threaded tokio runtime.
-/// Failed ranges are retried up to [`RANGE_MAX_RETRIES`] times before
-/// propagating the error.
+/// Uses a streaming GET for throughput. If the connection drops mid-transfer,
+/// the stream is automatically resumed from the last successfully delivered
+/// byte offset (via `GetRange::Offset`). Gives up after [`STREAM_MAX_RETRIES`]
+/// consecutive failures.
 async fn stream_ciphertexts(
     store: Arc<dyn ObjectStore>,
     path: object_store::path::Path,
     tx: kanal::AsyncSender<Result<Vec<u8>, S3Error>>,
 ) {
-    // HEAD to learn the total object size.
-    let total_size = match store.head(&path).await {
-        Ok(meta) => {
-            debug!(
-                path = %path,
-                total_size = meta.size,
-                "ciphertext stream: resolved object size"
-            );
-            meta.size
-        }
-        Err(e) => {
-            error!(path = %path, %e, "ciphertext stream: HEAD request failed");
-            let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
-            return;
-        }
-    };
+    let mut bytes_delivered: usize = 0;
+    let mut retries: u32 = 0;
 
-    if total_size == 0 {
-        warn!(path = %path, "ciphertext stream: object is empty");
-        return; // Empty object — dropping tx signals EOF.
-    }
-
-    let mut offset = 0usize;
-    while offset < total_size {
-        let end = (offset + RANGE_CHUNK_SIZE).min(total_size);
-
-        let mut last_err = None;
-        for attempt in 0..=RANGE_MAX_RETRIES {
-            if attempt > 0 {
-                warn!(
-                    path = %path, attempt, offset, end,
-                    "ciphertext stream: retrying range request"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(100 * (1 << attempt))).await;
+    loop {
+        // Open a (possibly resumed) streaming GET.
+        let opts = if bytes_delivered == 0 {
+            GetOptions::default()
+        } else {
+            GetOptions {
+                range: Some(GetRange::Offset(bytes_delivered)),
+                ..Default::default()
             }
-            match store.get_range(&path, offset..end).await {
+        };
+
+        debug!(
+            path = %path,
+            bytes_delivered,
+            resumed = bytes_delivered > 0,
+            "ciphertext stream: opening GET"
+        );
+
+        let get_result = match store.get_opts(&path, opts).await {
+            Ok(r) => r,
+            Err(e) => {
+                retries += 1;
+                if retries > STREAM_MAX_RETRIES {
+                    error!(
+                        path = %path, bytes_delivered, retries,
+                        %e, "ciphertext stream: failed to open after retries"
+                    );
+                    let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
+                    return;
+                }
+                warn!(
+                    path = %path, bytes_delivered, retries,
+                    %e, "ciphertext stream: open failed, will retry"
+                );
+                let backoff = std::time::Duration::from_millis(100 * (1 << retries));
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        };
+
+        let mut stream = get_result.into_stream();
+        let mut stream_failed = false;
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
                 Ok(bytes) => {
-                    last_err = None;
+                    let len = bytes.len();
                     if tx.send(Ok(bytes.to_vec())).await.is_err() {
                         debug!(
-                            path = %path, offset,
+                            path = %path, bytes_delivered,
                             "ciphertext stream: consumer dropped, stopping"
                         );
                         return;
                     }
-                    break;
+                    bytes_delivered += len;
+                    retries = 0; // Successful data resets the retry counter.
                 }
                 Err(e) => {
+                    retries += 1;
+                    if retries > STREAM_MAX_RETRIES {
+                        error!(
+                            path = %path, bytes_delivered, retries,
+                            %e, "ciphertext stream: failed after retries"
+                        );
+                        let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
+                        return;
+                    }
                     warn!(
-                        path = %path, attempt, offset, end, %e,
-                        "ciphertext stream: range request failed"
+                        path = %path, bytes_delivered, retries,
+                        %e, "ciphertext stream: connection lost, will resume"
                     );
-                    last_err = Some(e);
+                    let backoff = std::time::Duration::from_millis(100 * (1 << retries));
+                    tokio::time::sleep(backoff).await;
+                    stream_failed = true;
+                    break; // Break inner loop to re-open from offset.
                 }
             }
         }
 
-        if let Some(e) = last_err {
-            error!(
-                path = %path, offset, end, retries = RANGE_MAX_RETRIES, %e,
-                "ciphertext stream: range request failed after all retries"
+        if !stream_failed {
+            // Stream completed normally (no more chunks).
+            debug!(
+                path = %path, bytes_delivered,
+                "ciphertext stream: completed"
             );
-            let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
             return;
         }
-
-        offset = end;
     }
-
-    debug!(path = %path, total_size, "ciphertext stream: completed");
 }
