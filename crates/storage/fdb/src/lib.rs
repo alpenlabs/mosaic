@@ -12,7 +12,8 @@ use std::{
 };
 
 use foundationdb::{
-    Database, FdbError, KeySelector, RangeOption, Transaction, TransactionCommitError,
+    Database, FdbError, KeySelector, RangeOption, TransactOption, Transaction,
+    TransactionCommitError,
     directory::{Directory, DirectoryError, DirectoryLayer, DirectoryOutput},
     options,
 };
@@ -54,6 +55,20 @@ pub enum FdbStorageError {
     /// Returned key escaped the scoped directory prefix.
     #[error("scoped range returned a key outside the expected directory prefix")]
     PrefixViolation,
+    /// A mutation was attempted through a read-only handle.
+    #[error("mutation attempted through read-only foundationdb state handle")]
+    ReadOnlyMutation,
+}
+
+impl TryFrom<FdbStorageError> for FdbError {
+    type Error = FdbStorageError;
+
+    fn try_from(value: FdbStorageError) -> Result<Self, Self::Error> {
+        match value {
+            FdbStorageError::Fdb(err) => Ok(err),
+            other => Err(other),
+        }
+    }
 }
 
 /// FoundationDB-backed provider for garbler and evaluator state.
@@ -129,6 +144,32 @@ impl FdbStorageProvider {
         Ok(KvStoreEvaluator::new(FdbTransaction::new(tx, prefix)))
     }
 
+    async fn garbler_state_read_handle(
+        &self,
+        peer_id: PeerId,
+    ) -> Result<KvStoreGarbler<FdbReadOnlyStore>, FdbStorageError> {
+        let prefix = self
+            .ensure_role_keyspace(peer_id, RoleKeyspace::Garbler)
+            .await?;
+        Ok(KvStoreGarbler::new(FdbReadOnlyStore::new(
+            self.db.clone(),
+            prefix,
+        )))
+    }
+
+    async fn evaluator_state_read_handle(
+        &self,
+        peer_id: PeerId,
+    ) -> Result<KvStoreEvaluator<FdbReadOnlyStore>, FdbStorageError> {
+        let prefix = self
+            .ensure_role_keyspace(peer_id, RoleKeyspace::Evaluator)
+            .await?;
+        Ok(KvStoreEvaluator::new(FdbReadOnlyStore::new(
+            self.db.clone(),
+            prefix,
+        )))
+    }
+
     async fn ensure_role_keyspace(
         &self,
         peer_id: PeerId,
@@ -173,8 +214,8 @@ impl FdbStorageProvider {
 }
 
 impl StorageProvider for FdbStorageProvider {
-    type GarblerState = KvStoreGarbler<FdbTransaction>;
-    type EvaluatorState = KvStoreEvaluator<FdbTransaction>;
+    type GarblerState = KvStoreGarbler<FdbReadOnlyStore>;
+    type EvaluatorState = KvStoreEvaluator<FdbReadOnlyStore>;
 
     fn garbler_state(
         &self,
@@ -186,7 +227,7 @@ impl StorageProvider for FdbStorageProvider {
         let provider = self.clone();
         async move {
             provider
-                .garbler_state_handle(peer_id)
+                .garbler_state_read_handle(peer_id)
                 .await
                 .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
@@ -202,7 +243,7 @@ impl StorageProvider for FdbStorageProvider {
         let provider = self.clone();
         async move {
             provider
-                .evaluator_state_handle(peer_id)
+                .evaluator_state_read_handle(peer_id)
                 .await
                 .map_err(|err| StorageProviderError::Other(err.to_string()))
         }
@@ -274,6 +315,19 @@ pub struct FdbTransaction {
     prefix: Vec<u8>,
 }
 
+#[derive(Clone)]
+/// Read-only KV view that opens a fresh FoundationDB transaction per method call.
+pub struct FdbReadOnlyStore {
+    db: Arc<Database>,
+    prefix: Vec<u8>,
+}
+
+impl fmt::Debug for FdbReadOnlyStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FdbReadOnlyStore").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 struct RangeCursor {
     opt: Option<RangeOption<'static>>,
@@ -286,70 +340,16 @@ impl FdbTransaction {
         Self { tx, prefix }
     }
 
-    fn prefix_key(&self, key: &[u8]) -> Vec<u8> {
-        let mut prefixed = Vec::with_capacity(self.prefix.len() + key.len());
-        prefixed.extend_from_slice(&self.prefix);
-        prefixed.extend_from_slice(key);
-        prefixed
-    }
-
-    fn owned_bound(bound: Bound<&[u8]>) -> Bound<Vec<u8>> {
-        match bound {
-            Bound::Included(key) => Bound::Included(key.to_vec()),
-            Bound::Excluded(key) => Bound::Excluded(key.to_vec()),
-            Bound::Unbounded => Bound::Unbounded,
-        }
-    }
-
-    fn start_selector(&self, bound: Bound<Vec<u8>>) -> KeySelector<'static> {
-        match bound {
-            Bound::Included(key) => KeySelector::first_greater_or_equal(self.prefix_key(&key)),
-            Bound::Excluded(key) => KeySelector::first_greater_than(self.prefix_key(&key)),
-            Bound::Unbounded => KeySelector::first_greater_or_equal(self.prefix.clone()),
-        }
-    }
-
-    fn end_selector(&self, bound: Bound<Vec<u8>>) -> KeySelector<'static> {
-        match bound {
-            Bound::Included(key) => KeySelector::first_greater_than(self.prefix_key(&key)),
-            Bound::Excluded(key) => KeySelector::first_greater_or_equal(self.prefix_key(&key)),
-            Bound::Unbounded => {
-                let next = next_prefix(&self.prefix).unwrap_or_else(|| vec![0xFF]);
-                KeySelector::first_greater_or_equal(next)
-            }
-        }
-    }
-
-    fn first_greater_than_key(key: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(key.len() + 1);
-        out.extend_from_slice(key);
-        out.push(0x00);
-        out
-    }
-
-    fn clear_range_start_key(&self, bound: Bound<Vec<u8>>) -> Vec<u8> {
-        match bound {
-            Bound::Included(key) => self.prefix_key(&key),
-            Bound::Excluded(key) => Self::first_greater_than_key(&self.prefix_key(&key)),
-            Bound::Unbounded => self.prefix.clone(),
-        }
-    }
-
-    fn clear_range_end_key(&self, bound: Bound<Vec<u8>>) -> Vec<u8> {
-        match bound {
-            Bound::Included(key) => Self::first_greater_than_key(&self.prefix_key(&key)),
-            Bound::Excluded(key) => self.prefix_key(&key),
-            Bound::Unbounded => next_prefix(&self.prefix).unwrap_or_else(|| vec![0xFF]),
-        }
-    }
-
     fn make_cursor(
         &self,
         start: Bound<Vec<u8>>,
         end: Bound<Vec<u8>>,
         reverse: bool,
     ) -> RangeCursor {
-        let mut opt = RangeOption::from((self.start_selector(start), self.end_selector(end)));
+        let mut opt = RangeOption::from((
+            start_selector(&self.prefix, start),
+            end_selector(&self.prefix, end),
+        ));
         opt.reverse = reverse;
         opt.mode = options::StreamingMode::Iterator;
 
@@ -390,23 +390,171 @@ impl FdbTransaction {
     }
 }
 
+impl FdbReadOnlyStore {
+    fn new(db: Arc<Database>, prefix: Vec<u8>) -> Self {
+        Self { db, prefix }
+    }
+
+    async fn collect_range(
+        &self,
+        start: Bound<Vec<u8>>,
+        end: Bound<Vec<u8>>,
+        reverse: bool,
+    ) -> Result<Vec<KvPair>, FdbStorageError> {
+        self.db
+            .transact_boxed(
+                RangeRequest {
+                    prefix: self.prefix.clone(),
+                    start,
+                    end,
+                    reverse,
+                },
+                |tx, request| {
+                    Box::pin(async move {
+                        let mut cursor = make_cursor(
+                            &request.prefix,
+                            request.start.clone(),
+                            request.end.clone(),
+                            request.reverse,
+                        );
+                        let mut out = Vec::new();
+
+                        loop {
+                            let Some(opt) = cursor.opt.take() else {
+                                return Ok(out);
+                            };
+                            let values = tx.get_range(&opt, cursor.iteration, false).await?;
+                            cursor.iteration += 1;
+                            cursor.opt = opt.next_range(&values);
+
+                            for kv in values {
+                                let key = kv
+                                    .key()
+                                    .strip_prefix(request.prefix.as_slice())
+                                    .ok_or(FdbStorageError::PrefixViolation)?
+                                    .to_vec();
+                                out.push(KvPair {
+                                    key,
+                                    value: kv.value().to_vec(),
+                                });
+                            }
+                        }
+                    })
+                },
+                TransactOption::idempotent(),
+            )
+            .await
+    }
+
+    fn stream_from_pairs<'a>(mut pairs: VecDeque<KvPair>) -> KvStream<'a, FdbStorageError> {
+        KvStream::new(async move {
+            match pairs.pop_front() {
+                Some(pair) => Ok(Some((pair, Self::stream_from_pairs(pairs)))),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RangeRequest {
+    prefix: Vec<u8>,
+    start: Bound<Vec<u8>>,
+    end: Bound<Vec<u8>>,
+    reverse: bool,
+}
+
+fn prefix_key(prefix: &[u8], key: &[u8]) -> Vec<u8> {
+    let mut prefixed = Vec::with_capacity(prefix.len() + key.len());
+    prefixed.extend_from_slice(prefix);
+    prefixed.extend_from_slice(key);
+    prefixed
+}
+
+fn owned_bound(bound: Bound<&[u8]>) -> Bound<Vec<u8>> {
+    match bound {
+        Bound::Included(key) => Bound::Included(key.to_vec()),
+        Bound::Excluded(key) => Bound::Excluded(key.to_vec()),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
+
+fn start_selector(prefix: &[u8], bound: Bound<Vec<u8>>) -> KeySelector<'static> {
+    match bound {
+        Bound::Included(key) => KeySelector::first_greater_or_equal(prefix_key(prefix, &key)),
+        Bound::Excluded(key) => KeySelector::first_greater_than(prefix_key(prefix, &key)),
+        Bound::Unbounded => KeySelector::first_greater_or_equal(prefix.to_vec()),
+    }
+}
+
+fn end_selector(prefix: &[u8], bound: Bound<Vec<u8>>) -> KeySelector<'static> {
+    match bound {
+        Bound::Included(key) => KeySelector::first_greater_than(prefix_key(prefix, &key)),
+        Bound::Excluded(key) => KeySelector::first_greater_or_equal(prefix_key(prefix, &key)),
+        Bound::Unbounded => {
+            let next = next_prefix(prefix).unwrap_or_else(|| vec![0xFF]);
+            KeySelector::first_greater_or_equal(next)
+        }
+    }
+}
+
+fn first_greater_than_key(key: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(key.len() + 1);
+    out.extend_from_slice(key);
+    out.push(0x00);
+    out
+}
+
+fn clear_range_start_key(prefix: &[u8], bound: Bound<Vec<u8>>) -> Vec<u8> {
+    match bound {
+        Bound::Included(key) => prefix_key(prefix, &key),
+        Bound::Excluded(key) => first_greater_than_key(&prefix_key(prefix, &key)),
+        Bound::Unbounded => prefix.to_vec(),
+    }
+}
+
+fn clear_range_end_key(prefix: &[u8], bound: Bound<Vec<u8>>) -> Vec<u8> {
+    match bound {
+        Bound::Included(key) => first_greater_than_key(&prefix_key(prefix, &key)),
+        Bound::Excluded(key) => prefix_key(prefix, &key),
+        Bound::Unbounded => next_prefix(prefix).unwrap_or_else(|| vec![0xFF]),
+    }
+}
+
+fn make_cursor(
+    prefix: &[u8],
+    start: Bound<Vec<u8>>,
+    end: Bound<Vec<u8>>,
+    reverse: bool,
+) -> RangeCursor {
+    let mut opt = RangeOption::from((start_selector(prefix, start), end_selector(prefix, end)));
+    opt.reverse = reverse;
+    opt.mode = options::StreamingMode::Iterator;
+
+    RangeCursor {
+        opt: Some(opt),
+        iteration: 1,
+        buffered: VecDeque::new(),
+    }
+}
+
 #[async_trait::async_trait]
 impl KvStore for FdbTransaction {
     type Error = FdbStorageError;
 
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        let key = self.prefix_key(key);
+        let key = prefix_key(&self.prefix, key);
         Ok(self.tx.get(&key, false).await?.map(|value| value.to_vec()))
     }
 
     async fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-        let key = self.prefix_key(key);
+        let key = prefix_key(&self.prefix, key);
         self.tx.set(&key, value);
         Ok(())
     }
 
     async fn delete(&mut self, key: &[u8]) -> Result<(), Self::Error> {
-        let key = self.prefix_key(key);
+        let key = prefix_key(&self.prefix, key);
         self.tx.clear(&key);
         Ok(())
     }
@@ -417,8 +565,8 @@ impl KvStore for FdbTransaction {
         end: Bound<&[u8]>,
         reverse: bool,
     ) -> KvStream<'a, Self::Error> {
-        let start = Self::owned_bound(start);
-        let end = Self::owned_bound(end);
+        let start = owned_bound(start);
+        let end = owned_bound(end);
         self.stream_from_cursor(self.make_cursor(start, end, reverse))
     }
 
@@ -427,12 +575,66 @@ impl KvStore for FdbTransaction {
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
     ) -> Result<(), Self::Error> {
-        let start = Self::owned_bound(start);
-        let end = Self::owned_bound(end);
-        let begin = self.clear_range_start_key(start);
-        let end = self.clear_range_end_key(end);
+        let start = owned_bound(start);
+        let end = owned_bound(end);
+        let begin = clear_range_start_key(&self.prefix, start);
+        let end = clear_range_end_key(&self.prefix, end);
         self.tx.clear_range(&begin, &end);
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl KvStore for FdbReadOnlyStore {
+    type Error = FdbStorageError;
+
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.db
+            .transact_boxed(
+                (self.prefix.clone(), key.to_vec()),
+                |tx, data| {
+                    Box::pin(async move {
+                        let key = prefix_key(&data.0, &data.1);
+                        Ok(tx.get(&key, false).await?.map(|value| value.to_vec()))
+                    })
+                },
+                TransactOption::idempotent(),
+            )
+            .await
+    }
+
+    async fn set(&mut self, _key: &[u8], _value: &[u8]) -> Result<(), Self::Error> {
+        Err(FdbStorageError::ReadOnlyMutation)
+    }
+
+    async fn delete(&mut self, _key: &[u8]) -> Result<(), Self::Error> {
+        Err(FdbStorageError::ReadOnlyMutation)
+    }
+
+    fn range<'a>(
+        &'a self,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        reverse: bool,
+    ) -> KvStream<'a, Self::Error> {
+        let store = self.clone();
+        let start = owned_bound(start);
+        let end = owned_bound(end);
+        KvStream::new(async move {
+            let mut pairs = VecDeque::from(store.collect_range(start, end, reverse).await?);
+            match pairs.pop_front() {
+                Some(pair) => Ok(Some((pair, FdbReadOnlyStore::stream_from_pairs(pairs)))),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn clear_range(
+        &mut self,
+        _start: Bound<&[u8]>,
+        _end: Bound<&[u8]>,
+    ) -> Result<(), Self::Error> {
+        Err(FdbStorageError::ReadOnlyMutation)
     }
 }
 
