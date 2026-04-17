@@ -21,7 +21,6 @@ pub mod evaluator;
 pub mod garbler;
 pub mod garbling;
 pub mod polynomial_cache;
-pub(crate) mod retry_state;
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::state_machine::{evaluator::StateRead as _, garbler::StateRead as _};
@@ -30,7 +29,7 @@ use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{StorageProvider, TableStore};
 use mosaic_vs3::Index;
 
-use crate::{polynomial_cache::PolynomialCache, retry_state::RetryEvalState};
+use crate::polynomial_cache::PolynomialCache;
 
 /// Concrete executor for Mosaic job actions.
 ///
@@ -283,7 +282,9 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
     ) -> impl Future<Output = Result<Self::Session, CircuitError>> + Send {
         let peer_id = *peer_id;
         async move {
-            let eval_state = RetryEvalState::new(&self.storage, &peer_id)
+            let eval_state = self
+                .storage
+                .evaluator_state(&peer_id)
                 .await
                 .map_err(|_| CircuitError::StorageUnavailable)?;
             let challenge_indices = eval_state
@@ -298,8 +299,12 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
-            let opened_input_shares =
-                evaluator::load_opened_input_shares(&eval_state, &challenge_indices).await?;
+            let opened_input_shares = evaluator::load_opened_input_shares_with_retry(
+                &self.storage,
+                &peer_id,
+                &challenge_indices,
+            )
+            .await?;
             let pos = challenge_indices.iter().position(|ci| *ci == index).ok_or(
                 CircuitError::SetupFailed("index not in challenge indices".into()),
             )?;
