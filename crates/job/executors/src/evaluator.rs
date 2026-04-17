@@ -24,6 +24,7 @@ use mosaic_storage_api::{
     table_store::{TableId, TableReader as _, TableStore, TableWriter as _},
 };
 use mosaic_vs3::{Index, Share, batch_verify_shares, interpolate};
+
 use super::MosaicExecutor;
 use crate::{
     circuit_sessions::{CiphertextReaderAdapter, EvaluationSession},
@@ -151,7 +152,9 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
     let Some(challenge_indices) = eval_state.get_challenge_indices().await.ok().flatten() else {
         return HandlerOutcome::Retry;
     };
-    let Ok(opened_input_shares) = load_opened_input_shares(&ctx.storage, peer_id, &challenge_indices).await else {
+    let Ok(opened_input_shares) =
+        load_opened_input_shares(&ctx.storage, peer_id, &challenge_indices).await
+    else {
         return HandlerOutcome::Retry;
     };
 

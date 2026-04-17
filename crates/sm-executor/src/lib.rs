@@ -16,7 +16,7 @@ use mosaic_sm_executor_api::{
     DepositInitData, DisputedWithdrawalData, InitData, SmCommand, SmCommandKind, SmExecutorConfig,
     SmExecutorHandle, SmRole,
 };
-use mosaic_storage_api::{Commit, StorageProviderError, StorageProviderMut};
+use mosaic_storage_api::{Commit, StorageProvider, StorageProviderError, StorageProviderMut};
 use tracing::Instrument;
 
 /// Initial backoff before retrying a completion that failed to apply.
@@ -188,9 +188,11 @@ async fn recv_shutdown(
 #[derive(Debug)]
 pub struct SmExecutor<S>
 where
-    S: StorageProviderMut + 'static,
-    S::GarblerState: garbler::StateMut + Commit,
-    S::EvaluatorState: evaluator::StateMut + Commit,
+    S: StorageProvider + StorageProviderMut + 'static,
+    <S as StorageProviderMut>::GarblerState: garbler::StateMut + Commit,
+    <S as StorageProviderMut>::EvaluatorState: evaluator::StateMut + Commit,
+    <S as StorageProvider>::GarblerState: garbler::StateRead,
+    <S as StorageProvider>::EvaluatorState: evaluator::StateRead,
 {
     config: SmExecutorConfig,
     storage: S,
@@ -201,9 +203,11 @@ where
 
 impl<S> SmExecutor<S>
 where
-    S: StorageProviderMut + 'static,
-    S::GarblerState: garbler::StateMut + Commit,
-    S::EvaluatorState: evaluator::StateMut + Commit,
+    S: StorageProvider + StorageProviderMut + 'static,
+    <S as StorageProviderMut>::GarblerState: garbler::StateMut + Commit,
+    <S as StorageProviderMut>::EvaluatorState: evaluator::StateMut + Commit,
+    <S as StorageProvider>::GarblerState: garbler::StateRead,
+    <S as StorageProvider>::EvaluatorState: evaluator::StateRead,
 {
     /// Create a new executor and handle.
     pub fn new(
@@ -467,11 +471,15 @@ where
         async {
             let garbler_ok = {
                 tracing::debug!(role = ?SmRole::Garbler, "restoring garbler state machine");
-                match self.storage.garbler_state_mut(&peer_id).await {
+                match self.storage.garbler_state(&peer_id).await {
                     Ok(state) => {
                         let mut actions = garbler::ActionContainer::default();
                         match Self::stf_guard(peer_id, SmRole::Garbler, "restore", async {
-                            GarblerSM::<S::GarblerState>::restore(&state, &mut actions).await
+                            GarblerSM::<
+                                <S as StorageProviderMut>::GarblerState,
+                                <S as StorageProvider>::GarblerState,
+                            >::restore(&state, &mut actions)
+                            .await
                         })
                         .await
                         {
@@ -481,31 +489,19 @@ where
                                     actions = actions.len(),
                                     "garbler restore STF completed"
                                 );
-                                match Self::commit_state(state, peer_id, SmRole::Garbler).await {
-                                    Ok(()) => {
-                                        match self
-                                            .submit_actions(peer_id, JobActions::Garbler(actions))
-                                            .await
-                                        {
-                                            Ok(()) => true,
-                                            Err(err) => {
-                                                if Self::is_fatal_processing_error(&err) {
-                                                    return Err(err);
-                                                }
-                                                tracing::error!(
-                                                    role = ?SmRole::Garbler,
-                                                    error = ?err,
-                                                    "garbler restore action submission failed"
-                                                );
-                                                false
-                                            }
-                                        }
-                                    }
+                                match self
+                                    .submit_actions(peer_id, JobActions::Garbler(actions))
+                                    .await
+                                {
+                                    Ok(()) => true,
                                     Err(err) => {
+                                        if Self::is_fatal_processing_error(&err) {
+                                            return Err(err);
+                                        }
                                         tracing::error!(
                                             role = ?SmRole::Garbler,
                                             error = ?err,
-                                            "garbler restore commit failed"
+                                            "garbler restore action submission failed"
                                         );
                                         false
                                     }
@@ -534,11 +530,15 @@ where
 
             let evaluator_ok = {
                 tracing::debug!(role = ?SmRole::Evaluator, "restoring evaluator state machine");
-                match self.storage.evaluator_state_mut(&peer_id).await {
+                match self.storage.evaluator_state(&peer_id).await {
                     Ok(state) => {
                         let mut actions = evaluator::ActionContainer::default();
                         match Self::stf_guard(peer_id, SmRole::Evaluator, "restore", async {
-                            EvaluatorSM::<S::EvaluatorState>::restore(&state, &mut actions).await
+                            EvaluatorSM::<
+                                <S as StorageProviderMut>::EvaluatorState,
+                                <S as StorageProvider>::EvaluatorState,
+                            >::restore(&state, &mut actions)
+                            .await
                         })
                         .await
                         {
@@ -548,31 +548,19 @@ where
                                     actions = actions.len(),
                                     "evaluator restore STF completed"
                                 );
-                                match Self::commit_state(state, peer_id, SmRole::Evaluator).await {
-                                    Ok(()) => {
-                                        match self
-                                            .submit_actions(peer_id, JobActions::Evaluator(actions))
-                                            .await
-                                        {
-                                            Ok(()) => true,
-                                            Err(err) => {
-                                                if Self::is_fatal_processing_error(&err) {
-                                                    return Err(err);
-                                                }
-                                                tracing::error!(
-                                                    role = ?SmRole::Evaluator,
-                                                    error = ?err,
-                                                    "evaluator restore action submission failed"
-                                                );
-                                                false
-                                            }
-                                        }
-                                    }
+                                match self
+                                    .submit_actions(peer_id, JobActions::Evaluator(actions))
+                                    .await
+                                {
+                                    Ok(()) => true,
                                     Err(err) => {
+                                        if Self::is_fatal_processing_error(&err) {
+                                            return Err(err);
+                                        }
                                         tracing::error!(
                                             role = ?SmRole::Evaluator,
                                             error = ?err,
-                                            "evaluator restore commit failed"
+                                            "evaluator restore action submission failed"
                                         );
                                         false
                                     }
@@ -835,7 +823,7 @@ where
             let mut actions = garbler::ActionContainer::default();
 
             Self::stf_guard(peer_id, SmRole::Garbler, "event", async {
-                GarblerSM::<S::GarblerState>::stf(
+                GarblerSM::<<S as StorageProviderMut>::GarblerState>::stf(
                     &mut state,
                     FasmInput::Normal(input),
                     &mut actions,
@@ -878,7 +866,7 @@ where
             let mut actions = evaluator::ActionContainer::default();
 
             Self::stf_guard(peer_id, SmRole::Evaluator, "event", async {
-                EvaluatorSM::<S::EvaluatorState>::stf(
+                EvaluatorSM::<<S as StorageProviderMut>::EvaluatorState>::stf(
                     &mut state,
                     FasmInput::Normal(input),
                     &mut actions,
@@ -922,7 +910,7 @@ where
             let mut actions = garbler::ActionContainer::default();
 
             Self::stf_guard(peer_id, SmRole::Garbler, "completion", async {
-                GarblerSM::<S::GarblerState>::stf(
+                GarblerSM::<<S as StorageProviderMut>::GarblerState>::stf(
                     &mut state,
                     FasmInput::TrackedActionCompleted { id, result },
                     &mut actions,
@@ -966,7 +954,7 @@ where
             let mut actions = evaluator::ActionContainer::default();
 
             Self::stf_guard(peer_id, SmRole::Evaluator, "completion", async {
-                EvaluatorSM::<S::EvaluatorState>::stf(
+                EvaluatorSM::<<S as StorageProviderMut>::EvaluatorState>::stf(
                     &mut state,
                     FasmInput::TrackedActionCompleted { id, result },
                     &mut actions,
@@ -1220,6 +1208,25 @@ mod tests {
 
     #[derive(Debug, Default, Clone, Copy)]
     struct TestStorage;
+
+    impl StorageProvider for TestStorage {
+        type GarblerState = StoredGarblerState;
+        type EvaluatorState = StoredEvaluatorState;
+
+        fn garbler_state(
+            &self,
+            _peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>> + Send {
+            std::future::ready(Ok(StoredGarblerState::default()))
+        }
+
+        fn evaluator_state(
+            &self,
+            _peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>> + Send {
+            std::future::ready(Ok(StoredEvaluatorState::default()))
+        }
+    }
 
     impl StorageProviderMut for TestStorage {
         type GarblerState = StoredGarblerState;
