@@ -2669,6 +2669,7 @@ dependencies = [
  "object_store",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
