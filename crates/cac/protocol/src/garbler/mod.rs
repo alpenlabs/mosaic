@@ -25,6 +25,7 @@ pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
 
 impl<S: StateMut> StateMachine for GarblerSM<S> {
     type State = S;
+    type RestoreState = S;
 
     type Input = Input;
 
@@ -57,7 +58,7 @@ impl<S: StateMut> StateMachine for GarblerSM<S> {
     }
 
     async fn restore(
-        state: &Self::State,
+        state: &Self::RestoreState,
         actions: &mut Self::Actions,
     ) -> Result<(), Self::RestoreError> {
         stf::restore(state, actions).await?;

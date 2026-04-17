@@ -373,7 +373,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1164,9 +1164,9 @@ dependencies = [
 
 [[package]]
 name = "fasm"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4eeeb720348b3e0675242d3c09fdb75be4bc216ff01381348d22c4fffee571a2"
+checksum = "ec91f05d045b6a9aa3964796b78f046e056779af00c7d03041e8b2abbd4da89f"
 
 [[package]]
 name = "fastbloom"
