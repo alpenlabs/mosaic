@@ -26,13 +26,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: Resolve Build Plan
+  build_and_publish:
+    name: Build and Publish Mosaic Image
     runs-on: ubuntu-latest
-    outputs:
-      checkout_ref: ${{ steps.plan.outputs.checkout_ref }}
-      resolved_sha: ${{ steps.plan.outputs.resolved_sha }}
-      image_tag: ${{ steps.plan.outputs.image_tag }}
+    environment: AWS
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 180
     steps:
       - name: Validate manual inputs
         env:
@@ -67,10 +68,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.ref }}
 
-      - name: Resolve plan
-        id: plan
+      - name: Resolve build metadata
         env:
           INPUT_REF: ${{ inputs.ref }}
           INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
@@ -83,26 +83,10 @@ jobs:
           image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
 
           {
-            echo "checkout_ref=${checkout_ref}"
-            echo "resolved_sha=${resolved_sha}"
-            echo "image_tag=${image_tag}"
-          } >> "${GITHUB_OUTPUT}"
-
-  build_and_publish:
-    name: Build and Publish Mosaic Image
-    needs: plan
-    runs-on: ubuntu-latest
-    environment: AWS
-    permissions:
-      contents: read
-      id-token: write
-    timeout-minutes: 180
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          ref: ${{ needs.plan.outputs.resolved_sha }}
+            echo "CHECKOUT_REF=${checkout_ref}"
+            echo "RESOLVED_SHA=${resolved_sha}"
+            echo "IMAGE_TAG=${image_tag}"
+          } >> "${GITHUB_ENV}"
 
       - name: Cleanup space
         uses: ./.github/actions/cleanup # zizmor: ignore[unpinned-uses]
@@ -131,8 +115,6 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build Mosaic image
-        env:
-          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
         run: |
           set -euo pipefail
           local_image="mosaic-local:${IMAGE_TAG}"
@@ -144,8 +126,6 @@ jobs:
             .
 
       - name: Scan Mosaic image with Trivy
-        env:
-          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
         run: |
           set -euo pipefail
           mkdir -p trivy-results
@@ -165,13 +145,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: trivy-mosaic-${{ needs.plan.outputs.image_tag }}
+          name: trivy-mosaic-${{ env.IMAGE_TAG }}
           path: trivy-results/mosaic.txt
           if-no-files-found: error
 
       - name: Tag and push Mosaic image
-        env:
-          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
         run: |
           set -euo pipefail
           local_image="mosaic-local:${IMAGE_TAG}"
@@ -181,8 +159,6 @@ jobs:
 
       - name: Resolve pushed image digest
         id: digest
-        env:
-          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
         run: |
           set -euo pipefail
           digest="$(aws ecr describe-images \
@@ -195,9 +171,6 @@ jobs:
       - name: Append publish summary
         if: always()
         env:
-          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
-          RESOLVED_SHA: ${{ needs.plan.outputs.resolved_sha }}
-          CHECKOUT_REF: ${{ needs.plan.outputs.checkout_ref }}
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
           image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
