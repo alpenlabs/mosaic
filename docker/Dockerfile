@@ -6,7 +6,9 @@
 FROM ubuntu:24.04 AS builder
 
 # Install build dependencies and Rust nightly toolchain.
-RUN apt-get update \
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
+    && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
     adduser build-essential ca-certificates clang curl libclang-dev pkg-config \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -48,6 +50,8 @@ FROM ubuntu:24.04 AS runtime
 ARG TARGETARCH
 ARG FDB_VERSION=7.3.75
 RUN FDB_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "amd64") \
+    && sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
+    && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
     && apt-get update \
     && apt-get install -y --no-install-recommends adduser ca-certificates curl \
     && curl -fsSLO --proto "=https" --tlsv1.2 \

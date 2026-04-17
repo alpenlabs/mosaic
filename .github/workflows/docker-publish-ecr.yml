@@ -159,7 +159,7 @@ jobs:
         with:
           name: trivy-mosaic-${{ env.IMAGE_TAG }}
           path: trivy-results/mosaic.txt
-          if-no-files-found: error
+          if-no-files-found: ignore
 
       - name: Tag and push Mosaic image
         run: |
@@ -204,6 +204,7 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
+          trivy_artifact="trivy-mosaic-${IMAGE_TAG}"
           image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
           public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${IMAGE_TAG}"
           {
@@ -214,11 +215,15 @@ jobs:
             echo "- Image: \`${image_ref}\`"
             echo "- Public image: \`${public_image_ref}\`"
             echo "- Digest: \`${IMAGE_DIGEST}\`"
-            echo "- Trivy artifact: \`trivy-mosaic-${IMAGE_TAG}\`"
+            echo "- Trivy artifact: \`${trivy_artifact}\`"
             echo
             echo "### Trivy summary"
             echo
-            echo '```text'
-            sed -n '1,120p' trivy-results/mosaic.txt
-            echo '```'
+            if [[ -f trivy-results/mosaic.txt ]]; then
+              echo '```text'
+              sed -n '1,120p' trivy-results/mosaic.txt
+              echo '```'
+            else
+              echo "Trivy scan output was not generated."
+            fi
           } >> "${GITHUB_STEP_SUMMARY}"
