@@ -299,7 +299,7 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                 .ok()
                 .flatten()
                 .ok_or(CircuitError::StorageUnavailable)?;
-            let opened_input_shares = evaluator::load_opened_input_shares_with_retry(
+            let opened_input_shares = evaluator::load_opened_input_shares(
                 &self.storage,
                 &peer_id,
                 &challenge_indices,
