@@ -11,6 +11,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
 use object_store::ObjectStore;
+use tracing::error;
 
 use crate::{
     PART_BUFFER_SIZE,
@@ -126,7 +127,16 @@ async fn background_writer(
     result_tx: kanal::AsyncSender<Result<(), S3Error>>,
 ) {
     let result = background_writer_inner(&store, &root_paths, &version_paths, &cmd_rx).await;
-    let _ = result_tx.send(result).await;
+    if let Err(e) = &result {
+        error!(
+            path = %version_paths.ciphertexts,
+            %e,
+            "background writer failed"
+        );
+    }
+    if result_tx.send(result).await.is_err() {
+        tracing::warn!("background writer: result channel closed, caller gone");
+    }
 }
 
 async fn background_writer_inner(

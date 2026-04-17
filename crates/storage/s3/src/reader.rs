@@ -10,6 +10,7 @@ use std::{future::Future, sync::Arc};
 use mosaic_common::Byte32;
 use mosaic_storage_api::table_store::{TableMetadata, TableReader};
 use object_store::ObjectStore;
+use tracing::{debug, error, warn};
 
 use crate::{error::S3Error, paths::TableRootPaths};
 
@@ -278,14 +279,23 @@ async fn stream_ciphertexts(
 ) {
     // HEAD to learn the total object size.
     let total_size = match store.head(&path).await {
-        Ok(meta) => meta.size,
+        Ok(meta) => {
+            debug!(
+                path = %path,
+                total_size = meta.size,
+                "ciphertext stream: resolved object size"
+            );
+            meta.size
+        }
         Err(e) => {
+            error!(path = %path, %e, "ciphertext stream: HEAD request failed");
             let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
             return;
         }
     };
 
     if total_size == 0 {
+        warn!(path = %path, "ciphertext stream: object is empty");
         return; // Empty object — dropping tx signals EOF.
     }
 
@@ -296,23 +306,39 @@ async fn stream_ciphertexts(
         let mut last_err = None;
         for attempt in 0..=RANGE_MAX_RETRIES {
             if attempt > 0 {
+                warn!(
+                    path = %path, attempt, offset, end,
+                    "ciphertext stream: retrying range request"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(100 * (1 << attempt))).await;
             }
             match store.get_range(&path, offset..end).await {
                 Ok(bytes) => {
                     last_err = None;
                     if tx.send(Ok(bytes.to_vec())).await.is_err() {
-                        return; // Consumer gone.
+                        debug!(
+                            path = %path, offset,
+                            "ciphertext stream: consumer dropped, stopping"
+                        );
+                        return;
                     }
                     break;
                 }
                 Err(e) => {
+                    warn!(
+                        path = %path, attempt, offset, end, %e,
+                        "ciphertext stream: range request failed"
+                    );
                     last_err = Some(e);
                 }
             }
         }
 
         if let Some(e) = last_err {
+            error!(
+                path = %path, offset, end, retries = RANGE_MAX_RETRIES, %e,
+                "ciphertext stream: range request failed after all retries"
+            );
             let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
             return;
         }
@@ -320,5 +346,5 @@ async fn stream_ciphertexts(
         offset = end;
     }
 
-    // All ranges fetched — dropping tx signals EOF to the receiver.
+    debug!(path = %path, total_size, "ciphertext stream: completed");
 }
