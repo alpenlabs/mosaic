@@ -16,6 +16,10 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '888577024788.dkr.ecr.us-east-1.amazonaws.com' }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'tn1/mosaic' }}
+  PUBLIC_ECR_REGISTRY: public.ecr.aws
+  PUBLIC_ECR_NAMESPACE: z5c7y9u9
+  PUBLIC_ECR_REPOSITORY: mosaic
+  PUBLIC_ECR_REGION: us-east-1
   DOCKER_PLATFORM: linux/amd64
 
 permissions:
@@ -94,9 +98,14 @@ jobs:
       - name: Validate AWS publish configuration
         env:
           AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          PUBLIC_AWS_ROLE_TO_ASSUME: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
         run: |
           if [[ -z "${AWS_ROLE_TO_ASSUME}" ]]; then
             echo "::error::Repository variable AWS_ROLE_TO_ASSUME is required for ECR publishing"
+            exit 1
+          fi
+          if [[ -z "${PUBLIC_AWS_ROLE_TO_ASSUME}" ]]; then
+            echo "::error::Repository variable PUBLIC_AWS_ROLE_TO_ASSUME is required for public ECR publishing"
             exit 1
           fi
 
@@ -168,18 +177,39 @@ jobs:
             --output text)"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
+      - name: Configure public ECR credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.PUBLIC_ECR_REGION }}
+
+      - name: Login to public ECR
+        run: |
+          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
+            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
+
+      - name: Tag and push public Mosaic image
+        run: |
+          set -euo pipefail
+          local_image="mosaic-local:${IMAGE_TAG}"
+          public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker tag "${local_image}" "${public_image_ref}"
+          docker push "${public_image_ref}"
+
       - name: Append publish summary
         if: always()
         env:
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
           image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${IMAGE_TAG}"
           {
             echo "## Mosaic image publish"
             echo
             echo "- Checkout ref: \`${CHECKOUT_REF}\`"
             echo "- Resolved SHA: \`${RESOLVED_SHA}\`"
             echo "- Image: \`${image_ref}\`"
+            echo "- Public image: \`${public_image_ref}\`"
             echo "- Digest: \`${IMAGE_DIGEST}\`"
             echo "- Trivy artifact: \`trivy-mosaic-${IMAGE_TAG}\`"
             echo
