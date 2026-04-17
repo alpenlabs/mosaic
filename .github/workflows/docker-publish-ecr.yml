@@ -1,0 +1,227 @@
+name: Docker Publish to ECR
+
+on:
+  push:
+    branches:
+      - feat/str-3103-mosaic-ci
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git branch, tag, or commit SHA to build. Defaults to the selected branch in the UI.
+        required: false
+        type: string
+      image_tag:
+        description: Optional image tag override. Defaults to the resolved short SHA.
+        required: false
+        type: string
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '888577024788.dkr.ecr.us-east-1.amazonaws.com' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'tn1/mosaic' }}
+  PUBLIC_ECR_REGISTRY: public.ecr.aws
+  PUBLIC_ECR_NAMESPACE: z5c7y9u9
+  PUBLIC_ECR_REPOSITORY: mosaic
+  PUBLIC_ECR_REGION: us-east-1
+  DEFAULT_BUILD_REF: bae62a54b7137e811653d5dd89975e10f0e71676
+  DOCKER_PLATFORMS: linux/amd64,linux/arm64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-ecr-${{ inputs.ref || 'bae62a54b7137e811653d5dd89975e10f0e71676' }}
+  cancel-in-progress: false
+
+jobs:
+  build_and_publish:
+    name: Build and Publish Mosaic Image
+    runs-on: ubuntu-latest
+    environment: AWS
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 180
+    steps:
+      - name: Validate manual inputs
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_REF}" ]]; then
+            if [[ "${INPUT_REF}" =~ [[:space:]] ]]; then
+              echo "::error::ref must not contain whitespace"
+              exit 1
+            fi
+            if [[ ! "${INPUT_REF}" =~ ^[A-Za-z0-9._/@:-]+$ ]]; then
+              echo "::error::ref contains unsupported characters"
+              exit 1
+            fi
+          fi
+
+          if [[ -n "${INPUT_IMAGE_TAG}" ]]; then
+            if [[ "${INPUT_IMAGE_TAG}" =~ [[:space:]] ]]; then
+              echo "::error::image_tag must not contain whitespace"
+              exit 1
+            fi
+            if [[ ! "${INPUT_IMAGE_TAG}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+              echo "::error::image_tag must match [A-Za-z0-9._-]{1,128}"
+              exit 1
+            fi
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || env.DEFAULT_BUILD_REF }}
+          fetch-depth: 0
+
+      - name: Resolve build metadata
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          resolved_sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=8 HEAD)"
+          checkout_ref="${INPUT_REF:-${DEFAULT_BUILD_REF}}"
+          image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
+          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
+          public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${image_tag}"
+
+          {
+            echo "CHECKOUT_REF=${checkout_ref}"
+            echo "RESOLVED_SHA=${resolved_sha}"
+            echo "IMAGE_TAG=${image_tag}"
+            echo "IMAGE_REF=${image_ref}"
+            echo "PUBLIC_IMAGE_REF=${public_image_ref}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Cleanup space
+        uses: ./.github/actions/cleanup # zizmor: ignore[unpinned-uses]
+
+      - name: Validate AWS publish configuration
+        env:
+          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          PUBLIC_AWS_ROLE_TO_ASSUME: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
+        run: |
+          if [[ -z "${AWS_ROLE_TO_ASSUME}" ]]; then
+            echo "::error::Repository variable AWS_ROLE_TO_ASSUME is required for ECR publishing"
+            exit 1
+          fi
+          if [[ -z "${PUBLIC_AWS_ROLE_TO_ASSUME}" ]]; then
+            echo "::error::Repository variable PUBLIC_AWS_ROLE_TO_ASSUME is required for public ECR publishing"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Configure public ECR credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.PUBLIC_ECR_REGION }}
+
+      - name: Login to public ECR
+        run: |
+          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
+            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
+
+      - name: Build and push Mosaic images
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "${DOCKER_PLATFORMS}" \
+            --file docker/Dockerfile \
+            --tag "${IMAGE_REF}" \
+            --tag "${PUBLIC_IMAGE_REF}" \
+            --push \
+            .
+
+      - name: Reconfigure private AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR for follow-up checks
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Resolve pushed image digest
+        id: digest
+        run: |
+          set -euo pipefail
+          digest="$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Scan Mosaic image with Trivy
+        run: |
+          set -euo pipefail
+          mkdir -p trivy-results
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.65.0 \
+            image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 0 \
+            --no-progress \
+            "${IMAGE_REF}" > trivy-results/mosaic.txt
+
+      - name: Upload Trivy results artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-mosaic-${{ env.IMAGE_TAG }}
+          path: trivy-results/mosaic.txt
+          if-no-files-found: ignore
+
+      - name: Append publish summary
+        if: always()
+        env:
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          trivy_artifact="trivy-mosaic-${IMAGE_TAG}"
+          {
+            echo "## Mosaic image publish"
+            echo
+            echo "- Checkout ref: \`${CHECKOUT_REF}\`"
+            echo "- Resolved SHA: \`${RESOLVED_SHA}\`"
+            echo "- Image: \`${IMAGE_REF}\`"
+            echo "- Public image: \`${PUBLIC_IMAGE_REF}\`"
+            echo "- Digest: \`${IMAGE_DIGEST}\`"
+            echo "- Trivy artifact: \`${trivy_artifact}\`"
+            echo
+            echo "### Trivy summary"
+            echo
+            if [[ -f trivy-results/mosaic.txt ]]; then
+              echo '```text'
+              sed -n '1,120p' trivy-results/mosaic.txt
+              echo '```'
+            else
+              echo "Trivy scan output was not generated."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
