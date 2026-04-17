@@ -7,7 +7,6 @@
 
 use std::{future::Future, sync::Arc};
 
-use futures::StreamExt;
 use mosaic_common::Byte32;
 use mosaic_storage_api::table_store::{TableMetadata, TableReader};
 use object_store::ObjectStore;
@@ -253,38 +252,73 @@ async fn fetch_translation(
     Ok(bytes.to_vec())
 }
 
+/// Size of each range request when streaming ciphertexts from S3.
+///
+/// Using range requests instead of a single streaming GET avoids problems
+/// with long-lived HTTP connections: multiple concurrent 44 GB streams on a
+/// single-threaded tokio runtime can starve each other, causing body-read
+/// errors. Each range request is a short, independent HTTP roundtrip.
+const RANGE_CHUNK_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
+
+/// Maximum retries per range request before giving up.
+const RANGE_MAX_RETRIES: u32 = 3;
+
 /// Background task that streams ciphertext data from object storage
 /// through a bounded channel.
+///
+/// Uses sequential range requests rather than a single streaming GET.
+/// Each range is a short-lived HTTP request, avoiding issues with
+/// long-lived connections on a shared single-threaded tokio runtime.
+/// Failed ranges are retried up to [`RANGE_MAX_RETRIES`] times before
+/// propagating the error.
 async fn stream_ciphertexts(
     store: Arc<dyn ObjectStore>,
     path: object_store::path::Path,
     tx: kanal::AsyncSender<Result<Vec<u8>, S3Error>>,
 ) {
-    let get_result = match store.get(&path).await {
-        Ok(r) => r,
+    // HEAD to learn the total object size.
+    let total_size = match store.head(&path).await {
+        Ok(meta) => meta.size,
         Err(e) => {
             let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
             return;
         }
     };
 
-    let mut stream = get_result.into_stream();
-
-    loop {
-        let chunk_result = stream.next().await;
-        match chunk_result {
-            Some(Ok(bytes)) => {
-                if tx.send(Ok(bytes.to_vec())).await.is_err() {
-                    return;
-                }
-            }
-            Some(Err(e)) => {
-                let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
-                return;
-            }
-            None => break,
-        }
+    if total_size == 0 {
+        return; // Empty object — dropping tx signals EOF.
     }
 
-    // Stream complete — dropping tx signals EOF to the receiver.
+    let mut offset = 0usize;
+    while offset < total_size {
+        let end = (offset + RANGE_CHUNK_SIZE).min(total_size);
+
+        let mut last_err = None;
+        for attempt in 0..=RANGE_MAX_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(100 * (1 << attempt))).await;
+            }
+            match store.get_range(&path, offset..end).await {
+                Ok(bytes) => {
+                    last_err = None;
+                    if tx.send(Ok(bytes.to_vec())).await.is_err() {
+                        return; // Consumer gone.
+                    }
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if let Some(e) = last_err {
+            let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
+            return;
+        }
+
+        offset = end;
+    }
+
+    // All ranges fetched — dropping tx signals EOF to the receiver.
 }

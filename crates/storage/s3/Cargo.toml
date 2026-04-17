@@ -19,7 +19,7 @@ futures = "0.3"
 kanal = "0.1.1"
 object_store = { version = "0.11", features = ["aws"] }
 thiserror.workspace = true
-tokio = { version = "1", features = ["rt", "sync", "macros"] }
+tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
 
 [dev-dependencies]
 mosaic-net-svc-api.workspace = true
