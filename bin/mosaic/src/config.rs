@@ -673,12 +673,56 @@ bind_addr = "127.0.0.1:8080"
         config.validate().expect("config should validate");
     }
 
+<<<<<<< HEAD
     #[test]
     fn s3_timeout_defaults_are_applied() {
+=======
+    fn sample_s3_config_toml(circuit_path: &Path, credential_lines: &str) -> String {
+        format!(
+            r#"
+[logging]
+filter = "debug"
+
+[circuit]
+path = "{}"
+
+[network]
+signing_key_hex = "1111111111111111111111111111111111111111111111111111111111111111"
+bind_addr = "127.0.0.1:7000"
+
+[[network.peers]]
+peer_id_hex = "2222222222222222222222222222222222222222222222222222222222222222"
+addr = "127.0.0.1:7001"
+
+[storage]
+
+[table_store]
+backend = "s3_compatible"
+bucket = "bucket"
+region = "us-east-1"
+prefix = "prefix"
+{}
+
+[job_scheduler]
+
+[sm_executor]
+
+[rpc]
+bind_addr = "127.0.0.1:8080"
+"#,
+            circuit_path.display(),
+            credential_lines
+        )
+    }
+
+    #[test]
+    fn validate_accepts_s3_default_credential_chain() {
+>>>>>>> 6d1277f (config: reject invalid s3 session token configs)
         let path = std::env::current_exe().expect("current executable path");
         let config: MosaicConfig =
             toml::from_str(&sample_s3_config_toml(&path, "")).expect("config should parse");
 
+<<<<<<< HEAD
         let options = config
             .table_store
             .backend
@@ -725,6 +769,44 @@ bind_addr = "127.0.0.1:8080"
         assert_eq!(
             options.get_config_value(&ClientConfigKey::ConnectTimeout),
             expected.get_config_value(&ClientConfigKey::ConnectTimeout)
+=======
+        config.validate().expect("config should validate");
+    }
+
+    #[test]
+    fn validate_accepts_s3_static_credentials_with_optional_token() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig = toml::from_str(&sample_s3_config_toml(
+            &path,
+            r#"
+access_key_id = "access"
+secret_access_key = "secret"
+session_token = "token"
+"#,
+        ))
+        .expect("config should parse");
+
+        config.validate().expect("config should validate");
+    }
+
+    #[test]
+    fn validate_rejects_s3_session_token_without_static_credentials() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig = toml::from_str(&sample_s3_config_toml(
+            &path,
+            r#"
+session_token = "token"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config.validate().expect_err("config should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("table_store.session_token requires table_store.access_key_id"),
+            "unexpected error: {error}"
+>>>>>>> 6d1277f (config: reject invalid s3 session token configs)
         );
     }
 }
