@@ -150,6 +150,7 @@ impl MosaicConfig {
             endpoint,
             access_key_id,
             secret_access_key,
+            session_token,
             request_timeout_secs,
             connect_timeout_secs,
             ..
@@ -163,12 +164,34 @@ impl MosaicConfig {
                 bail!("table_store.region must not be empty");
             }
 
-            if access_key_id.is_empty() {
-                bail!("table_store.access_key_id must not be empty");
+            match (access_key_id.as_deref(), secret_access_key.as_deref()) {
+                (Some(access_key_id), Some(secret_access_key)) => {
+                    if access_key_id.is_empty() {
+                        bail!("table_store.access_key_id must not be empty when provided");
+                    }
+
+                    if secret_access_key.is_empty() {
+                        bail!("table_store.secret_access_key must not be empty when provided");
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    bail!(
+                        "table_store.access_key_id and table_store.secret_access_key must either both be set or both be omitted"
+                    );
+                }
             }
 
-            if secret_access_key.is_empty() {
-                bail!("table_store.secret_access_key must not be empty");
+            if let Some(session_token) = session_token {
+                if session_token.is_empty() {
+                    bail!("table_store.session_token must not be empty when provided");
+                }
+
+                if access_key_id.is_none() || secret_access_key.is_none() {
+                    bail!(
+                        "table_store.session_token requires table_store.access_key_id and table_store.secret_access_key"
+                    );
+                }
             }
 
             if *request_timeout_secs == 0 {
@@ -283,8 +306,11 @@ pub(crate) enum TableStoreBackend {
         bucket: String,
         region: String,
         prefix: String,
-        access_key_id: String,
-        secret_access_key: String,
+        /// When both `access_key_id` and `secret_access_key` are omitted, the
+        /// AWS credential chain is used: IRSA web-identity token → ECS task
+        /// creds → EC2 instance profile.
+        access_key_id: Option<String>,
+        secret_access_key: Option<String>,
         endpoint: Option<String>,
         session_token: Option<String>,
         #[serde(default = "default_s3_request_timeout_secs")]
@@ -588,8 +614,6 @@ backend = "s3_compatible"
 bucket = "bucket"
 region = "us-east-1"
 prefix = "tables"
-access_key_id = "access"
-secret_access_key = "secret"
 {extra_table_store}
 
 [job_scheduler]
@@ -644,8 +668,11 @@ bind_addr = "127.0.0.1:8080"
     #[test]
     fn s3_timeout_defaults_are_applied() {
         let path = std::env::current_exe().expect("current executable path");
-        let config: MosaicConfig =
-            toml::from_str(&sample_s3_config_toml(&path, "")).expect("config should parse");
+        let config: MosaicConfig = toml::from_str(&sample_s3_config_toml(
+            &path,
+            "request_timeout_secs = 7200\nconnect_timeout_secs = 5",
+        ))
+        .expect("config should parse");
 
         let options = config
             .table_store
@@ -693,6 +720,54 @@ bind_addr = "127.0.0.1:8080"
         assert_eq!(
             options.get_config_value(&ClientConfigKey::ConnectTimeout),
             expected.get_config_value(&ClientConfigKey::ConnectTimeout)
+        );
+    }
+
+    #[test]
+    fn validate_accepts_s3_default_credential_chain() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig = toml::from_str(&sample_s3_config_toml(
+            &path,
+            "request_timeout_secs = 7200\nconnect_timeout_secs = 5",
+        ))
+        .expect("config should parse");
+
+        config.validate().expect("config should validate");
+    }
+
+    #[test]
+    fn validate_accepts_s3_static_credentials_with_optional_token() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig = toml::from_str(&sample_s3_config_toml(
+            &path,
+            r#"
+access_key_id = "access"
+secret_access_key = "secret"
+session_token = "token"
+"#,
+        ))
+        .expect("config should parse");
+
+        config.validate().expect("config should validate");
+    }
+
+    #[test]
+    fn validate_rejects_s3_session_token_without_static_credentials() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig = toml::from_str(&sample_s3_config_toml(
+            &path,
+            r#"
+session_token = "token"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config.validate().expect_err("config should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("table_store.session_token requires table_store.access_key_id"),
+            "unexpected error: {error}"
         );
     }
 }
