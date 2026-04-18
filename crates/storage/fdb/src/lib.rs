@@ -17,6 +17,7 @@ use foundationdb::{
     directory::{Directory, DirectoryError, DirectoryLayer, DirectoryOutput},
     options,
 };
+use mosaic_cac_types::RetryableStorageError;
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{Commit, StorageProvider, StorageProviderError, StorageProviderMut};
 use mosaic_storage_kvstore::{
@@ -67,6 +68,16 @@ impl TryFrom<FdbStorageError> for FdbError {
         match value {
             FdbStorageError::Fdb(err) => Ok(err),
             other => Err(other),
+        }
+    }
+}
+
+impl RetryableStorageError for FdbStorageError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Fdb(err) => err.is_retryable(),
+            Self::Commit(err) => err.is_retryable_not_committed(),
+            Self::Directory(_) | Self::PrefixViolation | Self::ReadOnlyMutation => false,
         }
     }
 }
@@ -229,7 +240,7 @@ impl StorageProvider for FdbStorageProvider {
             provider
                 .garbler_state_read_handle(peer_id)
                 .await
-                .map_err(|err| StorageProviderError::Other(err.to_string()))
+                .map_err(StorageProviderError::source)
         }
     }
 
@@ -245,7 +256,7 @@ impl StorageProvider for FdbStorageProvider {
             provider
                 .evaluator_state_read_handle(peer_id)
                 .await
-                .map_err(|err| StorageProviderError::Other(err.to_string()))
+                .map_err(StorageProviderError::source)
         }
     }
 }
@@ -265,7 +276,7 @@ impl StorageProviderMut for FdbStorageProvider {
             provider
                 .garbler_state_handle(peer_id)
                 .await
-                .map_err(|err| StorageProviderError::Other(err.to_string()))
+                .map_err(StorageProviderError::source)
         }
     }
 
@@ -281,7 +292,7 @@ impl StorageProviderMut for FdbStorageProvider {
             provider
                 .evaluator_state_handle(peer_id)
                 .await
-                .map_err(|err| StorageProviderError::Other(err.to_string()))
+                .map_err(StorageProviderError::source)
         }
     }
 }

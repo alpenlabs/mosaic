@@ -24,7 +24,7 @@ use crate::{
 /// (e.g. challenge message is acked, verification finishes), the result is
 /// delivered via [`fasm::Input::TrackedActionCompleted`] with an
 /// [`ActionId`](super::ActionId) and [`ActionResult`](super::ActionResult).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Input {
     /// Initialize the evaluator state machine with seed and setup inputs.
     Init(EvaluatorInitData),
@@ -61,7 +61,7 @@ pub enum Input {
 }
 
 /// Data required during evaluator state machine initialization.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EvaluatorInitData {
     /// Seed for deterministic RNG.
     pub seed: Seed,
@@ -70,7 +70,7 @@ pub struct EvaluatorInitData {
 }
 
 /// Data required to initialize a deposit on the evaluator side.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EvaluatorDepositInitData {
     /// Secret key used to generate adaptors.
     pub sk: SecretKey,
@@ -81,7 +81,7 @@ pub struct EvaluatorDepositInitData {
 }
 
 /// Data required to initiate a disputed withdrawal process.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EvaluatorDisputedWithdrawalData {
     /// Completed adaptor signatures extracted from on-chain transaction.
     pub signatures: CompletedSignatures,

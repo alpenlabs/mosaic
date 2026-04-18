@@ -2620,6 +2620,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "foundationdb",
+ "mosaic-cac-types",
  "mosaic-net-svc-api",
  "mosaic-storage-api",
  "mosaic-storage-kvstore",

@@ -2,6 +2,8 @@
 
 use std::{error::Error, fmt, fmt::Debug, ops::Bound, pin::Pin};
 
+use mosaic_cac_types::RetryableStorageError;
+
 /// A key-value pair returned from range scans.
 #[derive(Debug, Clone)]
 pub struct KvPair {
@@ -126,7 +128,7 @@ impl<'a, E> KvStream<'a, E> {
 #[async_trait::async_trait]
 pub trait KvStore: Send {
     /// The error type for this store.
-    type Error: Error + Debug + Send + Sync + 'static;
+    type Error: Error + RetryableStorageError + Debug + Send + Sync + 'static;
 
     /// Get a value by key.
     ///

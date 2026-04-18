@@ -23,7 +23,7 @@ use crate::{
 /// (e.g. polynomial generation finishes, a message is acked), the result is
 /// delivered via [`fasm::Input::TrackedActionCompleted`] with an
 /// [`ActionId`](super::ActionId) and [`ActionResult`](super::ActionResult).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Input {
     /// Initialize the garbler state machine with seed and setup inputs.
     Init(GarblerInitData),
@@ -59,7 +59,7 @@ pub enum Input {
 }
 
 /// Data required during garbler state machine initialization.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GarblerInitData {
     /// Seed for deterministic RNG.
     pub seed: Seed,
@@ -68,7 +68,7 @@ pub struct GarblerInitData {
 }
 
 /// Data required to initialize a deposit on the garbler side.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GarblerDepositInitData {
     /// Public key used to verify adaptors created under evaluator's secret key.
     pub pk: PubKey,
