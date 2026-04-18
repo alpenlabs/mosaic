@@ -188,13 +188,27 @@ impl TableStore for S3TableStore {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        fmt,
+        ops::Range,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
 
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use futures::{StreamExt, stream::BoxStream};
     use mosaic_common::Byte32;
     use mosaic_net_svc_api::PeerId;
     use mosaic_storage_api::table_store::{TableMetadata, TableReader, TableStore, TableWriter};
     use mosaic_vs3::Index;
-    use object_store::memory::InMemory;
+    use object_store::{
+        Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
+        ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult,
+        Result as ObjectStoreResult, memory::InMemory, path::Path,
+    };
 
     use super::*;
 
@@ -224,6 +238,220 @@ mod tests {
             out.extend_from_slice(&buf[..n]);
         }
         out
+    }
+
+    #[derive(Debug, Default)]
+    struct TokioAssertingStore {
+        inner: InMemory,
+    }
+
+    impl fmt::Display for TokioAssertingStore {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "TokioAssertingStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for TokioAssertingStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> ObjectStoreResult<PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: PutMultipartOpts,
+        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> ObjectStoreResult<GetResult> {
+            assert!(
+                tokio::runtime::Handle::try_current().is_ok(),
+                "object_store get must run on a tokio runtime"
+            );
+            self.inner.get_opts(location, options).await
+        }
+
+        async fn get_range(
+            &self,
+            location: &Path,
+            range: Range<usize>,
+        ) -> ObjectStoreResult<Bytes> {
+            self.inner.get_range(location, range).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &Path,
+            ranges: &[Range<usize>],
+        ) -> ObjectStoreResult<Vec<Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        async fn head(&self, location: &Path) -> ObjectStoreResult<ObjectMeta> {
+            self.inner.head(location).await
+        }
+
+        async fn delete(&self, location: &Path) -> ObjectStoreResult<()> {
+            self.inner.delete(location).await
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> ObjectStoreResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
+            self.inner.copy(from, to).await
+        }
+
+        async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
+            self.inner.copy_if_not_exists(from, to).await
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ResumeStore {
+        inner: InMemory,
+        fail_first_ciphertext_stream: AtomicBool,
+        seen_offsets: Mutex<Vec<usize>>,
+    }
+
+    impl fmt::Display for ResumeStore {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "ResumeStore")
+        }
+    }
+
+    impl ResumeStore {
+        fn seen_offsets(&self) -> Vec<usize> {
+            self.seen_offsets.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for ResumeStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> ObjectStoreResult<PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: PutMultipartOpts,
+        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> ObjectStoreResult<GetResult> {
+            if !location.to_string().ends_with("/ciphertexts") {
+                return self.inner.get_opts(location, options).await;
+            }
+
+            let offset = match options.range {
+                Some(GetRange::Offset(offset)) => offset,
+                None => 0,
+                Some(other) => panic!("unexpected get range in test: {other:?}"),
+            };
+            self.seen_offsets.lock().unwrap().push(offset);
+
+            let meta = self.inner.head(location).await?;
+            let bytes = self.inner.get(location).await?.bytes().await?;
+
+            let payload = if offset == 0
+                && self
+                    .fail_first_ciphertext_stream
+                    .swap(false, Ordering::SeqCst)
+            {
+                let first_len = 5.min(bytes.len());
+                let injected = object_store::Error::Generic {
+                    store: "test",
+                    source: Box::new(std::io::Error::other("injected stream failure")),
+                };
+                let stream =
+                    futures::stream::iter(vec![Ok(bytes.slice(0..first_len)), Err(injected)])
+                        .boxed();
+                GetResultPayload::Stream(stream)
+            } else {
+                let stream = futures::stream::iter(vec![Ok(bytes.slice(offset..))]).boxed();
+                GetResultPayload::Stream(stream)
+            };
+
+            Ok(GetResult {
+                payload,
+                meta,
+                range: offset..bytes.len(),
+                attributes: Attributes::default(),
+            })
+        }
+
+        async fn get_range(
+            &self,
+            location: &Path,
+            range: Range<usize>,
+        ) -> ObjectStoreResult<Bytes> {
+            self.inner.get_range(location, range).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &Path,
+            ranges: &[Range<usize>],
+        ) -> ObjectStoreResult<Vec<Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        async fn head(&self, location: &Path) -> ObjectStoreResult<ObjectMeta> {
+            self.inner.head(location).await
+        }
+
+        async fn delete(&self, location: &Path) -> ObjectStoreResult<()> {
+            self.inner.delete(location).await
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> ObjectStoreResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
+            self.inner.copy(from, to).await
+        }
+
+        async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
+            self.inner.copy_if_not_exists(from, to).await
+        }
     }
 
     #[tokio::test]
@@ -264,5 +492,42 @@ mod tests {
 
         store.delete(&id).await.unwrap();
         assert!(!store.exists(&id).await.unwrap());
+    }
+
+    #[test]
+    fn open_bridges_committed_version_fetch_onto_tokio_runtime() {
+        let store = S3TableStore::new(Arc::new(TokioAssertingStore::default()), "tables");
+        let id = table_id();
+
+        futures::executor::block_on(async {
+            let mut writer = store.create(&id).await.unwrap();
+            writer.write_ciphertext(b"ciphertexts").await.unwrap();
+            writer.finish(b"translation", metadata(7)).await.unwrap();
+        });
+
+        let mut reader = futures::executor::block_on(store.open(&id)).unwrap();
+        assert_eq!(
+            futures::executor::block_on(reader.read_translation()).unwrap(),
+            b"translation"
+        );
+    }
+
+    #[tokio::test]
+    async fn ciphertext_stream_resumes_from_last_delivered_offset() {
+        let backing = Arc::new(ResumeStore {
+            inner: InMemory::new(),
+            fail_first_ciphertext_stream: AtomicBool::new(true),
+            seen_offsets: Mutex::new(Vec::new()),
+        });
+        let store = S3TableStore::new(backing.clone() as Arc<dyn ObjectStore>, "tables");
+        let id = table_id();
+
+        let mut writer = store.create(&id).await.unwrap();
+        writer.write_ciphertext(b"abcdefghij").await.unwrap();
+        writer.finish(b"translation", metadata(9)).await.unwrap();
+
+        let mut reader = store.open(&id).await.unwrap();
+        assert_eq!(read_all_ciphertexts(&mut reader).await, b"abcdefghij");
+        assert_eq!(backing.seen_offsets(), vec![0, 5]);
     }
 }

@@ -12,6 +12,7 @@ use mosaic_net_client::NetClientConfig;
 use mosaic_net_svc::{NetServiceConfig, PeerConfig, PeerId};
 use mosaic_sm_executor_api::SmExecutorConfig;
 use mosaic_storage_fdb::FdbStorageConfig;
+use object_store::ClientOptions;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +150,8 @@ impl MosaicConfig {
             endpoint,
             access_key_id,
             secret_access_key,
+            request_timeout_secs,
+            connect_timeout_secs,
             ..
         } = &self.table_store.backend
         {
@@ -166,6 +169,14 @@ impl MosaicConfig {
 
             if secret_access_key.is_empty() {
                 bail!("table_store.secret_access_key must not be empty");
+            }
+
+            if *request_timeout_secs == 0 {
+                bail!("table_store.request_timeout_secs must be greater than zero");
+            }
+
+            if *connect_timeout_secs == 0 {
+                bail!("table_store.connect_timeout_secs must be greater than zero");
             }
 
             if let Some(endpoint) = endpoint
@@ -276,11 +287,32 @@ pub(crate) enum TableStoreBackend {
         secret_access_key: String,
         endpoint: Option<String>,
         session_token: Option<String>,
+        #[serde(default = "default_s3_request_timeout_secs")]
+        request_timeout_secs: u64,
+        #[serde(default = "default_s3_connect_timeout_secs")]
+        connect_timeout_secs: u64,
         #[serde(default)]
         allow_http: bool,
         #[serde(default)]
         virtual_hosted_style_request: bool,
     },
+}
+
+impl TableStoreBackend {
+    pub(crate) fn build_s3_client_options(&self) -> Option<ClientOptions> {
+        match self {
+            Self::S3Compatible {
+                request_timeout_secs,
+                connect_timeout_secs,
+                ..
+            } => Some(
+                ClientOptions::new()
+                    .with_timeout(Duration::from_secs(*request_timeout_secs))
+                    .with_connect_timeout(Duration::from_secs(*connect_timeout_secs)),
+            ),
+            Self::LocalFilesystem { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -418,6 +450,8 @@ const DEFAULT_CHUNK_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_SUBMISSION_QUEUE_SIZE: usize = 256;
 const DEFAULT_COMPLETION_QUEUE_SIZE: usize = 256;
 const DEFAULT_COMMAND_QUEUE_SIZE: usize = 256;
+const DEFAULT_S3_REQUEST_TIMEOUT_SECS: u64 = 2 * 60 * 60;
+const DEFAULT_S3_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 fn default_log_filter() -> String {
     DEFAULT_LOG_FILTER.to_string()
@@ -479,8 +513,18 @@ const fn default_command_queue_size() -> usize {
     DEFAULT_COMMAND_QUEUE_SIZE
 }
 
+const fn default_s3_request_timeout_secs() -> u64 {
+    DEFAULT_S3_REQUEST_TIMEOUT_SECS
+}
+
+const fn default_s3_connect_timeout_secs() -> u64 {
+    DEFAULT_S3_CONNECT_TIMEOUT_SECS
+}
+
 #[cfg(test)]
 mod tests {
+    use object_store::ClientConfigKey;
+
     use super::*;
 
     fn sample_config_toml(circuit_path: &Path) -> String {
@@ -507,6 +551,46 @@ cluster_file = "/etc/foundationdb/fdb.cluster"
 backend = "local_filesystem"
 root = "/var/lib/mosaic/tables"
 prefix = "tables"
+
+[job_scheduler]
+
+[sm_executor]
+
+[rpc]
+bind_addr = "127.0.0.1:8080"
+"#,
+            circuit_path.display()
+        )
+    }
+
+    fn sample_s3_config_toml(circuit_path: &Path, extra_table_store: &str) -> String {
+        format!(
+            r#"
+[logging]
+filter = "debug"
+
+[circuit]
+path = "{}"
+
+[network]
+signing_key_hex = "1111111111111111111111111111111111111111111111111111111111111111"
+bind_addr = "127.0.0.1:7000"
+
+[[network.peers]]
+peer_id_hex = "2222222222222222222222222222222222222222222222222222222222222222"
+addr = "127.0.0.1:7001"
+
+[storage]
+cluster_file = "/etc/foundationdb/fdb.cluster"
+
+[table_store]
+backend = "s3_compatible"
+bucket = "bucket"
+region = "us-east-1"
+prefix = "tables"
+access_key_id = "access"
+secret_access_key = "secret"
+{extra_table_store}
 
 [job_scheduler]
 
@@ -555,5 +639,60 @@ bind_addr = "127.0.0.1:8080"
             toml::from_str(&sample_config_toml(&path)).expect("config should parse");
 
         config.validate().expect("config should validate");
+    }
+
+    #[test]
+    fn s3_timeout_defaults_are_applied() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig =
+            toml::from_str(&sample_s3_config_toml(&path, "")).expect("config should parse");
+
+        let options = config
+            .table_store
+            .backend
+            .build_s3_client_options()
+            .expect("s3 backend should build client options");
+
+        let expected = ClientOptions::new()
+            .with_timeout(Duration::from_secs(DEFAULT_S3_REQUEST_TIMEOUT_SECS))
+            .with_connect_timeout(Duration::from_secs(DEFAULT_S3_CONNECT_TIMEOUT_SECS));
+
+        assert_eq!(
+            options.get_config_value(&ClientConfigKey::Timeout),
+            expected.get_config_value(&ClientConfigKey::Timeout)
+        );
+        assert_eq!(
+            options.get_config_value(&ClientConfigKey::ConnectTimeout),
+            expected.get_config_value(&ClientConfigKey::ConnectTimeout)
+        );
+    }
+
+    #[test]
+    fn s3_timeout_overrides_are_applied() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig = toml::from_str(&sample_s3_config_toml(
+            &path,
+            "request_timeout_secs = 900\nconnect_timeout_secs = 9",
+        ))
+        .expect("config should parse");
+
+        let options = config
+            .table_store
+            .backend
+            .build_s3_client_options()
+            .expect("s3 backend should build client options");
+
+        let expected = ClientOptions::new()
+            .with_timeout(Duration::from_secs(900))
+            .with_connect_timeout(Duration::from_secs(9));
+
+        assert_eq!(
+            options.get_config_value(&ClientConfigKey::Timeout),
+            expected.get_config_value(&ClientConfigKey::Timeout)
+        );
+        assert_eq!(
+            options.get_config_value(&ClientConfigKey::ConnectTimeout),
+            expected.get_config_value(&ClientConfigKey::ConnectTimeout)
+        );
     }
 }

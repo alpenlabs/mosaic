@@ -2,17 +2,23 @@
 //!
 //! Reads garbling table components from object storage. Metadata and
 //! translation material are fetched eagerly on construction (they're small).
-//! Ciphertext data is streamed lazily via a background tokio task that
-//! pre-fetches chunks through a bounded channel.
+//! Ciphertext data is streamed via a background tokio task that pre-fetches
+//! chunks through a bounded channel. If the HTTP connection drops mid-transfer,
+//! the background task automatically resumes from the last successfully
+//! delivered byte offset.
 
 use std::{future::Future, sync::Arc};
 
 use futures::StreamExt;
 use mosaic_common::Byte32;
 use mosaic_storage_api::table_store::{TableMetadata, TableReader};
-use object_store::ObjectStore;
+use object_store::{GetOptions, GetRange, ObjectStore};
+use tracing::{debug, error, warn};
 
 use crate::{error::S3Error, paths::TableRootPaths};
+
+/// Maximum retries when opening or resuming a ciphertext stream.
+const STREAM_MAX_RETRIES: u32 = 3;
 
 /// Reads a garbling table from object storage.
 ///
@@ -20,6 +26,9 @@ use crate::{error::S3Error, paths::TableRootPaths};
 /// Ciphertext data is streamed on demand via [`read_ciphertext`](Self::read_ciphertext),
 /// backed by a background tokio task that pre-fetches chunks from the object
 /// store through a bounded channel.
+///
+/// If the underlying HTTP connection drops, the background task automatically
+/// resumes from the last delivered byte offset.
 #[derive(Debug)]
 pub struct S3TableReader {
     /// Table metadata (loaded eagerly).
@@ -46,7 +55,20 @@ impl S3TableReader {
         rt_handle: tokio::runtime::Handle,
         root_paths: TableRootPaths,
     ) -> Result<Self, S3Error> {
-        let version = fetch_committed_version(&store, &root_paths.committed).await?;
+        // Fetch committed version via tokio runtime.
+        let (ver_tx, ver_rx) = kanal::bounded_async(1);
+        {
+            let store = Arc::clone(&store);
+            let committed_path = root_paths.committed.clone();
+            rt_handle.spawn(async move {
+                let result = fetch_committed_version(&store, &committed_path).await;
+                let _ = ver_tx.send(result).await;
+            });
+        }
+        let version = ver_rx
+            .recv()
+            .await
+            .map_err(|_| S3Error::Channel("committed version fetch task gone".into()))??;
         let paths = root_paths.version_paths(version);
 
         // Fetch metadata and translation eagerly via the tokio runtime.
@@ -242,36 +264,105 @@ async fn fetch_translation(
 
 /// Background task that streams ciphertext data from object storage
 /// through a bounded channel.
+///
+/// Uses a streaming GET for throughput. If the connection drops mid-transfer,
+/// the stream is automatically resumed from the last successfully delivered
+/// byte offset (via `GetRange::Offset`). Gives up after [`STREAM_MAX_RETRIES`]
+/// consecutive failures.
 async fn stream_ciphertexts(
     store: Arc<dyn ObjectStore>,
     path: object_store::path::Path,
     tx: kanal::AsyncSender<Result<Vec<u8>, S3Error>>,
 ) {
-    let get_result = match store.get(&path).await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
-            return;
-        }
-    };
-
-    let mut stream = get_result.into_stream();
+    let mut bytes_delivered: usize = 0;
+    let mut retries: u32 = 0;
 
     loop {
-        let chunk_result = stream.next().await;
-        match chunk_result {
-            Some(Ok(bytes)) => {
-                if tx.send(Ok(bytes.to_vec())).await.is_err() {
+        // Open a (possibly resumed) streaming GET.
+        let opts = if bytes_delivered == 0 {
+            GetOptions::default()
+        } else {
+            GetOptions {
+                range: Some(GetRange::Offset(bytes_delivered)),
+                ..Default::default()
+            }
+        };
+
+        debug!(
+            path = %path,
+            bytes_delivered,
+            resumed = bytes_delivered > 0,
+            "ciphertext stream: opening GET"
+        );
+
+        let get_result = match store.get_opts(&path, opts).await {
+            Ok(r) => r,
+            Err(e) => {
+                retries += 1;
+                if retries > STREAM_MAX_RETRIES {
+                    error!(
+                        path = %path, bytes_delivered, retries,
+                        %e, "ciphertext stream: failed to open after retries"
+                    );
+                    let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
                     return;
                 }
+                warn!(
+                    path = %path, bytes_delivered, retries,
+                    %e, "ciphertext stream: open failed, will retry"
+                );
+                let backoff = std::time::Duration::from_millis(100 * (1 << retries));
+                tokio::time::sleep(backoff).await;
+                continue;
             }
-            Some(Err(e)) => {
-                let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
-                return;
+        };
+
+        let mut stream = get_result.into_stream();
+        let mut stream_failed = false;
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    let len = bytes.len();
+                    if tx.send(Ok(bytes.to_vec())).await.is_err() {
+                        debug!(
+                            path = %path, bytes_delivered,
+                            "ciphertext stream: consumer dropped, stopping"
+                        );
+                        return;
+                    }
+                    bytes_delivered += len;
+                    retries = 0; // Successful data resets the retry counter.
+                }
+                Err(e) => {
+                    retries += 1;
+                    if retries > STREAM_MAX_RETRIES {
+                        error!(
+                            path = %path, bytes_delivered, retries,
+                            %e, "ciphertext stream: failed after retries"
+                        );
+                        let _ = tx.send(Err(S3Error::ObjectStore(e))).await;
+                        return;
+                    }
+                    warn!(
+                        path = %path, bytes_delivered, retries,
+                        %e, "ciphertext stream: connection lost, will resume"
+                    );
+                    let backoff = std::time::Duration::from_millis(100 * (1 << retries));
+                    tokio::time::sleep(backoff).await;
+                    stream_failed = true;
+                    break; // Break inner loop to re-open from offset.
+                }
             }
-            None => break,
+        }
+
+        if !stream_failed {
+            // Stream completed normally (no more chunks).
+            debug!(
+                path = %path, bytes_delivered,
+                "ciphertext stream: completed"
+            );
+            return;
         }
     }
-
-    // Stream complete — dropping tx signals EOF to the receiver.
 }
