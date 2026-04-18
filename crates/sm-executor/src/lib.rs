@@ -6,7 +6,7 @@ use fasm::{Input as FasmInput, StateMachine};
 use futures::FutureExt;
 use mosaic_cac_protocol::{SMError, evaluator::EvaluatorSM, garbler::GarblerSM};
 use mosaic_cac_types::{
-    Msg,
+    Msg, RetryableStorageError,
     state_machine::{evaluator, garbler},
 };
 use mosaic_job_api::{ActionCompletion, JobActions, JobBatch, JobCompletion, JobSchedulerHandle};
@@ -16,7 +16,7 @@ use mosaic_sm_executor_api::{
     DepositInitData, DisputedWithdrawalData, InitData, SmCommand, SmCommandKind, SmExecutorConfig,
     SmExecutorHandle, SmRole,
 };
-use mosaic_storage_api::{Commit, StorageProviderError, StorageProviderMut};
+use mosaic_storage_api::{Commit, StorageProvider, StorageProviderError, StorageProviderMut};
 use tracing::Instrument;
 
 /// Initial backoff before retrying a completion that failed to apply.
@@ -130,6 +130,8 @@ pub enum SmExecutorError {
         peer_id: PeerId,
         /// Role whose state failed to commit.
         role: SmRole,
+        /// Whether retrying the whole STF unit is safe.
+        retryable: bool,
         /// Commit failure detail.
         reason: String,
     },
@@ -188,9 +190,11 @@ async fn recv_shutdown(
 #[derive(Debug)]
 pub struct SmExecutor<S>
 where
-    S: StorageProviderMut + 'static,
-    S::GarblerState: garbler::StateMut + Commit,
-    S::EvaluatorState: evaluator::StateMut + Commit,
+    S: StorageProvider + StorageProviderMut + 'static,
+    <S as StorageProviderMut>::GarblerState: garbler::StateMut + Commit,
+    <S as StorageProviderMut>::EvaluatorState: evaluator::StateMut + Commit,
+    <S as StorageProvider>::GarblerState: garbler::StateRead,
+    <S as StorageProvider>::EvaluatorState: evaluator::StateRead,
 {
     config: SmExecutorConfig,
     storage: S,
@@ -201,9 +205,11 @@ where
 
 impl<S> SmExecutor<S>
 where
-    S: StorageProviderMut + 'static,
-    S::GarblerState: garbler::StateMut + Commit,
-    S::EvaluatorState: evaluator::StateMut + Commit,
+    S: StorageProvider + StorageProviderMut + 'static,
+    <S as StorageProviderMut>::GarblerState: garbler::StateMut + Commit,
+    <S as StorageProviderMut>::EvaluatorState: evaluator::StateMut + Commit,
+    <S as StorageProvider>::GarblerState: garbler::StateRead,
+    <S as StorageProvider>::EvaluatorState: evaluator::StateRead,
 {
     /// Create a new executor and handle.
     pub fn new(
@@ -467,11 +473,15 @@ where
         async {
             let garbler_ok = {
                 tracing::debug!(role = ?SmRole::Garbler, "restoring garbler state machine");
-                match self.storage.garbler_state_mut(&peer_id).await {
+                match self.storage.garbler_state(&peer_id).await {
                     Ok(state) => {
                         let mut actions = garbler::ActionContainer::default();
                         match Self::stf_guard(peer_id, SmRole::Garbler, "restore", async {
-                            GarblerSM::<S::GarblerState>::restore(&state, &mut actions).await
+                            GarblerSM::<
+                                <S as StorageProviderMut>::GarblerState,
+                                <S as StorageProvider>::GarblerState,
+                            >::restore(&state, &mut actions)
+                            .await
                         })
                         .await
                         {
@@ -481,31 +491,19 @@ where
                                     actions = actions.len(),
                                     "garbler restore STF completed"
                                 );
-                                match Self::commit_state(state, peer_id, SmRole::Garbler).await {
-                                    Ok(()) => {
-                                        match self
-                                            .submit_actions(peer_id, JobActions::Garbler(actions))
-                                            .await
-                                        {
-                                            Ok(()) => true,
-                                            Err(err) => {
-                                                if Self::is_fatal_processing_error(&err) {
-                                                    return Err(err);
-                                                }
-                                                tracing::error!(
-                                                    role = ?SmRole::Garbler,
-                                                    error = ?err,
-                                                    "garbler restore action submission failed"
-                                                );
-                                                false
-                                            }
-                                        }
-                                    }
+                                match self
+                                    .submit_actions(peer_id, JobActions::Garbler(actions))
+                                    .await
+                                {
+                                    Ok(()) => true,
                                     Err(err) => {
+                                        if Self::is_fatal_processing_error(&err) {
+                                            return Err(err);
+                                        }
                                         tracing::error!(
                                             role = ?SmRole::Garbler,
                                             error = ?err,
-                                            "garbler restore commit failed"
+                                            "garbler restore action submission failed"
                                         );
                                         false
                                     }
@@ -534,11 +532,15 @@ where
 
             let evaluator_ok = {
                 tracing::debug!(role = ?SmRole::Evaluator, "restoring evaluator state machine");
-                match self.storage.evaluator_state_mut(&peer_id).await {
+                match self.storage.evaluator_state(&peer_id).await {
                     Ok(state) => {
                         let mut actions = evaluator::ActionContainer::default();
                         match Self::stf_guard(peer_id, SmRole::Evaluator, "restore", async {
-                            EvaluatorSM::<S::EvaluatorState>::restore(&state, &mut actions).await
+                            EvaluatorSM::<
+                                <S as StorageProviderMut>::EvaluatorState,
+                                <S as StorageProvider>::EvaluatorState,
+                            >::restore(&state, &mut actions)
+                            .await
                         })
                         .await
                         {
@@ -548,31 +550,19 @@ where
                                     actions = actions.len(),
                                     "evaluator restore STF completed"
                                 );
-                                match Self::commit_state(state, peer_id, SmRole::Evaluator).await {
-                                    Ok(()) => {
-                                        match self
-                                            .submit_actions(peer_id, JobActions::Evaluator(actions))
-                                            .await
-                                        {
-                                            Ok(()) => true,
-                                            Err(err) => {
-                                                if Self::is_fatal_processing_error(&err) {
-                                                    return Err(err);
-                                                }
-                                                tracing::error!(
-                                                    role = ?SmRole::Evaluator,
-                                                    error = ?err,
-                                                    "evaluator restore action submission failed"
-                                                );
-                                                false
-                                            }
-                                        }
-                                    }
+                                match self
+                                    .submit_actions(peer_id, JobActions::Evaluator(actions))
+                                    .await
+                                {
+                                    Ok(()) => true,
                                     Err(err) => {
+                                        if Self::is_fatal_processing_error(&err) {
+                                            return Err(err);
+                                        }
                                         tracing::error!(
                                             role = ?SmRole::Evaluator,
                                             error = ?err,
-                                            "evaluator restore commit failed"
+                                            "evaluator restore action submission failed"
                                         );
                                         false
                                     }
@@ -822,32 +812,56 @@ where
             input_kind = garbler_input_kind(&input)
         );
         async move {
-            tracing::trace!("running STF for event");
-            let mut state = self
-                .storage
-                .garbler_state_mut(&peer_id)
-                .await
-                .map_err(|source| SmExecutorError::Storage {
-                    peer_id,
-                    role: SmRole::Garbler,
-                    source,
-                })?;
-            let mut actions = garbler::ActionContainer::default();
+            let mut attempts = 0u32;
+            loop {
+                tracing::trace!(attempts, "running STF for event");
+                let mut state = match self.storage.garbler_state_mut(&peer_id).await {
+                    Ok(state) => state,
+                    Err(source) => {
+                        let err = SmExecutorError::Storage {
+                            peer_id,
+                            role: SmRole::Garbler,
+                            source,
+                        };
+                        if Self::is_retryable_processing_error(&err) {
+                            attempts = attempts.saturating_add(1);
+                            tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable storage acquisition failure; retrying STF unit");
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+                let mut actions = garbler::ActionContainer::default();
 
-            Self::stf_guard(peer_id, SmRole::Garbler, "event", async {
-                GarblerSM::<S::GarblerState>::stf(
-                    &mut state,
-                    FasmInput::Normal(input),
-                    &mut actions,
-                )
+                if let Err(err) = Self::stf_guard(peer_id, SmRole::Garbler, "event", async {
+                    GarblerSM::<<S as StorageProviderMut>::GarblerState>::stf(
+                        &mut state,
+                        FasmInput::Normal(input.clone()),
+                        &mut actions,
+                    )
+                    .await
+                })
                 .await
-            })
-            .await?;
-            tracing::debug!(actions = actions.len(), "garbler event STF completed");
+                {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable STF failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                tracing::debug!(actions = actions.len(), "garbler event STF completed");
 
-            Self::commit_state(state, peer_id, SmRole::Garbler).await?;
-            self.submit_actions(peer_id, JobActions::Garbler(actions))
-                .await
+                if let Err(err) = Self::commit_state(state, peer_id, SmRole::Garbler).await {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable commit failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                return self.submit_actions(peer_id, JobActions::Garbler(actions)).await;
+            }
         }
         .instrument(span)
         .await
@@ -865,32 +879,58 @@ where
             input_kind = evaluator_input_kind(&input)
         );
         async move {
-            tracing::trace!("running STF for event");
-            let mut state = self
-                .storage
-                .evaluator_state_mut(&peer_id)
-                .await
-                .map_err(|source| SmExecutorError::Storage {
-                    peer_id,
-                    role: SmRole::Evaluator,
-                    source,
-                })?;
-            let mut actions = evaluator::ActionContainer::default();
+            let mut attempts = 0u32;
+            loop {
+                tracing::trace!(attempts, "running STF for event");
+                let mut state = match self.storage.evaluator_state_mut(&peer_id).await {
+                    Ok(state) => state,
+                    Err(source) => {
+                        let err = SmExecutorError::Storage {
+                            peer_id,
+                            role: SmRole::Evaluator,
+                            source,
+                        };
+                        if Self::is_retryable_processing_error(&err) {
+                            attempts = attempts.saturating_add(1);
+                            tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable storage acquisition failure; retrying STF unit");
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+                let mut actions = evaluator::ActionContainer::default();
 
-            Self::stf_guard(peer_id, SmRole::Evaluator, "event", async {
-                EvaluatorSM::<S::EvaluatorState>::stf(
-                    &mut state,
-                    FasmInput::Normal(input),
-                    &mut actions,
-                )
+                if let Err(err) = Self::stf_guard(peer_id, SmRole::Evaluator, "event", async {
+                    EvaluatorSM::<<S as StorageProviderMut>::EvaluatorState>::stf(
+                        &mut state,
+                        FasmInput::Normal(input.clone()),
+                        &mut actions,
+                    )
+                    .await
+                })
                 .await
-            })
-            .await?;
-            tracing::debug!(actions = actions.len(), "evaluator event STF completed");
+                {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable STF failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                tracing::debug!(actions = actions.len(), "evaluator event STF completed");
 
-            Self::commit_state(state, peer_id, SmRole::Evaluator).await?;
-            self.submit_actions(peer_id, JobActions::Evaluator(actions))
-                .await
+                if let Err(err) = Self::commit_state(state, peer_id, SmRole::Evaluator).await {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable commit failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                return self
+                    .submit_actions(peer_id, JobActions::Evaluator(actions))
+                    .await;
+            }
         }
         .instrument(span)
         .await
@@ -909,32 +949,60 @@ where
             action_id = ?id
         );
         async move {
-            tracing::trace!("running STF for tracked completion");
-            let mut state = self
-                .storage
-                .garbler_state_mut(&peer_id)
-                .await
-                .map_err(|source| SmExecutorError::Storage {
-                    peer_id,
-                    role: SmRole::Garbler,
-                    source,
-                })?;
-            let mut actions = garbler::ActionContainer::default();
+            let mut attempts = 0u32;
+            loop {
+                tracing::trace!(attempts, "running STF for tracked completion");
+                let mut state = match self.storage.garbler_state_mut(&peer_id).await {
+                    Ok(state) => state,
+                    Err(source) => {
+                        let err = SmExecutorError::Storage {
+                            peer_id,
+                            role: SmRole::Garbler,
+                            source,
+                        };
+                        if Self::is_retryable_processing_error(&err) {
+                            attempts = attempts.saturating_add(1);
+                            tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable storage acquisition failure; retrying STF unit");
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+                let mut actions = garbler::ActionContainer::default();
 
-            Self::stf_guard(peer_id, SmRole::Garbler, "completion", async {
-                GarblerSM::<S::GarblerState>::stf(
-                    &mut state,
-                    FasmInput::TrackedActionCompleted { id, result },
-                    &mut actions,
-                )
-                .await
-            })
-            .await?;
-            tracing::debug!(actions = actions.len(), "garbler completion STF completed");
+                if let Err(err) =
+                    Self::stf_guard(peer_id, SmRole::Garbler, "completion", async {
+                        GarblerSM::<<S as StorageProviderMut>::GarblerState>::stf(
+                            &mut state,
+                            FasmInput::TrackedActionCompleted {
+                                id: id.clone(),
+                                result: result.clone(),
+                            },
+                            &mut actions,
+                        )
+                        .await
+                    })
+                    .await
+                {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable STF failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                tracing::debug!(actions = actions.len(), "garbler completion STF completed");
 
-            Self::commit_state(state, peer_id, SmRole::Garbler).await?;
-            self.submit_actions(peer_id, JobActions::Garbler(actions))
-                .await
+                if let Err(err) = Self::commit_state(state, peer_id, SmRole::Garbler).await {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable commit failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                return self.submit_actions(peer_id, JobActions::Garbler(actions)).await;
+            }
         }
         .instrument(span)
         .await
@@ -953,35 +1021,65 @@ where
             action_id = ?id
         );
         async move {
-            tracing::trace!("running STF for tracked completion");
-            let mut state = self
-                .storage
-                .evaluator_state_mut(&peer_id)
-                .await
-                .map_err(|source| SmExecutorError::Storage {
-                    peer_id,
-                    role: SmRole::Evaluator,
-                    source,
-                })?;
-            let mut actions = evaluator::ActionContainer::default();
+            let mut attempts = 0u32;
+            loop {
+                tracing::trace!(attempts, "running STF for tracked completion");
+                let mut state = match self.storage.evaluator_state_mut(&peer_id).await {
+                    Ok(state) => state,
+                    Err(source) => {
+                        let err = SmExecutorError::Storage {
+                            peer_id,
+                            role: SmRole::Evaluator,
+                            source,
+                        };
+                        if Self::is_retryable_processing_error(&err) {
+                            attempts = attempts.saturating_add(1);
+                            tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable storage acquisition failure; retrying STF unit");
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+                let mut actions = evaluator::ActionContainer::default();
 
-            Self::stf_guard(peer_id, SmRole::Evaluator, "completion", async {
-                EvaluatorSM::<S::EvaluatorState>::stf(
-                    &mut state,
-                    FasmInput::TrackedActionCompleted { id, result },
-                    &mut actions,
-                )
-                .await
-            })
-            .await?;
-            tracing::debug!(
-                actions = actions.len(),
-                "evaluator completion STF completed"
-            );
+                if let Err(err) =
+                    Self::stf_guard(peer_id, SmRole::Evaluator, "completion", async {
+                        EvaluatorSM::<<S as StorageProviderMut>::EvaluatorState>::stf(
+                            &mut state,
+                            FasmInput::TrackedActionCompleted {
+                                id: id.clone(),
+                                result: result.clone(),
+                            },
+                            &mut actions,
+                        )
+                        .await
+                    })
+                    .await
+                {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable STF failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                tracing::debug!(
+                    actions = actions.len(),
+                    "evaluator completion STF completed"
+                );
 
-            Self::commit_state(state, peer_id, SmRole::Evaluator).await?;
-            self.submit_actions(peer_id, JobActions::Evaluator(actions))
-                .await
+                if let Err(err) = Self::commit_state(state, peer_id, SmRole::Evaluator).await {
+                    if Self::is_retryable_processing_error(&err) {
+                        attempts = attempts.saturating_add(1);
+                        tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable commit failure; retrying STF unit");
+                        continue;
+                    }
+                    return Err(err);
+                }
+                return self
+                    .submit_actions(peer_id, JobActions::Evaluator(actions))
+                    .await;
+            }
         }
         .instrument(span)
         .await
@@ -1029,6 +1127,7 @@ where
             .map_err(|err| SmExecutorError::Commit {
                 peer_id,
                 role,
+                retryable: err.is_retryable(),
                 reason: format!("{err:?}"),
             })?;
         tracing::debug!(peer = ?peer_id, role = ?role, "state committed");
@@ -1068,6 +1167,20 @@ where
         matches!(err, SmExecutorError::JobSubmission { .. })
     }
 
+    fn is_retryable_processing_error(err: &SmExecutorError) -> bool {
+        match err {
+            SmExecutorError::Storage { source, .. } => source.is_retryable(),
+            SmExecutorError::Commit { retryable, .. } => *retryable,
+            SmExecutorError::Stf { source, .. } => source.is_retryable_storage(),
+            SmExecutorError::SourceClosed(_)
+            | SmExecutorError::NetRecv(_)
+            | SmExecutorError::Ack { .. }
+            | SmExecutorError::JobSubmission { .. }
+            | SmExecutorError::RoleMismatch(_)
+            | SmExecutorError::StfPanic { .. } => false,
+        }
+    }
+
     fn handle_failed_completion(
         pending_completions: &mut VecDeque<PendingJobCompletion>,
         mut completion: PendingJobCompletion,
@@ -1105,17 +1218,20 @@ where
     }
 
     fn completion_error_action(err: &SmExecutorError) -> CompletionErrorAction {
+        if Self::is_retryable_processing_error(err) {
+            return CompletionErrorAction::Requeue;
+        }
+
         match err {
-            SmExecutorError::Storage { .. } | SmExecutorError::Commit { .. } => {
-                CompletionErrorAction::Requeue
-            }
             SmExecutorError::Stf { .. } => CompletionErrorAction::Drop,
             SmExecutorError::JobSubmission { .. }
             | SmExecutorError::RoleMismatch(_)
             | SmExecutorError::StfPanic { .. }
             | SmExecutorError::SourceClosed(_)
             | SmExecutorError::NetRecv(_)
-            | SmExecutorError::Ack { .. } => CompletionErrorAction::Fatal,
+            | SmExecutorError::Ack { .. }
+            | SmExecutorError::Storage { .. }
+            | SmExecutorError::Commit { .. } => CompletionErrorAction::Fatal,
         }
     }
 }
@@ -1193,6 +1309,7 @@ mod tests {
     use futures::task::noop_waker_ref;
     use mosaic_cac_types::{
         AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg, HeapArray, Index, Msg,
+        RetryableStorageError,
         state_machine::{
             evaluator::{
                 self, EvaluatorInitData, StateMut as EvaluatorStateMut,
@@ -1220,6 +1337,35 @@ mod tests {
 
     #[derive(Debug, Default, Clone, Copy)]
     struct TestStorage;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct TestRetryableStorageError(&'static str);
+
+    impl RetryableStorageError for TestRetryableStorageError {
+        fn is_retryable(&self) -> bool {
+            true
+        }
+    }
+
+    impl StorageProvider for TestStorage {
+        type GarblerState = StoredGarblerState;
+        type EvaluatorState = StoredEvaluatorState;
+
+        fn garbler_state(
+            &self,
+            _peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::GarblerState>> + Send {
+            std::future::ready(Ok(StoredGarblerState::default()))
+        }
+
+        fn evaluator_state(
+            &self,
+            _peer_id: &PeerId,
+        ) -> impl Future<Output = StorageProviderResult<Self::EvaluatorState>> + Send {
+            std::future::ready(Ok(StoredEvaluatorState::default()))
+        }
+    }
 
     impl StorageProviderMut for TestStorage {
         type GarblerState = StoredGarblerState;
@@ -1296,9 +1442,9 @@ mod tests {
             let fail_next = Arc::clone(&self.fail_next_evaluator_state_mut);
             async move {
                 if fail_next.swap(false, Ordering::AcqRel) {
-                    return Err(StorageProviderError::Other(
-                        "transient evaluator state acquisition failure".into(),
-                    ));
+                    return Err(StorageProviderError::source(TestRetryableStorageError(
+                        "transient evaluator state acquisition failure",
+                    )));
                 }
                 inner.evaluator_state_mut(&peer_id).await
             }
@@ -1488,14 +1634,14 @@ mod tests {
     }
 
     #[test]
-    fn completion_error_policy_requeues_transient_failures_and_drops_stf_errors() {
+    fn completion_error_policy_requeues_only_retryable_failures() {
         let peer_id = PeerId::from([6; 32]);
 
         let storage_err =
             SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Storage {
                 peer_id,
                 role: SmRole::Evaluator,
-                source: StorageProviderError::Other("temporary".into()),
+                source: StorageProviderError::source(TestRetryableStorageError("temporary")),
             });
         assert_eq!(storage_err, CompletionErrorAction::Requeue);
 
@@ -1503,9 +1649,27 @@ mod tests {
             SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Commit {
                 peer_id,
                 role: SmRole::Garbler,
+                retryable: true,
                 reason: "temporary".into(),
             });
         assert_eq!(commit_err, CompletionErrorAction::Requeue);
+
+        let non_retryable_storage =
+            SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Storage {
+                peer_id,
+                role: SmRole::Evaluator,
+                source: StorageProviderError::Other("permanent".into()),
+            });
+        assert_eq!(non_retryable_storage, CompletionErrorAction::Fatal);
+
+        let non_retryable_commit =
+            SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Commit {
+                peer_id,
+                role: SmRole::Garbler,
+                retryable: false,
+                reason: "permanent".into(),
+            });
+        assert_eq!(non_retryable_commit, CompletionErrorAction::Fatal);
 
         let stf_err = SmExecutor::<TestStorage>::completion_error_action(&SmExecutorError::Stf {
             peer_id,
@@ -1540,6 +1704,7 @@ mod tests {
             SmExecutorError::Commit {
                 peer_id,
                 role: SmRole::Evaluator,
+                retryable: true,
                 reason: "temporary".into(),
             },
         )

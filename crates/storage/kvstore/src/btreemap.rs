@@ -15,6 +15,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use mosaic_cac_types::RetryableStorageError;
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut, StorageProviderResult};
 
@@ -31,6 +32,12 @@ pub enum BTreeMapKvStoreError {
     /// The underlying lock was poisoned by a panic while held.
     #[error("btreemap store lock was poisoned")]
     PoisonedLock,
+}
+
+impl RetryableStorageError for BTreeMapKvStoreError {
+    fn is_retryable(&self) -> bool {
+        false
+    }
 }
 
 /// In-memory key-value store using a `BTreeMap<Vec<u8>, Vec<u8>>`.

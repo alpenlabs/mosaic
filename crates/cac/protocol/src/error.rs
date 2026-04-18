@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use mosaic_cac_types::DepositId;
+use mosaic_cac_types::{DepositId, RetryableStorageError};
 
 /// State machine error
 #[derive(Debug, thiserror::Error)]
@@ -27,8 +27,15 @@ pub enum SMError {
     #[error("CRITICAL: State is inconsistent with expectations: {0}")]
     StateInconsistency(String),
     /// Error while accessing storage.
-    #[error("Error while accessing storage: {0}")]
-    Storage(Box<dyn Error>),
+    #[error("Error while accessing storage: {source}")]
+    Storage {
+        /// Whether the underlying storage failure is safe to retry by
+        /// discarding the current STF attempt and rerunning it from the start.
+        retryable: bool,
+        /// Original storage error.
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
 }
 
 impl SMError {
@@ -68,8 +75,20 @@ impl SMError {
     }
 
     /// Creates a storage error.
-    pub fn storage(err: impl Error + 'static) -> Self {
-        Self::Storage(Box::new(err))
+    pub fn storage(err: impl Error + RetryableStorageError + Send + Sync + 'static) -> Self {
+        Self::Storage {
+            retryable: err.is_retryable(),
+            source: Box::new(err),
+        }
+    }
+
+    /// Returns true when this error came from storage and the caller may
+    /// safely retry the whole STF unit from the start.
+    pub fn is_retryable_storage(&self) -> bool {
+        match self {
+            Self::Storage { retryable, .. } => *retryable,
+            _ => false,
+        }
     }
 }
 
@@ -84,13 +103,13 @@ pub trait ResultOptionExt<T, E> {
     /// into a single method call.
     fn require(self, message: &str) -> Result<T, SMError>
     where
-        E: std::error::Error + 'static;
+        E: std::error::Error + RetryableStorageError + Send + Sync + 'static;
 }
 
 impl<T, E> ResultOptionExt<T, E> for Result<Option<T>, E> {
     fn require(self, message: &str) -> Result<T, SMError>
     where
-        E: std::error::Error + 'static,
+        E: std::error::Error + RetryableStorageError + Send + Sync + 'static,
     {
         self.map_err(SMError::storage)?
             .ok_or_else(|| SMError::state_inconsistency(message))

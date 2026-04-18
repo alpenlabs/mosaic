@@ -3,7 +3,8 @@ use std::marker::PhantomData;
 
 use fasm::{StateMachine, actions::Action as FasmAction};
 use mosaic_cac_types::state_machine::evaluator::{
-    Action, ActionContainer, EvaluatorTrackedActionTypes, Input, StateMut, UntrackedAction,
+    Action, ActionContainer, EvaluatorTrackedActionTypes, Input, StateMut, StateRead,
+    UntrackedAction,
 };
 
 mod stf;
@@ -13,8 +14,8 @@ mod tests;
 use crate::SMError;
 
 #[derive(Debug)]
-pub struct EvaluatorSM<S: StateMut> {
-    _s: PhantomData<S>,
+pub struct EvaluatorSM<S: StateMut, R: StateRead = S> {
+    _s: PhantomData<(S, R)>,
 }
 
 /// Push a single action into the FASM actions container with proper tracking ID.
@@ -23,8 +24,9 @@ pub(crate) fn emit(actions: &mut ActionContainer, action: Action) {
     actions.push(FasmAction::new_tracked(id, action));
 }
 
-impl<S: StateMut> StateMachine for EvaluatorSM<S> {
+impl<S: StateMut, R: StateRead> StateMachine for EvaluatorSM<S, R> {
     type State = S;
+    type RestoreState = R;
 
     type Input = Input;
 
@@ -57,7 +59,7 @@ impl<S: StateMut> StateMachine for EvaluatorSM<S> {
     }
 
     async fn restore(
-        state: &Self::State,
+        state: &Self::RestoreState,
         actions: &mut Self::Actions,
     ) -> Result<(), Self::RestoreError> {
         stf::restore(state, actions).await?;

@@ -1,6 +1,6 @@
 //! Error types for in-memory storage operations.
 
-use mosaic_cac_types::DepositId;
+use mosaic_cac_types::{DepositId, RetryableStorageError};
 use thiserror::Error;
 
 /// Errors that can occur during database operations.
@@ -37,5 +37,11 @@ impl DbError {
     /// Creates an invalid argument error.
     pub fn invalid_argument(s: impl Into<String>) -> Self {
         Self::InvalidArgument(s.into())
+    }
+}
+
+impl RetryableStorageError for DbError {
+    fn is_retryable(&self) -> bool {
+        false
     }
 }

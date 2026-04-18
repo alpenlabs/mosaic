@@ -36,8 +36,12 @@ pub mod __private {
 }
 
 use core::future::Future;
+use std::error::Error;
 
-use mosaic_cac_types::state_machine::{evaluator, garbler};
+use mosaic_cac_types::{
+    RetryableStorageError,
+    state_machine::{evaluator, garbler},
+};
 use mosaic_net_svc_api::PeerId;
 pub use table_store::{TableId, TableMetadata, TableReader, TableStore, TableWriter};
 use thiserror::Error;
@@ -51,10 +55,38 @@ pub enum StorageProviderError {
     /// Other type of error not covered above.
     #[error("storage: {0}")]
     Other(String),
+    /// Source error preserved for retryability inspection.
+    #[error("storage: {source}")]
+    Source {
+        /// Whether the underlying failure is safe to retry.
+        retryable: bool,
+        /// Original source error.
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
 }
 
 /// Storage Provider Result
 pub type StorageProviderResult<T> = Result<T, StorageProviderError>;
+
+impl StorageProviderError {
+    /// Wrap a typed source error, preserving retryability.
+    pub fn source(err: impl Error + RetryableStorageError + Send + Sync + 'static) -> Self {
+        Self::Source {
+            retryable: err.is_retryable(),
+            source: Box::new(err),
+        }
+    }
+}
+
+impl RetryableStorageError for StorageProviderError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Serialization(_) | Self::Other(_) => false,
+            Self::Source { retryable, .. } => *retryable,
+        }
+    }
+}
 
 /// Commit hook for mutable storage sessions/handles.
 ///
@@ -63,7 +95,7 @@ pub type StorageProviderResult<T> = Result<T, StorageProviderError>;
 /// call. In-memory backends may implement this as a no-op.
 pub trait Commit {
     /// Error type produced by commit.
-    type Error: std::fmt::Debug;
+    type Error: std::fmt::Debug + RetryableStorageError;
 
     /// Finalize writes performed through this mutable handle.
     fn commit(self) -> impl Future<Output = Result<(), Self::Error>>;
