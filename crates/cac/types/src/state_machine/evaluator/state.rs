@@ -8,15 +8,16 @@ use super::{DepositState, EvaluatorState};
 use crate::{
     AllGarblingTableCommitments, ChallengeIndices, CircuitInputShares, CompletedSignatures,
     DepositAdaptors, DepositId, DepositInputs, EvaluationIndices, OpenedGarblingSeeds,
-    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares, Sighashes,
-    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
-    WithdrawalAdaptorsChunk, WithdrawalInputs,
+    OpenedOutputShares, OutputPolynomialCommitment, ReservedSetupInputShares,
+    RetryableStorageError, Sighashes, WideLabelWirePolynomialCommitments,
+    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
+    WithdrawalInputs,
 };
 
 /// Read-only access to evaluator state storage.
 pub trait StateRead {
     /// Error type used by state operations.
-    type Error: Error + Debug + Send + 'static;
+    type Error: Error + RetryableStorageError + Debug + Send + Sync + 'static;
 
     /// Retrieves the root evaluator state.
     fn get_root_state(

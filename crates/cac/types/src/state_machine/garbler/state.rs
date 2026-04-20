@@ -8,14 +8,15 @@ use crate::{
     AllGarblingTableCommitments, AllOutputLabelCts, AllPublicSValues, ChallengeIndices,
     CircuitInputShares, CircuitOutputShare, CompletedSignatures, DepositAdaptors, DepositId,
     DepositInputs, GarblingTableCommitment, Index, OutputPolynomialCommitment, OutputShares,
-    ReservedInputShares, ReservedSetupInputShares, Sighashes, WideLabelWirePolynomialCommitments,
-    WithdrawalAdaptors, WithdrawalInputs, state_machine::garbler::GarblingMetadata,
+    ReservedInputShares, ReservedSetupInputShares, RetryableStorageError, Sighashes,
+    WideLabelWirePolynomialCommitments, WithdrawalAdaptors, WithdrawalInputs,
+    state_machine::garbler::GarblingMetadata,
 };
 
 /// Read-only access to garbler state storage.
 pub trait StateRead {
     /// Error type used by state operations.
-    type Error: Error + Debug + Send + 'static;
+    type Error: Error + RetryableStorageError + Debug + Send + Sync + 'static;
 
     /// Retrieves the root garbler state.
     fn get_root_state(

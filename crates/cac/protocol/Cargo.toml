@@ -25,9 +25,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 mosaic-cac-types = { workspace = true, features = ["test-utils"] }
+mosaic-storage-api.workspace = true
 mosaic-storage-inmemory.workspace = true
 mosaic-job-executors.workspace = true
-mosaic-storage-api.workspace = true
 mosaic-job-api.workspace = true
 mosaic-net-svc-api.workspace = true
 mosaic-net-svc.workspace = true

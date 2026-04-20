@@ -25,6 +25,14 @@ pub use protocol::*;
 pub use seed::Seed;
 use serde::{Deserialize, Serialize};
 
+/// Error contract for storage operations that may be retried safely by
+/// discarding the current logical attempt and rerunning it from the start.
+pub trait RetryableStorageError {
+    /// Returns true when the caller may safely retry the whole logical
+    /// operation from the beginning.
+    fn is_retryable(&self) -> bool;
+}
+
 /// Commitment to a Garbling Table
 pub type GarblingTableCommitment = Byte32;
 

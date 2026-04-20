@@ -104,7 +104,7 @@ bytes = "1.10"
 ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt" }
 ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
 criterion = "0.5"
-fasm = "0.3.0"
+fasm = "0.4.0"
 # TODO(alpenlabs): switch back to crates.io foundationdb >= 0.11 once released.
 
 foundationdb = { git = "https://github.com/foundationdb-rs/foundationdb-rs.git", rev = "ed274ba533e15ec02e4ab8dd4defca7d18eaf355", features = [

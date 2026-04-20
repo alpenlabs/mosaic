@@ -341,7 +341,7 @@ async fn handle_init_garbler<SP: StorageProvider + StorageProviderMut>(
         .garbler_state_mut(eval_peer_id)
         .await
         .unwrap();
-    garbler::GarblerSM::stf(
+    garbler::GarblerSM::<_>::stf(
         &mut garb_state,
         fasm::Input::Normal(GarbInput::Init(GarblerInitData {
             seed: garb_seed,
@@ -370,7 +370,7 @@ async fn handle_init_evaluator<SP: StorageProvider + StorageProviderMut>(
         .evaluator_state_mut(&garbler_peer_id)
         .await
         .unwrap();
-    evaluator::EvaluatorSM::stf(
+    evaluator::EvaluatorSM::<_>::stf(
         &mut eval_state,
         fasm::Input::Normal(EvalInput::Init(EvaluatorInitData {
             seed: eval_seed,
@@ -409,7 +409,7 @@ async fn handle_garbler_prepares_commit_msg<SP: StorageProvider + StorageProvide
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -424,7 +424,7 @@ async fn handle_garbler_prepares_commit_msg<SP: StorageProvider + StorageProvide
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -441,7 +441,7 @@ async fn handle_garbler_prepares_commit_msg<SP: StorageProvider + StorageProvide
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -498,7 +498,7 @@ async fn handle_garbler_waits_for_challenge<SP: StorageProvider + StorageProvide
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -522,7 +522,7 @@ async fn handle_evaluator_prepares_challenge<SP: StorageProvider + StorageProvid
         .await
         .unwrap();
     while let Some(ei) = eval_inputs.pop() {
-        evaluator::EvaluatorSM::stf(&mut eval_state, fasm::Input::Normal(ei), eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, fasm::Input::Normal(ei), eval_actions)
             .await
             .unwrap();
     }
@@ -575,7 +575,7 @@ async fn handle_evaluator_waits_for_challenge_response<SP: StorageProvider + Sto
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
@@ -598,7 +598,7 @@ async fn handle_garbler_prepares_challenge_response<SP: StorageProvider + Storag
         .garbler_state_mut(&eval_peer_id)
         .await
         .unwrap();
-    garbler::GarblerSM::stf(
+    garbler::GarblerSM::<_>::stf(
         &mut garb_state,
         fasm::Input::Normal(garb_inputs),
         garb_actions,
@@ -653,7 +653,7 @@ async fn handle_garbler_prepares_for_table_transfer<SP: StorageProviderMut + Sto
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -683,7 +683,7 @@ async fn handle_garbler_processes_table_requests<SP: StorageProvider + StoragePr
         .await
         .unwrap();
     while let Some(input) = garb_inputs.pop() {
-        garbler::GarblerSM::stf(&mut garb_state, fasm::Input::Normal(input), garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, fasm::Input::Normal(input), garb_actions)
             .await
             .unwrap();
     }
@@ -708,7 +708,7 @@ async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + Sto
         .await
         .unwrap();
     while let Some(ei) = eval_inputs.pop() {
-        evaluator::EvaluatorSM::stf(&mut eval_state, fasm::Input::Normal(ei), eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, fasm::Input::Normal(ei), eval_actions)
             .await
             .unwrap();
     }
@@ -725,7 +725,7 @@ async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + Sto
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
@@ -741,7 +741,7 @@ async fn handle_evaluator_processes_challenge_response<SP: StorageProvider + Sto
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
@@ -773,7 +773,7 @@ async fn handle_evaluator_processes_table<SP: StorageProvider + StorageProviderM
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
@@ -807,7 +807,7 @@ async fn handle_garbler_waits_for_receipt<SP: StorageProvider + StorageProviderM
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -865,7 +865,7 @@ async fn handle_evaluator_consumes_receipt_ack<SP: StorageProvider + StorageProv
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
@@ -893,7 +893,7 @@ async fn handle_garbler_consumes_receipt_ack<SP: StorageProvider + StorageProvid
         .await
         .unwrap();
     while let Some(input) = garb_inputs.pop() {
-        garbler::GarblerSM::stf(&mut garb_state, fasm::Input::Normal(input), garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, fasm::Input::Normal(input), garb_actions)
             .await
             .unwrap();
     }
@@ -928,7 +928,7 @@ async fn handle_garbler_inits_deposit<SP: StorageProvider + StorageProviderMut>(
         sighashes: HeapArray::from_vec(sighashes.to_vec()),
         deposit_inputs,
     };
-    garbler::GarblerSM::stf(
+    garbler::GarblerSM::<_>::stf(
         &mut garb_state,
         fasm::Input::Normal(GarbInput::DepositInit(deposit_id, deposit_input)),
         garb_actions,
@@ -963,7 +963,7 @@ async fn handle_evaluator_inits_deposit<SP: StorageProvider + StorageProviderMut
         .await
         .unwrap();
 
-    evaluator::EvaluatorSM::stf(
+    evaluator::EvaluatorSM::<_>::stf(
         &mut eval_state,
         fasm::Input::Normal(EvalInput::DepositInit(deposit_id, deposit_input)),
         eval_actions,
@@ -980,7 +980,7 @@ async fn handle_evaluator_inits_deposit<SP: StorageProvider + StorageProviderMut
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
@@ -1040,7 +1040,7 @@ async fn handle_evaluator_is_deposit_ready<SP: StorageProvider + StorageProvider
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }
@@ -1083,7 +1083,7 @@ async fn handle_garbler_verifies_adaptors<SP: StorageProvider + StorageProviderM
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -1122,7 +1122,7 @@ async fn handle_garbler_starts_adaptor_verification_job<
         .await
         .unwrap();
     while let Some(ei) = garb_inputs.pop() {
-        garbler::GarblerSM::stf(&mut garb_state, fasm::Input::Normal(ei), garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, fasm::Input::Normal(ei), garb_actions)
             .await
             .unwrap();
     }
@@ -1146,7 +1146,7 @@ async fn handle_garbler_completes_signatures<SP: StorageProvider + StorageProvid
         .garbler_state_mut(&eval_peer_id)
         .await
         .unwrap();
-    garbler::GarblerSM::stf(
+    garbler::GarblerSM::<_>::stf(
         &mut garb_state,
         fasm::Input::Normal(GarbInput::DisputedWithdrawal(deposit_id, withdrawal_input)),
         garb_actions,
@@ -1165,7 +1165,7 @@ async fn handle_garbler_completes_signatures<SP: StorageProvider + StorageProvid
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        garbler::GarblerSM::stf(&mut garb_state, tracked_input, garb_actions)
+        garbler::GarblerSM::<_>::stf(&mut garb_state, tracked_input, garb_actions)
             .await
             .unwrap();
     }
@@ -1202,7 +1202,7 @@ async fn handle_evaluator_finds_fault_secret<SP: StorageProvider + StorageProvid
     let eval_disputed_withdrawal = EvaluatorDisputedWithdrawalData {
         signatures: on_chain_sigs.clone(),
     };
-    evaluator::EvaluatorSM::stf(
+    evaluator::EvaluatorSM::<_>::stf(
         &mut eval_state,
         fasm::Input::Normal(EvalInput::DisputedWithdrawal(
             deposit_id,
@@ -1224,7 +1224,7 @@ async fn handle_evaluator_finds_fault_secret<SP: StorageProvider + StorageProvid
                 id: action_id.clone(),
                 result: action_result.clone(),
             };
-        evaluator::EvaluatorSM::stf(&mut eval_state, tracked_input, eval_actions)
+        evaluator::EvaluatorSM::<_>::stf(&mut eval_state, tracked_input, eval_actions)
             .await
             .unwrap();
     }

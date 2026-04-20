@@ -1,7 +1,7 @@
 //! Shared errors for KV-backed storage adapters.
 use std::error::Error;
 
-use mosaic_cac_types::DepositId;
+use mosaic_cac_types::{DepositId, RetryableStorageError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -20,8 +20,14 @@ pub enum StorageError {
     #[error("valuedeserialize: {0}")]
     ValueDeserialize(Box<dyn Error + Send + Sync>),
     /// Underlying KV backend error.
-    #[error("kvstore: {0}")]
-    KvStore(Box<dyn Error + Send + Sync>),
+    #[error("kvstore: {source}")]
+    KvStore {
+        /// Whether retrying the whole logical operation is safe.
+        retryable: bool,
+        /// Original backend error.
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
     /// Received unexpected reserved index 0.
     #[error("Received unexpected Index(0)")]
     UnexpectedZeroIndex,
@@ -53,8 +59,11 @@ impl StorageError {
         Self::ValueDeserialize(Box::new(err))
     }
 
-    pub(crate) fn kvstore(err: impl Error + Send + Sync + 'static) -> Self {
-        Self::KvStore(Box::new(err))
+    pub(crate) fn kvstore(err: impl Error + RetryableStorageError + Send + Sync + 'static) -> Self {
+        Self::KvStore {
+            retryable: err.is_retryable(),
+            source: Box::new(err),
+        }
     }
 
     pub(crate) fn unknown_deposit(id: DepositId) -> Self {
@@ -67,5 +76,21 @@ impl StorageError {
 
     pub(crate) fn invalid_argument(s: impl Into<String>) -> Self {
         Self::InvalidArgument(s.into())
+    }
+}
+
+impl RetryableStorageError for StorageError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::KvStore { retryable, .. } => *retryable,
+            Self::KeyPack(_)
+            | Self::KeyUnpack(_)
+            | Self::ValueSerialize(_)
+            | Self::ValueDeserialize(_)
+            | Self::UnexpectedZeroIndex
+            | Self::UnknownDeposit(_)
+            | Self::StateInconsistency(_)
+            | Self::InvalidArgument(_) => false,
+        }
     }
 }
