@@ -24,6 +24,7 @@ use mosaic_storage_api::{
     table_store::{TableId, TableReader as _, TableStore, TableWriter as _},
 };
 use mosaic_vs3::{Index, Share, batch_verify_shares, interpolate};
+use tracing::{error, warn};
 
 use super::MosaicExecutor;
 use crate::{
