@@ -136,8 +136,6 @@ where
             let mut builder = AmazonS3Builder::new()
                 .with_bucket_name(bucket)
                 .with_region(region)
-                .with_access_key_id(access_key_id)
-                .with_secret_access_key(secret_access_key)
                 .with_allow_http(*allow_http)
                 .with_virtual_hosted_style_request(*virtual_hosted_style_request)
                 .with_client_options(
@@ -148,6 +146,16 @@ where
                         .expect("s3 backend should build client options"),
                 );
 
+            if let Some(access_key_id) = access_key_id {
+                builder = builder.with_access_key_id(access_key_id);
+            }
+
+            if let Some(secret_access_key) = secret_access_key {
+                builder = builder.with_secret_access_key(secret_access_key);
+            }
+
+            // When credentials are omitted the builder falls through to the
+            // AWS credential chain: IRSA web-identity → ECS task → instance profile.
             if let Some(endpoint) = endpoint {
                 builder = builder.with_endpoint(endpoint);
             }
