@@ -140,6 +140,9 @@ jobs:
             --push \
             .
 
+      - name: Pull image from private ECR
+        run: docker pull "${IMAGE_REF}"
+
       - name: Configure public ECR credentials
         uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
         with:
@@ -151,14 +154,11 @@ jobs:
           aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
             | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
 
-      - name: Copy image to public ECR
+      - name: Push image to public ECR
         run: |
           set -euo pipefail
-          # imagetools create must run while public ECR AWS credentials are active;
-          # the ECR credential helper re-auths using AWS env vars, not cached docker login tokens.
-          docker buildx imagetools create \
-            --tag "${PUBLIC_IMAGE_REF}" \
-            "${IMAGE_REF}"
+          docker tag "${IMAGE_REF}" "${PUBLIC_IMAGE_REF}"
+          docker push "${PUBLIC_IMAGE_REF}"
 
       - name: Restore private AWS credentials
         uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
@@ -181,9 +181,6 @@ jobs:
             --query 'imageDetails[0].imageDigest' \
             --output text)"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
-
-      - name: Pull image for Trivy scan
-        run: docker pull "${IMAGE_REF}"
 
       - name: Scan Mosaic image with Trivy
         run: |
