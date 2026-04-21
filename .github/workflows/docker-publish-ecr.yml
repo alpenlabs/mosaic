@@ -125,23 +125,6 @@ jobs:
           aws ecr get-login-password --region "${AWS_REGION}" \
             | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
-      - name: Configure public ECR credentials
-        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
-        with:
-          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.PUBLIC_ECR_REGION }}
-
-      - name: Login to public ECR
-        run: |
-          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
-            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
-
-      - name: Restore private AWS credentials
-        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
@@ -157,12 +140,36 @@ jobs:
             --push \
             .
 
+      - name: Configure public ECR credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.PUBLIC_ECR_REGION }}
+
+      - name: Login to public ECR
+        run: |
+          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
+            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
+
       - name: Copy image to public ECR
         run: |
           set -euo pipefail
+          # imagetools create must run while public ECR AWS credentials are active;
+          # the ECR credential helper re-auths using AWS env vars, not cached docker login tokens.
           docker buildx imagetools create \
             --tag "${PUBLIC_IMAGE_REF}" \
             "${IMAGE_REF}"
+
+      - name: Restore private AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to private ECR for follow-up steps
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
       - name: Resolve pushed image digest
         id: digest
