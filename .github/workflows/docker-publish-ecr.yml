@@ -1,13 +1,10 @@
 name: Docker Publish to ECR
 
 on:
-  push:
-    branches:
-      - feat/str-3103-mosaic-ci
   workflow_dispatch:
     inputs:
       ref:
-        description: Git branch, tag, or commit SHA to build. Defaults to the selected branch in the UI.
+        description: Git branch, tag, or commit SHA to build. Defaults to the branch HEAD selected in the UI.
         required: false
         type: string
       image_tag:
@@ -23,7 +20,6 @@ env:
   PUBLIC_ECR_NAMESPACE: z5c7y9u9
   PUBLIC_ECR_REPOSITORY: mosaic
   PUBLIC_ECR_REGION: us-east-1
-  DEFAULT_BUILD_REF: bae62a54b7137e811653d5dd89975e10f0e71676
   DOCKER_PLATFORMS: linux/amd64
 
 permissions:
@@ -41,7 +37,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    timeout-minutes: 180
+    timeout-minutes: 30
     steps:
       - name: Validate manual inputs
         env:
@@ -76,7 +72,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ inputs.ref || env.DEFAULT_BUILD_REF }}
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
 
       - name: Resolve build metadata
@@ -88,7 +84,7 @@ jobs:
 
           resolved_sha="$(git rev-parse HEAD)"
           short_sha="$(git rev-parse --short=8 HEAD)"
-          checkout_ref="${INPUT_REF:-${DEFAULT_BUILD_REF}}"
+          checkout_ref="${INPUT_REF:-${GITHUB_SHA}}"
           image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
           image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
           public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${image_tag}"
@@ -118,8 +114,8 @@ jobs:
             exit 1
           fi
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - name: Configure private AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
@@ -129,8 +125,25 @@ jobs:
           aws ecr get-login-password --region "${AWS_REGION}" \
             | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
+      - name: Configure public ECR credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.PUBLIC_ECR_REGION }}
+
+      - name: Login to public ECR
+        run: |
+          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
+            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
+
+      - name: Restore private AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Build and push Mosaic image to private ECR
         run: |
@@ -144,37 +157,12 @@ jobs:
             --push \
             .
 
-      - name: Configure public ECR credentials
-        continue-on-error: true
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.PUBLIC_ECR_REGION }}
-
-      - name: Login to public ECR
-        continue-on-error: true
-        run: |
-          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
-            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
-
       - name: Copy image to public ECR
-        continue-on-error: true
         run: |
           set -euo pipefail
           docker buildx imagetools create \
             --tag "${PUBLIC_IMAGE_REF}" \
             "${IMAGE_REF}"
-
-      - name: Reconfigure private AWS credentials
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to ECR for follow-up checks
-        run: |
-          aws ecr get-login-password --region "${AWS_REGION}" \
-            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
       - name: Resolve pushed image digest
         id: digest
@@ -207,7 +195,7 @@ jobs:
 
       - name: Upload Trivy results artifact
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-mosaic-${{ env.IMAGE_TAG }}
           path: trivy-results/mosaic.txt
