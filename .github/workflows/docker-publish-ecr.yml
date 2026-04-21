@@ -145,21 +145,22 @@ jobs:
             .
 
       - name: Configure public ECR credentials
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.PUBLIC_ECR_REGION }}
 
       - name: Login to public ECR
+        continue-on-error: true
         run: |
           aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
             | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
 
       - name: Copy image to public ECR
+        continue-on-error: true
         run: |
           set -euo pipefail
-          # imagetools create copies the manifest from private ECR (docker login still valid)
-          # to public ECR using the public ECR docker login obtained above.
           docker buildx imagetools create \
             --tag "${PUBLIC_IMAGE_REF}" \
             "${IMAGE_REF}"
