@@ -187,6 +187,9 @@ jobs:
             --output text)"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
+      - name: Pull image for Trivy scan
+        run: docker pull "${IMAGE_REF}"
+
       - name: Scan Mosaic image with Trivy
         run: |
           set -euo pipefail
