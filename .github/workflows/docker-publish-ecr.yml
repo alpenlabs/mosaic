@@ -124,8 +124,25 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Login to private ECR
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build and push Mosaic image to private ECR
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "${DOCKER_PLATFORMS}" \
+            --file docker/Dockerfile \
+            --cache-from "type=gha,scope=mosaic" \
+            --cache-to "type=gha,scope=mosaic,mode=max" \
+            --tag "${IMAGE_REF}" \
+            --push \
+            .
 
       - name: Configure public ECR credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
@@ -138,29 +155,14 @@ jobs:
           aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
             | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
 
-      - name: Reconfigure private AWS credentials for build
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to private ECR for build
-        run: |
-          aws ecr get-login-password --region "${AWS_REGION}" \
-            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
-
-      - name: Build and push Mosaic image
+      - name: Copy image to public ECR
         run: |
           set -euo pipefail
-          docker buildx build \
-            --platform "${DOCKER_PLATFORMS}" \
-            --file docker/Dockerfile \
-            --cache-from "type=gha,scope=mosaic" \
-            --cache-to "type=gha,scope=mosaic,mode=max" \
-            --tag "${IMAGE_REF}" \
+          # imagetools create copies the manifest from private ECR (docker login still valid)
+          # to public ECR using the public ECR docker login obtained above.
+          docker buildx imagetools create \
             --tag "${PUBLIC_IMAGE_REF}" \
-            --push \
-            .
+            "${IMAGE_REF}"
 
       - name: Reconfigure private AWS credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
