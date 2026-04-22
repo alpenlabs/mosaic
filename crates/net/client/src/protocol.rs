@@ -90,6 +90,10 @@ impl InboundRequest {
     /// This sets the stream priority to 1 (higher than the initial message),
     /// sends an empty acknowledgment, and closes the stream.
     ///
+    /// The underlying protocol stream is single-request by contract: the inbound
+    /// request payload has already been extracted before this responder is created,
+    /// and the stream handle is only used for the acknowledgment path.
+    ///
     /// # Errors
     ///
     /// Returns an error if the acknowledgment could not be sent.
