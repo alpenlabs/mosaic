@@ -46,6 +46,29 @@ fn retry_backoff(attempts: u32) -> Duration {
     backoff.min(RETRY_BACKOFF_MAX)
 }
 
+/// Releases a worker permit back to the pool when the spawned task exits.
+///
+/// This makes permit release robust against early returns and task panics.
+struct PermitGuard {
+    permit_tx: Option<kanal::Sender<()>>,
+}
+
+impl PermitGuard {
+    fn new(permit_tx: kanal::Sender<()>) -> Self {
+        Self {
+            permit_tx: Some(permit_tx),
+        }
+    }
+}
+
+impl Drop for PermitGuard {
+    fn drop(&mut self) {
+        if let Some(permit_tx) = self.permit_tx.take() {
+            let _ = permit_tx.try_send(());
+        }
+    }
+}
+
 /// A job descriptor that lives in the shared queue.
 ///
 /// Contains the action to execute and the peer it belongs to. The worker
@@ -199,6 +222,7 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
             //    whether it succeeded or was requeued for retry.
             monoio::spawn(
                 async move {
+                    let _permit = PermitGuard::new(permit_tx);
                     tracing::trace!("executing worker job");
                     let result = execute_job(dispatcher.as_ref(), &pool_job).await;
                     match result {
@@ -232,8 +256,6 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
                             queue.requeue(job);
                         }
                     }
-                    // Release permit back to the pool.
-                    let _ = permit_tx.send(());
                 }
                 .instrument(tracing::debug_span!(
                     "job_scheduler.worker_job",

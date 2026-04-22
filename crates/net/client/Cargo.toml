@@ -18,6 +18,10 @@ ark-serialize = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Runtime-agnostic timeout support
+futures-util = "0.3"
+futures-timer = "3"
+
 # Async runtime for timeouts
 tokio = { version = "1", features = ["time"] }
 
@@ -32,6 +36,7 @@ tokio = { version = "1", features = [
   "macros",
   "time",
 ] }
+monoio = { version = "0.2", features = ["sync"] }
 
 # Cryptography for test key generation
 ed25519-dalek = "2.2"
