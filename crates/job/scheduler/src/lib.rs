@@ -22,11 +22,16 @@ pub(crate) mod priority;
 
 use mosaic_net_svc_api::PeerId;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) enum SchedulerFault {
     CompletionChannelClosed {
         source: &'static str,
         peer_id: PeerId,
+    },
+    ThreadExited {
+        source: &'static str,
+        thread: String,
+        reason: String,
     },
 }
 

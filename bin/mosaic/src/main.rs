@@ -6,7 +6,11 @@ mod rpc;
 use std::{
     env,
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        mpsc::{self, RecvTimeoutError},
+    },
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -43,8 +47,27 @@ fn main() -> Result<()> {
         .context("failed to build mosaic monoio runtime")?;
     let running = runtime.block_on(startup(config))?;
 
-    wait_for_shutdown_signal()?;
-    shutdown(running)
+    let reason = wait_for_shutdown_or_component_exit(&running)?;
+    match &reason {
+        ShutdownReason::Signal => tracing::info!("shutdown signal received"),
+        ShutdownReason::ComponentExited { component } => {
+            tracing::error!(
+                component = *component,
+                "critical component exited unexpectedly; shutting down mosaic"
+            );
+        }
+    }
+
+    let shutdown_result = shutdown(running);
+    match reason {
+        ShutdownReason::Signal => shutdown_result,
+        ShutdownReason::ComponentExited { component } => {
+            if let Err(error) = shutdown_result {
+                tracing::error!(component, error = ?error, "failed to fully shut down after critical component exit");
+            }
+            bail!("critical component exited unexpectedly: {component}")
+        }
+    }
 }
 
 struct RunningMosaic {
@@ -53,6 +76,11 @@ struct RunningMosaic {
     sm_executor_controller: SmExecutorController,
     _sm_executor_handle: SmExecutorHandle,
     rpc_controller: rpc::RpcController,
+}
+
+enum ShutdownReason {
+    Signal,
+    ComponentExited { component: &'static str },
 }
 
 async fn startup(config: MosaicConfig) -> Result<RunningMosaic> {
@@ -234,27 +262,86 @@ where
 }
 
 fn shutdown(running: RunningMosaic) -> Result<()> {
-    running
-        .rpc_controller
-        .shutdown()
-        .context("failed to shut down RPC server")?;
-    shutdown_net(running.net_controller)?;
-    shutdown_sm_executor(running.sm_executor_controller)?;
-    shutdown_job_scheduler(running.job_scheduler_controller)?;
+    let RunningMosaic {
+        net_controller,
+        job_scheduler_controller,
+        sm_executor_controller,
+        _sm_executor_handle: _,
+        rpc_controller,
+    } = running;
+
+    let mut first_error: Option<anyhow::Error> = None;
+
+    if let Err(error) = rpc_controller.shutdown() {
+        tracing::error!(error = ?error, "failed to shut down RPC server");
+        if first_error.is_none() {
+            first_error = Some(error.context("failed to shut down RPC server"));
+        }
+    }
+    if let Err(error) = shutdown_net(net_controller) {
+        tracing::error!(error = ?error, "failed to shut down net service");
+        if first_error.is_none() {
+            first_error = Some(error.context("failed to shut down net service"));
+        }
+    }
+    if let Err(error) = shutdown_sm_executor(sm_executor_controller) {
+        tracing::error!(error = ?error, "failed to shut down sm executor");
+        if first_error.is_none() {
+            first_error = Some(error.context("failed to shut down sm executor"));
+        }
+    }
+    if let Err(error) = shutdown_job_scheduler(job_scheduler_controller) {
+        tracing::error!(error = ?error, "failed to shut down job scheduler");
+        if first_error.is_none() {
+            first_error = Some(error.context("failed to shut down job scheduler"));
+        }
+    }
+
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+
     tracing::info!("mosaic shutdown complete");
     Ok(())
 }
 
-fn wait_for_shutdown_signal() -> Result<()> {
+fn wait_for_shutdown_or_component_exit(running: &RunningMosaic) -> Result<ShutdownReason> {
     let (tx, rx) = mpsc::sync_channel(1);
     ctrlc::set_handler(move || {
         let _ = tx.send(());
     })
     .context("failed to install shutdown signal handler")?;
-    rx.recv()
-        .context("failed while waiting for shutdown signal")?;
-    tracing::info!("shutdown signal received");
-    Ok(())
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(()) => return Ok(ShutdownReason::Signal),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                bail!("failed while waiting for shutdown signal")
+            }
+        }
+
+        if !running.rpc_controller.is_running() {
+            return Ok(ShutdownReason::ComponentExited {
+                component: "rpc_server",
+            });
+        }
+        if !running.net_controller.is_running() {
+            return Ok(ShutdownReason::ComponentExited {
+                component: "net_service",
+            });
+        }
+        if !running.sm_executor_controller.is_running() {
+            return Ok(ShutdownReason::ComponentExited {
+                component: "sm_executor",
+            });
+        }
+        if !running.job_scheduler_controller.is_running() {
+            return Ok(ShutdownReason::ComponentExited {
+                component: "job_scheduler",
+            });
+        }
+    }
 }
 
 fn shutdown_net(controller: mosaic_net_svc::NetServiceController) -> Result<()> {
