@@ -37,6 +37,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      security-events: write
     timeout-minutes: 30
     steps:
       - name: Validate manual inputs
@@ -183,26 +184,29 @@ jobs:
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
       - name: Scan Mosaic image with Trivy
-        run: |
-          set -euo pipefail
-          mkdir -p trivy-results
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.65.0 \
-            image \
-            --scanners vuln \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --exit-code 0 \
-            --no-progress \
-            "${IMAGE_REF}" > trivy-results/mosaic.txt
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: sarif
+          output: trivy-results/mosaic.sarif
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results/mosaic.sarif
+          category: mosaic-ecr
 
       - name: Upload Trivy results artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-mosaic-${{ env.IMAGE_TAG }}
-          path: trivy-results/mosaic.txt
+          path: trivy-results/mosaic.sarif
           if-no-files-found: ignore
 
       - name: Append publish summary
@@ -223,10 +227,8 @@ jobs:
             echo
             echo "### Trivy summary"
             echo
-            if [[ -f trivy-results/mosaic.txt ]]; then
-              echo '```text'
-              sed -n '1,120p' trivy-results/mosaic.txt
-              echo '```'
+            if [[ -f trivy-results/mosaic.sarif ]]; then
+              echo "Trivy SARIF uploaded to GitHub Security tab."
             else
               echo "Trivy scan output was not generated."
             fi
