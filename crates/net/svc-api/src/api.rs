@@ -9,7 +9,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use kanal::{AsyncReceiver, AsyncSender};
+use kanal::{AsyncReceiver, AsyncSender, bounded_async};
 
 use crate::{config::NetServiceConfig, peer_id::PeerId};
 
@@ -125,6 +125,32 @@ impl Stream {
         buf_return_rx: AsyncReceiver<PayloadBuf>,
         close_rx: AsyncReceiver<StreamClosed>,
     ) -> Self {
+        Self {
+            peer,
+            payload_rx,
+            request_tx,
+            buf_return_rx,
+            close_rx,
+            close_reason: None,
+        }
+    }
+
+    /// Create a write-only stream handle.
+    ///
+    /// This is used internally for protocol streams after the single request
+    /// payload has already been extracted by net-svc. The returned handle is
+    /// still valid for priority changes, writes, resets, and graceful close,
+    /// but does not expose any further inbound payloads.
+    #[doc(hidden)]
+    pub fn new_write_only(
+        peer: PeerId,
+        request_tx: AsyncSender<StreamRequest>,
+        buf_return_rx: AsyncReceiver<PayloadBuf>,
+        close_rx: AsyncReceiver<StreamClosed>,
+    ) -> Self {
+        let (payload_tx, payload_rx) = bounded_async(1);
+        drop(payload_tx);
+
         Self {
             peer,
             payload_rx,
@@ -295,6 +321,73 @@ impl Stream {
 // Service Handle
 // ============================================================================
 
+/// A single inbound protocol request.
+///
+/// Protocol streams are single-request by contract:
+/// - the opener sends exactly one payload frame containing the request
+/// - the receiver later sends exactly one acknowledgment payload frame back
+/// - no further opener->receiver payload frames are part of the protocol API
+///
+/// net-svc reads the first payload frame before exposing the request to
+/// callers, so header-only streams never enter the shared protocol queue.
+pub struct InboundProtocolStream {
+    peer: PeerId,
+    payload: Option<PayloadBuf>,
+    stream: Stream,
+}
+
+impl InboundProtocolStream {
+    /// Create a new inbound protocol request.
+    #[doc(hidden)]
+    pub fn new(peer: PeerId, payload: PayloadBuf, stream: Stream) -> Self {
+        Self {
+            peer,
+            payload: Some(payload),
+            stream,
+        }
+    }
+
+    /// The peer that sent this request.
+    pub fn peer(&self) -> PeerId {
+        self.peer
+    }
+
+    /// Borrow the request payload bytes.
+    ///
+    /// Returns `None` if the single request payload has already been consumed.
+    pub fn payload(&self) -> Option<&[u8]> {
+        self.payload.as_deref()
+    }
+
+    /// Read the single inbound protocol payload.
+    ///
+    /// This yields the opener's single request payload exactly once. Further
+    /// reads are invalid for protocol streams and return `Disconnected`.
+    pub async fn read(&mut self) -> Result<PayloadBuf, StreamClosed> {
+        self.payload.take().ok_or(StreamClosed::Disconnected)
+    }
+
+    /// Consume the request and return its payload bytes plus the underlying stream.
+    ///
+    /// The returned stream is intended only for response/ack handling.
+    /// The payload is `None` if it was already consumed via [`read`](Self::read).
+    pub fn into_parts(self) -> (Option<PayloadBuf>, Stream) {
+        (self.payload, self.stream)
+    }
+}
+
+impl std::fmt::Debug for InboundProtocolStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InboundProtocolStream")
+            .field("peer", &self.peer)
+            .field(
+                "payload_len",
+                &self.payload.as_ref().map_or(0, |payload| payload.len()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 /// Handle to the network service.
 ///
 /// This is cheaply cloneable and can be sent to any thread. All methods use
@@ -305,8 +398,8 @@ pub struct NetServiceHandle {
     config: Arc<NetServiceConfig>,
     /// Commands to the service.
     command_tx: AsyncSender<NetCommand>,
-    /// Incoming protocol streams (shared receiver).
-    protocol_stream_rx: AsyncReceiver<Stream>,
+    /// Incoming protocol requests (shared receiver).
+    protocol_stream_rx: AsyncReceiver<InboundProtocolStream>,
     /// Monotonic request ID generator for explicit stream-open cancellation.
     next_open_request_id: Arc<AtomicU64>,
 }
@@ -319,7 +412,7 @@ impl NetServiceHandle {
     pub fn new(
         config: Arc<NetServiceConfig>,
         command_tx: AsyncSender<NetCommand>,
-        protocol_stream_rx: AsyncReceiver<Stream>,
+        protocol_stream_rx: AsyncReceiver<InboundProtocolStream>,
     ) -> Self {
         Self {
             config,
@@ -344,11 +437,15 @@ impl NetServiceHandle {
         &self.config
     }
 
-    /// Get the receiver for incoming protocol streams.
+    /// Get the receiver for incoming protocol requests.
     ///
-    /// The SMScheduler should own this and receive streams from it.
-    /// Each stream is a new incoming connection from a peer.
-    pub fn protocol_streams(&self) -> &AsyncReceiver<Stream> {
+    /// The SM executor should own this and receive requests from it.
+    ///
+    /// Protocol streams are single-request by contract: net-svc reads the
+    /// header and first payload before enqueueing an [`InboundProtocolStream`].
+    /// The contained stream handle is only for sending the acknowledgment
+    /// (or resetting/closing the stream), not for reading more request frames.
+    pub fn protocol_streams(&self) -> &AsyncReceiver<InboundProtocolStream> {
         &self.protocol_stream_rx
     }
 

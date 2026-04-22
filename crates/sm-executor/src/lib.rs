@@ -1521,14 +1521,18 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(None)));
     }
 
-    fn make_net_client() -> (NetClient, kanal::AsyncSender<Stream>) {
+    fn make_net_client() -> (
+        NetClient,
+        kanal::AsyncSender<mosaic_net_svc_api::InboundProtocolStream>,
+    ) {
         let config = Arc::new(NetServiceConfig::new(
             SigningKey::from_bytes(&[1; 32]),
             "127.0.0.1:0".parse().expect("parse socket addr"),
             Vec::new(),
         ));
         let (command_tx, _command_rx) = kanal::bounded_async::<NetCommand>(8);
-        let (protocol_tx, protocol_rx) = kanal::bounded_async::<Stream>(8);
+        let (protocol_tx, protocol_rx) =
+            kanal::bounded_async::<mosaic_net_svc_api::InboundProtocolStream>(8);
         let handle = NetServiceHandle::new(config, command_tx, protocol_rx);
         (NetClient::new(handle), protocol_tx)
     }
@@ -1543,7 +1547,10 @@ mod tests {
     fn stream_with_message(
         peer_id: PeerId,
         msg: Msg,
-    ) -> (Stream, kanal::AsyncReceiver<StreamRequest>) {
+    ) -> (
+        mosaic_net_svc_api::InboundProtocolStream,
+        kanal::AsyncReceiver<StreamRequest>,
+    ) {
         let mut bytes = Vec::new();
         msg.serialize_with_mode(&mut bytes, Compress::No)
             .expect("serialize protocol msg");
@@ -1558,8 +1565,13 @@ mod tests {
         let (_buf_return_tx, buf_return_rx) = kanal::bounded_async::<Vec<u8>>(1);
         let (_close_tx, close_rx) = kanal::bounded_async::<StreamClosed>(1);
 
+        let mut stream = Stream::new(peer_id, payload_rx, request_tx, buf_return_rx, close_rx);
+        let payload = stream
+            .try_read()
+            .expect("protocol payload available for test inbound stream");
+
         (
-            Stream::new(peer_id, payload_rx, request_tx, buf_return_rx, close_rx),
+            mosaic_net_svc_api::InboundProtocolStream::new(peer_id, payload, stream),
             request_rx,
         )
     }

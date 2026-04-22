@@ -27,8 +27,8 @@
 //! Each protocol message follows a request-response pattern:
 //!
 //! 1. Sender opens a protocol stream (priority 0)
-//! 2. Sender writes the serialized message
-//! 3. Receiver reads and deserializes the message
+//! 2. Sender writes exactly one serialized message payload
+//! 3. Receiver accepts that single inbound request and deserializes the payload
 //! 4. Receiver sends an acknowledgment (priority 1)
 //! 5. Stream closes
 //!
@@ -245,8 +245,8 @@ impl NetClient {
     /// Receive the next incoming protocol message.
     ///
     /// This method:
-    /// 1. Accepts the next incoming protocol stream
-    /// 2. Reads and deserializes the message
+    /// 1. Accepts the next incoming protocol request
+    /// 2. Deserializes the already-buffered request payload
     /// 3. Returns an [`InboundRequest`] containing the message and a handle to send acknowledgment
     ///
     /// The returned [`InboundRequest`] must be acknowledged by calling
@@ -271,20 +271,16 @@ impl NetClient {
     /// request.ack().await?;
     /// ```
     pub async fn recv(&self) -> Result<InboundRequest, RecvError> {
-        // Accept next incoming protocol stream
-        let mut stream = self
+        // Accept next incoming protocol request
+        let inbound = self
             .handle
             .protocol_streams()
             .recv()
             .await
             .map_err(|_| RecvError::Closed)?;
-        let peer_id = stream.peer;
-
-        // Read message bytes
-        let bytes = stream
-            .read()
-            .await
-            .map_err(|source| RecvError::Read { peer_id, source })?;
+        let peer_id = inbound.peer();
+        let (bytes, stream) = inbound.into_parts();
+        let bytes = bytes.ok_or(RecvError::Closed)?;
 
         // Deserialize message (uncompressed, with validation)
         let msg = deserialize(&bytes).map_err(|error| RecvError::Deserialize { peer_id, error })?;

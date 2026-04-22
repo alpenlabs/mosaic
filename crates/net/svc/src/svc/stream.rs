@@ -18,6 +18,7 @@ use crate::{
 const PAYLOAD_CHANNEL_SIZE: usize = 16;
 const REQUEST_CHANNEL_SIZE: usize = 16;
 const BUF_RETURN_CHANNEL_SIZE: usize = 16;
+const INITIAL_READ_BUFFER_CAPACITY: usize = 4 * 1024;
 
 /// Shared close state for a stream.
 ///
@@ -84,6 +85,29 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
     );
 
     Stream::new(peer, payload_rx, request_tx, buf_return_rx, close_rx)
+}
+
+/// Create a write-only stream handle for a protocol response path.
+///
+/// The request payload has already been extracted by net-svc, so only the
+/// send side remains relevant for acknowledgment/reset handling.
+pub fn create_write_only_stream(peer: PeerId, send: SendStream) -> Stream {
+    let (request_tx, request_rx) = bounded_async(REQUEST_CHANNEL_SIZE);
+    let (buf_return_tx, buf_return_rx) = bounded_async(BUF_RETURN_CHANNEL_SIZE);
+    let (close_tx, close_rx) = bounded_async(1);
+
+    let close_state = Arc::new(CloseState::new());
+
+    tokio::spawn(
+        write_task(send, request_rx, buf_return_tx, close_tx, close_state).instrument(
+            tracing::debug_span!(
+                "net_svc.stream_write_only",
+                peer = %peer
+            ),
+        ),
+    );
+
+    Stream::new_write_only(peer, request_tx, buf_return_rx, close_rx)
 }
 
 /// Write task: handles StreamRequest -> QUIC stream.
@@ -185,7 +209,8 @@ async fn read_task(
     close_state: Arc<CloseState>,
 ) {
     let limits = mosaic_net_wire::FrameLimits::default();
-    let mut buf = Vec::with_capacity(limits.max_recv_size as usize + 4);
+    let mut buf =
+        Vec::with_capacity(INITIAL_READ_BUFFER_CAPACITY.min(limits.max_recv_size as usize + 4));
     let mut read_buf = [0u8; 64 * 1024];
 
     loop {

@@ -271,31 +271,34 @@ where
 /// This is a setup barrier only; behavior assertions should remain strict.
 async fn stabilize_stream_path(sender: &TestPeer, receiver: &TestPeer) {
     retry_until_ok(Duration::from_secs(10), || async {
-        let mut stream = tokio::time::timeout(
-            Duration::from_secs(3),
-            sender
-                .client
-                .handle()
-                .open_protocol_stream(receiver.peer_id(), StreamPriority::Normal.as_i32()),
-        )
-        .await
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
-
-        let mut inbound = tokio::time::timeout(
-            Duration::from_secs(3),
-            receiver.client.handle().protocol_streams().recv(),
-        )
-        .await
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
-
         for probe in [b"probe-1".as_slice(), b"probe-2".as_slice()] {
+            let mut stream = tokio::time::timeout(
+                Duration::from_secs(3),
+                sender
+                    .client
+                    .handle()
+                    .open_protocol_stream(receiver.peer_id(), StreamPriority::Normal.as_i32()),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+
             stream.write(probe.to_vec()).await.map_err(|_| ())?;
-            let payload = tokio::time::timeout(Duration::from_secs(3), inbound.read())
-                .await
-                .map_err(|_| ())?
-                .map_err(|_| ())?;
+
+            let inbound = tokio::time::timeout(
+                Duration::from_secs(3),
+                receiver.client.handle().protocol_streams().recv(),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+
+            let payload = tokio::time::timeout(Duration::from_secs(3), async {
+                inbound.payload().map(|payload| payload.to_vec()).ok_or(())
+            })
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
             if payload.as_slice() != probe {
                 return Err(());
             }

@@ -30,7 +30,7 @@ const CI_TIMEOUT: Duration = Duration::from_secs(15);
 use ed25519_dalek::SigningKey;
 use mosaic_net_svc::{
     PeerId,
-    api::{OpenStreamError, Stream, StreamClosed},
+    api::{InboundProtocolStream, OpenStreamError, Stream},
     config::{NetServiceConfig, PeerConfig},
     svc::NetService,
     tls::peer_id_from_signing_key,
@@ -230,7 +230,11 @@ async fn open_stream_eventually(handle: &mosaic_net_svc::NetServiceHandle, peer:
     .await
 }
 
-async fn open_stream_pair_eventually(sender: &TestPeer, receiver: &TestPeer) -> (Stream, Stream) {
+async fn open_stream_pair_eventually(
+    sender: &TestPeer,
+    receiver: &TestPeer,
+    payload: &[u8],
+) -> (Stream, InboundProtocolStream) {
     retry_until_ok(CI_TIMEOUT, || async {
         let mut outbound = tokio::time::timeout(
             Duration::from_secs(5),
@@ -239,7 +243,9 @@ async fn open_stream_pair_eventually(sender: &TestPeer, receiver: &TestPeer) -> 
         .await
         .map_err(|_| ())?
         .map_err(|_| ())?;
-        let mut inbound = tokio::time::timeout(
+
+        outbound.write(payload.to_vec()).await.map_err(|_| ())?;
+        let inbound = tokio::time::timeout(
             Duration::from_secs(5),
             receiver.handle.protocol_streams().recv(),
         )
@@ -247,15 +253,8 @@ async fn open_stream_pair_eventually(sender: &TestPeer, receiver: &TestPeer) -> 
         .map_err(|_| ())?
         .map_err(|_| ())?;
 
-        for probe in [b"stabilize-1".as_slice(), b"stabilize-2".as_slice()] {
-            outbound.write(probe.to_vec()).await.map_err(|_| ())?;
-            let echoed = tokio::time::timeout(Duration::from_secs(5), inbound.read())
-                .await
-                .map_err(|_| ())?
-                .map_err(|_| ())?;
-            if echoed.as_slice() != probe {
-                return Err(());
-            }
+        if inbound.payload() != Some(payload) {
+            return Err(());
         }
 
         Ok::<_, ()>((outbound, inbound))
@@ -338,6 +337,7 @@ fn test_simultaneous_connect_converges_deterministically() {
             let mut stream_a = open_a.map_err(|_| ())?.map_err(|_| ())?;
             let mut stream_b = open_b.map_err(|_| ())?.map_err(|_| ())?;
 
+            stream_a.write(b"a->b".to_vec()).await.map_err(|_| ())?;
             let mut inbound_on_b = tokio::time::timeout(
                 Duration::from_secs(5),
                 peer_b.handle.protocol_streams().recv(),
@@ -345,15 +345,6 @@ fn test_simultaneous_connect_converges_deterministically() {
             .await
             .map_err(|_| ())?
             .map_err(|_| ())?;
-            let mut inbound_on_a = tokio::time::timeout(
-                Duration::from_secs(5),
-                peer_a.handle.protocol_streams().recv(),
-            )
-            .await
-            .map_err(|_| ())?
-            .map_err(|_| ())?;
-
-            stream_a.write(b"a->b".to_vec()).await.map_err(|_| ())?;
             let msg = tokio::time::timeout(Duration::from_secs(5), inbound_on_b.read())
                 .await
                 .map_err(|_| ())?
@@ -363,6 +354,13 @@ fn test_simultaneous_connect_converges_deterministically() {
             }
 
             stream_b.write(b"b->a".to_vec()).await.map_err(|_| ())?;
+            let mut inbound_on_a = tokio::time::timeout(
+                Duration::from_secs(5),
+                peer_a.handle.protocol_streams().recv(),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
             let msg = tokio::time::timeout(Duration::from_secs(5), inbound_on_a.read())
                 .await
                 .map_err(|_| ())?
@@ -544,12 +542,12 @@ fn test_duplicate_peer_identity_routes_to_single_selected_connection() {
             .await
             .map_err(|_| ())?
             .map_err(|_| ())?;
+            baseline.write(b"baseline".to_vec()).await.map_err(|_| ())?;
             let mut baseline_recv =
                 tokio::time::timeout(Duration::from_secs(5), handle_b.protocol_streams().recv())
                     .await
                     .map_err(|_| ())?
                     .map_err(|_| ())?;
-            baseline.write(b"baseline".to_vec()).await.map_err(|_| ())?;
             let msg = tokio::time::timeout(Duration::from_secs(5), baseline_recv.read())
                 .await
                 .map_err(|_| ())?
@@ -581,6 +579,8 @@ fn test_duplicate_peer_identity_routes_to_single_selected_connection() {
                     .map_err(|_| ())?
                     .map_err(|_| ())?;
 
+                    stream_a.write(b"steady".to_vec()).await.map_err(|_| ())?;
+
                     let recv_b = tokio::time::timeout(
                         Duration::from_secs(2),
                         handle_b.protocol_streams().recv(),
@@ -602,7 +602,6 @@ fn test_duplicate_peer_identity_routes_to_single_selected_connection() {
                         }
                     };
 
-                    stream_a.write(b"steady".to_vec()).await.map_err(|_| ())?;
                     let msg = tokio::time::timeout(Duration::from_secs(5), stream_on_b.read())
                         .await
                         .map_err(|_| ())?
@@ -734,13 +733,18 @@ fn test_protocol_stream_open_and_receive() {
 
     run_async(async {
         retry_until_ok(CI_TIMEOUT, || async {
-            let stream_a = open_stream_eventually(&peer_a.handle, peer_b.peer_id).await;
-            let stream_b =
-                recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
-            if stream_b.peer != peer_a.peer_id {
+            let (_stream_a, mut stream_b) =
+                open_stream_pair_eventually(&peer_a, &peer_b, b"hello").await;
+            if stream_b.peer() != peer_a.peer_id {
                 return Err(());
             }
-            drop(stream_a);
+            let payload = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ())?;
+            if payload != b"hello" {
+                return Err(());
+            }
             drop(stream_b);
             Ok::<_, ()>(())
         })
@@ -757,8 +761,8 @@ fn test_protocol_stream_send_receive_data() {
 
     run_async(async {
         retry_until_ok(CI_TIMEOUT, || async {
-            let (mut stream_a, mut stream_b) = open_stream_pair_eventually(&peer_a, &peer_b).await;
-            stream_a.write(b"hello".to_vec()).await.map_err(|_| ())?;
+            let (_stream_a, mut stream_b) =
+                open_stream_pair_eventually(&peer_a, &peer_b, b"hello").await;
             let received = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
                 .await
                 .map_err(|_| ())?
@@ -781,16 +785,17 @@ fn test_stream_bidirectional() {
 
     run_async(async {
         retry_until_ok(CI_TIMEOUT, || async {
-            let (mut stream_a, mut stream_b) = open_stream_pair_eventually(&peer_a, &peer_b).await;
-            stream_a.write(b"ping".to_vec()).await.map_err(|_| ())?;
-            let msg = tokio::time::timeout(Duration::from_secs(5), stream_b.read())
-                .await
-                .map_err(|_| ())?
-                .map_err(|_| ())?;
-            if msg != b"ping" {
+            let (mut stream_a, stream_b) =
+                open_stream_pair_eventually(&peer_a, &peer_b, b"ping").await;
+            if stream_b.payload() != Some(b"ping".as_slice()) {
                 return Err(());
             }
-            stream_b.write(b"pong".to_vec()).await.map_err(|_| ())?;
+            let (_payload, mut response_stream) = stream_b.into_parts();
+            let _payload = _payload.ok_or(())?;
+            response_stream
+                .write(b"pong".to_vec())
+                .await
+                .map_err(|_| ())?;
             let msg = tokio::time::timeout(Duration::from_secs(5), stream_a.read())
                 .await
                 .map_err(|_| ())?
@@ -808,43 +813,21 @@ fn test_stream_bidirectional() {
 }
 
 #[test]
-fn test_stream_close_on_drop_sends_fin() {
+fn test_protocol_stream_payload_survives_opener_drop() {
     let (peer_a, peer_b) = create_peer_pair();
 
     run_async(async {
         retry_until_ok(CI_TIMEOUT, || async {
-            let (stream_a, mut stream_b) = open_stream_pair_eventually(&peer_a, &peer_b).await;
+            let (stream_a, mut stream_b) =
+                open_stream_pair_eventually(&peer_a, &peer_b, b"hello").await;
             drop(stream_a);
             let result = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
                 .await
                 .map_err(|_| ())?;
-            if matches!(result, Err(StreamClosed::PeerFinished)) {
+            if matches!(result, Ok(payload) if payload == b"hello") {
                 Ok::<_, ()>(())
             } else {
                 Err(())
-            }
-        })
-        .await;
-    });
-
-    peer_a.shutdown();
-    peer_b.shutdown();
-}
-
-#[test]
-fn test_stream_reset_with_code() {
-    let (peer_a, peer_b) = create_peer_pair();
-
-    run_async(async {
-        retry_until_ok(CI_TIMEOUT, || async {
-            let (stream_a, mut stream_b) = open_stream_pair_eventually(&peer_a, &peer_b).await;
-            stream_a.reset(123).await;
-            let result = tokio::time::timeout(CI_TIMEOUT, stream_b.read())
-                .await
-                .map_err(|_| ())?;
-            match result {
-                Err(StreamClosed::PeerReset(123)) => Ok::<_, ()>(()),
-                _ => Err(()),
             }
         })
         .await;
@@ -860,7 +843,7 @@ fn test_buffer_returned_after_write() {
 
     run_async(async {
         let returned = retry_until_ok(CI_TIMEOUT, || async {
-            let (mut stream_a, _stream_b) = open_stream_pair_eventually(&peer_a, &peer_b).await;
+            let mut stream_a = open_stream_eventually(&peer_a.handle, peer_b.peer_id).await;
 
             // Write data
             let buf = vec![42u8; 1000];
@@ -888,7 +871,8 @@ fn test_bulk_transfer_registered() {
             let tag = next_key_tag();
             identifier[..8].copy_from_slice(&tag.to_le_bytes());
 
-            let (_protocol, _inbound) = open_stream_pair_eventually(&peer_a, &peer_b).await;
+            let (_protocol, _inbound) =
+                open_stream_pair_eventually(&peer_a, &peer_b, b"warm").await;
             let expectation = peer_b
                 .handle
                 .expect_bulk_transfer(peer_a.peer_id, identifier)
@@ -935,7 +919,8 @@ fn test_multiple_streams_concurrent() {
 
     run_async(async {
         retry_until_ok(CI_TIMEOUT, || async {
-            let (_warm, _warm_inbound) = open_stream_pair_eventually(&peer_a, &peer_b).await;
+            let (_warm, _warm_inbound) =
+                open_stream_pair_eventually(&peer_a, &peer_b, b"warm").await;
             let mut streams_a = Vec::new();
             for _ in 0..3 {
                 let s = tokio::time::timeout(
@@ -948,17 +933,17 @@ fn test_multiple_streams_concurrent() {
                 streams_a.push(s);
             }
 
+            for (i, s) in streams_a.iter_mut().enumerate() {
+                s.write(format!("msg{}", i).into_bytes())
+                    .await
+                    .map_err(|_| ())?;
+            }
+
             let mut streams_b = Vec::new();
             for _ in 0..3 {
                 streams_b.push(
                     recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await,
                 );
-            }
-
-            for (i, s) in streams_a.iter_mut().enumerate() {
-                s.write(format!("msg{}", i).into_bytes())
-                    .await
-                    .map_err(|_| ())?;
             }
 
             let mut msgs = Vec::new();
@@ -988,9 +973,9 @@ fn test_large_payload() {
 
     run_async(async {
         retry_until_ok(CI_TIMEOUT, || async {
-            let (mut stream_a, mut stream_b) = open_stream_pair_eventually(&peer_a, &peer_b).await;
             let payload: Vec<u8> = (0..65536).map(|i| (i % 256) as u8).collect();
-            stream_a.write(payload.clone()).await.map_err(|_| ())?;
+            let (_stream_a, mut stream_b) =
+                open_stream_pair_eventually(&peer_a, &peer_b, &payload).await;
             let received = tokio::time::timeout(Duration::from_secs(10), stream_b.read())
                 .await
                 .map_err(|_| ())?
