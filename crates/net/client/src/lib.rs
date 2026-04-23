@@ -63,7 +63,9 @@ use std::{
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 pub use bulk::{BulkExpectation, BulkReceiver, BulkSender};
-pub use error::{AckError, BulkExpectError, BulkOpenError, BulkReceiveError, RecvError, SendError};
+pub use error::{
+    AckError, BulkExpectError, BulkOpenError, BulkReadError, BulkReceiveError, RecvError, SendError,
+};
 use futures_util::{
     FutureExt,
     future::{Either, select},

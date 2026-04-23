@@ -1,5 +1,7 @@
 //! Executors for evaluator state machine actions.
 
+use std::time::{Duration, Instant};
+
 use bitvec::vec::BitVec;
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use ckt_gobble::{
@@ -18,6 +20,7 @@ use mosaic_common::constants::{
 };
 use mosaic_heap_array::HeapArray;
 use mosaic_job_api::{ActionCompletion, CircuitError, HandlerOutcome};
+use mosaic_net_client::{BulkReadError, BulkReceiveError};
 use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::{
     StorageProvider,
@@ -31,6 +34,11 @@ use crate::{
     circuit_sessions::{CiphertextReaderAdapter, EvaluationSession},
     garbling::{compute_commitment, hash_garbling_params},
 };
+
+const BULK_OPEN_WARN_AFTER: Duration = Duration::from_secs(5);
+const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+const BULK_READ_WARN_AFTER: Duration = Duration::from_secs(5);
+const BULK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Build a successful evaluator completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {
@@ -243,6 +251,13 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         return HandlerOutcome::Retry;
     };
     let index = eval_indices[pos];
+    let expected_ciphertext_bytes = match ctx.expected_table_ciphertext_bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!(%peer_id, ?index, ?e, "failed to compute expected ciphertext length for receive_garbling_table");
+            return HandlerOutcome::Retry;
+        }
+    };
 
     // Register to receive the bulk transfer using the commitment as identifier.
     let identifier: [u8; 32] = expected_commitment
@@ -268,9 +283,33 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     }
 
     // Wait for the garbler to open the stream.
-    let Ok(mut stream) = expectation.recv().await else {
-        warn!(%peer_id, "bulk stream receive failed for receive_garbling_table");
-        return HandlerOutcome::Retry;
+    let open_started = Instant::now();
+    let mut stream = match expectation.recv_with_timeout(BULK_OPEN_TIMEOUT).await {
+        Ok(stream) => {
+            let elapsed = open_started.elapsed();
+            if elapsed >= BULK_OPEN_WARN_AFTER {
+                warn!(
+                    %peer_id,
+                    ?index,
+                    ?elapsed,
+                    "bulk stream open was slower than expected for receive_garbling_table"
+                );
+            }
+            stream
+        }
+        Err(BulkReceiveError::TimedOut) => {
+            warn!(
+                %peer_id,
+                ?index,
+                timeout = ?BULK_OPEN_TIMEOUT,
+                "timed out waiting for bulk stream in receive_garbling_table"
+            );
+            return HandlerOutcome::Retry;
+        }
+        Err(BulkReceiveError::Closed) => {
+            warn!(%peer_id, ?index, "bulk stream receive failed for receive_garbling_table");
+            return HandlerOutcome::Retry;
+        }
     };
 
     // The garbler sends: translation bytes first, then ciphertext data.
@@ -293,11 +332,35 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     let mut ct_hasher = blake3::Hasher::new();
     let mut translation_buf = Vec::with_capacity(translation_size);
     let mut translation_remaining = translation_size;
+    let mut ciphertext_bytes_received = 0usize;
 
     loop {
-        let chunk = match stream.read().await {
-            Ok(data) => data,
-            Err(_closed) => break,
+        let read_started = Instant::now();
+        let chunk = match stream.read_with_timeout(BULK_READ_TIMEOUT).await {
+            Ok(data) => {
+                let elapsed = read_started.elapsed();
+                if elapsed >= BULK_READ_WARN_AFTER {
+                    warn!(
+                        %peer_id,
+                        ?index,
+                        ?elapsed,
+                        "bulk stream read was slower than expected for receive_garbling_table"
+                    );
+                }
+                data
+            }
+            Err(BulkReadError::TimedOut) => {
+                warn!(
+                    %peer_id,
+                    ?index,
+                    timeout = ?BULK_READ_TIMEOUT,
+                    "timed out waiting for bulk payload in receive_garbling_table"
+                );
+                stream.reset(0).await;
+                let _ = ctx.table_store.delete(&table_id).await;
+                return HandlerOutcome::Retry;
+            }
+            Err(BulkReadError::Closed(_closed)) => break,
         };
 
         if chunk.is_empty() {
@@ -315,6 +378,20 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 
             // Any overflow goes to ciphertext.
             if !ct_part.is_empty() {
+                let next_ciphertext_bytes = ciphertext_bytes_received + ct_part.len();
+                if next_ciphertext_bytes > expected_ciphertext_bytes {
+                    error!(
+                        %peer_id,
+                        ?index,
+                        received = next_ciphertext_bytes,
+                        expected = expected_ciphertext_bytes,
+                        "received oversized ciphertext stream for receive_garbling_table"
+                    );
+                    stream.reset(0).await;
+                    let _ = ctx.table_store.delete(&table_id).await;
+                    return HandlerOutcome::Retry;
+                }
+                ciphertext_bytes_received = next_ciphertext_bytes;
                 ct_hasher.update(ct_part);
                 if writer.write_ciphertext(ct_part).await.is_err() {
                     error!(%peer_id, "ciphertext write failed (translation overflow) for receive_garbling_table");
@@ -324,6 +401,20 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
             }
         } else {
             // All translation received — remaining data is ciphertext.
+            let next_ciphertext_bytes = ciphertext_bytes_received + chunk.len();
+            if next_ciphertext_bytes > expected_ciphertext_bytes {
+                error!(
+                    %peer_id,
+                    ?index,
+                    received = next_ciphertext_bytes,
+                    expected = expected_ciphertext_bytes,
+                    "received oversized ciphertext stream for receive_garbling_table"
+                );
+                stream.reset(0).await;
+                let _ = ctx.table_store.delete(&table_id).await;
+                return HandlerOutcome::Retry;
+            }
+            ciphertext_bytes_received = next_ciphertext_bytes;
             ct_hasher.update(&chunk);
             if writer.write_ciphertext(&chunk).await.is_err() {
                 error!(%peer_id, "ciphertext write failed for receive_garbling_table");
@@ -336,6 +427,17 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     // Verify we received enough translation data.
     if translation_remaining > 0 {
         error!(%peer_id, translation_remaining, "incomplete translation data for receive_garbling_table");
+        let _ = ctx.table_store.delete(&table_id).await;
+        return HandlerOutcome::Retry;
+    }
+    if ciphertext_bytes_received != expected_ciphertext_bytes {
+        error!(
+            %peer_id,
+            ?index,
+            received = ciphertext_bytes_received,
+            expected = expected_ciphertext_bytes,
+            "ciphertext length mismatch for receive_garbling_table"
+        );
         let _ = ctx.table_store.delete(&table_id).await;
         return HandlerOutcome::Retry;
     }

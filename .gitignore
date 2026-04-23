@@ -101,4 +101,5 @@ docker/vol/fdb/data/
 docker/vol/mosaic-*/tables/
 
 # local scratch docs
+# Local analysis notes
 tmp/
