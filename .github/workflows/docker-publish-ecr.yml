@@ -183,11 +183,21 @@ jobs:
             --output text)"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
-      - name: Scan Mosaic image with Trivy
-        env:
-          TRIVY_OUTPUT_DIR: trivy-results
-        run: mkdir -p "${TRIVY_OUTPUT_DIR}"
-      - name: Run Trivy vulnerability scan
+      - name: Create Trivy output directory
+        run: mkdir -p trivy-results
+
+      - name: Scan Mosaic image with Trivy (JSON — summary table)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: json
+          output: trivy-results/mosaic.json
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Scan Mosaic image with Trivy (SARIF — Security tab)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
@@ -198,9 +208,82 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
+      - name: Render Trivy markdown summary
+        if: always()
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+
+          SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
+
+          def iter_items(value):
+              if isinstance(value, list):
+                  return [i for i in value if isinstance(i, dict)]
+              if isinstance(value, dict):
+                  return list(value.values())
+              return []
+
+          image_ref = os.environ.get("IMAGE_REF", "mosaic")
+          json_path = Path("trivy-results/mosaic.json")
+          lines = [
+              "### Trivy Summary: Mosaic",
+              "",
+              f"`{image_ref}`",
+              "",
+              "- Scanners: `vuln`",
+              "- Severity filter: `HIGH,CRITICAL` (unfixed ignored)",
+              "",
+          ]
+
+          if not json_path.exists():
+              lines += ["Trivy did not produce a JSON report.", ""]
+          else:
+              results = json.loads(json_path.read_text())
+              counts = Counter()
+              findings = []
+              for target in results.get("Results", []):
+                  if not isinstance(target, dict):
+                      continue
+                  target_name = target.get("Target", "unknown")
+                  for vuln in iter_items(target.get("Vulnerabilities")):
+                      sev = vuln.get("Severity", "UNKNOWN")
+                      counts[sev] += 1
+                      findings.append({"severity": sev, "target": target_name,
+                                       "kind": "vuln", "id": vuln.get("VulnerabilityID", "unknown")})
+              findings.sort(key=lambda f: (
+                  SEVERITY_ORDER.index(f["severity"]) if f["severity"] in SEVERITY_ORDER else len(SEVERITY_ORDER),
+                  f["id"],
+              ))
+              lines += [
+                  "| CRITICAL | HIGH | MEDIUM | LOW | UNKNOWN |",
+                  "| --- | --- | --- | --- | --- |",
+                  "| " + " | ".join(str(counts.get(s, 0)) for s in SEVERITY_ORDER) + " |",
+                  "",
+              ]
+              if findings:
+                  lines += [
+                      "Top findings:",
+                      "",
+                      "| Severity | Type | ID | Target |",
+                      "| --- | --- | --- | --- |",
+                  ]
+                  for f in findings[:10]:
+                      lines.append(f"| {f['severity']} | {f['kind']} | `{f['id']}` | `{f['target']}` |")
+                  lines.append("")
+              else:
+                  lines += ["No HIGH/CRITICAL unfixed vulnerabilities found.", ""]
+
+          Path("trivy-results/mosaic.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          EOF
+
       - name: Upload Trivy SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results/mosaic.sarif
           category: mosaic-ecr
@@ -210,8 +293,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-mosaic-${{ env.IMAGE_TAG }}
-          path: trivy-results/mosaic.sarif
           if-no-files-found: ignore
+          path: |
+            trivy-results/mosaic.json
+            trivy-results/mosaic.sarif
+            trivy-results/mosaic.md
 
       - name: Append publish summary
         if: always()
@@ -229,11 +315,11 @@ jobs:
             echo "- Digest: \`${IMAGE_DIGEST}\`"
             echo "- Trivy artifact: \`${trivy_artifact}\`"
             echo
-            echo "### Trivy summary"
-            echo
-            if [[ -f trivy-results/mosaic.sarif ]]; then
-              echo "Trivy SARIF uploaded to GitHub Security tab."
+            if [[ -f trivy-results/mosaic.md ]]; then
+              cat trivy-results/mosaic.md
             else
+              echo "### Trivy summary"
+              echo
               echo "Trivy scan output was not generated."
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
