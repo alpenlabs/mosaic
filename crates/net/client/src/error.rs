@@ -94,4 +94,20 @@ pub enum BulkReceiveError {
     /// Bulk expectation channel closed before stream arrival.
     #[error("failed to receive bulk stream from service")]
     Closed,
+
+    /// Timed out waiting for the bulk stream to arrive.
+    #[error("timed out waiting for bulk stream")]
+    TimedOut,
+}
+
+/// Error reading from a bulk receiver stream.
+#[derive(Debug, thiserror::Error)]
+pub enum BulkReadError {
+    /// The stream closed before a payload arrived.
+    #[error("bulk stream closed: {0}")]
+    Closed(#[from] StreamClosed),
+
+    /// Timed out waiting for the next payload chunk.
+    #[error("timed out waiting for bulk payload")]
+    TimedOut,
 }

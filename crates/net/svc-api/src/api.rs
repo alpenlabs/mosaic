@@ -562,6 +562,17 @@ impl BulkTransferExpectation {
         self.rx.recv().await
     }
 
+    /// Explicitly cancel the registered expectation.
+    pub async fn cancel(self) {
+        let _ = self
+            .command_tx
+            .send(NetCommand::CancelBulkTransfer {
+                peer: self.peer,
+                identifier: self.identifier,
+            })
+            .await;
+    }
+
     /// Borrow the underlying receiver.
     pub fn receiver(&self) -> &AsyncReceiver<Stream> {
         &self.rx
