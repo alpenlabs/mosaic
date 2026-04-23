@@ -1,10 +1,17 @@
 //! Thin bulk-transfer wrappers over net-svc streams.
 
+use std::{future::Future, time::Duration};
+
+use futures_util::{
+    FutureExt,
+    future::{Either, select},
+    pin_mut,
+};
 use mosaic_net_svc::{
     BulkTransferExpectation as SvcBulkTransferExpectation, PayloadBuf, PeerId, Stream, StreamClosed,
 };
 
-use crate::error::BulkReceiveError;
+use crate::error::{BulkReadError, BulkReceiveError};
 
 /// Sender-side wrapper for bulk transfer streams.
 ///
@@ -75,6 +82,18 @@ impl BulkReceiver {
         self.stream.read().await
     }
 
+    /// Read next payload chunk with a timeout.
+    pub async fn read_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<PayloadBuf, BulkReadError> {
+        match timeout_in_current_runtime(timeout, self.stream.read()).await {
+            Ok(Ok(payload)) => Ok(payload),
+            Ok(Err(err)) => Err(BulkReadError::Closed(err)),
+            Err(TimeoutElapsed) => Err(BulkReadError::TimedOut),
+        }
+    }
+
     /// Try reading next payload chunk without blocking.
     pub fn try_read(&mut self) -> Option<PayloadBuf> {
         self.stream.try_read()
@@ -83,6 +102,11 @@ impl BulkReceiver {
     /// Peer this stream is connected to.
     pub fn peer(&self) -> PeerId {
         self.stream.peer
+    }
+
+    /// Reset the stream.
+    pub async fn reset(self, code: u32) {
+        self.stream.reset(code).await;
     }
 }
 
@@ -112,10 +136,45 @@ impl BulkExpectation {
             .map(BulkReceiver::new)
             .map_err(|_| BulkReceiveError::Closed)
     }
+
+    /// Wait for the incoming bulk stream with a timeout.
+    pub async fn recv_with_timeout(
+        self,
+        timeout: Duration,
+    ) -> Result<BulkReceiver, BulkReceiveError> {
+        match timeout_in_current_runtime(timeout, self.inner.receiver().recv()).await {
+            Ok(Ok(stream)) => Ok(BulkReceiver::new(stream)),
+            Ok(Err(_)) => Err(BulkReceiveError::Closed),
+            Err(TimeoutElapsed) => {
+                self.cancel().await;
+                Err(BulkReceiveError::TimedOut)
+            }
+        }
+    }
+
+    /// Explicitly cancel the registered expectation.
+    pub async fn cancel(self) {
+        self.inner.cancel().await;
+    }
 }
 
 impl std::fmt::Debug for BulkExpectation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BulkExpectation").finish_non_exhaustive()
+    }
+}
+
+struct TimeoutElapsed;
+
+async fn timeout_in_current_runtime<T>(
+    duration: Duration,
+    fut: impl Future<Output = T>,
+) -> Result<T, TimeoutElapsed> {
+    let fut = fut.map(Ok::<T, TimeoutElapsed>);
+    let timeout = futures_timer::Delay::new(duration).map(|_| Err(TimeoutElapsed));
+    pin_mut!(fut);
+    pin_mut!(timeout);
+    match select(fut, timeout).await {
+        Either::Left((result, _)) | Either::Right((result, _)) => result,
     }
 }

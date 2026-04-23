@@ -49,6 +49,8 @@ pub struct MosaicExecutor<SP: StorageProvider, TS: TableStore> {
     pub table_store: TS,
     /// Path to the v5c circuit file used for garbling and evaluation.
     pub circuit_path: PathBuf,
+    /// Cached exact ciphertext length for one garbling table.
+    expected_ciphertext_bytes: parking_lot::Mutex<Option<usize>>,
 }
 
 impl<SP: StorageProvider, TS: TableStore> MosaicExecutor<SP, TS> {
@@ -65,6 +67,7 @@ impl<SP: StorageProvider, TS: TableStore> MosaicExecutor<SP, TS> {
             storage,
             table_store,
             circuit_path,
+            expected_ciphertext_bytes: parking_lot::Mutex::new(None),
         }
     }
 
@@ -82,8 +85,31 @@ impl<SP: StorageProvider, TS: TableStore> MosaicExecutor<SP, TS> {
             storage,
             table_store,
             circuit_path,
+            expected_ciphertext_bytes: parking_lot::Mutex::new(None),
         }
     }
+
+    async fn expected_table_ciphertext_bytes(&self) -> Result<usize, CircuitError> {
+        if let Some(bytes) = *self.expected_ciphertext_bytes.lock() {
+            return Ok(bytes);
+        }
+
+        let computed = compute_expected_table_ciphertext_bytes(&self.circuit_path)?;
+        let mut cached = self.expected_ciphertext_bytes.lock();
+        Ok(*cached.get_or_insert(computed))
+    }
+}
+
+fn compute_expected_table_ciphertext_bytes(
+    circuit_path: &std::path::Path,
+) -> Result<usize, CircuitError> {
+    let reader = ReaderV5c::open(circuit_path)
+        .map_err(|e| CircuitError::SetupFailed(format!("circuit open: {e}")))?;
+
+    usize::try_from(reader.header().and_gates)
+        .map_err(|_| CircuitError::SetupFailed("and gate count does not fit in usize".into()))?
+        .checked_mul(16)
+        .ok_or_else(|| CircuitError::SetupFailed("ciphertext byte count overflow".into()))
 }
 
 impl<SP: StorageProvider, TS: TableStore> std::fmt::Debug for MosaicExecutor<SP, TS> {

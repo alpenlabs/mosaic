@@ -19,6 +19,8 @@ mod port_allocator;
 
 use ark_serialize as _;
 use ed25519_dalek as _;
+use futures_timer as _;
+use futures_util as _;
 use mosaic_net_svc_api as _;
 use mosaic_vs3 as _;
 use rand as _;
@@ -983,5 +985,65 @@ fn test_bulk_wrapper_pipelined_write_no_reclaim() {
             .expect("receiver task panicked");
         let expected = chunks.concat();
         assert_eq!(received, expected);
+    });
+}
+
+#[test]
+fn test_bulk_expectation_recv_timeout() {
+    let (peer_a, peer_b) = create_client_pair();
+
+    run_async(async {
+        stabilize_stream_path(&peer_a, &peer_b).await;
+
+        let mut identifier = [0x66u8; 32];
+        let tag = next_key_tag();
+        identifier[..8].copy_from_slice(&tag.to_le_bytes());
+
+        let expectation = peer_b
+            .client
+            .expect_bulk_receiver(peer_a.peer_id, identifier)
+            .await
+            .expect("register bulk expectation");
+
+        let err = expectation
+            .recv_with_timeout(Duration::from_millis(50))
+            .await
+            .expect_err("bulk receive should time out");
+        assert!(matches!(err, mosaic_net_client::BulkReceiveError::TimedOut));
+    });
+}
+
+#[test]
+fn test_bulk_receiver_read_timeout() {
+    let (peer_a, peer_b) = create_client_pair();
+
+    run_async(async {
+        stabilize_stream_path(&peer_a, &peer_b).await;
+
+        let mut identifier = [0x67u8; 32];
+        let tag = next_key_tag();
+        identifier[..8].copy_from_slice(&tag.to_le_bytes());
+
+        let expectation = peer_b
+            .client
+            .expect_bulk_receiver(peer_a.peer_id, identifier)
+            .await
+            .expect("register bulk expectation");
+
+        let sender = peer_a
+            .client
+            .open_bulk_sender(peer_b.peer_id, identifier, StreamPriority::Bulk.as_i32())
+            .await
+            .expect("open bulk sender");
+
+        let mut receiver = expectation.recv().await.expect("receive bulk stream");
+        let err = receiver
+            .read_with_timeout(Duration::from_millis(50))
+            .await
+            .expect_err("bulk read should time out");
+        assert!(matches!(err, mosaic_net_client::BulkReadError::TimedOut));
+
+        receiver.reset(0).await;
+        sender.reset(0).await;
     });
 }

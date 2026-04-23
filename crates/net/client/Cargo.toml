@@ -18,6 +18,10 @@ ark-serialize = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Runtime-agnostic timeout support
+futures-util = "0.3"
+futures-timer = "3"
+
 # Async runtime for timeouts
 tokio = { version = "1", features = ["time"] }
 
