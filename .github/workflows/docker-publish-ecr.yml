@@ -1,0 +1,273 @@
+name: Docker Publish to ECR
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git branch, tag, or commit SHA to build. Defaults to the branch HEAD selected in the UI.
+        required: false
+        type: string
+      image_tag:
+        description: Optional image tag override. Defaults to the resolved short SHA.
+        required: false
+        type: string
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '888577024788.dkr.ecr.us-east-1.amazonaws.com' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'tn1/mosaic' }}
+  PUBLIC_ECR_REGISTRY: public.ecr.aws
+  PUBLIC_ECR_NAMESPACE: z5c7y9u9
+  PUBLIC_ECR_REPOSITORY: mosaic
+  PUBLIC_ECR_REGION: us-east-1
+  DOCKER_PLATFORMS: linux/amd64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-ecr-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_and_publish:
+    name: Build and Publish Mosaic Image
+    runs-on: ubuntu-latest
+    environment: AWS
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    timeout-minutes: 30
+    steps:
+      - name: Validate manual inputs
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_REF}" ]]; then
+            if [[ "${INPUT_REF}" =~ [[:space:]] ]]; then
+              echo "::error::ref must not contain whitespace"
+              exit 1
+            fi
+            if [[ ! "${INPUT_REF}" =~ ^[A-Za-z0-9._/@:-]+$ ]]; then
+              echo "::error::ref contains unsupported characters"
+              exit 1
+            fi
+          fi
+
+          if [[ -n "${INPUT_IMAGE_TAG}" ]]; then
+            if [[ "${INPUT_IMAGE_TAG}" =~ [[:space:]] ]]; then
+              echo "::error::image_tag must not contain whitespace"
+              exit 1
+            fi
+            if [[ ! "${INPUT_IMAGE_TAG}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+              echo "::error::image_tag must match [A-Za-z0-9._-]{1,128}"
+              exit 1
+            fi
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Resolve build metadata
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          resolved_sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=8 HEAD)"
+          checkout_ref="${INPUT_REF:-${GITHUB_SHA}}"
+          image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
+          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
+          public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${image_tag}"
+
+          {
+            echo "CHECKOUT_REF=${checkout_ref}"
+            echo "RESOLVED_SHA=${resolved_sha}"
+            echo "IMAGE_TAG=${image_tag}"
+            echo "IMAGE_REF=${image_ref}"
+            echo "PUBLIC_IMAGE_REF=${public_image_ref}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Cleanup space
+        uses: ./.github/actions/cleanup # zizmor: ignore[unpinned-uses]
+
+      - name: Validate AWS publish configuration
+        env:
+          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          PUBLIC_AWS_ROLE_TO_ASSUME: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
+        run: |
+          if [[ -z "${AWS_ROLE_TO_ASSUME}" ]]; then
+            echo "::error::Repository variable AWS_ROLE_TO_ASSUME is required for ECR publishing"
+            exit 1
+          fi
+          if [[ -z "${PUBLIC_AWS_ROLE_TO_ASSUME}" ]]; then
+            echo "::error::Repository variable PUBLIC_AWS_ROLE_TO_ASSUME is required for public ECR publishing"
+            exit 1
+          fi
+
+      - name: Configure private AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to private ECR
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build and push Mosaic image to private ECR
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "${DOCKER_PLATFORMS}" \
+            --file docker/Dockerfile \
+            --cache-from "type=gha,scope=mosaic" \
+            --cache-to "type=gha,scope=mosaic,mode=max" \
+            --tag "${IMAGE_REF}" \
+            --push \
+            .
+
+      - name: Pull image from private ECR
+        run: docker pull "${IMAGE_REF}"
+
+      - name: Configure public ECR credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.PUBLIC_ECR_REGION }}
+
+      - name: Login to public ECR
+        run: |
+          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
+            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
+
+      - name: Push image to public ECR
+        run: |
+          set -euo pipefail
+          docker tag "${IMAGE_REF}" "${PUBLIC_IMAGE_REF}"
+          docker push "${PUBLIC_IMAGE_REF}"
+
+      - name: Restore private AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to private ECR for follow-up steps
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Resolve pushed image digest
+        id: digest
+        run: |
+          set -euo pipefail
+          digest="$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Trivy output directory
+        run: mkdir -p trivy-results
+
+      # Two Trivy scans are intentional:
+      #   1. JSON  → parsed by .github/scripts/render_trivy_summary.py to produce a
+      #              Markdown table that renders natively in the workflow summary page.
+      #   2. SARIF → uploaded to the GitHub Security tab for structured CVE tracking.
+      # Both scans are advisory (exit-code: "0") — findings never block the publish.
+      - name: Scan Mosaic image with Trivy (JSON — summary table)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: json
+          output: trivy-results/mosaic.json
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Scan Mosaic image with Trivy (SARIF — Security tab)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: sarif
+          output: trivy-results/mosaic.sarif
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      # Converts trivy-results/mosaic.json → trivy-results/mosaic.md.
+      # The .md file is appended to $GITHUB_STEP_SUMMARY in the "Append publish summary"
+      # step below. See .github/scripts/render_trivy_summary.py for rendering logic.
+      - name: Render Trivy markdown summary
+        if: always()
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: python3 .github/scripts/render_trivy_summary.py
+
+      # Uploads SARIF to the repository's Security → Code scanning tab.
+      # Requires security-events: write permission (set at job level above).
+      - name: Upload Trivy SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
+        with:
+          sarif_file: trivy-results/mosaic.sarif
+          category: mosaic-ecr
+
+      # Bundles all three Trivy output formats as a downloadable artifact.
+      # Artifact name includes the image tag so runs can be compared side-by-side.
+      - name: Upload Trivy results artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-mosaic-${{ env.IMAGE_TAG }}
+          if-no-files-found: ignore
+          path: |
+            trivy-results/mosaic.json
+            trivy-results/mosaic.sarif
+            trivy-results/mosaic.md
+
+      - name: Append publish summary
+        if: always()
+        env:
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          trivy_artifact="trivy-mosaic-${IMAGE_TAG}"
+          {
+            echo "## Mosaic image publish"
+            echo
+            echo "- Checkout ref: \`${CHECKOUT_REF}\`"
+            echo "- Resolved SHA: \`${RESOLVED_SHA}\`"
+            echo "- Image: \`${IMAGE_REF}\`"
+            echo "- Public image: \`${PUBLIC_IMAGE_REF}\`"
+            echo "- Digest: \`${IMAGE_DIGEST}\`"
+            echo "- Trivy artifact: \`${trivy_artifact}\`"
+            echo
+            # Render the Trivy markdown table produced by render_trivy_summary.py.
+            # Falls back to a plain message if the script did not produce output.
+            if [[ -f trivy-results/mosaic.md ]]; then
+              cat trivy-results/mosaic.md
+            else
+              echo "### Trivy summary"
+              echo
+              echo "Trivy scan output was not generated."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
