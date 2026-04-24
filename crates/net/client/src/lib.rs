@@ -64,6 +64,11 @@ use std::{
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 pub use bulk::{BulkExpectation, BulkReceiver, BulkSender};
 pub use error::{AckError, BulkExpectError, BulkOpenError, BulkReceiveError, RecvError, SendError};
+use futures_util::{
+    FutureExt,
+    future::{Either, select},
+    pin_mut,
+};
 use mosaic_cac_types::Msg;
 use mosaic_net_svc::{FrameLimits, NetServiceHandle};
 pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
@@ -184,7 +189,7 @@ impl NetClient {
         let msg: Msg = msg.into();
 
         // Open protocol stream with normal priority
-        let mut stream = match timeout_if_tokio_runtime(
+        let mut stream = match timeout_in_any_runtime(
             self.config.open_timeout,
             self.handle
                 .open_protocol_stream(peer, StreamPriority::Normal.as_i32()),
@@ -221,7 +226,7 @@ impl NetClient {
         let written_at = started.elapsed();
 
         // Wait for ack (empty response)
-        let _ack = match timeout_if_tokio_runtime(self.config.ack_timeout, stream.read()).await {
+        let _ack = match timeout_in_any_runtime(self.config.ack_timeout, stream.read()).await {
             Ok(Ok(ack)) => ack,
             Ok(Err(err)) => return Err(SendError::NoAck(err)),
             Err(TimeoutElapsed) => {
@@ -308,20 +313,20 @@ fn deserialize(bytes: &[u8]) -> Result<Msg, ark_serialize::SerializationError> {
 /// Marker error used when a tokio timeout elapses.
 struct TimeoutElapsed;
 
-/// Apply a timeout when running inside a tokio runtime.
+/// Apply a runtime-agnostic timeout.
 ///
-/// When no tokio runtime is present (for example, monoio worker threads),
-/// this awaits the future directly without enforcing a timeout.
-async fn timeout_if_tokio_runtime<T>(
+/// This keeps `NetClient::send()` futures `Send`, unlike embedding a
+/// monoio-specific timer future directly in the public future type.
+async fn timeout_in_any_runtime<T>(
     duration: Duration,
     fut: impl Future<Output = T>,
 ) -> Result<T, TimeoutElapsed> {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::time::timeout(duration, fut)
-            .await
-            .map_err(|_| TimeoutElapsed)
-    } else {
-        Ok(fut.await)
+    let fut = fut.map(Ok::<T, TimeoutElapsed>);
+    let timeout = futures_timer::Delay::new(duration).map(|_| Err(TimeoutElapsed));
+    pin_mut!(fut);
+    pin_mut!(timeout);
+    match select(fut, timeout).await {
+        Either::Left((result, _)) | Either::Right((result, _)) => result,
     }
 }
 
