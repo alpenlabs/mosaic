@@ -99,6 +99,14 @@ impl JobSchedulerController {
 
         Ok(())
     }
+
+    /// Check whether the scheduler thread is still running.
+    pub fn is_running(&self) -> bool {
+        self.thread_handle
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false)
+    }
 }
 
 impl Drop for JobSchedulerController {
@@ -226,6 +234,15 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                 source,
                                 peer = ?peer_id,
                                 "job scheduler completion delivery failed; shutting down fail-closed"
+                            );
+                            break;
+                        }
+                        Ok(SchedulerFault::ThreadExited { source, thread, reason }) => {
+                            tracing::error!(
+                                source,
+                                %thread,
+                                %reason,
+                                "job scheduler thread dependency exited unexpectedly; shutting down fail-closed"
                             );
                             break;
                         }

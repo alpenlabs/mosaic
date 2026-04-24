@@ -48,7 +48,13 @@
 //! [`CircuitAction`]: mosaic_job_api::CircuitAction
 //! [`Arc<OwnedChunk>`]: mosaic_job_api::OwnedChunk
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use mosaic_job_api::{
@@ -59,6 +65,16 @@ use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
 
 use crate::SchedulerFault;
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(message) => (*message).to_string(),
+            Err(_) => "thread panicked".to_string(),
+        },
+    }
+}
 
 /// Size of each v5c gate record in bytes (3 × u32).
 const GATE_SIZE: usize = 12;
@@ -169,20 +185,37 @@ struct WorkerHandle {
 
 impl WorkerHandle {
     /// Spawn a new worker thread with its own monoio runtime.
-    fn spawn(id: usize, chunk_timeout: Duration) -> Self {
+    fn spawn(
+        id: usize,
+        chunk_timeout: Duration,
+        fault_tx: kanal::AsyncSender<SchedulerFault>,
+    ) -> Self {
         // Bounded channels: main sends at most 1 command before waiting for
         // a report, so capacity 2 provides adequate headroom.
         let (command_tx, command_rx) = kanal::bounded_async(2);
         let (report_tx, report_rx) = kanal::bounded_async(2);
 
+        let thread_name = format!("garbling-worker-{id}");
         let thread = std::thread::Builder::new()
-            .name(format!("garbling-worker-{id}"))
+            .name(thread_name.clone())
             .spawn(move || {
-                monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
-                    .enable_timer()
-                    .build()
-                    .expect("failed to build monoio runtime for garbling worker")
-                    .block_on(worker_loop(id, chunk_timeout, command_rx, report_tx));
+                let run_result = catch_unwind(AssertUnwindSafe(|| {
+                    monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                        .enable_timer()
+                        .build()
+                        .expect("failed to build monoio runtime for garbling worker")
+                        .block_on(worker_loop(id, chunk_timeout, command_rx, report_tx));
+                }));
+
+                if let Err(payload) = run_result {
+                    let reason = panic_payload_to_string(payload);
+                    tracing::error!(worker = id, %reason, "garbling worker thread exited due to panic");
+                    let _ = fault_tx.to_sync().send(SchedulerFault::ThreadExited {
+                        source: "garbling_worker",
+                        thread: thread_name,
+                        reason,
+                    });
+                }
             })
             .expect("failed to spawn garbling worker thread");
 
@@ -269,20 +302,33 @@ impl GarblingCoordinator {
     ) -> Self {
         let (submit_tx, submit_rx) = kanal::bounded_async(config.max_concurrent * 2);
 
+        let coordinator_thread_name = "garbling-coordinator".to_string();
         let thread = std::thread::Builder::new()
-            .name("garbling-coordinator".into())
+            .name(coordinator_thread_name.clone())
             .spawn(move || {
-                monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
-                    .enable_timer()
-                    .build()
-                    .expect("failed to build monoio runtime for garbling coordinator")
-                    .block_on(coordinator_loop(
-                        config,
-                        factory,
-                        submit_rx,
-                        completion_tx,
-                        fault_tx,
-                    ));
+                let run_result = catch_unwind(AssertUnwindSafe(|| {
+                    monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                        .enable_timer()
+                        .build()
+                        .expect("failed to build monoio runtime for garbling coordinator")
+                        .block_on(coordinator_loop(
+                            config,
+                            factory,
+                            submit_rx,
+                            completion_tx,
+                            fault_tx.clone(),
+                        ));
+                }));
+
+                if let Err(payload) = run_result {
+                    let reason = panic_payload_to_string(payload);
+                    tracing::error!(%reason, "garbling coordinator thread exited due to panic");
+                    let _ = fault_tx.to_sync().send(SchedulerFault::ThreadExited {
+                        source: "garbling_coordinator",
+                        thread: coordinator_thread_name,
+                        reason,
+                    });
+                }
             })
             .expect("failed to spawn garbling coordinator thread");
 
@@ -340,7 +386,7 @@ async fn coordinator_loop(
         // Spawn persistent worker threads.
         let n_workers = config.worker_threads.max(1);
         let mut workers: Vec<WorkerHandle> = (0..n_workers)
-            .map(|id| WorkerHandle::spawn(id, config.chunk_timeout))
+            .map(|id| WorkerHandle::spawn(id, config.chunk_timeout, fault_tx.clone()))
             .collect();
 
         tracing::info!(

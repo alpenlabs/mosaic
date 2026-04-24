@@ -32,6 +32,14 @@ impl RpcController {
         tracing::info!("RPC server shut down");
         Ok(())
     }
+
+    /// Check whether the RPC server thread is still running.
+    pub(crate) fn is_running(&self) -> bool {
+        self.thread_handle
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false)
+    }
 }
 
 /// Start the RPC server on a dedicated tokio thread.

@@ -169,6 +169,14 @@ impl SmExecutorController {
 
         Ok(())
     }
+
+    /// Check whether the executor thread is still running.
+    pub fn is_running(&self) -> bool {
+        self.thread_handle
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false)
+    }
 }
 
 impl Drop for SmExecutorController {

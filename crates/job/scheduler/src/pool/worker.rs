@@ -10,7 +10,11 @@
 //! ensures one unresponsive peer cannot monopolise worker slots — other peers'
 //! jobs get a chance to run between retries.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+    time::Duration,
+};
 
 use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
@@ -105,21 +109,35 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
         fault_tx: kanal::AsyncSender<SchedulerFault>,
         concurrency: usize,
     ) -> Self {
+        let thread_name = format!("worker-{id}");
         let handle = std::thread::Builder::new()
-            .name(format!("worker-{id}"))
+            .name(thread_name.clone())
             .spawn(move || {
-                monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
-                    .enable_timer()
-                    .build()
-                    .expect("failed to build monoio runtime")
-                    .block_on(worker_loop(
-                        id,
-                        dispatcher,
-                        queue,
-                        completion_tx,
-                        fault_tx,
-                        concurrency,
-                    ));
+                let run_result = catch_unwind(AssertUnwindSafe(|| {
+                    monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+                        .enable_timer()
+                        .build()
+                        .expect("failed to build monoio runtime")
+                        .block_on(worker_loop(
+                            id,
+                            dispatcher,
+                            Arc::clone(&queue),
+                            completion_tx,
+                            fault_tx.clone(),
+                            concurrency,
+                        ));
+                }));
+
+                if let Err(payload) = run_result {
+                    let reason = panic_payload_to_string(payload);
+                    tracing::error!(worker = id, %reason, "worker thread exited due to panic");
+                    queue.close();
+                    let _ = fault_tx.to_sync().send(SchedulerFault::ThreadExited {
+                        source: "pool_worker",
+                        thread: thread_name,
+                        reason,
+                    });
+                }
             })
             .expect("failed to spawn worker thread");
 
@@ -139,6 +157,16 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(message) => (*message).to_string(),
+            Err(_) => "worker thread panicked".to_string(),
+        },
     }
 }
 
