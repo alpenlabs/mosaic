@@ -38,7 +38,7 @@ use state::{OpenRequestCancelRegistry, PeerConnectionState, ServiceEvent, Servic
 use tokio::runtime::Builder;
 
 use crate::{
-    api::{NetCommand, NetServiceHandle, Stream},
+    api::{InboundProtocolStream, NetCommand, NetServiceHandle},
     close_codes::CLOSE_NORMAL,
     config::NetServiceConfig,
     tls::{self, PeerId},
@@ -224,7 +224,7 @@ fn run_service(
     config: Arc<NetServiceConfig>,
     allowed_peers: Arc<HashSet<PeerId>>,
     command_rx: AsyncReceiver<NetCommand>,
-    protocol_stream_tx: AsyncSender<Stream>,
+    protocol_stream_tx: AsyncSender<InboundProtocolStream>,
     shutdown_rx: AsyncReceiver<()>,
     startup_tx: AsyncSender<Result<(), ServiceError>>,
 ) -> Result<(), ServiceError> {
@@ -254,7 +254,7 @@ async fn run_service_async(
     config: Arc<NetServiceConfig>,
     allowed_peers: Arc<HashSet<PeerId>>,
     command_rx: AsyncReceiver<NetCommand>,
-    protocol_stream_tx: AsyncSender<Stream>,
+    protocol_stream_tx: AsyncSender<InboundProtocolStream>,
     shutdown_rx: AsyncReceiver<()>,
     startup_tx: AsyncSender<Result<(), ServiceError>>,
 ) -> Result<(), ServiceError> {

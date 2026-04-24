@@ -99,3 +99,6 @@ fuzz-*.log
 # Docker volume data
 docker/vol/fdb/data/
 docker/vol/mosaic-*/tables/
+
+# Local working notes / triage docs
+tmp/

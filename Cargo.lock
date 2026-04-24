@@ -2296,10 +2296,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mosaic-cac-crypto"
-version = "0.1.0"
-
-[[package]]
 name = "mosaic-cac-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2356,26 +2352,6 @@ version = "0.1.0"
 dependencies = [
  "ark-serialize",
  "serde",
-]
-
-[[package]]
-name = "mosaic-compute-exec"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "mosaic-compute-fw",
- "strata-codec",
- "tracing",
-]
-
-[[package]]
-name = "mosaic-compute-fw"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "strata-codec",
 ]
 
 [[package]]
@@ -3935,14 +3911,6 @@ name = "stdext"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4af28eeb7c18ac2dbdb255d40bee63f203120e1db6b0024b177746ebec7049c1"
-
-[[package]]
-name = "strata-codec"
-version = "0.1.0"
-source = "git+https://github.com/alpenlabs/strata-common.git#48ec7e1795bcba7914ef9808ae82875dcbac8138"
-dependencies = [
- "thiserror 2.0.18",
-]
 
 [[package]]
 name = "strsim"

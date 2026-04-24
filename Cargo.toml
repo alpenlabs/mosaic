@@ -1,14 +1,10 @@
 [workspace]
 members = [
   "crates/adaptor-sigs",
-  "crates/cac/crypto",
   "crates/cac/protocol",
   "crates/cac/types",
   "crates/common",
   "crates/heap-array",
-  "crates/compute-exec",
-  "crates/compute-fw",
-  # "crates/jobs",
   "crates/job/api",
   "crates/job/executors",
   "crates/job/scheduler",
@@ -22,7 +18,6 @@ members = [
   "crates/rpc/types",
   "crates/sm-executor",
   "crates/sm-executor-api",
-  # "crates/state-machine/executor",
   "crates/storage/api",
   "crates/storage/fdb",
   "crates/storage/inmemory",
@@ -64,7 +59,6 @@ mosaic-adaptor-sigs = { path = "crates/adaptor-sigs" }
 mosaic-cac-protocol = { path = "crates/cac/protocol" }
 mosaic-cac-types = { path = "crates/cac/types" }
 mosaic-common = { path = "crates/common" }
-mosaic-compute-fw = { path = "crates/compute-fw" }
 mosaic-heap-array = { path = "crates/heap-array" }
 mosaic-job-api = { path = "crates/job/api" }
 mosaic-job-executors = { path = "crates/job/executors" }
