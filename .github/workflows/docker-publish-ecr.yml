@@ -69,12 +69,24 @@ jobs:
             fi
           fi
 
-      - name: Checkout repository
+      # Workflow scripts (render_trivy_summary.py, cleanup action) always come from
+      # main so they are reviewed code regardless of what inputs.ref points to.
+      - name: Checkout workflow scripts from main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: main
+          fetch-depth: 0
+
+      # The requested build ref is checked out into build-src/ and used only as
+      # Docker build context — no code from it is executed by the runner directly.
+      - name: Checkout build ref into build-src/
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
+          path: build-src
 
       - name: Resolve build metadata
         env:
@@ -83,8 +95,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          resolved_sha="$(git rev-parse HEAD)"
-          short_sha="$(git rev-parse --short=8 HEAD)"
+          # Resolve SHA from build-src/ (the requested ref), not the main checkout.
+          resolved_sha="$(git -C build-src rev-parse HEAD)"
+          short_sha="$(git -C build-src rev-parse --short=8 HEAD)"
           checkout_ref="${INPUT_REF:-${GITHUB_SHA}}"
           image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
           image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
@@ -134,12 +147,12 @@ jobs:
           set -euo pipefail
           docker buildx build \
             --platform "${DOCKER_PLATFORMS}" \
-            --file docker/Dockerfile \
+            --file build-src/docker/Dockerfile \
             --cache-from "type=gha,scope=mosaic" \
             --cache-to "type=gha,scope=mosaic,mode=max" \
             --tag "${IMAGE_REF}" \
             --push \
-            .
+            build-src
 
       - name: Pull image from private ECR
         run: docker pull "${IMAGE_REF}"
@@ -192,6 +205,7 @@ jobs:
       #   2. SARIF → uploaded to the GitHub Security tab for structured CVE tracking.
       # Both scans are advisory (exit-code: "0") — findings never block the publish.
       - name: Scan Mosaic image with Trivy (JSON — summary table)
+        continue-on-error: true
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
@@ -203,6 +217,7 @@ jobs:
           exit-code: "0"
 
       - name: Scan Mosaic image with Trivy (SARIF — Security tab)
+        continue-on-error: true
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
@@ -218,6 +233,7 @@ jobs:
       # step below. See .github/scripts/render_trivy_summary.py for rendering logic.
       - name: Render Trivy markdown summary
         if: always()
+        continue-on-error: true
         env:
           IMAGE_REF: ${{ env.IMAGE_REF }}
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
@@ -227,6 +243,7 @@ jobs:
       # Requires security-events: write permission (set at job level above).
       - name: Upload Trivy SARIF to GitHub Security tab
         if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
         with:
           sarif_file: trivy-results/mosaic.sarif
