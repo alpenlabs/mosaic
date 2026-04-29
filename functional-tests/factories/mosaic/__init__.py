@@ -11,6 +11,11 @@ from services import ProcServiceWithEnv, get_fdb_env
 
 from .mosaic_config import *
 
+# Environment variable to override the mosaic binary path.
+# Mirrors the FDBSERVER_PATH / FDBCLI_PATH pattern in factories/fdb.py.
+# By default, uses the expected release binary path.
+MOSAIC_PATH = os.environ.get("MOSAIC_PATH", "../target/release/mosaic")
+
 
 @dataclass
 class MosaicFactoryConfig:
@@ -51,7 +56,7 @@ class MosaicFactory(flexitest.Factory):
         logfile = os.path.join(datadir, "service.log")
 
         cmd = [
-            "mosaic",
+            MOSAIC_PATH,
             config_toml,
         ]
 
