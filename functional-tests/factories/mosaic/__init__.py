@@ -13,8 +13,8 @@ from .mosaic_config import *
 
 # Environment variable to override the mosaic binary path.
 # Mirrors the FDBSERVER_PATH / FDBCLI_PATH pattern in factories/fdb.py.
-# Useful when the binary is not on PATH (e.g., a debug build under target/debug).
-MOSAIC_PATH = os.environ.get("MOSAIC_PATH", "mosaic")
+# By default, uses the expected release binary path.
+MOSAIC_PATH = os.environ.get("MOSAIC_PATH", "../target/release/mosaic")
 
 
 @dataclass
