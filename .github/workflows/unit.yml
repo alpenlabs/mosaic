@@ -36,7 +36,7 @@ jobs:
           rustup default nightly
 
       - name: Install latest cargo-nextest release
-        uses: taiki-e/install-action@9ca1734d8940023f074414ee621fd530c4ce10f2 # v2.55.3
+        uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2.75.17
         with:
           tool: nextest
 
