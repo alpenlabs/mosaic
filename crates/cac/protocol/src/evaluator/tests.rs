@@ -943,7 +943,10 @@ async fn valid_opened_output_shares_are_persisted() {
         &mut actions,
     )
     .await;
-    assert!(result.is_ok(), "valid header must be accepted, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "valid header must be accepted, got: {result:?}"
+    );
 
     // Step still WaitingForChallengeResponse (chunks not yet received) but header flag flipped.
     let root = state.get_root_state().await.unwrap().unwrap();
@@ -984,7 +987,10 @@ async fn corrupted_opened_output_share_aborts_without_persisting() {
         &mut actions,
     )
     .await;
-    assert!(result.is_ok(), "corrupted header should abort, not error: {result:?}");
+    assert!(
+        result.is_ok(),
+        "corrupted header should abort, not error: {result:?}"
+    );
     assert!(actions.is_empty(), "abort path must not emit actions");
 
     // Step transitioned to Aborted with the expected reason prefix.

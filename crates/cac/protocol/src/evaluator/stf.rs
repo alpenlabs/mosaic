@@ -829,10 +829,9 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 .await
                 .require("expected output poly commit")?;
 
-            if let Some(failure_reason) = verify_opened_output_shares(
-                &opened_output_shares,
-                &output_polynomial_commitment,
-            ) {
+            if let Some(failure_reason) =
+                verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
+            {
                 warn!(reason = %failure_reason, "evaluator opened output shares verification failed, aborting");
                 root_state.step = Step::Aborted {
                     reason: format!("invalid opened output shares: {}", failure_reason),
