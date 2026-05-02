@@ -5,10 +5,10 @@ use mosaic_cac_types::{
     AdaptorMsgChunk, AllGarblingTableCommitments, ChallengeIndices, ChallengeMsg,
     ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk, CommitMsgHeader,
     CompletedSignatures, DepositAdaptors, DepositId, GarblingTableCommitment, HeapArray, Index,
-    OpenedGarblingTableCommitments, PubKey, ReservedSetupInputShares, Seed, SetupInputs,
-    TableTransferReceiptMsg, WideLabelWirePolynomialCommitments,
-    WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors, WithdrawalAdaptorsChunk,
-    WithdrawalInputs, state_machine::evaluator::*,
+    OpenedGarblingTableCommitments, OpenedOutputShares, OutputPolynomialCommitment, PubKey,
+    ReservedSetupInputShares, Seed, SetupInputs, TableTransferReceiptMsg,
+    WideLabelWirePolynomialCommitments, WideLabelZerothPolynomialCoefficients, WithdrawalAdaptors,
+    WithdrawalAdaptorsChunk, WithdrawalInputs, state_machine::evaluator::*,
 };
 use mosaic_common::constants::{
     N_ADAPTOR_MSG_CHUNKS, N_CHALLENGE_RESPONSE_CHUNKS, N_CIRCUITS, N_DEPOSIT_INPUT_WIRES,
@@ -824,6 +824,22 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 unchallenged_output_label_cts,
             } = response_msg_header;
 
+            let output_polynomial_commitment = state
+                .get_output_polynomial_commitment()
+                .await
+                .require("expected output poly commit")?;
+
+            if let Some(failure_reason) = verify_opened_output_shares(
+                &opened_output_shares,
+                &output_polynomial_commitment,
+            ) {
+                warn!(reason = %failure_reason, "evaluator opened output shares verification failed, aborting");
+                root_state.step = Step::Aborted {
+                    reason: format!("invalid opened output shares: {}", failure_reason),
+                };
+                return Ok(());
+            }
+
             state
                 .put_reserved_setup_input_shares(&reserved_setup_input_shares)
                 .await
@@ -1342,6 +1358,29 @@ fn verify_reserved_setup_input_shares(
             ));
         }
     }
+    None
+}
+
+/// Verify each opened output share against the output polynomial commitment.
+/// Returns failure reason or None.
+fn verify_opened_output_shares(
+    opened_output_shares: &OpenedOutputShares,
+    output_polynomial_commitment: &OutputPolynomialCommitment,
+) -> Option<String> {
+    let output_polynomial_commitment = &output_polynomial_commitment[0];
+
+    for opened_output_share in opened_output_shares {
+        if output_polynomial_commitment
+            .verify_share(*opened_output_share)
+            .is_err()
+        {
+            return Some(format!(
+                "opened output share at index {} failed verification",
+                opened_output_share.index()
+            ));
+        }
+    }
+
     None
 }
 

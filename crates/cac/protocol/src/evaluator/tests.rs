@@ -4,12 +4,12 @@ use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::{
     ChallengeIndices, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk,
     CommitMsgHeader, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
-    GarblingTableCommitment, HeapArray, Index, Polynomial,
+    GarblingTableCommitment, HeapArray, Index, OpenedOutputShares, Polynomial,
     state_machine::evaluator::{
         Action, ActionId, ActionResult, EvaluatorState, Input, StateMut, StateRead, Step,
     },
 };
-use mosaic_common::constants::N_EVAL_CIRCUITS;
+use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
 use mosaic_storage_inmemory::evaluator::StoredEvaluatorState;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
@@ -867,4 +867,140 @@ async fn duplicate_garbling_table_received_with_mismatched_commitment_aborts() {
         "expected abort on commitment mismatch, got {:?}",
         stored.step
     );
+}
+
+// ============================================================================
+// Output share verification
+// ============================================================================
+
+/// Build a valid `ChallengeResponseMsgHeader` whose `opened_output_shares` are
+/// real evaluations of `output_polynomial` at each `challenge_indices` position.
+fn build_valid_response_header(
+    output_polynomial: &Polynomial,
+    challenge_indices: &ChallengeIndices,
+) -> (ChallengeResponseMsgHeader, OpenedOutputShares) {
+    let mut rng = ChaCha20Rng::seed_from_u64(0);
+    let dummy_share = Polynomial::rand(&mut rng).eval(Index::new(1).unwrap());
+
+    let opened_output_shares: OpenedOutputShares =
+        HeapArray::new(|i| output_polynomial.eval(challenge_indices[i]));
+
+    let header = ChallengeResponseMsgHeader {
+        reserved_setup_input_shares: HeapArray::from_elem(dummy_share),
+        opened_output_shares: opened_output_shares.clone(),
+        opened_garbling_seeds: HeapArray::from_elem([0u8; 32].into()),
+        unchallenged_output_label_cts: HeapArray::from_elem([0u8; 32].into()),
+    };
+
+    (header, opened_output_shares)
+}
+
+/// Seed evaluator storage with the prerequisites needed to enter
+/// `handle_recv_challenge_response_header` and reach the share-verification step.
+async fn seed_evaluator_for_challenge_response(
+    state: &mut StoredEvaluatorState,
+    output_polynomial: &Polynomial,
+    challenge_indices: &ChallengeIndices,
+) {
+    state
+        .put_output_polynomial_commitment(&HeapArray::from_elem(output_polynomial.commit()))
+        .await
+        .unwrap();
+    state
+        .put_challenge_indices(challenge_indices)
+        .await
+        .unwrap();
+
+    let remaining = get_remaining_challenge_response_chunks(challenge_indices);
+    state
+        .put_root_state(&EvaluatorState {
+            config: None,
+            step: Step::WaitingForChallengeResponse {
+                header: false,
+                remaining_chunks: remaining,
+            },
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn valid_opened_output_shares_are_persisted() {
+    let mut rng = ChaCha20Rng::seed_from_u64(1);
+    let output_polynomial = Polynomial::rand(&mut rng);
+    let challenge_indices = ChallengeIndices::new(|i| Index::new(i + 1).unwrap());
+
+    let mut state = StoredEvaluatorState::default();
+    seed_evaluator_for_challenge_response(&mut state, &output_polynomial, &challenge_indices).await;
+
+    let (header, expected_opened) =
+        build_valid_response_header(&output_polynomial, &challenge_indices);
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvChallengeResponseMsgHeader(header),
+        &mut actions,
+    )
+    .await;
+    assert!(result.is_ok(), "valid header must be accepted, got: {result:?}");
+
+    // Step still WaitingForChallengeResponse (chunks not yet received) but header flag flipped.
+    let root = state.get_root_state().await.unwrap().unwrap();
+    match root.step {
+        Step::WaitingForChallengeResponse { header, .. } => {
+            assert!(header, "header flag should be set after valid header");
+        }
+        other => panic!("unexpected step after valid header: {other:?}"),
+    }
+
+    // Shares were persisted.
+    let stored = state.get_opened_output_shares().await.unwrap();
+    assert_eq!(stored, Some(expected_opened));
+}
+
+#[tokio::test]
+async fn corrupted_opened_output_share_aborts_without_persisting() {
+    let mut rng = ChaCha20Rng::seed_from_u64(2);
+    let output_polynomial = Polynomial::rand(&mut rng);
+    let challenge_indices = ChallengeIndices::new(|i| Index::new(i + 1).unwrap());
+
+    let mut state = StoredEvaluatorState::default();
+    seed_evaluator_for_challenge_response(&mut state, &output_polynomial, &challenge_indices).await;
+
+    let (mut header, _) = build_valid_response_header(&output_polynomial, &challenge_indices);
+
+    // Replace one opened share with a share from an unrelated polynomial at the same index —
+    // it will fail verify_share against the committed output polynomial.
+    let corrupt_idx = N_OPEN_CIRCUITS / 2;
+    let other_polynomial = Polynomial::rand(&mut rng);
+    header.opened_output_shares[corrupt_idx] =
+        other_polynomial.eval(challenge_indices[corrupt_idx]);
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvChallengeResponseMsgHeader(header),
+        &mut actions,
+    )
+    .await;
+    assert!(result.is_ok(), "corrupted header should abort, not error: {result:?}");
+    assert!(actions.is_empty(), "abort path must not emit actions");
+
+    // Step transitioned to Aborted with the expected reason prefix.
+    let root = state.get_root_state().await.unwrap().unwrap();
+    match root.step {
+        Step::Aborted { reason } => {
+            assert!(
+                reason.starts_with("invalid opened output shares"),
+                "unexpected abort reason: {reason}"
+            );
+        }
+        other => panic!("expected Aborted, got: {other:?}"),
+    }
+
+    // Crucially: nothing was persisted.
+    assert_eq!(state.get_opened_output_shares().await.unwrap(), None);
+    assert_eq!(state.get_reserved_setup_input_shares().await.unwrap(), None);
+    assert_eq!(state.get_opened_garbling_seeds().await.unwrap(), None);
 }
