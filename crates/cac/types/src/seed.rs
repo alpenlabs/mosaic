@@ -95,6 +95,6 @@ impl fmt::Display for Seed {
 
 impl fmt::Debug for Seed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Seed({})", &hex::encode(self.0))
+        write!(f, "Seed({})", hex::encode(self.0))
     }
 }
