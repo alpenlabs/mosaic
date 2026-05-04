@@ -84,7 +84,7 @@ impl fmt::Display for PeerId {
 
 impl fmt::Debug for PeerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PeerId({})", &hex::encode(self.0))
+        write!(f, "PeerId({})", hex::encode(self.0))
     }
 }
 
