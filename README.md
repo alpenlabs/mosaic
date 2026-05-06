@@ -1,10 +1,12 @@
-# Mosaaaic
+# Mosaic
 
-Mosaic is the garbled-circuit component of [Strata Bridge](https://github.com/alpenlabs), a Bitcoin ↔ Alpen L2 bridge with **1-of-N trust** — a single honest operator suffices for correctness. Each bridge operator runs a Mosaic node alongside Bridge Core; Mosaic peers exchange garbling material over QUIC and execute the Mosaic protocol's Garbler and Evaluator state machines.
+Mosaic is the garbled-circuit component of [Strata Bridge](https://github.com/alpenlabs), a Bitcoin ↔ Alpen L2 bridge. Each bridge operator runs a Mosaic node; Mosaic peers exchange garbling material over QUIC and execute the Mosaic protocol's Garbler and Evaluator state machines.
 
-This repo contains the open-source reference implementation: the `mosaic` node binary, the protocol crates, and a functional-test harness.
+The Mosaic protocol is described in detail in https://eprint.iacr.org/2026/812, along with an informal security analysis.
 
-> **Status:** pre-1.0. APIs and on-disk formats may change. Do not use in production yet.
+This repository contains a full-stack open-source implementation: the `mosaic` node binary, the protocol crates, storage and network handling, Docker configuration, and a functional-test harness.
+
+> **Warning:** This implementation is being written with eventual production deployment in mind. However, it is still an active work in progress and has not been externally reviewed.
 
 ## Repository layout
 
@@ -14,7 +16,7 @@ This repo contains the open-source reference implementation: the `mosaic` node b
 - `crates/job/` — job scheduler and executors (network I/O, crypto, garbling)
 - `crates/net/` — QUIC transport and typed client
 - `crates/storage/` — FoundationDB state store, S3/local table store
-- `crates/vs3`, `crates/adaptor-sigs` — VS3 commitments, BIP-340 adaptor signatures
+- `crates/vs3`, `crates/adaptor-sigs` — cryptographic libraries for secret sharing and adaptor signatures
 - `docker/` — Dockerfile and a 2-node `compose.yml` for local runs
 - `functional-tests/` — Python-driven end-to-end tests
 - `docs/` — deeper notes ([architecture](docs/architecture.md), [network](docs/network.md), [scheduler](docs/jobscheduler.md), [SM executor](docs/sm-executor.md))
@@ -36,7 +38,7 @@ RPC is exposed on `127.0.0.1:8000` (node 1) and `127.0.0.1:8001` (node 2). To sh
 docker compose down
 ```
 
-The compose file mounts `artifacts/g16.v5c` as the circuit. Replace it with your own `.v5c` to run a different circuit.
+The compose file mounts `artifacts/g16.v5c` as a test circuit.
 
 ## Build and run from source
 
@@ -45,7 +47,7 @@ The compose file mounts `artifacts/g16.v5c` as the circuit. Replace it with your
 - Rust **nightly** (`rustup toolchain install nightly`)
 - FoundationDB **7.3.x** client library — install from the [FDB releases](https://github.com/apple/foundationdb/releases) (the `foundationdb-clients` package on Linux, the `.pkg` on macOS)
 - A running FoundationDB cluster reachable via a `fdb.cluster` file
-- A Mosaic circuit artifact (`.v5c`)
+- A Mosaic circuit artifact (`.v5c`; a test circuit is included)
 
 ### Build
 
