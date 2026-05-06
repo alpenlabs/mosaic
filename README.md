@@ -1,4 +1,4 @@
-# Mosaic
+# Mosaaaic
 
 Mosaic is the garbled-circuit component of [Strata Bridge](https://github.com/alpenlabs), a Bitcoin ↔ Alpen L2 bridge with **1-of-N trust** — a single honest operator suffices for correctness. Each bridge operator runs a Mosaic node alongside Bridge Core; Mosaic peers exchange garbling material over QUIC and execute the Mosaic protocol's Garbler and Evaluator state machines.
 
