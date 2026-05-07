@@ -27,8 +27,9 @@ The fastest way to see Mosaic running is the bundled compose file. It boots a Fo
 
 ```bash
 cd docker
-docker compose up -d --build
+docker compose up -d foundationdb
 ./init-fdb.sh           # one-time: configure the fresh FDB cluster
+docker compose up -d --build mosaic_1 mosaic_2
 docker compose logs -f mosaic_1 mosaic_2
 ```
 
