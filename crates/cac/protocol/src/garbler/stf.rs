@@ -152,25 +152,43 @@ pub(crate) async fn handle_event<S: StateMut>(
             Step::TransferringGarblingTables {
                 eval_seeds,
                 eval_commitments,
-                transferred: _,
+                locally_transferred,
+                transferred,
+                ..
             } => {
-                // Note: Not checking for already transferred tables here.
-                // Evaluator can request same table multiple times until it has notified that all
-                // tables have been read.
-
-                let Some((seed, _commitment)) =
-                    eval_seeds
-                        .iter()
-                        .zip(eval_commitments)
-                        .find(|(_seed, commitment)| {
+                let Some((pos, (seed, _commitment))) =
+                    eval_seeds.iter().zip(eval_commitments).enumerate().find(
+                        |(_pos, (_seed, commitment))| {
                             commitment == &&request_msg.garbling_table_commitment
-                        })
+                        },
+                    )
                 else {
                     error!(commitment = %request_msg.garbling_table_commitment, "Got table transfer request for invalid table commitment");
                     return Err(SMError::invalid_input_data());
                 };
 
-                // Only begin table transfer after getting request from evaluator.
+                // Idempotent only after the evaluator has confirmed receipt
+                // (`transferred[pos]`). Before the receipt arrives we accept
+                // re-transfer requests even if a previous local transfer
+                // already completed: the evaluator may have failed to persist
+                // the table on its side (e.g. a `writer.finish` failure in
+                // `ReceiveGarblingTable`) and is honestly retrying. Without
+                // this, an evaluator that retries after our finished send
+                // would wait forever and setup would deadlock.
+                //
+                // Duplicate-request amplification (a malicious peer sending
+                // many requests in a tight loop) is bounded upstream by the
+                // per-peer protocol-message rate limiter (#220).
+                let _ = locally_transferred;
+                if transferred[pos] {
+                    debug!(
+                        commitment = %request_msg.garbling_table_commitment,
+                        pos,
+                        "duplicate table transfer request after receipt; ack and ignore"
+                    );
+                    return Ok(());
+                }
+
                 debug!(commitment = %request_msg.garbling_table_commitment, "garbler received table transfer request");
                 emit(actions, Action::TransferGarblingTable(*seed));
             }
@@ -182,9 +200,11 @@ pub(crate) async fn handle_event<S: StateMut>(
         },
         Input::RecvTableTransferReceipt(receipt_msg) => match &mut root_state.step {
             Step::TransferringGarblingTables {
+                eval_seeds,
                 eval_commitments,
+                locally_transferred,
+                pending_receipts,
                 transferred,
-                ..
             } => {
                 let Some((pos, _commitment)) =
                     eval_commitments
@@ -198,15 +218,62 @@ pub(crate) async fn handle_event<S: StateMut>(
                     return Err(SMError::invalid_input_data());
                 };
 
-                transferred[pos] = true;
-                debug!(
-                    pos,
-                    done = transferred.count_ones(),
-                    total = transferred.len(),
-                    "garbler received table transfer receipt"
-                );
-
-                if transferred.all() {
+                // Soundness gate: a receipt may only graduate a slot to
+                // `transferred` if the matching local `TransferGarblingTable`
+                // action has already completed. A peer-controlled receipt
+                // alone must not be able to drive us to `SetupComplete`.
+                //
+                // Race-tolerance: the SM executor's `job_completion` and
+                // `network` arms run on independent select branches, so a
+                // real evaluator's receipt can land at the STF before our
+                // own `GarblingTableTransferred` completion does. In that
+                // case we stash the receipt as `pending_receipts[pos]` and
+                // ack the inbound message; the local-transfer completion
+                // path drains pending receipts when it fires.
+                //
+                // Restart / migration robustness: if we accept a receipt
+                // for a slot whose `locally_transferred` is still false,
+                // we *also* re-dispatch a `TransferGarblingTable` action.
+                // This handles two cases:
+                //
+                // 1. Crash mid-transfer (no committed completion + no in-flight worker after
+                //    restart): without re-dispatch the pending receipt would never be drained.
+                // 2. Migration from pre-`locally_transferred` state: old persisted root states
+                //    deserialize with `locally_transferred = false` everywhere. Any receipt we
+                //    receive after that upgrade hits the deferred branch; re-dispatching ensures we
+                //    still produce a fresh local completion to drain it.
+                //
+                // The fast-race case (receipt arrives 1 ms before our
+                // own in-flight completion) duplicates a transfer that's
+                // already in flight; the duplicate's late completion is
+                // handled idempotently by the `GarblingTableTransferred`
+                // arm below.
+                let mut all_transferred = false;
+                if locally_transferred[pos] {
+                    transferred[pos] = true;
+                    debug!(
+                        pos,
+                        done = transferred.count_ones(),
+                        total = transferred.len(),
+                        "garbler received table transfer receipt"
+                    );
+                    all_transferred = transferred.all();
+                } else if !pending_receipts[pos] {
+                    debug!(
+                        commitment = %receipt_msg.garbling_table_commitment,
+                        pos,
+                        "table transfer receipt arrived before local transfer; deferring and re-dispatching transfer"
+                    );
+                    pending_receipts[pos] = true;
+                    emit(actions, Action::TransferGarblingTable(eval_seeds[pos]));
+                } else {
+                    debug!(
+                        commitment = %receipt_msg.garbling_table_commitment,
+                        pos,
+                        "duplicate pending table transfer receipt; ignored"
+                    );
+                }
+                if all_transferred {
                     info!("all garbling tables transferred, setup complete");
                     root_state.step = Step::SetupComplete;
                 }
@@ -506,7 +573,9 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 Step::TransferringGarblingTables {
                     eval_seeds,
                     eval_commitments,
-                    ..
+                    locally_transferred,
+                    pending_receipts,
+                    transferred,
                 } => {
                     let Some(index) = eval_seeds.iter().enumerate().find_map(|(idx, seed)| {
                         if seed == &garbling_seed {
@@ -522,10 +591,43 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                         return Err(SMError::invalid_input_data());
                     }
 
-                    // Informational only. We mark a table as transferred once we get corresponding
-                    // [`TableTransferReceiptMsg`](mosaic_cac_types::TableTransferReceiptMsg) from
-                    // evaluator.
-                    debug!(%commitment, "garbling table transferred")
+                    // Record the local-side completion. This is idempotent
+                    // — a retry of `TransferGarblingTable` (e.g. an honest
+                    // evaluator re-requesting after a failed receive on
+                    // their side) produces a second completion for the
+                    // same slot; setting `locally_transferred[index] = true`
+                    // again is a no-op.
+                    locally_transferred[index] = true;
+                    debug!(%commitment, index, "garbling table transferred locally");
+
+                    // Drain a receipt that arrived before this completion.
+                    if pending_receipts[index] && !transferred[index] {
+                        pending_receipts[index] = false;
+                        transferred[index] = true;
+                        debug!(
+                            %commitment,
+                            index,
+                            done = transferred.count_ones(),
+                            total = transferred.len(),
+                            "drained pending table transfer receipt"
+                        );
+                        if transferred.all() {
+                            info!("all garbling tables transferred, setup complete");
+                            root_state.step = Step::SetupComplete;
+                        }
+                    }
+                }
+                // A `TransferGarblingTable` completion can land after the
+                // step has already advanced to `SetupComplete` (or further)
+                // if a retry's local completion arrives later than the
+                // receipt that finished the slot. Treat it as a no-op
+                // rather than `unexpected_input` — the late completion
+                // doesn't carry any state we need to act on.
+                step if step.phase() > StepPhase::TransferringGarblingTables => {
+                    debug!(
+                        %commitment,
+                        "garbling table transfer completion arrived after setup advanced; ignoring"
+                    );
                 }
                 _ => return Err(SMError::unexpected_input()),
             }
@@ -956,7 +1058,36 @@ pub(crate) async fn restore<S: StateRead>(
                 }
             }
         }
-        Step::TransferringGarblingTables { .. } => {
+        Step::TransferringGarblingTables {
+            eval_seeds,
+            pending_receipts,
+            transferred,
+            ..
+        } => {
+            // Re-dispatch any slot whose receipt arrived before a crash but
+            // whose local-transfer completion never committed. Without
+            // this, after a crash mid-transfer the garbler is left with
+            // `pending_receipts[i] = true` and no in-flight action to drain
+            // it; the evaluator already considers the slot done, so they
+            // won't re-send a `TableTransferRequest`. Re-emitting the
+            // action here gives us a fresh local completion which then
+            // graduates the slot via the normal `pending_receipts` drain
+            // path.
+            //
+            // For slots where neither a receipt nor a local completion was
+            // observed (`!locally_transferred && !pending_receipts &&
+            // !transferred`), we still rely on the evaluator's
+            // `TableTransferRequest` to kick off the transfer — that is the
+            // protocol's normal startup path.
+            for index in 0..eval_seeds.len() {
+                if pending_receipts[index] && !transferred[index] {
+                    debug!(
+                        index,
+                        "restoring TransferGarblingTable for slot with pending receipt"
+                    );
+                    emit(actions, Action::TransferGarblingTable(eval_seeds[index]));
+                }
+            }
             // NOTE: we dont automatically start transferring garbling tables, but wait for
             // corresponding [`TableTransferRequestMsg`](mosaic_cac_types::TableTransferRequestMsg)
             // from evaluator to begin transfer.
@@ -1029,6 +1160,8 @@ async fn handle_post_sending_challenge_response<S: StateMut>(
     root_state.step = Step::TransferringGarblingTables {
         eval_seeds,
         eval_commitments,
+        locally_transferred: HeapArray::from_elem(false),
+        pending_receipts: HeapArray::from_elem(false),
         transferred: HeapArray::from_elem(false),
     };
 

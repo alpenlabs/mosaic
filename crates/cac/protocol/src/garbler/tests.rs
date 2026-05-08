@@ -1,13 +1,13 @@
 use mosaic_cac_types::{
-    Adaptor, AdaptorMsgChunk, ChallengeMsg, DepositId, HeapArray, Index, KeyPair, Polynomial,
-    SecretKey, TableTransferReceiptMsg, TableTransferRequestMsg, WideLabelWireAdaptors,
-    WithdrawalAdaptorsChunk,
+    Adaptor, AdaptorMsgChunk, ChallengeMsg, DepositId, GarblingTableCommitment, HeapArray, Index,
+    KeyPair, Polynomial, SecretKey, TableTransferReceiptMsg, TableTransferRequestMsg,
+    WideLabelWireAdaptors, WithdrawalAdaptorsChunk,
     state_machine::garbler::{
         Action, ActionId, ActionResult, Config, DepositState, DepositStep, GarblerDepositInitData,
         GarblerInitData, GarblerState, GarblingMetadata, Input, StateMut, StateRead, Step,
     },
 };
-use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES};
+use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES};
 use mosaic_storage_inmemory::garbler::StoredGarblerState;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
@@ -528,4 +528,383 @@ async fn adaptor_chunk_when_root_completing_adaptors_is_ack_and_ignore() {
 
     assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
     assert!(actions.is_empty(), "should produce no actions");
+}
+
+// ---------------------------------------------------------------------------
+// Table-transfer soundness: receipts must follow a successful local transfer.
+// Also covers duplicate-request amplification mitigation.
+// ---------------------------------------------------------------------------
+
+fn transferring_state_with(
+    seed_byte: u8,
+) -> (
+    GarblerState,
+    HeapArray<GarblingTableCommitment, N_EVAL_CIRCUITS>,
+) {
+    let eval_seeds: HeapArray<_, N_EVAL_CIRCUITS> =
+        HeapArray::new(|i| [seed_byte.wrapping_add(i as u8); 32].into());
+    let eval_commitments: HeapArray<GarblingTableCommitment, N_EVAL_CIRCUITS> =
+        HeapArray::new(|i| [seed_byte.wrapping_add(i as u8).wrapping_add(0x80); 32].into());
+
+    let state = GarblerState {
+        config: None,
+        step: Step::TransferringGarblingTables {
+            eval_seeds,
+            eval_commitments: eval_commitments.clone(),
+            locally_transferred: HeapArray::from_elem(false),
+            pending_receipts: HeapArray::from_elem(false),
+            transferred: HeapArray::from_elem(false),
+        },
+    };
+    (state, eval_commitments)
+}
+
+#[tokio::test]
+async fn table_transfer_receipt_before_local_transfer_is_deferred_and_redispatches() {
+    // The SM executor processes job completions and inbound network requests
+    // on independent select branches, so a real evaluator's receipt can land
+    // before our own GarblingTableTransferred completion does. The STF must
+    // not reject the receipt as invalid (it would never be re-delivered, and
+    // the slot would deadlock).
+    //
+    // The deferred path stashes the receipt as `pending_receipts[pos] = true`
+    // AND re-dispatches a `TransferGarblingTable` action so a fresh local
+    // completion is guaranteed to land and drain the pending receipt — this
+    // covers the crash-mid-transfer and pre-`locally_transferred` migration
+    // cases where there is no in-flight worker to produce the completion
+    // otherwise.
+    let mut state = StoredGarblerState::default();
+    let (root, eval_commitments) = transferring_state_with(0x10);
+    let expected_seed = match &root.step {
+        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds[0],
+        _ => unreachable!(),
+    };
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_event(
+        &mut state,
+        Input::RecvTableTransferReceipt(TableTransferReceiptMsg {
+            garbling_table_commitment: eval_commitments[0],
+        }),
+        &mut actions,
+    )
+    .await
+    .expect("early receipt must be deferred, not rejected");
+    let redispatched = actions
+        .iter()
+        .filter_map(|action| match action {
+            fasm::actions::Action::Tracked(tracked) => match tracked.action() {
+                Action::TransferGarblingTable(seed) => Some(*seed),
+                _ => None,
+            },
+            fasm::actions::Action::Untracked(_) => None,
+        })
+        .next();
+    assert_eq!(
+        redispatched.map(|s| s.to_hex()),
+        Some(expected_seed.to_hex()),
+        "deferred receipt must re-dispatch TransferGarblingTable for the slot's seed"
+    );
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    let Step::TransferringGarblingTables {
+        pending_receipts,
+        transferred,
+        ..
+    } = root.step
+    else {
+        panic!(
+            "expected step to remain TransferringGarblingTables, got {:?}",
+            root.step
+        );
+    };
+    assert!(
+        pending_receipts[0],
+        "slot 0 must be marked pending after early receipt"
+    );
+    assert_eq!(
+        transferred.count_ones(),
+        0,
+        "no slot should be marked transferred until local transfer also lands"
+    );
+}
+
+#[tokio::test]
+async fn pending_receipt_is_consumed_when_local_transfer_completes() {
+    // Race scenario: receipt arrives first (pending_receipts set), then
+    // GarblingTableTransferred lands. The action-completion path must
+    // graduate the slot to `transferred` and clear `pending_receipts`.
+    let mut state = StoredGarblerState::default();
+    let (mut root, eval_commitments) = transferring_state_with(0x50);
+    let seed = match &root.step {
+        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds[0],
+        _ => unreachable!(),
+    };
+    if let Step::TransferringGarblingTables {
+        pending_receipts, ..
+    } = &mut root.step
+    {
+        pending_receipts[0] = true;
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::TransferGarblingTable(seed),
+        ActionResult::GarblingTableTransferred(seed, eval_commitments[0]),
+        &mut actions,
+    )
+    .await
+    .expect("draining a pending receipt must succeed");
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    let Step::TransferringGarblingTables {
+        locally_transferred,
+        pending_receipts,
+        transferred,
+        ..
+    } = root.step
+    else {
+        panic!("expected TransferringGarblingTables");
+    };
+    assert!(locally_transferred[0]);
+    assert!(
+        !pending_receipts[0],
+        "pending receipt must be cleared after draining"
+    );
+    assert!(
+        transferred[0],
+        "slot must graduate to transferred when both halves are observed"
+    );
+}
+
+#[tokio::test]
+async fn table_transfer_receipt_succeeds_after_local_transfer_completes() {
+    // Happy-path counterpart to the rejection test: once the local
+    // GarblingTableTransferred action result has been recorded for a slot,
+    // the matching receipt should advance that slot to transferred=true.
+    let mut state = StoredGarblerState::default();
+    let (mut root, eval_commitments) = transferring_state_with(0x20);
+    if let Step::TransferringGarblingTables {
+        locally_transferred,
+        ..
+    } = &mut root.step
+    {
+        locally_transferred[0] = true;
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_event(
+        &mut state,
+        Input::RecvTableTransferReceipt(TableTransferReceiptMsg {
+            garbling_table_commitment: eval_commitments[0],
+        }),
+        &mut actions,
+    )
+    .await
+    .expect("receipt after local transfer must be accepted");
+    assert!(actions.is_empty());
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    let Step::TransferringGarblingTables { transferred, .. } = root.step else {
+        panic!("expected step to remain TransferringGarblingTables");
+    };
+    assert!(transferred[0], "slot 0 should be marked transferred");
+}
+
+#[tokio::test]
+async fn duplicate_table_transfer_request_after_receipt_emits_no_action() {
+    // Once the evaluator has confirmed receipt for a slot
+    // (`transferred[pos] = true`), a re-issued `TableTransferRequest` is
+    // idempotent: ack and ignore, no new `TransferGarblingTable` action.
+    let mut state = StoredGarblerState::default();
+    let (mut root, eval_commitments) = transferring_state_with(0x30);
+    if let Step::TransferringGarblingTables {
+        locally_transferred,
+        transferred,
+        ..
+    } = &mut root.step
+    {
+        locally_transferred[0] = true;
+        transferred[0] = true;
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_event(
+        &mut state,
+        Input::RecvTableTransferRequest(TableTransferRequestMsg {
+            garbling_table_commitment: eval_commitments[0],
+        }),
+        &mut actions,
+    )
+    .await
+    .expect("duplicate request after receipt must ack-and-ignore");
+
+    assert!(
+        actions.is_empty(),
+        "no TransferGarblingTable action should be emitted on duplicate request after receipt; got {} actions",
+        actions.len()
+    );
+}
+
+#[tokio::test]
+async fn retry_request_between_local_transfer_and_receipt_redispatches_action() {
+    // If a previous transfer completed locally but the evaluator failed to
+    // persist the table on its side and retries, we must re-dispatch
+    // `TransferGarblingTable` rather than ack-and-ignore — otherwise the
+    // evaluator's retry waits forever and setup deadlocks.
+    let mut state = StoredGarblerState::default();
+    let (mut root, eval_commitments) = transferring_state_with(0x35);
+    if let Step::TransferringGarblingTables {
+        locally_transferred,
+        ..
+    } = &mut root.step
+    {
+        locally_transferred[0] = true;
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_event(
+        &mut state,
+        Input::RecvTableTransferRequest(TableTransferRequestMsg {
+            garbling_table_commitment: eval_commitments[0],
+        }),
+        &mut actions,
+    )
+    .await
+    .expect("retry request before receipt must succeed");
+
+    assert_eq!(
+        actions.len(),
+        1,
+        "exactly one TransferGarblingTable action should be redispatched on retry before receipt"
+    );
+}
+
+#[tokio::test]
+async fn garbling_table_transferred_action_result_marks_locally_transferred() {
+    // Sanity: the action-completion path that the soundness gate depends on
+    // actually flips `locally_transferred[index] = true`.
+    let mut state = StoredGarblerState::default();
+    let (root, eval_commitments) = transferring_state_with(0x40);
+    let seed = match &root.step {
+        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds[0],
+        _ => unreachable!(),
+    };
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::TransferGarblingTable(seed),
+        ActionResult::GarblingTableTransferred(seed, eval_commitments[0]),
+        &mut actions,
+    )
+    .await
+    .expect("recording a successful local transfer must succeed");
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    let Step::TransferringGarblingTables {
+        locally_transferred,
+        transferred,
+        ..
+    } = root.step
+    else {
+        panic!("expected TransferringGarblingTables");
+    };
+    assert!(locally_transferred[0]);
+    assert!(
+        !transferred[0],
+        "transferred is gated on receipt, not on local-transfer alone"
+    );
+}
+
+#[tokio::test]
+async fn late_garbling_table_transferred_after_setup_complete_is_ack_and_ignore() {
+    // A retry's local completion may arrive AFTER the slot has already
+    // graduated to transferred via a receipt + earlier completion, and the
+    // STF may even have advanced to `SetupComplete`. The completion handler
+    // must treat that as a no-op rather than `unexpected_input`, otherwise
+    // the worker pool's retry path keeps surfacing failure signals on a
+    // setup that is already done.
+    let mut state = StoredGarblerState::default();
+    let (root, eval_commitments) = transferring_state_with(0x60);
+    let seed = match &root.step {
+        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds[0],
+        _ => unreachable!(),
+    };
+    // Place the SM directly in SetupComplete to simulate the slot having
+    // already graduated and the rest of setup having moved on.
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::SetupComplete,
+        })
+        .await
+        .unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::TransferGarblingTable(seed),
+        ActionResult::GarblingTableTransferred(seed, eval_commitments[0]),
+        &mut actions,
+    )
+    .await
+    .expect("late completion after SetupComplete must ack-and-ignore");
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    assert!(matches!(root.step, Step::SetupComplete));
+    assert!(actions.is_empty());
+}
+
+#[tokio::test]
+async fn restore_redispatches_transfers_for_slots_with_pending_receipts() {
+    // Crash-recovery scenario: receipt arrived for a slot before the local
+    // transfer completion was committed; we crashed; on restart we have
+    // `pending_receipts[i] = true` and `locally_transferred[i] = false`.
+    // The evaluator considers itself done and won't resend the request, so
+    // restore() must re-dispatch `TransferGarblingTable` for every such
+    // slot to drive a fresh local completion that will drain the pending
+    // receipt.
+    let mut state = StoredGarblerState::default();
+    let (mut root, _eval_commitments) = transferring_state_with(0x70);
+    let seeds = match &root.step {
+        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds.clone(),
+        _ => unreachable!(),
+    };
+    if let Step::TransferringGarblingTables {
+        pending_receipts, ..
+    } = &mut root.step
+    {
+        pending_receipts[0] = true;
+        pending_receipts[1] = true;
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    super::stf::restore(&state, &mut actions).await.unwrap();
+
+    let redispatched: std::collections::HashSet<_> = actions
+        .into_iter()
+        .filter_map(|action| {
+            let fasm::actions::Action::Tracked(tracked) = action;
+            let (_id, action) = tracked.into_parts();
+            match action {
+                Action::TransferGarblingTable(seed) => Some(seed.to_hex()),
+                _ => None,
+            }
+        })
+        .collect();
+    let expected: std::collections::HashSet<_> =
+        [seeds[0].to_hex(), seeds[1].to_hex()].into_iter().collect();
+    assert_eq!(
+        redispatched, expected,
+        "expected restore to re-dispatch TransferGarblingTable for both pending-receipt slots"
+    );
 }
