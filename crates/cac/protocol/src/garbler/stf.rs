@@ -1104,29 +1104,25 @@ pub(crate) async fn restore<S: StateRead>(
             // Re-dispatch `TransferGarblingTable` for slots that need a
             // fresh local completion to make progress. Two cases:
             //
-            // 1. Crash mid-transfer with a stashed receipt
-            //    (`pending_receipts[i] && !transferred[i]`): the receipt
-            //    was acked but the matching local completion never
-            //    committed. The evaluator considers the slot done and
-            //    won't re-send a `TableTransferRequest`, so we must
-            //    re-emit the action ourselves.
+            // 1. Crash mid-transfer with a stashed receipt (`pending_receipts[i] &&
+            //    !transferred[i]`): the receipt was acked but the matching local completion never
+            //    committed. The evaluator considers the slot done and won't re-send a
+            //    `TableTransferRequest`, so we must re-emit the action ourselves.
             //
-            // 2. Rolling upgrade from pre-`locally_transferred` state
-            //    (`transferred[i] && !locally_transferred[i]`): the old
-            //    code accepted a receipt as sole authority and set
-            //    `transferred[i] = true` without the local-completion
-            //    gate. After upgrade, the new SetupComplete check
-            //    requires `locally_transferred.all()`; without
-            //    re-dispatching, those slots are stuck. The evaluator
-            //    likewise considers them done, so we must re-emit.
+            // 2. Rolling upgrade from pre-`locally_transferred` state (`transferred[i] &&
+            //    !locally_transferred[i]`): the old code accepted a receipt as sole authority and
+            //    set `transferred[i] = true` without the local-completion gate. After upgrade, the
+            //    new SetupComplete check requires `locally_transferred.all()`; without
+            //    re-dispatching, those slots are stuck. The evaluator likewise considers them done,
+            //    so we must re-emit.
             //
             // For slots with no progress at all (`!locally_transferred &&
             // !pending_receipts && !transferred`), we rely on the
             // evaluator's `TableTransferRequest` to kick off the transfer
             // — that is the protocol's normal startup path.
             for index in 0..eval_seeds.len() {
-                let needs_redispatch = !locally_transferred[index]
-                    && (pending_receipts[index] || transferred[index]);
+                let needs_redispatch =
+                    !locally_transferred[index] && (pending_receipts[index] || transferred[index]);
                 if needs_redispatch {
                     debug!(
                         index,

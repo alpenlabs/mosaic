@@ -923,11 +923,7 @@ async fn legacy_transferred_bit_does_not_complete_setup_without_local_transfer()
     // forward.
     let mut state = StoredGarblerState::default();
     let (mut root, eval_commitments) = transferring_state_with(0x80);
-    if let Step::TransferringGarblingTables {
-        transferred,
-        ..
-    } = &mut root.step
-    {
+    if let Step::TransferringGarblingTables { transferred, .. } = &mut root.step {
         for i in 0..N_EVAL_CIRCUITS {
             transferred[i] = true;
         }
@@ -994,9 +990,8 @@ async fn restore_redispatches_for_legacy_transferred_without_local_transfer() {
             }
         })
         .collect();
-    let expected: std::collections::HashSet<_> = (0..N_EVAL_CIRCUITS)
-        .map(|i| seeds[i].to_hex())
-        .collect();
+    let expected: std::collections::HashSet<_> =
+        (0..N_EVAL_CIRCUITS).map(|i| seeds[i].to_hex()).collect();
     assert_eq!(
         redispatched, expected,
         "expected restore to re-dispatch TransferGarblingTable for legacy transferred slots"
