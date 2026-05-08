@@ -167,24 +167,41 @@ pub(crate) async fn handle_event<S: StateMut>(
                     return Err(SMError::invalid_input_data());
                 };
 
-                // Idempotent only after the evaluator has confirmed receipt
-                // (`transferred[pos]`). Before the receipt arrives we accept
-                // re-transfer requests even if a previous local transfer
-                // already completed: the evaluator may have failed to persist
-                // the table on its side (e.g. a `writer.finish` failure in
-                // `ReceiveGarblingTable`) and is honestly retrying. Without
-                // this, an evaluator that retries after our finished send
-                // would wait forever and setup would deadlock.
+                // Idempotent only when *both* sides observed the transfer:
+                // `transferred[pos]` (evaluator receipt) AND
+                // `locally_transferred[pos]` (our local-completion).
                 //
-                // Duplicate-request amplification (a malicious peer sending
-                // many requests in a tight loop) is bounded upstream by the
-                // per-peer protocol-message rate limiter (#220).
-                let _ = locally_transferred;
-                if transferred[pos] {
+                // Gating on `transferred[pos]` alone is unsafe under
+                // rolling upgrade: an old-code persisted state can have
+                // `transferred[pos] = true` for slots that were never
+                // locally transferred under the new soundness invariant
+                // (the old code accepted a receipt as sole authority).
+                // After upgrade, suppressing the evaluator's retry would
+                // leave us stuck — the evaluator considers the slot done
+                // and won't request again, and we never produced a local
+                // completion. Requiring `locally_transferred[pos]` here
+                // forces a fresh transfer for legacy slots.
+                //
+                // For the normal (post-upgrade) case the new STF maintains
+                // `transferred[pos] => locally_transferred[pos]`, so this
+                // strengthening is a safety belt and does not change
+                // behavior.
+                //
+                // Pre-receipt retries (`transferred[pos] = false`) still
+                // fall through to re-emit `TransferGarblingTable`, since
+                // the evaluator may have failed to persist the table
+                // (e.g. a `writer.finish` failure in
+                // `ReceiveGarblingTable`) and is honestly retrying.
+                //
+                // Duplicate-request amplification (a malicious peer
+                // sending many requests in a tight loop) is bounded
+                // upstream by the per-peer protocol-message rate
+                // limiter (#220).
+                if transferred[pos] && locally_transferred[pos] {
                     debug!(
                         commitment = %request_msg.garbling_table_commitment,
                         pos,
-                        "duplicate table transfer request after receipt; ack and ignore"
+                        "duplicate table transfer request after both sides observed transfer; ack and ignore"
                     );
                     return Ok(());
                 }
@@ -257,7 +274,15 @@ pub(crate) async fn handle_event<S: StateMut>(
                         total = transferred.len(),
                         "garbler received table transfer receipt"
                     );
-                    all_transferred = transferred.all();
+                    // SetupComplete requires *both* sides observed every
+                    // slot. `locally_transferred.all()` is a safety belt
+                    // for rolling upgrades: a pre-upgrade persisted state
+                    // can have `transferred[i] = true` (set by old code
+                    // on receipt alone) without the matching local
+                    // completion. We must not advance until restore /
+                    // re-dispatch produces a fresh local completion for
+                    // those slots.
+                    all_transferred = transferred.all() && locally_transferred.all();
                 } else if !pending_receipts[pos] {
                     debug!(
                         commitment = %receipt_msg.garbling_table_commitment,
@@ -611,10 +636,21 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                             total = transferred.len(),
                             "drained pending table transfer receipt"
                         );
-                        if transferred.all() {
-                            info!("all garbling tables transferred, setup complete");
-                            root_state.step = Step::SetupComplete;
-                        }
+                    }
+
+                    // Check SetupComplete after potentially flipping
+                    // `locally_transferred` and/or `transferred` above.
+                    // Includes the legacy-migration case: a pre-upgrade
+                    // persisted state may carry `transferred[i] = true`
+                    // for slots whose local completion was never recorded
+                    // under the new soundness invariant; restore
+                    // re-dispatches `TransferGarblingTable` for those
+                    // slots and the resulting completion lands here,
+                    // flipping the last `locally_transferred` bit and
+                    // making both arrays all-true.
+                    if transferred.all() && locally_transferred.all() {
+                        info!("all garbling tables transferred, setup complete");
+                        root_state.step = Step::SetupComplete;
                     }
                 }
                 // A `TransferGarblingTable` completion can land after the
@@ -1060,30 +1096,43 @@ pub(crate) async fn restore<S: StateRead>(
         }
         Step::TransferringGarblingTables {
             eval_seeds,
+            locally_transferred,
             pending_receipts,
             transferred,
             ..
         } => {
-            // Re-dispatch any slot whose receipt arrived before a crash but
-            // whose local-transfer completion never committed. Without
-            // this, after a crash mid-transfer the garbler is left with
-            // `pending_receipts[i] = true` and no in-flight action to drain
-            // it; the evaluator already considers the slot done, so they
-            // won't re-send a `TableTransferRequest`. Re-emitting the
-            // action here gives us a fresh local completion which then
-            // graduates the slot via the normal `pending_receipts` drain
-            // path.
+            // Re-dispatch `TransferGarblingTable` for slots that need a
+            // fresh local completion to make progress. Two cases:
             //
-            // For slots where neither a receipt nor a local completion was
-            // observed (`!locally_transferred && !pending_receipts &&
-            // !transferred`), we still rely on the evaluator's
-            // `TableTransferRequest` to kick off the transfer — that is the
-            // protocol's normal startup path.
+            // 1. Crash mid-transfer with a stashed receipt
+            //    (`pending_receipts[i] && !transferred[i]`): the receipt
+            //    was acked but the matching local completion never
+            //    committed. The evaluator considers the slot done and
+            //    won't re-send a `TableTransferRequest`, so we must
+            //    re-emit the action ourselves.
+            //
+            // 2. Rolling upgrade from pre-`locally_transferred` state
+            //    (`transferred[i] && !locally_transferred[i]`): the old
+            //    code accepted a receipt as sole authority and set
+            //    `transferred[i] = true` without the local-completion
+            //    gate. After upgrade, the new SetupComplete check
+            //    requires `locally_transferred.all()`; without
+            //    re-dispatching, those slots are stuck. The evaluator
+            //    likewise considers them done, so we must re-emit.
+            //
+            // For slots with no progress at all (`!locally_transferred &&
+            // !pending_receipts && !transferred`), we rely on the
+            // evaluator's `TableTransferRequest` to kick off the transfer
+            // — that is the protocol's normal startup path.
             for index in 0..eval_seeds.len() {
-                if pending_receipts[index] && !transferred[index] {
+                let needs_redispatch = !locally_transferred[index]
+                    && (pending_receipts[index] || transferred[index]);
+                if needs_redispatch {
                     debug!(
                         index,
-                        "restoring TransferGarblingTable for slot with pending receipt"
+                        pending_receipt = pending_receipts[index],
+                        legacy_transferred = transferred[index],
+                        "restoring TransferGarblingTable for slot needing local completion"
                     );
                     emit(actions, Action::TransferGarblingTable(eval_seeds[index]));
                 }

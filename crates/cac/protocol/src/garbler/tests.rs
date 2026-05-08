@@ -908,3 +908,140 @@ async fn restore_redispatches_transfers_for_slots_with_pending_receipts() {
         "expected restore to re-dispatch TransferGarblingTable for both pending-receipt slots"
     );
 }
+
+#[tokio::test]
+async fn legacy_transferred_bit_does_not_complete_setup_without_local_transfer() {
+    // Rolling-upgrade scenario: pre-upgrade code accepted a receipt as sole
+    // authority and set `transferred[i] = true` without recording a local
+    // completion. After upgrade, deserializing that state yields
+    // `transferred[i] = true` but `locally_transferred[i] = false`.
+    //
+    // The new STF must NOT advance to `SetupComplete` purely on the strength
+    // of those legacy bits, even when every slot is `transferred`. This is
+    // the soundness invariant the new gating preserves: a peer-controlled
+    // receipt alone (even one persisted by old code) cannot drive us
+    // forward.
+    let mut state = StoredGarblerState::default();
+    let (mut root, eval_commitments) = transferring_state_with(0x80);
+    if let Step::TransferringGarblingTables {
+        transferred,
+        ..
+    } = &mut root.step
+    {
+        for i in 0..N_EVAL_CIRCUITS {
+            transferred[i] = true;
+        }
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    // Send another receipt for an already-`transferred` slot — this hits
+    // the receipt handler's `else if !pending_receipts[pos]` branch and
+    // must not advance to `SetupComplete` because `locally_transferred`
+    // is still all-false.
+    let mut actions = Vec::new();
+    handle_event(
+        &mut state,
+        Input::RecvTableTransferReceipt(TableTransferReceiptMsg {
+            garbling_table_commitment: eval_commitments[0],
+        }),
+        &mut actions,
+    )
+    .await
+    .expect("receipt on legacy state must succeed");
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    assert!(
+        matches!(root.step, Step::TransferringGarblingTables { .. }),
+        "must not advance to SetupComplete on legacy bits alone, got {:?}",
+        root.step.step_name()
+    );
+}
+
+#[tokio::test]
+async fn restore_redispatches_for_legacy_transferred_without_local_transfer() {
+    // Rolling-upgrade migration: persisted `transferred[i] = true` set by
+    // old code without the local-completion gate. The evaluator considers
+    // those slots done and won't resend a `TableTransferRequest`. restore()
+    // must re-dispatch `TransferGarblingTable` for every such slot so a
+    // fresh local completion can flip `locally_transferred` and unblock
+    // SetupComplete.
+    let mut state = StoredGarblerState::default();
+    let (mut root, _eval_commitments) = transferring_state_with(0x82);
+    let seeds = match &root.step {
+        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds.clone(),
+        _ => unreachable!(),
+    };
+    if let Step::TransferringGarblingTables { transferred, .. } = &mut root.step {
+        // mark every slot legacy-transferred (test config has small
+        // N_EVAL_CIRCUITS so we cover all of them)
+        for i in 0..N_EVAL_CIRCUITS {
+            transferred[i] = true;
+        }
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    super::stf::restore(&state, &mut actions).await.unwrap();
+
+    let redispatched: std::collections::HashSet<_> = actions
+        .into_iter()
+        .filter_map(|action| {
+            let fasm::actions::Action::Tracked(tracked) = action;
+            let (_id, action) = tracked.into_parts();
+            match action {
+                Action::TransferGarblingTable(seed) => Some(seed.to_hex()),
+                _ => None,
+            }
+        })
+        .collect();
+    let expected: std::collections::HashSet<_> = (0..N_EVAL_CIRCUITS)
+        .map(|i| seeds[i].to_hex())
+        .collect();
+    assert_eq!(
+        redispatched, expected,
+        "expected restore to re-dispatch TransferGarblingTable for legacy transferred slots"
+    );
+}
+
+#[tokio::test]
+async fn legacy_migration_completes_setup_after_local_completion_drives_in() {
+    // End-to-end migration path: pre-upgrade `transferred[i] = true` for
+    // every slot, post-upgrade `locally_transferred[i] = false`. After
+    // restore re-dispatches `TransferGarblingTable` and each completion
+    // lands at `handle_action_result`, the last completion that flips the
+    // final `locally_transferred` bit must advance the step to
+    // `SetupComplete`.
+    let mut state = StoredGarblerState::default();
+    let (mut root, eval_commitments) = transferring_state_with(0x84);
+    let seeds = match &root.step {
+        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds.clone(),
+        _ => unreachable!(),
+    };
+    if let Step::TransferringGarblingTables { transferred, .. } = &mut root.step {
+        for i in 0..N_EVAL_CIRCUITS {
+            transferred[i] = true;
+        }
+    }
+    state.put_root_state(&root).await.unwrap();
+
+    // Drive completions for every slot, simulating the actions that
+    // restore would have re-dispatched.
+    let mut actions = Vec::new();
+    for i in 0..N_EVAL_CIRCUITS {
+        handle_action_result(
+            &mut state,
+            ActionId::TransferGarblingTable(seeds[i]),
+            ActionResult::GarblingTableTransferred(seeds[i], eval_commitments[i]),
+            &mut actions,
+        )
+        .await
+        .expect("legacy-migration completion must succeed");
+    }
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    assert!(
+        matches!(root.step, Step::SetupComplete),
+        "expected SetupComplete after every legacy slot got a fresh local completion, got {:?}",
+        root.step.step_name()
+    );
+}
