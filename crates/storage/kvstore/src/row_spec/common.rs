@@ -9,6 +9,7 @@ use mosaic_cac_types::{
     WideLabelZerothPolynomialCoefficients, WithdrawalAdaptorsChunk, WithdrawalInputs,
 };
 use mosaic_common::Byte32;
+use serde::de::DeserializeOwned;
 
 use crate::row_spec::{
     PackableKey, SerializableValue,
@@ -436,5 +437,65 @@ impl SerializableValue for Byte32 {
         let mut value = [0u8; 32];
         value.copy_from_slice(bytes);
         Ok(Byte32::from(value))
+    }
+}
+
+/// Decode a postcard-encoded value, rejecting any trailing bytes.
+///
+/// `postcard::from_bytes` succeeds even when the input contains extra bytes
+/// after the encoded value, which the storage format does not intend. This
+/// helper enforces canonical decoding: the input must be exactly the encoded
+/// value with no extra suffix.
+pub(crate) fn decode_postcard_canonical<T: DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, postcard::Error> {
+    let (value, rest) = postcard::take_from_bytes::<T>(bytes)?;
+    if !rest.is_empty() {
+        return Err(postcard::Error::DeserializeUnexpectedEnd);
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use mosaic_cac_types::state_machine::{evaluator::EvaluatorState, garbler::GarblerState};
+
+    use super::*;
+    use crate::row_spec::SerializableValue;
+
+    #[test]
+    fn decode_postcard_canonical_rejects_trailing_bytes() {
+        let value: u32 = 0xDEADBEEF;
+        let mut encoded = postcard::to_allocvec(&value).unwrap();
+        encoded.push(0xFF);
+        let result: Result<u32, _> = decode_postcard_canonical(&encoded);
+        assert!(
+            result.is_err(),
+            "trailing bytes must be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn decode_postcard_canonical_round_trips_clean_input() {
+        let value: u32 = 0xCAFE_F00D;
+        let encoded = postcard::to_allocvec(&value).unwrap();
+        let decoded: u32 = decode_postcard_canonical(&encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn garbler_state_decoder_rejects_trailing_bytes() {
+        let value = GarblerState::default();
+        let mut bytes = <GarblerState as SerializableValue>::serialize(&value).unwrap();
+        bytes.push(0x00);
+        assert!(<GarblerState as SerializableValue>::deserialize(&bytes).is_err());
+    }
+
+    #[test]
+    fn evaluator_state_decoder_rejects_trailing_bytes() {
+        let value = EvaluatorState::default();
+        let mut bytes = <EvaluatorState as SerializableValue>::serialize(&value).unwrap();
+        bytes.push(0x00);
+        assert!(<EvaluatorState as SerializableValue>::deserialize(&bytes).is_err());
     }
 }
