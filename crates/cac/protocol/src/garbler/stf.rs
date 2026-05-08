@@ -217,11 +217,11 @@ pub(crate) async fn handle_event<S: StateMut>(
         },
         Input::RecvTableTransferReceipt(receipt_msg) => match &mut root_state.step {
             Step::TransferringGarblingTables {
-                eval_seeds,
                 eval_commitments,
                 locally_transferred,
                 pending_receipts,
                 transferred,
+                ..
             } => {
                 let Some((pos, _commitment)) =
                     eval_commitments
@@ -246,25 +246,24 @@ pub(crate) async fn handle_event<S: StateMut>(
                 // own `GarblingTableTransferred` completion does. In that
                 // case we stash the receipt as `pending_receipts[pos]` and
                 // ack the inbound message; the local-transfer completion
-                // path drains pending receipts when it fires.
+                // path (`GarblingTableTransferred` handler below) drains
+                // pending receipts when it fires.
                 //
-                // Restart / migration robustness: if we accept a receipt
-                // for a slot whose `locally_transferred` is still false,
-                // we *also* re-dispatch a `TransferGarblingTable` action.
-                // This handles two cases:
-                //
-                // 1. Crash mid-transfer (no committed completion + no in-flight worker after
-                //    restart): without re-dispatch the pending receipt would never be drained.
-                // 2. Migration from pre-`locally_transferred` state: old persisted root states
-                //    deserialize with `locally_transferred = false` everywhere. Any receipt we
-                //    receive after that upgrade hits the deferred branch; re-dispatching ensures we
-                //    still produce a fresh local completion to drain it.
-                //
-                // The fast-race case (receipt arrives 1 ms before our
-                // own in-flight completion) duplicates a transfer that's
-                // already in flight; the duplicate's late completion is
-                // handled idempotently by the `GarblingTableTransferred`
-                // arm below.
+                // We deliberately do NOT re-dispatch a fresh
+                // `TransferGarblingTable` action here. Re-dispatching from
+                // the live receipt path would race with the in-flight
+                // original completion: if the original completion lands
+                // first and advances the step to `SetupComplete`, the
+                // duplicate action gets rejected by
+                // `setup_transfer_session` and the garbling coordinator
+                // treats the rejection as retryable forever, occupying a
+                // coordinator slot until manual intervention. Recovery
+                // for slots where no in-flight transfer exists (crash
+                // mid-transfer, rolling upgrade from pre-
+                // `locally_transferred` state) is handled by `restore()`,
+                // which runs at process startup and re-dispatches based
+                // on the persisted `pending_receipts` / `transferred` /
+                // `locally_transferred` invariants.
                 let mut all_transferred = false;
                 if locally_transferred[pos] {
                     transferred[pos] = true;
@@ -287,10 +286,9 @@ pub(crate) async fn handle_event<S: StateMut>(
                     debug!(
                         commitment = %receipt_msg.garbling_table_commitment,
                         pos,
-                        "table transfer receipt arrived before local transfer; deferring and re-dispatching transfer"
+                        "table transfer receipt arrived before local transfer; deferring"
                     );
                     pending_receipts[pos] = true;
-                    emit(actions, Action::TransferGarblingTable(eval_seeds[pos]));
                 } else {
                     debug!(
                         commitment = %receipt_msg.garbling_table_commitment,

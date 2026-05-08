@@ -560,7 +560,7 @@ fn transferring_state_with(
 }
 
 #[tokio::test]
-async fn table_transfer_receipt_before_local_transfer_is_deferred_and_redispatches() {
+async fn table_transfer_receipt_before_local_transfer_is_stashed_without_redispatch() {
     // The SM executor processes job completions and inbound network requests
     // on independent select branches, so a real evaluator's receipt can land
     // before our own GarblingTableTransferred completion does. The STF must
@@ -568,17 +568,15 @@ async fn table_transfer_receipt_before_local_transfer_is_deferred_and_redispatch
     // the slot would deadlock).
     //
     // The deferred path stashes the receipt as `pending_receipts[pos] = true`
-    // AND re-dispatches a `TransferGarblingTable` action so a fresh local
-    // completion is guaranteed to land and drain the pending receipt — this
-    // covers the crash-mid-transfer and pre-`locally_transferred` migration
-    // cases where there is no in-flight worker to produce the completion
-    // otherwise.
+    // and trusts the in-flight `TransferGarblingTable` completion to drain
+    // it. We must NOT re-dispatch a fresh action here: the original
+    // completion is in flight; if it lands first and advances the step to
+    // `SetupComplete`, the duplicate would be rejected by
+    // `setup_transfer_session` and the garbling coordinator would retry the
+    // rejection forever, occupying a coordinator slot. Crash recovery and
+    // rolling-upgrade migration are handled by `restore()` instead.
     let mut state = StoredGarblerState::default();
     let (root, eval_commitments) = transferring_state_with(0x10);
-    let expected_seed = match &root.step {
-        Step::TransferringGarblingTables { eval_seeds, .. } => eval_seeds[0],
-        _ => unreachable!(),
-    };
     state.put_root_state(&root).await.unwrap();
 
     let mut actions = Vec::new();
@@ -591,20 +589,10 @@ async fn table_transfer_receipt_before_local_transfer_is_deferred_and_redispatch
     )
     .await
     .expect("early receipt must be deferred, not rejected");
-    let redispatched = actions
-        .iter()
-        .filter_map(|action| match action {
-            fasm::actions::Action::Tracked(tracked) => match tracked.action() {
-                Action::TransferGarblingTable(seed) => Some(*seed),
-                _ => None,
-            },
-            fasm::actions::Action::Untracked(_) => None,
-        })
-        .next();
-    assert_eq!(
-        redispatched.map(|s| s.to_hex()),
-        Some(expected_seed.to_hex()),
-        "deferred receipt must re-dispatch TransferGarblingTable for the slot's seed"
+    assert!(
+        actions.is_empty(),
+        "early receipt must not re-dispatch any action; got {} actions",
+        actions.len()
     );
 
     let root = state.get_root_state().await.unwrap().unwrap();
@@ -627,6 +615,37 @@ async fn table_transfer_receipt_before_local_transfer_is_deferred_and_redispatch
         transferred.count_ones(),
         0,
         "no slot should be marked transferred until local transfer also lands"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_pending_receipt_does_not_redispatch() {
+    // Two receipts arrive for the same slot before any local completion
+    // (e.g. evaluator restarted and re-sent). The first stashes
+    // `pending_receipts[0] = true`; the second hits the `else` branch
+    // ("duplicate pending; ignored"). Neither must enqueue a
+    // `TransferGarblingTable` action — the in-flight original transfer
+    // owns the local-completion path.
+    let mut state = StoredGarblerState::default();
+    let (root, eval_commitments) = transferring_state_with(0x12);
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    for _ in 0..2 {
+        handle_event(
+            &mut state,
+            Input::RecvTableTransferReceipt(TableTransferReceiptMsg {
+                garbling_table_commitment: eval_commitments[0],
+            }),
+            &mut actions,
+        )
+        .await
+        .expect("repeated early receipt must be deferred, not rejected");
+    }
+    assert!(
+        actions.is_empty(),
+        "duplicate early receipts must not enqueue any action; got {} actions",
+        actions.len()
     );
 }
 
