@@ -8,14 +8,6 @@ use crate::{
     SetupInputs,
 };
 
-/// Default for the per-slot bool arrays that gate `TransferringGarblingTables`
-/// progression (see `locally_transferred` / `pending_receipts`). Used as a
-/// `#[serde(default)]` fallback so root states persisted before those fields
-/// existed deserialize cleanly with all-`false` flags.
-fn default_eval_circuits_bool_array() -> HeapArray<bool, N_EVAL_CIRCUITS> {
-    HeapArray::from_elem(false)
-}
-
 /// Root state for the garbler in the setup protocol.
 ///
 /// Contains the configuration and current step in the protocol state machine.
@@ -91,12 +83,6 @@ crate::state_machine::define_step_phase! {
             /// Set when our local `TransferGarblingTable` action has reported a
             /// successful completion for this slot. A peer-controlled receipt
             /// only graduates a slot to `transferred` once this flag is set.
-            ///
-            /// `#[serde(default)]`: pre-existing persisted root states from
-            /// before this field was introduced will deserialize with all
-            /// flags `false`, which is the conservative starting state for
-            /// a slot whose previous transfer history is unknown.
-            #[serde(default = "default_eval_circuits_bool_array")]
             locally_transferred: HeapArray<bool, N_EVAL_CIRCUITS>,
             /// Set when a `TableTransferReceiptMsg` arrived for this slot
             /// before `locally_transferred` was true. The SM executor's
@@ -105,9 +91,6 @@ crate::state_machine::define_step_phase! {
             /// the STF before our own local-transfer completion does. We
             /// stash the receipt and graduate the slot to `transferred`
             /// once the matching local-transfer completion also lands.
-            ///
-            /// `#[serde(default)]` for the same backward-compat reason.
-            #[serde(default = "default_eval_circuits_bool_array")]
             pending_receipts: HeapArray<bool, N_EVAL_CIRCUITS>,
             /// Set when both `locally_transferred` and a receipt have been
             /// observed for the slot. `SetupComplete` requires every entry
