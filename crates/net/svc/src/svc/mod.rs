@@ -20,6 +20,7 @@
 
 mod conn;
 mod handlers;
+mod peer_rate_limit;
 mod state;
 mod stream;
 mod tasks;
@@ -284,6 +285,8 @@ async fn run_service_async(
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<ServiceEvent>();
 
     // Main service state (owned by this task, no mutex needed)
+    let peer_rate_limiter =
+        peer_rate_limit::PeerStreamRateLimiter::new(config.peer_stream_rate_limit);
     let mut state = ServiceState {
         config: config.clone(),
         endpoint: endpoint.clone(),
@@ -304,6 +307,7 @@ async fn run_service_async(
         next_overlap_key: 1,
         next_connection_generation: 1,
         resolved_outbound_attempt_by_peer: HashMap::new(),
+        peer_rate_limiter,
     };
 
     // Schedule initial connections to all peers.

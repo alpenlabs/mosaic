@@ -1435,6 +1435,36 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
 
             match stream_type {
                 mosaic_net_wire::StreamType::Protocol => {
+                    // Per-peer protocol-stream rate limit. If the peer has
+                    // exhausted its bucket, reset the stream rather than
+                    // routing it. Bulk transfers are deliberately not
+                    // rate-limited here (they're application-driven and
+                    // already gated by the protocol layer).
+                    //
+                    // The limiter throttles its own warn-level log to once
+                    // per peer per window so that an abusive peer can't
+                    // drive log amplification at the stream-open rate.
+                    // Subsequent rejects in the throttle window still
+                    // reset the stream, just at debug level.
+                    match state.peer_rate_limiter.try_admit(peer) {
+                        super::peer_rate_limit::AdmissionDecision::Admit => {}
+                        super::peer_rate_limit::AdmissionDecision::Reject { warn: true } => {
+                            tracing::warn!(
+                                peer = %hex::encode(peer),
+                                "rate limit exceeded for inbound protocol stream; resetting (further rejects within window will log at debug)"
+                            );
+                            let _ = send.reset(0u32.into());
+                            return;
+                        }
+                        super::peer_rate_limit::AdmissionDecision::Reject { warn: false } => {
+                            tracing::debug!(
+                                peer = %hex::encode(peer),
+                                "rate limit exceeded for inbound protocol stream; resetting"
+                            );
+                            let _ = send.reset(0u32.into());
+                            return;
+                        }
+                    }
                     tasks::spawn_protocol_stream_router(
                         peer,
                         send,
