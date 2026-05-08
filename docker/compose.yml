@@ -18,8 +18,12 @@ services:
       - ./vol/fdb/fdb.cluster:/var/fdb/fdb.cluster:rw
       - ./vol/fdb/data:/var/fdb/data
     ports:
+      # Bind FoundationDB strictly to loopback so the database (which holds
+      # protocol-secret material) is reachable only from the local host.
+      # Inter-container traffic uses the Compose network at
+      # `foundationdb:4500` and is unaffected.
       # Keep this port in sync with ./vol/fdb/fdb.cluster
-      - "4500:4500"
+      - "127.0.0.1:4500:4500"
     healthcheck:
       test:
         [
