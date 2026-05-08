@@ -35,8 +35,15 @@ pub struct JobSchedulerConfig {
     /// Garbling coordinator: coordinated topology reads + garbling.
     pub garbling: GarblingConfig,
     /// Capacity of the submission channel.
+    ///
+    /// No longer load-bearing: the submission channel is now unbounded to
+    /// avoid bounded-queue cycle deadlocks with the SM executor (see #221).
+    /// Retained for config compatibility; ignored at runtime.
     pub submission_queue_size: usize,
     /// Capacity of the completion channel.
+    ///
+    /// No longer load-bearing: the completion channel is now unbounded for
+    /// the same reason as `submission_queue_size`.
     pub completion_queue_size: usize,
 }
 
@@ -134,11 +141,24 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// After construction, call [`run`](Self::run) to start the dispatch loop.
     pub fn new(config: JobSchedulerConfig, dispatcher: D) -> (Self, JobSchedulerHandle) {
         // Channel for SM Scheduler → Job Scheduler (batch submissions).
-        let (submit_tx, submission_rx) = kanal::bounded_async(config.submission_queue_size);
+        //
+        // Unbounded: the SM scheduler's STF can produce these inline while
+        // processing a job completion. Bounding this channel created a
+        // cycle-deadlock against the worker → SM-executor completion channel
+        // under failure bursts (see #221). Volume here is bounded upstream
+        // by per-peer protocol-message rate limiting (#220).
+        let (submit_tx, submission_rx) = kanal::unbounded_async();
 
         // Channel for Job Scheduler → SM Scheduler (completed results).
-        let (completion_tx, completion_rx) = kanal::bounded_async(config.completion_queue_size);
-        let (fault_tx, fault_rx) = kanal::bounded_async(16);
+        //
+        // Unbounded for the same reason as the submission channel: workers
+        // produce completions at the rate jobs finish, and a bounded receive
+        // side could block them while the SM executor is mid-processing.
+        let (completion_tx, completion_rx) = kanal::unbounded_async();
+
+        // Worker fault reports. Unbounded so a faulting worker never blocks
+        // on send; volume is tiny (one per faulting thread).
+        let (fault_tx, fault_rx) = kanal::unbounded_async();
 
         let executor = Arc::new(dispatcher);
 

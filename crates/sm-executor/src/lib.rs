@@ -226,7 +226,13 @@ where
         job_handle: JobSchedulerHandle,
         net_client: NetClient,
     ) -> (Self, SmExecutorHandle) {
-        let (command_tx, command_rx) = kanal::bounded_async(config.command_queue_size);
+        // Unbounded: this channel carries operator/RPC-driven commands
+        // (Init, DepositInit, etc.). The producers are in-process trusted
+        // components and volume is low. Keeping it unbounded avoids any
+        // possibility of an admin RPC call blocking the executor loop or
+        // vice versa under load (see #221).
+        let _ = config.command_queue_size; // retained for config compatibility; ignored.
+        let (command_tx, command_rx) = kanal::unbounded_async();
         let handle = SmExecutorHandle::new(command_tx);
 
         (
