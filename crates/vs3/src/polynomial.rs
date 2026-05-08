@@ -47,6 +47,21 @@ impl CanonicalDeserialize for Index {
 
 impl Valid for Index {
     fn check(&self) -> Result<(), ark_serialize::SerializationError> {
+        // Reject indices above `MAX` outright. Such values can only arise
+        // from a malformed wire encoding (the safe `Index::new` never
+        // produces them) and would otherwise reach downstream array
+        // indexing or fixed-length conversions that assume `<= MAX`.
+        //
+        // `Index(0)` (the reserved evaluation point) is intentionally
+        // accepted: it is not a legitimate *challenge* index but it IS
+        // legitimately serialized in protocol messages — e.g. shares at
+        // the reserved point in
+        // `ChallengeResponseMsgHeader::reserved_setup_input_shares`.
+        // Challenge-index range/uniqueness is enforced at the protocol
+        // boundary in `is_valid_challenge`.
+        if self.0 > Self::MAX {
+            return Err(ark_serialize::SerializationError::InvalidData);
+        }
         Ok(())
     }
 }
@@ -307,6 +322,24 @@ mod tests {
         // Test invalid indices
         assert!(Index::new(0).is_none()); // Below MIN
         assert!(Index::new(Index::MAX + 1).is_none()); // Above MAX
+    }
+
+    #[test]
+    fn valid_check_rejects_above_max_but_accepts_reserved_zero() {
+        // `Index(0)` (reserved) must round-trip through canonical
+        // (de)serialization with validation, since it appears in
+        // legitimate protocol messages (e.g. shares at the reserved
+        // evaluation point).
+        assert!(Index::reserved().check().is_ok());
+        // Within-range values are accepted.
+        assert!(Index::new(Index::MIN).unwrap().check().is_ok());
+        assert!(Index::new(Index::MAX).unwrap().check().is_ok());
+        // Above-MAX values can only appear from a malformed wire
+        // encoding and must be rejected at the validation boundary.
+        let bad = Index(Index::MAX + 1);
+        assert!(bad.check().is_err());
+        let way_bad = Index(usize::MAX);
+        assert!(way_bad.check().is_err());
     }
 
     #[test]

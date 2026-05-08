@@ -1110,15 +1110,36 @@ fn generate_garbling_table_seeds(base_seed: Seed) -> AllGarblingSeeds {
     HeapArray::from_vec(garbling_seeds)
 }
 
-/// challenge indices must be in range, must not include 0, etc
+/// Validate a peer-supplied [`ChallengeMsg`].
+///
+/// `ChallengeIndices` is a fixed-length `HeapArray<Index, N_OPEN_CIRCUITS>`,
+/// so cardinality is implicit. We additionally enforce:
+///
+/// - no entry equals the reserved index (0),
+/// - every entry is in `[Index::MIN, Index::MAX]` (defense in depth — the `Valid` impl on `Index`
+///   also rejects out-of-range values during canonical deserialization, but we don't rely on the
+///   caller having opted in to `Validate::Yes`),
+/// - no duplicates.
+///
+/// Without the duplicate check, downstream code paths (`get_eval_indices`'s
+/// fixed-length conversion in particular) panic on malformed input from an
+/// authenticated peer, which is a DoS vector.
 fn is_valid_challenge(challenge: &ChallengeMsg) -> bool {
-    !challenge
-        .challenge_indices
-        .iter()
-        .any(|x| *x == Index::reserved())
-    // does not include reserved index
-    // ChallengeMsg in itself includes `Index` struct which can only be initialized within valid
-    // bounds so the range check is done during deserialization itself
+    let reserved = Index::reserved();
+    let mut seen = std::collections::HashSet::with_capacity(challenge.challenge_indices.len());
+    for idx in challenge.challenge_indices.iter() {
+        if *idx == reserved {
+            return false;
+        }
+        let raw = idx.get();
+        if !(Index::MIN..=Index::MAX).contains(&raw) {
+            return false;
+        }
+        if !seen.insert(raw) {
+            return false;
+        }
+    }
+    true
 }
 
 fn create_challenge_response_msg_header(
@@ -1172,4 +1193,51 @@ fn get_eval_seeds(
         let seed_idx = eval_indices[i].get() - 1;
         garbling_seeds[seed_idx]
     })
+}
+
+#[cfg(test)]
+mod challenge_validation_tests {
+    use mosaic_cac_types::HeapArray;
+    use mosaic_common::constants::N_OPEN_CIRCUITS;
+
+    use super::*;
+
+    fn make_challenge(indices: &[usize]) -> ChallengeMsg {
+        let challenge_indices: ChallengeIndices = HeapArray::new(|i| {
+            let raw = indices[i];
+            // Allow constructing out-of-range entries for negative tests by
+            // bypassing `Index::new`. The Index API does not normally permit
+            // 0 / out-of-range values, but a malicious peer can produce them
+            // by hand-crafting wire bytes; the validator must catch that.
+            if raw == 0 {
+                Index::reserved()
+            } else {
+                Index::new(raw).unwrap_or_else(Index::reserved)
+            }
+        });
+        ChallengeMsg { challenge_indices }
+    }
+
+    #[test]
+    fn rejects_reserved_index() {
+        // First entry is the reserved index (0).
+        let mut indices: Vec<usize> = (1..=N_OPEN_CIRCUITS).collect();
+        indices[0] = 0;
+        assert!(!is_valid_challenge(&make_challenge(&indices)));
+    }
+
+    #[test]
+    fn rejects_duplicate_indices() {
+        // Two entries point to the same circuit. Without the dup check, the
+        // downstream `get_eval_indices` fixed-length conversion panics.
+        let mut indices: Vec<usize> = (1..=N_OPEN_CIRCUITS).collect();
+        indices[1] = indices[0];
+        assert!(!is_valid_challenge(&make_challenge(&indices)));
+    }
+
+    #[test]
+    fn accepts_well_formed_challenge() {
+        let indices: Vec<usize> = (1..=N_OPEN_CIRCUITS).collect();
+        assert!(is_valid_challenge(&make_challenge(&indices)));
+    }
 }
