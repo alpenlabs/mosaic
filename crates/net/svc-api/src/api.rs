@@ -660,15 +660,12 @@ impl BulkTransferExpectation {
     }
 
     /// Explicitly cancel the registered expectation.
-    pub async fn cancel(self) {
-        let _ = self
-            .command_tx
-            .send(NetCommand::CancelBulkTransfer {
-                peer: self.peer,
-                identifier: self.identifier,
-            })
-            .await;
-    }
+    ///
+    /// Cancellation is sent best-effort by the [`Drop`] impl, which uses
+    /// `try_send` so it never blocks the caller if net-svc's command queue
+    /// is full. Consuming `self` here makes intent explicit and lets the
+    /// `Drop` run immediately.
+    pub fn cancel(self) {}
 
     /// Borrow the underlying receiver.
     pub fn receiver(&self) -> &AsyncReceiver<Stream> {

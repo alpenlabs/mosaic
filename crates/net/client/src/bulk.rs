@@ -146,15 +146,24 @@ impl BulkExpectation {
             Ok(Ok(stream)) => Ok(BulkReceiver::new(stream)),
             Ok(Err(_)) => Err(BulkReceiveError::Closed),
             Err(TimeoutElapsed) => {
-                self.cancel().await;
+                // Narrow the race window: a stream may have been delivered
+                // to the channel after `select` chose the timer but before
+                // we got here. Take it if so.
+                if let Ok(Some(stream)) = self.inner.receiver().try_recv() {
+                    return Ok(BulkReceiver::new(stream));
+                }
+                self.cancel();
                 Err(BulkReceiveError::TimedOut)
             }
         }
     }
 
     /// Explicitly cancel the registered expectation.
-    pub async fn cancel(self) {
-        self.inner.cancel().await;
+    ///
+    /// Best-effort: cancellation is delivered by the inner expectation's
+    /// `Drop` via `try_send`, so this call never blocks.
+    pub fn cancel(self) {
+        self.inner.cancel();
     }
 }
 

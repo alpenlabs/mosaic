@@ -95,7 +95,22 @@ impl<SP: StorageProvider, TS: TableStore> MosaicExecutor<SP, TS> {
             return Ok(bytes);
         }
 
-        let computed = compute_expected_table_ciphertext_bytes(&self.circuit_path)?;
+        // The circuit reader does synchronous file I/O. Run it on a
+        // dedicated OS thread so it cannot stall the runtime that called us
+        // (workers run on a thread-per-core monoio, where blocking I/O
+        // halts every cooperatively-scheduled task on that thread).
+        let circuit_path = self.circuit_path.clone();
+        let (tx, rx) = kanal::bounded_async(1);
+        std::thread::spawn(move || {
+            let _ = tx
+                .to_sync()
+                .send(compute_expected_table_ciphertext_bytes(&circuit_path));
+        });
+        let computed = rx
+            .recv()
+            .await
+            .map_err(|_| CircuitError::SetupFailed("circuit reader thread exited".into()))??;
+
         let mut cached = self.expected_ciphertext_bytes.lock();
         Ok(*cached.get_or_insert(computed))
     }
