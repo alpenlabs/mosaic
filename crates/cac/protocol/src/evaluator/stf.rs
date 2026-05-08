@@ -829,9 +829,11 @@ async fn handle_recv_challenge_response_header<S: StateMut>(
                 .await
                 .require("expected output poly commit")?;
 
-            if let Some(failure_reason) =
-                verify_opened_output_shares(&opened_output_shares, &output_polynomial_commitment)
-            {
+            if let Some(failure_reason) = verify_opened_output_shares(
+                &opened_output_shares,
+                &output_polynomial_commitment,
+                &challenge_idxs,
+            ) {
                 warn!(reason = %failure_reason, "evaluator opened output shares verification failed, aborting");
                 root_state.step = Step::Aborted {
                     reason: format!("invalid opened output shares: {}", failure_reason),
@@ -1360,15 +1362,28 @@ fn verify_reserved_setup_input_shares(
     None
 }
 
-/// Verify each opened output share against the output polynomial commitment.
-/// Returns failure reason or None.
+/// Verify each opened output share matches its challenged index and the output
+/// polynomial commitment. Returns failure reason or None.
 fn verify_opened_output_shares(
     opened_output_shares: &OpenedOutputShares,
     output_polynomial_commitment: &OutputPolynomialCommitment,
+    challenge_indices: &ChallengeIndices,
 ) -> Option<String> {
     let output_polynomial_commitment = &output_polynomial_commitment[0];
 
-    for opened_output_share in opened_output_shares {
+    for (position, (opened_output_share, challenge_index)) in opened_output_shares
+        .iter()
+        .zip(challenge_indices.iter())
+        .enumerate()
+    {
+        if opened_output_share.index() != *challenge_index {
+            return Some(format!(
+                "opened output share at position {position} has index {}, expected {}",
+                opened_output_share.index(),
+                challenge_index
+            ));
+        }
+
         if output_polynomial_commitment
             .verify_share(*opened_output_share)
             .is_err()

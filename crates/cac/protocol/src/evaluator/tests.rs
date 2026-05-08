@@ -963,6 +963,51 @@ async fn valid_opened_output_shares_are_persisted() {
 }
 
 #[tokio::test]
+async fn opened_output_share_with_wrong_challenge_index_aborts_without_persisting() {
+    let mut rng = ChaCha20Rng::seed_from_u64(3);
+    let output_polynomial = Polynomial::rand(&mut rng);
+    let challenge_indices = ChallengeIndices::new(|i| Index::new(i + 1).unwrap());
+
+    let mut state = StoredEvaluatorState::default();
+    seed_evaluator_for_challenge_response(&mut state, &output_polynomial, &challenge_indices).await;
+
+    let (mut header, _) = build_valid_response_header(&output_polynomial, &challenge_indices);
+
+    // Duplicate a committed, otherwise valid share into another opened position.
+    // verify_share accepts the embedded index, so the evaluator must also
+    // require each opened share index to match the corresponding challenge.
+    header.opened_output_shares[1] = header.opened_output_shares[0];
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvChallengeResponseMsgHeader(header),
+        &mut actions,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "wrong-index header should abort, not error: {result:?}"
+    );
+    assert!(actions.is_empty(), "abort path must not emit actions");
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    match root.step {
+        Step::Aborted { reason } => {
+            assert!(
+                reason.contains("has index"),
+                "unexpected abort reason: {reason}"
+            );
+        }
+        other => panic!("expected Aborted, got: {other:?}"),
+    }
+
+    assert_eq!(state.get_opened_output_shares().await.unwrap(), None);
+    assert_eq!(state.get_reserved_setup_input_shares().await.unwrap(), None);
+    assert_eq!(state.get_opened_garbling_seeds().await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn corrupted_opened_output_share_aborts_without_persisting() {
     let mut rng = ChaCha20Rng::seed_from_u64(2);
     let output_polynomial = Polynomial::rand(&mut rng);
