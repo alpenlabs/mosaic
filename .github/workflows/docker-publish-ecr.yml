@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       image_tag:
-        description: Optional image tag override. Defaults to the resolved short SHA.
+        description: Optional image tag override. Must start with dev-, manual- or test-. Defaults to the resolved short SHA.
         required: false
         type: string
 
@@ -69,6 +69,19 @@ jobs:
             fi
             if [[ ! "${INPUT_IMAGE_TAG}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
               echo "::error::image_tag must match [A-Za-z0-9._-]{1,128}"
+              exit 1
+            fi
+
+            # Allowlist for user-supplied image_tag values. The only
+            # production tag namespace is the short SHA that the default
+            # path pushes to both private and public ECR, and a
+            # dispatcher can supply that exact SHA as an override to
+            # overwrite a trusted tag from an arbitrary ref. A denylist of
+            # reserved names cannot cover this: the trusted namespace is
+            # exactly the shape an attacker would reuse. Accept only
+            # explicitly non-production prefixes.
+            if [[ ! "${INPUT_IMAGE_TAG}" =~ ^(dev|manual|test)-[A-Za-z0-9._-]{1,120}$ ]]; then
+              echo "::error::image_tag '${INPUT_IMAGE_TAG}' is not allowed via workflow_dispatch; tag must start with dev-, manual- or test-"
               exit 1
             fi
           fi
