@@ -41,7 +41,16 @@ impl CanonicalDeserialize for Index {
         validate: Validate,
     ) -> Result<Self, ark_serialize::SerializationError> {
         let value = u64::deserialize_with_mode(reader, compress, validate)?;
-        Ok(Self(value as usize))
+        let index = Self(value as usize);
+        // Honor `Validate::Yes` for direct calls. Container types
+        // (`HeapArray<Index, _>`, derived structs containing `Index`, …)
+        // batch-check elements via `Valid::check`, but a top-level
+        // `Index::deserialize` / `deserialize_compressed` would otherwise
+        // skip the bounds check and accept out-of-range values.
+        if matches!(validate, Validate::Yes) {
+            index.check()?;
+        }
+        Ok(index)
     }
 }
 
@@ -322,6 +331,28 @@ mod tests {
         // Test invalid indices
         assert!(Index::new(0).is_none()); // Below MIN
         assert!(Index::new(Index::MAX + 1).is_none()); // Above MAX
+    }
+
+    #[test]
+    fn deserialize_with_validate_yes_rejects_above_max() {
+        // Encode a u64 above MAX directly and confirm `deserialize_compressed`
+        // (which uses `Validate::Yes`) rejects it. `deserialize_compressed_unchecked`
+        // (`Validate::No`) must accept the same bytes — the validation gate is
+        // the only difference.
+        let mut buf = Vec::new();
+        ((Index::MAX as u64) + 1)
+            .serialize_compressed(&mut buf)
+            .unwrap();
+
+        assert!(Index::deserialize_compressed(&buf[..]).is_err());
+        let unchecked = Index::deserialize_compressed_unchecked(&buf[..]).unwrap();
+        assert_eq!(unchecked.get(), Index::MAX + 1);
+
+        // Reserved index 0 round-trips with validation.
+        let mut buf = Vec::new();
+        Index::reserved().serialize_compressed(&mut buf).unwrap();
+        let round = Index::deserialize_compressed(&buf[..]).unwrap();
+        assert_eq!(round, Index::reserved());
     }
 
     #[test]
