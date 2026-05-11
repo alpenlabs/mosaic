@@ -3939,7 +3939,7 @@ checksum = "4af28eeb7c18ac2dbdb255d40bee63f203120e1db6b0024b177746ebec7049c1"
 [[package]]
 name = "strata-codec"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/strata-common.git#48ec7e1795bcba7914ef9808ae82875dcbac8138"
+source = "git+https://github.com/alpenlabs/strata-common.git#75763ada955765fb7cb32dba045c7484f591aa25"
 dependencies = [
  "thiserror 2.0.18",
 ]
