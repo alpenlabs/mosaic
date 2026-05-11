@@ -32,7 +32,7 @@ use std::{
 };
 
 use ahash::{HashMap, HashMapExt};
-use kanal::{AsyncReceiver, AsyncSender, bounded_async};
+use kanal::{AsyncReceiver, AsyncSender, bounded_async, unbounded_async};
 use quinn::{Endpoint, ServerConfig};
 use state::{OpenRequestCancelRegistry, PeerConnectionState, ServiceEvent, ServiceState};
 use tokio::runtime::Builder;
@@ -156,10 +156,19 @@ impl NetService {
         // Precompute allowed peers set once (avoid per-accept allocation).
         let allowed_peers: Arc<HashSet<PeerId>> = Arc::new(config.peer_ids().copied().collect());
 
-        // Command channel (handles -> service)
-        let (command_tx, command_rx) = bounded_async(64);
+        // Command channel (handles -> service).
+        //
+        // Unbounded: producers are in-process (NetClient/BulkExpectation
+        // handles), volume is bounded by application code, and bounding it
+        // created a deadlock risk for callers that needed to send a cancel
+        // command from inside a worker (see #221, PR #198).
+        let (command_tx, command_rx) = unbounded_async();
 
-        // Protocol stream channel (service -> handles)
+        // Protocol stream channel (service -> handles).
+        //
+        // Stays bounded: this channel is fed by inbound peer streams. The
+        // boundary admission story (per-peer protocol-message rate limits,
+        // #220) bounds peer fan-in upstream of this channel.
         let (protocol_stream_tx, protocol_stream_rx) = bounded_async(64);
 
         // Shutdown channel

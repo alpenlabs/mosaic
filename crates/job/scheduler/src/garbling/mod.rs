@@ -300,7 +300,12 @@ impl GarblingCoordinator {
         completion_tx: kanal::AsyncSender<JobCompletion>,
         fault_tx: kanal::AsyncSender<SchedulerFault>,
     ) -> Self {
-        let (submit_tx, submit_rx) = kanal::bounded_async(config.max_concurrent * 2);
+        // Unbounded: the scheduler dispatch loop forwards each circuit
+        // action through this channel inline. Bounding it head-of-line
+        // blocks unrelated dispatch when a garbling pass is in progress
+        // (see #182). Volume is bounded upstream by per-peer protocol-message
+        // rate limiting (#220).
+        let (submit_tx, submit_rx) = kanal::unbounded_async();
 
         let coordinator_thread_name = "garbling-coordinator".to_string();
         let thread = std::thread::Builder::new()
