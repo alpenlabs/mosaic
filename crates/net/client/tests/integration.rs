@@ -19,6 +19,8 @@ mod port_allocator;
 
 use ark_serialize as _;
 use ed25519_dalek as _;
+use futures_timer as _;
+use futures_util as _;
 use mosaic_net_svc_api as _;
 use mosaic_vs3 as _;
 use rand as _;
@@ -222,6 +224,18 @@ where
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
+        .build()
+        .unwrap()
+        .block_on(f)
+}
+
+fn run_monoio<F, T>(f: F) -> T
+where
+    F: std::future::Future<Output = T> + 'static,
+    T: Send + 'static,
+{
+    monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+        .enable_timer()
         .build()
         .unwrap()
         .block_on(f)
@@ -700,6 +714,54 @@ fn test_send_times_out_without_ack() {
             .await
             .expect("send task join timed out")
             .expect("send task panicked");
+
+        match result {
+            Err(SendError::NoAck(_)) => {}
+            Ok(_) => panic!("expected NoAck error, got Ok"),
+            Err(other) => panic!("expected NoAck error, got {:?}", other),
+        }
+    });
+}
+
+#[test]
+fn test_send_times_out_without_ack_on_monoio() {
+    let ack_timeout = Duration::from_millis(200);
+    let config = NetClientConfig {
+        open_timeout: Duration::from_secs(2),
+        ack_timeout,
+    };
+    let (peer_a, peer_b) = create_client_pair_with_config(config);
+
+    run_async(async {
+        stabilize_stream_path(&peer_a, &peer_b).await;
+
+        let msg = make_challenge_msg(42);
+        let peer_b_id = peer_b.peer_id();
+        let client_a = peer_a.client.clone();
+        let handle_b = peer_b.client.handle().clone();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+
+        std::thread::spawn(move || {
+            let result = run_monoio(async move { client_a.send(peer_b_id, msg).await });
+            let _ = result_tx.send(result);
+        });
+
+        // Receive raw stream but do not ack it.
+        let mut stream =
+            match tokio::time::timeout(Duration::from_secs(10), handle_b.protocol_streams().recv())
+                .await
+            {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(e)) => panic!("recv failed before stream arrived: {:?}", e),
+                Err(_) => panic!("timed out waiting for raw stream"),
+            };
+        let _bytes = stream.read().await.expect("read failed");
+
+        tokio::time::sleep(ack_timeout.saturating_mul(2)).await;
+
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("send thread did not return before timeout");
 
         match result {
             Err(SendError::NoAck(_)) => {}
