@@ -7,7 +7,9 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt,
+    future::Future,
     ops::Bound,
+    pin::Pin,
     sync::{Arc, Mutex},
 };
 
@@ -405,74 +407,6 @@ impl FdbReadOnlyStore {
     fn new(db: Arc<Database>, prefix: Vec<u8>) -> Self {
         Self { db, prefix }
     }
-
-    async fn collect_range(
-        &self,
-        start: Bound<Vec<u8>>,
-        end: Bound<Vec<u8>>,
-        reverse: bool,
-    ) -> Result<Vec<KvPair>, FdbStorageError> {
-        self.db
-            .transact_boxed(
-                RangeRequest {
-                    prefix: self.prefix.clone(),
-                    start,
-                    end,
-                    reverse,
-                },
-                |tx, request| {
-                    Box::pin(async move {
-                        let mut cursor = make_cursor(
-                            &request.prefix,
-                            request.start.clone(),
-                            request.end.clone(),
-                            request.reverse,
-                        );
-                        let mut out = Vec::new();
-
-                        loop {
-                            let Some(opt) = cursor.opt.take() else {
-                                return Ok(out);
-                            };
-                            let values = tx.get_range(&opt, cursor.iteration, false).await?;
-                            cursor.iteration += 1;
-                            cursor.opt = opt.next_range(&values);
-
-                            for kv in values {
-                                let key = kv
-                                    .key()
-                                    .strip_prefix(request.prefix.as_slice())
-                                    .ok_or(FdbStorageError::PrefixViolation)?
-                                    .to_vec();
-                                out.push(KvPair {
-                                    key,
-                                    value: kv.value().to_vec(),
-                                });
-                            }
-                        }
-                    })
-                },
-                TransactOption::idempotent(),
-            )
-            .await
-    }
-
-    fn stream_from_pairs<'a>(mut pairs: VecDeque<KvPair>) -> KvStream<'a, FdbStorageError> {
-        KvStream::new(async move {
-            match pairs.pop_front() {
-                Some(pair) => Ok(Some((pair, Self::stream_from_pairs(pairs)))),
-                None => Ok(None),
-            }
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct RangeRequest {
-    prefix: Vec<u8>,
-    start: Bound<Vec<u8>>,
-    end: Bound<Vec<u8>>,
-    reverse: bool,
 }
 
 fn prefix_key(prefix: &[u8], key: &[u8]) -> Vec<u8> {
@@ -529,23 +463,6 @@ fn clear_range_end_key(prefix: &[u8], bound: Bound<Vec<u8>>) -> Vec<u8> {
         Bound::Included(key) => first_greater_than_key(&prefix_key(prefix, &key)),
         Bound::Excluded(key) => prefix_key(prefix, &key),
         Bound::Unbounded => next_prefix(prefix).unwrap_or_else(|| vec![0xFF]),
-    }
-}
-
-fn make_cursor(
-    prefix: &[u8],
-    start: Bound<Vec<u8>>,
-    end: Bound<Vec<u8>>,
-    reverse: bool,
-) -> RangeCursor {
-    let mut opt = RangeOption::from((start_selector(prefix, start), end_selector(prefix, end)));
-    opt.reverse = reverse;
-    opt.mode = options::StreamingMode::Iterator;
-
-    RangeCursor {
-        opt: Some(opt),
-        iteration: 1,
-        buffered: VecDeque::new(),
     }
 }
 
@@ -622,21 +539,54 @@ impl KvStore for FdbReadOnlyStore {
         Err(FdbStorageError::ReadOnlyMutation)
     }
 
+    /// Scan a range of keys, streaming each page lazily.
+    ///
+    /// # Single-transaction semantics
+    ///
+    /// **One `range()` call corresponds to exactly one FoundationDB
+    /// transaction**, opened lazily inside the stream and held open for
+    /// the duration of the iteration. Every page read shares that
+    /// transaction's read version, so a scan that completes without
+    /// retries observes a single consistent FoundationDB snapshot.
+    ///
+    /// FDB transactions have a soft limit of ~5 seconds (after which
+    /// reads start returning `transaction_too_old` and the transaction
+    /// must be retried). Because *all* pages in one `range()` call run
+    /// inside the same transaction, that 5-second budget covers the
+    /// entire scan, not each page. Callers iterating very large key
+    /// ranges (or processing each item slowly enough that the total
+    /// scan time would exceed FDB's transaction window) **must split
+    /// the range up themselves** — pick an intermediate cursor key from
+    /// the last item of one batch, then issue a fresh `range()` starting
+    /// from that key. Each new call gets its own transaction and its
+    /// own 5-second budget; cross-batch consistency is then the
+    /// caller's responsibility.
+    ///
+    /// On retryable errors during a page fetch (`transaction_too_old`,
+    /// `process_behind`, ...) the implementation calls
+    /// `Transaction::on_error`, which applies FDB's recommended backoff
+    /// and resets the transaction. Pages observed after a retry are at
+    /// the post-reset snapshot, so retries trade some cross-page
+    /// consistency for liveness — the same trade-off the older
+    /// `transact_boxed`-based scan made when it retried the whole
+    /// closure.
     fn range<'a>(
         &'a self,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
         reverse: bool,
     ) -> KvStream<'a, Self::Error> {
-        let store = self.clone();
+        let db = Arc::clone(&self.db);
+        let prefix = Arc::new(self.prefix.clone());
         let start = owned_bound(start);
         let end = owned_bound(end);
         KvStream::new(async move {
-            let mut pairs = VecDeque::from(store.collect_range(start, end, reverse).await?);
-            match pairs.pop_front() {
-                Some(pair) => Ok(Some((pair, FdbReadOnlyStore::stream_from_pairs(pairs)))),
-                None => Ok(None),
-            }
+            let tx = match db.create_trx() {
+                Ok(tx) => tx,
+                Err(e) => return Err(FdbStorageError::from(e)),
+            };
+            let initial_opt = build_range_option(prefix.as_slice(), start, end, reverse);
+            stream_next_page(tx, prefix, Some(initial_opt), 1, VecDeque::new()).await
         })
     }
 
@@ -647,6 +597,97 @@ impl KvStore for FdbReadOnlyStore {
     ) -> Result<(), Self::Error> {
         Err(FdbStorageError::ReadOnlyMutation)
     }
+}
+
+fn build_range_option(
+    prefix: &[u8],
+    start: Bound<Vec<u8>>,
+    end: Bound<Vec<u8>>,
+    reverse: bool,
+) -> RangeOption<'static> {
+    let mut opt = RangeOption::from((start_selector(prefix, start), end_selector(prefix, end)));
+    opt.reverse = reverse;
+    opt.mode = options::StreamingMode::Iterator;
+    opt
+}
+
+type RangeStreamFuture<'a> = Pin<
+    Box<
+        dyn Future<
+                Output = Result<Option<(KvPair, KvStream<'a, FdbStorageError>)>, FdbStorageError>,
+            > + Send
+            + 'a,
+    >,
+>;
+
+/// Drive a paginated read-only range scan against a single transaction,
+/// retrying transient FDB errors via `Transaction::on_error`.
+///
+/// The transaction is moved by value through each recursion of the stream
+/// future. As long as no retryable error is hit, every page reads at the
+/// same FDB snapshot. On a retryable error during `get_range`,
+/// `tx.on_error(e)` consumes the transaction, applies FDB's recommended
+/// backoff, and returns it reset and ready for retry from the same cursor.
+/// Pages observed after that retry will be at the post-reset snapshot.
+fn stream_next_page<'a>(
+    tx: Transaction,
+    prefix: Arc<Vec<u8>>,
+    cursor_opt: Option<RangeOption<'static>>,
+    iteration: usize,
+    buffered: VecDeque<KvPair>,
+) -> RangeStreamFuture<'a> {
+    Box::pin(async move {
+        let mut tx = tx;
+        let mut cursor_opt = cursor_opt;
+        let mut iteration = iteration;
+        let mut buffered = buffered;
+        loop {
+            if let Some(pair) = buffered.pop_front() {
+                let next_prefix = Arc::clone(&prefix);
+                let next_cursor = cursor_opt;
+                let next_iteration = iteration;
+                let next_buffered = buffered;
+                let next_stream = KvStream::new(async move {
+                    stream_next_page(tx, next_prefix, next_cursor, next_iteration, next_buffered)
+                        .await
+                });
+                return Ok(Some((pair, next_stream)));
+            }
+
+            let Some(opt) = cursor_opt.take() else {
+                return Ok(None);
+            };
+
+            // Retry loop for transient FDB errors. `on_error` consumes the
+            // transaction, applies FDB's exponential backoff, and returns
+            // a fresh transaction ready to retry. If the error is
+            // non-retryable, `on_error` returns Err and we propagate it.
+            let values = loop {
+                match tx.get_range(&opt, iteration, false).await {
+                    Ok(v) => break v,
+                    Err(e) => {
+                        tx = tx.on_error(e).await.map_err(FdbStorageError::from)?;
+                    }
+                }
+            };
+            // `next_range` consumes `self`; clone the cursor (cheap — it's
+            // two key selectors and a few flags) so we can advance it.
+            cursor_opt = opt.clone().next_range(&values);
+            iteration += 1;
+
+            for kv in values.into_iter() {
+                let key = kv
+                    .key()
+                    .strip_prefix(prefix.as_slice())
+                    .ok_or(FdbStorageError::PrefixViolation)?
+                    .to_vec();
+                buffered.push_back(KvPair {
+                    key,
+                    value: kv.value().to_vec(),
+                });
+            }
+        }
+    })
 }
 
 impl Commit for FdbTransaction {
