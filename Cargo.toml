@@ -99,7 +99,7 @@ bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
 bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }
 bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" }
 bitvec = "1.0.1"
-blake3 = "1.6"
+blake3 = "1.8"
 bytes = "1.10"
 ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt" }
 ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
@@ -118,10 +118,10 @@ jsonrpsee-types = "*" # constrained by jsonrpsee dep
 k256 = "0.13.4"
 kanal = "0.1.1"
 monoio = "0.2.4"
-once_cell = "1.21.3"
+once_cell = "1.21.4"
 parking_lot = "0.12"
 postcard = { version = "1.1.3", features = ["alloc"] }
-proptest = "1.5"
+proptest = "1.11"
 rand = "0.8.5"
 rand_chacha = "0.3.1" # constrained by ark-std::rand_core
 rand_core = "0.6"
