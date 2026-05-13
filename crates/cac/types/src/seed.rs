@@ -84,17 +84,58 @@ impl TryFrom<&[u8]> for Seed {
 }
 
 // ---------------------------------------------------------------------------
-// Display / Debug
+// Display / Debug — both deliberately redact secret bytes
 // ---------------------------------------------------------------------------
+//
+// `Seed` carries protocol-secret material (garbling seeds, polynomial seeds).
+// Default formatting (`{}`, `{:?}`, derived `Debug` on enclosing types) must
+// not leak these bytes into logs, panic messages, or operator-visible
+// diagnostics. Callers that need the raw bytes must reach for the explicit
+// accessors (`to_hex`, `as_bytes`, `to_bytes`).
 
 impl fmt::Display for Seed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&hex::encode(self.0))
+        f.write_str("Seed(<redacted>)")
     }
 }
 
 impl fmt::Debug for Seed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Seed({})", hex::encode(self.0))
+        f.write_str("Seed(<redacted>)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_does_not_leak_seed_bytes() {
+        let seed = Seed::from_bytes([0xAB; 32]);
+        let debug = format!("{seed:?}");
+        assert!(
+            !debug.contains("ab"),
+            "Debug must not include raw hex; got: {debug}"
+        );
+        assert_eq!(debug, "Seed(<redacted>)");
+    }
+
+    #[test]
+    fn display_does_not_leak_seed_bytes() {
+        let seed = Seed::from_bytes([0xCD; 32]);
+        let display = format!("{seed}");
+        assert!(
+            !display.contains("cd"),
+            "Display must not include raw hex; got: {display}"
+        );
+        assert_eq!(display, "Seed(<redacted>)");
+    }
+
+    #[test]
+    fn to_hex_remains_the_explicit_accessor() {
+        let seed = Seed::from_bytes([0xEF; 32]);
+        let hex = seed.to_hex();
+        assert_eq!(hex.len(), 64);
+        assert!(hex.starts_with("ef"));
     }
 }
