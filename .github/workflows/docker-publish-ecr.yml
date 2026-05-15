@@ -164,15 +164,17 @@ jobs:
       - name: Create Trivy output directory
         run: mkdir -p trivy-results
 
-      # Ensure .trivyignore exists in the build source — older refs may not have it.
-      - name: Ensure .trivyignore exists in build-src
+      # .trivyignore lives in the root checkout (always main) so only reviewed,
+      # merged code can suppress CVEs — an untrusted inputs.ref cannot manipulate it.
+      # Guard creates an empty file for runs against refs that pre-date the file.
+      - name: Ensure .trivyignore exists
         run: |
-          if [[ ! -f build-src/.trivyignore ]]; then
-            touch build-src/.trivyignore
+          if [[ ! -f .trivyignore ]]; then
+            touch .trivyignore
           fi
 
       # Hard gate — build fails and no image is pushed if CRITICAL or HIGH unfixed
-      # vulnerabilities are found. Add justified exceptions to build-src/.trivyignore.
+      # vulnerabilities are found. Add justified exceptions to .trivyignore via PR.
       - name: Scan Mosaic image with Trivy (hard gate)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -183,7 +185,7 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
-          trivyignores: build-src/.trivyignore
+          trivyignores: .trivyignore
 
       # Advisory SARIF scan — runs even if the hard gate failed so that findings
       # are always visible in the Security tab for triage.
@@ -197,10 +199,9 @@ jobs:
           output: trivy-results/mosaic.sarif
           scanners: vuln
           severity: CRITICAL,HIGH,MEDIUM,LOW
-
           ignore-unfixed: true
           exit-code: "0"
-          trivyignores: build-src/.trivyignore
+          trivyignores: .trivyignore
 
       # Advisory SBOM — CycloneDX artifact for supply chain tracking.
       - name: Generate SBOM with Trivy (CycloneDX)
@@ -213,7 +214,7 @@ jobs:
           output: trivy-results/mosaic.sbom.json
           scanners: vuln
           exit-code: "0"
-          trivyignores: build-src/.trivyignore
+          trivyignores: .trivyignore
 
       # Converts trivy-results/mosaic.json → trivy-results/mosaic.md.
       # The .md file is appended to $GITHUB_STEP_SUMMARY in the "Append publish summary"
