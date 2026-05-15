@@ -164,11 +164,16 @@ jobs:
       - name: Create Trivy output directory
         run: mkdir -p trivy-results
 
+      # Ensure .trivyignore exists in the build source — older refs may not have it.
+      - name: Ensure .trivyignore exists in build-src
+        run: |
+          if [[ ! -f build-src/.trivyignore ]]; then
+            touch build-src/.trivyignore
+          fi
+
       # Hard gate — build fails and no image is pushed if CRITICAL or HIGH unfixed
-      # vulnerabilities are found. Add justified exceptions to .trivyignore.
-      # TODO(STR-2637): remove continue-on-error once base image CVEs are resolved.
+      # vulnerabilities are found. Add justified exceptions to build-src/.trivyignore.
       - name: Scan Mosaic image with Trivy (hard gate)
-        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
@@ -178,7 +183,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-          trivyignores: .trivyignore
+          trivyignores: build-src/.trivyignore
 
       # Advisory SARIF scan — runs even if the hard gate failed so that findings
       # are always visible in the Security tab for triage.
@@ -194,7 +199,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "0"
-          trivyignores: .trivyignore
+          trivyignores: build-src/.trivyignore
 
       # Advisory SBOM — CycloneDX artifact for supply chain tracking.
       - name: Generate SBOM with Trivy (CycloneDX)
@@ -207,7 +212,7 @@ jobs:
           output: trivy-results/mosaic.sbom.json
           scanners: vuln
           exit-code: "0"
-          trivyignores: .trivyignore
+          trivyignores: build-src/.trivyignore
 
       # Converts trivy-results/mosaic.json → trivy-results/mosaic.md.
       # The .md file is appended to $GITHUB_STEP_SUMMARY in the "Append publish summary"
