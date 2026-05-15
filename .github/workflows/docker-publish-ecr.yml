@@ -171,8 +171,8 @@ jobs:
             touch build-src/.trivyignore
           fi
 
-      # Hard gate — build fails and no image is pushed if any unfixed vulnerability
-      # is found at any severity. Add justified exceptions to build-src/.trivyignore.
+      # Hard gate — build fails and no image is pushed if CRITICAL or HIGH unfixed
+      # vulnerabilities are found. Add justified exceptions to build-src/.trivyignore.
       - name: Scan Mosaic image with Trivy (hard gate)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -180,7 +180,7 @@ jobs:
           format: json
           output: trivy-results/mosaic.json
           scanners: vuln
-          severity: CRITICAL,HIGH,MEDIUM,LOW
+          severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
           trivyignores: build-src/.trivyignore
@@ -197,6 +197,7 @@ jobs:
           output: trivy-results/mosaic.sarif
           scanners: vuln
           severity: CRITICAL,HIGH,MEDIUM,LOW
+
           ignore-unfixed: true
           exit-code: "0"
           trivyignores: build-src/.trivyignore

@@ -11,14 +11,3 @@
 # Example:
 #   # CVE-2023-12345: affects x86 only; Mosaic targets amd64 via distroless base — review by 2024-06-01
 #   CVE-2023-12345
-
-# --- Active suppressions ---
-
-# CVE-2026-2219: MEDIUM — dpkg base image package; fix available in 1.22.6ubuntu6.5, pending upstream base image update — review by 2026-06-15
-CVE-2026-2219
-
-# CVE-2026-4878: MEDIUM — libcap2 base image package; fix available in 1:2.66-5ubuntu2.2, pending upstream base image update — review by 2026-06-15
-CVE-2026-4878
-
-# CVE-2026-5958: MEDIUM — sed base image package; fix available in 4.9-2build1, pending upstream base image update — review by 2026-06-15
-CVE-2026-5958
