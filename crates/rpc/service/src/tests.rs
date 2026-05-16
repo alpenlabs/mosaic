@@ -903,7 +903,6 @@ async fn evaluate_tableset_dispatches_disputed_withdrawal() {
         .await;
 
     let data = EvaluatorWithdrawalData {
-        withdrawal_inputs: [0xEEu8; N_WITHDRAWAL_INPUT_WIRES],
         signatures: test_completed_schnorr_signatures(),
     };
 
@@ -929,7 +928,6 @@ async fn evaluate_tableset_rejects_garbler_role() {
     let h = TestHarness::new();
 
     let data = EvaluatorWithdrawalData {
-        withdrawal_inputs: [0u8; N_WITHDRAWAL_INPUT_WIRES],
         signatures: test_completed_schnorr_signatures(),
     };
 
@@ -954,7 +952,6 @@ async fn evaluate_tableset_rejects_wrong_step() {
     .await;
 
     let data = EvaluatorWithdrawalData {
-        withdrawal_inputs: [0u8; N_WITHDRAWAL_INPUT_WIRES],
         signatures: test_completed_schnorr_signatures(),
     };
 

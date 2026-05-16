@@ -258,7 +258,6 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
         let deposit_id = DepositId::from(deposit_id);
 
         let data = EvaluatorWithdrawalData {
-            withdrawal_inputs: withdrawal_data.withdrawal_inputs.into_inner(),
             signatures: withdrawal_data.completed_signatures.into_inner().to_vec(),
         };
 

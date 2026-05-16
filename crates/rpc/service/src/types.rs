@@ -5,7 +5,7 @@
 
 use bitcoin::{XOnlyPublicKey, secp256k1::schnorr::Signature as SchnorrSignature};
 use mosaic_cac_types::{
-    DepositId, DepositInputs, HeapArray, SetupInputs, Sighashes, WithdrawalInputs,
+    DepositId, DepositInputs, HeapArray, SetupInputs, Sighashes,
     state_machine::{
         Role,
         evaluator::{self},
@@ -121,8 +121,6 @@ pub struct EvaluatorDepositInit {
 /// Data for an evaluator contested withdrawal.
 #[derive(Debug)]
 pub struct EvaluatorWithdrawalData {
-    /// Withdrawal input wire values.
-    pub withdrawal_inputs: WithdrawalInputs,
     /// Completed adaptor signatures from the garbler (bitcoin Schnorr format).
     pub signatures: Vec<SchnorrSignature>,
 }

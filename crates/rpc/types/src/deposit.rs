@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     RpcCompletedSignatures, RpcDepositId, RpcDepositInputs, RpcInputSighashes, RpcTablesetId,
-    RpcWithdrawalInputs,
 };
 
 /// Configuration provided as part of deposit setup for garbler.
@@ -38,15 +37,12 @@ pub struct EvaluatorDepositConfig {
 }
 
 /// Configuration provided as part of contested withdrawal for evaluator.
+///
+/// The evaluator recovers the withdrawal input wire values from the completed adaptor
+/// signatures using locally stored adaptor state, so callers no longer need to supply
+/// withdrawal-input hints.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EvaluatorWithdrawalConfig {
-    /// Input values for withdrawal input wires.
-    /// Provided by the corresponding garbler node, this should be considered fast but potentially
-    /// invalid values to extract corresponding shares for evaluation. If these values are
-    /// invalid, fallback to checking all combination of values for withdrawal wires (max 128 * 256
-    /// checks) to get withdrawal inputs. It is guaranteed that atleast one set of values will be
-    /// valid.
-    pub withdrawal_inputs: RpcWithdrawalInputs,
     /// Completed adaptor signatures.
     pub completed_signatures: RpcCompletedSignatures,
 }
