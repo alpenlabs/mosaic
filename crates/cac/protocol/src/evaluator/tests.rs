@@ -772,3 +772,42 @@ async fn ack_with_unknown_commitment_is_invalid_input() {
         "unknown commitment must be InvalidInputData"
     );
 }
+
+#[tokio::test]
+async fn duplicate_garbling_table_received_is_idempotent() {
+    // If `GarblingTableReceived` is delivered twice for the same slot, the
+    // second delivery must not emit a stray `SendTableTransferReceipt` or
+    // perturb state. Symmetric to the duplicate-ack guard.
+    let mut state = StoredEvaluatorState::default();
+    let mut received = HeapArray::from_elem(false);
+    received[0] = true;
+    let (root, eval_commitments, eval_indices) =
+        receiving_garbling_tables_state(received, HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::ReceiveGarblingTable(eval_commitments[0]),
+        ActionResult::GarblingTableReceived(eval_indices[0], eval_commitments[0]),
+        &mut actions,
+    )
+    .await
+    .expect("duplicate GarblingTableReceived must succeed");
+
+    assert!(
+        actions.is_empty(),
+        "duplicate GarblingTableReceived must not emit anything"
+    );
+    let stored = state.get_root_state().await.unwrap().unwrap();
+    let Step::ReceivingGarblingTables {
+        received,
+        receipt_acked,
+        ..
+    } = stored.step
+    else {
+        panic!("expected ReceivingGarblingTables");
+    };
+    assert_eq!(received.count_ones(), 1);
+    assert_eq!(receipt_acked.count_ones(), 0);
+}

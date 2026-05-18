@@ -384,6 +384,10 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 | Step::Aborted { .. } => {
                     debug!("late table transfer receipt ack after step advanced; ignoring");
                 }
+                // `SendTableTransferReceipt` is only emitted from
+                // `ReceivingGarblingTables`, and the step never moves
+                // backward. An ack landing here would imply a framework
+                // bug or stale id; fail closed.
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
@@ -1042,6 +1046,16 @@ async fn handle_table_received<S: StateMut>(
             let Some(pos) = eval_idxs.iter().position(|&x| x == index) else {
                 return Err(SMError::InvalidInputData);
             };
+
+            // Idempotency: a duplicate `GarblingTableReceived` for an already-
+            // marked slot would otherwise emit a stray `SendTableTransferReceipt`.
+            // The framework should not deliver completions twice, but the
+            // handler stays robust to that — symmetric to the duplicate-ack
+            // guard in `TableTransferReceiptAcked`.
+            if received[pos] {
+                debug!(%index, "duplicate GarblingTableReceived; ignoring");
+                return Ok(());
+            }
 
             let expected_commitment = eval_commitments[pos];
             if table_commitment != expected_commitment {
