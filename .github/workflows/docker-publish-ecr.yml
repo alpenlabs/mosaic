@@ -11,12 +11,7 @@ on:
         description: Optional image tag override. Defaults to the resolved short SHA.
         required: false
         type: string
-  push:
-    branches:
-      - 'infra/**'
-    paths:
-      - 'docker/**'
-      - '.github/workflows/docker-publish-ecr.yml'
+
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
