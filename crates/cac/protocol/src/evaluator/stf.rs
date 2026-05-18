@@ -1137,15 +1137,25 @@ pub(crate) async fn restore<S: StateRead>(
             receipt_acked,
             ..
         } => {
-            for ii in 0..eval_commitments.len() {
-                let commitment = eval_commitments[ii];
-                if !received[ii] {
+            for i in 0..eval_commitments.len() {
+                let commitment = eval_commitments[i];
+                // (!received && receipt_acked) is unreachable by construction:
+                // `receipt_acked[i]` can only be set inside this step, and the
+                // ack handler requires `received[i] = true` to have been set
+                // previously (the receipt was emitted in
+                // `handle_table_received`). Asserting the invariant here keeps
+                // the loop honest if future changes accidentally violate it.
+                debug_assert!(
+                    !receipt_acked[i] || received[i],
+                    "receipt_acked[{i}] must imply received[{i}]"
+                );
+                if !received[i] {
                     // Combined action: registers expectation, sends request,
                     // receives table.
                     emit(actions, Action::ReceiveGarblingTable(commitment));
                     continue;
                 }
-                if !receipt_acked[ii] {
+                if !receipt_acked[i] {
                     // Receipt for this slot was emitted in `handle_table_received`
                     // but not yet acked by the network layer. Re-emit so the
                     // garbler is guaranteed to learn this table was received.
