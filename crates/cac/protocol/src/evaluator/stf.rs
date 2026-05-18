@@ -1047,6 +1047,18 @@ async fn handle_table_received<S: StateMut>(
                 return Err(SMError::InvalidInputData);
             };
 
+            // Validate the commitment first so a mismatched duplicate still
+            // aborts (matching the original behaviour) instead of being
+            // silently dropped by the idempotency guard below.
+            let expected_commitment = eval_commitments[pos];
+            if table_commitment != expected_commitment {
+                warn!(%index, "evaluator received garbling table with mismatched commitment, aborting");
+                root_state.step = Step::Aborted {
+                    reason: format!("invalid table for index {}", index),
+                };
+                return Ok(());
+            }
+
             // Idempotency: a duplicate `GarblingTableReceived` for an already-
             // marked slot would otherwise emit a stray `SendTableTransferReceipt`.
             // The framework should not deliver completions twice, but the
@@ -1054,15 +1066,6 @@ async fn handle_table_received<S: StateMut>(
             // guard in `TableTransferReceiptAcked`.
             if received[pos] {
                 debug!(%index, "duplicate GarblingTableReceived; ignoring");
-                return Ok(());
-            }
-
-            let expected_commitment = eval_commitments[pos];
-            if table_commitment != expected_commitment {
-                warn!(%index, "evaluator received garbling table with mismatched commitment, aborting");
-                root_state.step = Step::Aborted {
-                    reason: format!("invalid table for index {}", index),
-                };
                 return Ok(());
             }
 
@@ -1254,6 +1257,13 @@ pub(crate) async fn restore<S: StateRead>(
             }
         }
         Step::SetupConsumed { .. } => {}
+        // NOTE: an abort transition from `ReceivingGarblingTables` (commitment
+        // mismatch in `handle_table_received`) can leave earlier slots'
+        // `SendTableTransferReceipt` actions in flight, which this branch
+        // does not re-emit. Functionally acceptable here because the SM is
+        // terminating and will not act on the result, but it does leave the
+        // garbler peer without those receipts. Cleaner abort-propagation is
+        // tracked as a follow-up (see PR #257 review thread).
         Step::Aborted { .. } => {}
     }
 

@@ -811,3 +811,60 @@ async fn duplicate_garbling_table_received_is_idempotent() {
     assert_eq!(received.count_ones(), 1);
     assert_eq!(receipt_acked.count_ones(), 0);
 }
+
+#[tokio::test]
+async fn ack_with_wrong_action_id_variant_is_invalid_input() {
+    // `ActionResult::TableTransferReceiptAcked` must be paired with
+    // `ActionId::SendTableTransferReceipt`. A mismatched pairing (only
+    // reachable from a framework bug or a corrupted id) must fail closed.
+    let mut state = StoredEvaluatorState::default();
+    let (root, _, _) =
+        receiving_garbling_tables_state(HeapArray::from_elem(true), HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    let result = handle_action_result(
+        &mut state,
+        ActionId::SendChallengeMsg, // wrong variant
+        ActionResult::TableTransferReceiptAcked,
+        &mut actions,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "mismatched ActionId variant must be InvalidInputData"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_garbling_table_received_with_mismatched_commitment_aborts() {
+    // A duplicate `GarblingTableReceived` with a *wrong* commitment for an
+    // already-received slot must still abort, not be swallowed by the
+    // idempotency guard. Defends the original abort-on-mismatch contract.
+    let mut state = StoredEvaluatorState::default();
+    let mut received = HeapArray::from_elem(false);
+    received[0] = true;
+    let (root, _eval_commitments, eval_indices) =
+        receiving_garbling_tables_state(received, HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::ReceiveGarblingTable(GarblingTableCommitment::from([0xAAu8; 32])),
+        ActionResult::GarblingTableReceived(
+            eval_indices[0],
+            GarblingTableCommitment::from([0xAAu8; 32]), // wrong commitment
+        ),
+        &mut actions,
+    )
+    .await
+    .expect("mismatch must produce Aborted, not Err");
+
+    let stored = state.get_root_state().await.unwrap().unwrap();
+    assert!(
+        matches!(stored.step, Step::Aborted { .. }),
+        "expected abort on commitment mismatch, got {:?}",
+        stored.step
+    );
+}
