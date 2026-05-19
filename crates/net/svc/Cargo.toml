@@ -34,7 +34,7 @@ rustls = { version = "0.23", default-features = false, features = [
   "ring",
   "std",
 ] }
-x509-parser = "0.17"
+x509-parser = "0.18"
 
 # Wire format
 mosaic-net-wire = { path = "../wire" }
