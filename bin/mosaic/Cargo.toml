@@ -42,7 +42,7 @@ rand.workspace = true
 rand_chacha.workspace = true
 serde.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
-toml = "0.8"
+toml = "0.9"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
