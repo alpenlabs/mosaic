@@ -14,7 +14,7 @@ use quinn::Endpoint;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    api::{OpenStreamError, Stream},
+    api::{InboundProtocolStream, OpenStreamError, Stream},
     config::NetServiceConfig,
     tls::PeerId,
 };
@@ -58,6 +58,9 @@ pub const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for writing stream headers (5 seconds).
 pub const STREAM_HEADER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for receiving the first protocol payload frame (5 seconds).
+pub const PROTOCOL_FIRST_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Metadata for a single outbound connection attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,8 +168,8 @@ pub struct ServiceState {
     /// Key: (peer_id, blake3_hash(identifier))
     pub bulk_expectations: HashMap<(PeerId, [u8; 32]), AsyncSender<Stream>>,
 
-    /// Channel to send incoming protocol streams to handles.
-    pub protocol_stream_tx: AsyncSender<Stream>,
+    /// Channel to send incoming protocol requests to handles.
+    pub protocol_stream_tx: AsyncSender<InboundProtocolStream>,
 
     /// Peers that need reconnection with their next attempt time.
     pub pending_reconnects: Vec<(PeerId, tokio::time::Instant)>,

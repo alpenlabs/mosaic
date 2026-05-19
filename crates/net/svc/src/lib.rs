@@ -41,7 +41,7 @@
 //!
 //! Two types of streams are supported:
 //!
-//! - **Protocol streams**: For control messages (normal priority)
+//! - **Protocol streams**: Single-request control-message streams (normal priority)
 //! - **Bulk transfer streams**: For large data transfers (low priority, routed by identifier)
 
 // Re-export API modules from svc-api so existing `mosaic_net_svc::api::*`
@@ -55,9 +55,9 @@ pub mod tls;
 
 // Re-export main API types for convenience.
 pub use mosaic_net_svc_api::{
-    BulkTransferExpectation, ExpectError, NetServiceConfig, NetServiceHandle, OpenStreamError,
-    PayloadBuf, PeerConfig, PeerId, Stream, StreamClosed, peer_id_from_signing_key,
-    peer_id_from_verifying_key,
+    BulkTransferExpectation, ExpectError, InboundProtocolStream, NetServiceConfig,
+    NetServiceHandle, OpenStreamError, PayloadBuf, PeerConfig, PeerId, Stream, StreamClosed,
+    peer_id_from_signing_key, peer_id_from_verifying_key,
 };
 pub use mosaic_net_wire::FrameLimits;
 pub use svc::{NetService, NetServiceController, ServiceError};

@@ -15,7 +15,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ahash::HashMap;
@@ -28,12 +28,12 @@ use super::{
     conn,
     state::{
         CONNECTION_TIMEOUT, HEADER_READ_TIMEOUT, IncomingCandidateId, OpenRequestCancelRegistry,
-        OutboundAttempt, OverlapKey, ServiceEvent,
+        OutboundAttempt, OverlapKey, PROTOCOL_FIRST_PAYLOAD_TIMEOUT, ServiceEvent,
     },
     stream,
 };
 use crate::{
-    api::{OpenStreamError, Stream},
+    api::{InboundProtocolStream, OpenStreamError, Stream},
     close_codes::{
         CLOSE_INVALID_OVERLAP_KEY, CLOSE_INVALID_PEER_ID_INCOMING, CLOSE_INVALID_PEER_ID_OUTBOUND,
         CLOSE_PEER_ID_MISMATCH, CLOSE_UNKNOWN_PEER,
@@ -761,12 +761,29 @@ pub fn spawn_protocol_stream_router(
     peer: PeerId,
     send: quinn::SendStream,
     recv: quinn::RecvStream,
-    protocol_stream_tx: AsyncSender<Stream>,
+    protocol_stream_tx: AsyncSender<InboundProtocolStream>,
 ) {
     tokio::spawn(async move {
-        let stream = stream::create_stream(peer, send, recv);
-        if protocol_stream_tx.send(stream).await.is_err() {
-            tracing::debug!(peer = %hex::encode(peer), "protocol stream channel closed");
+        let mut recv = recv;
+        match read_first_protocol_payload(&mut recv).await {
+            Ok(payload) => {
+                let _ = recv.stop(0u32.into());
+                let stream = stream::create_write_only_stream(peer, send);
+                let inbound = InboundProtocolStream::new(peer, payload, stream);
+                if protocol_stream_tx.send(inbound).await.is_err() {
+                    tracing::debug!(peer = %hex::encode(peer), "protocol stream channel closed");
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    error = %error,
+                    "failed to read first protocol payload"
+                );
+                let _ = recv.stop(0u32.into());
+                let mut send = send;
+                let _ = send.reset(0u32.into());
+            }
         }
     });
 }
@@ -786,4 +803,41 @@ pub fn spawn_bulk_stream_router(
             tracing::debug!(peer = %hex::encode(peer), "bulk expectation channel closed");
         }
     });
+}
+
+async fn read_first_protocol_payload(recv: &mut quinn::RecvStream) -> Result<Vec<u8>, String> {
+    let limits = mosaic_net_wire::FrameLimits::default();
+    let mut buf = Vec::with_capacity(4 * 1024);
+    let mut read_buf = [0u8; 64 * 1024];
+    let deadline = Instant::now() + PROTOCOL_FIRST_PAYLOAD_TIMEOUT;
+
+    loop {
+        match mosaic_net_wire::decode_frame(&buf, &limits) {
+            Ok((payload, consumed)) => {
+                if consumed != buf.len() {
+                    return Err("extra data after first protocol frame".to_string());
+                }
+                return Ok(payload);
+            }
+            Err(mosaic_net_wire::DecodeError::Incomplete { .. }) => {}
+            Err(mosaic_net_wire::DecodeError::FrameTooLarge { size, max }) => {
+                return Err(format!(
+                    "protocol frame too large: size={} max={}",
+                    size, max
+                ));
+            }
+            Err(error) => return Err(format!("protocol frame decode error: {}", error)),
+        }
+
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err("first protocol payload timed out".to_string());
+        };
+
+        match tokio::time::timeout(remaining, recv.read(&mut read_buf)).await {
+            Ok(Ok(Some(n))) => buf.extend_from_slice(&read_buf[..n]),
+            Ok(Ok(None)) => return Err("peer finished before first protocol payload".to_string()),
+            Ok(Err(error)) => return Err(format!("read error: {}", error)),
+            Err(_) => return Err("first protocol payload timed out".to_string()),
+        }
+    }
 }
