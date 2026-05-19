@@ -1,6 +1,9 @@
 name: Docker Publish to ECR
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       ref:
@@ -11,6 +14,7 @@ on:
         description: Optional image tag override. Defaults to the resolved short SHA.
         required: false
         type: string
+
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
@@ -142,7 +146,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-      - name: Build and push Mosaic image to private ECR
+      # Build to local Docker daemon so Trivy can scan the image before any push.
+      - name: Build Mosaic image
         run: |
           set -euo pipefail
           docker buildx build \
@@ -151,11 +156,102 @@ jobs:
             --cache-from "type=gha,scope=mosaic" \
             --cache-to "type=gha,scope=mosaic,mode=max" \
             --tag "${IMAGE_REF}" \
-            --push \
+            --load \
             build-src
 
-      - name: Pull image from private ECR
-        run: docker pull "${IMAGE_REF}"
+      - name: Create Trivy output directory
+        run: mkdir -p trivy-results
+
+      # .trivyignore lives in the root checkout (always main) so only reviewed,
+      # merged code can suppress CVEs — an untrusted inputs.ref cannot manipulate it.
+      # Guard creates an empty file for runs against refs that pre-date the file.
+      - name: Ensure .trivyignore exists
+        run: |
+          if [[ ! -f .trivyignore ]]; then
+            touch .trivyignore
+          fi
+
+      # Hard gate — build fails and no image is pushed if CRITICAL or HIGH unfixed
+      # vulnerabilities are found. Add justified exceptions to .trivyignore via PR.
+      - name: Scan Mosaic image with Trivy (hard gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: json
+          output: trivy-results/mosaic.json
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+      # Advisory SARIF scan — runs even if the hard gate failed so that findings
+      # are always visible in the Security tab for triage.
+      - name: Scan Mosaic image with Trivy (SARIF — Security tab)
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: sarif
+          output: trivy-results/mosaic.sarif
+          scanners: vuln
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          ignore-unfixed: true
+          exit-code: "0"
+          trivyignores: .trivyignore
+
+      # Advisory SBOM — CycloneDX artifact for supply chain tracking.
+      - name: Generate SBOM with Trivy (CycloneDX)
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: cyclonedx
+          output: trivy-results/mosaic.sbom.json
+          scanners: vuln
+          exit-code: "0"
+          trivyignores: .trivyignore
+
+      # Converts trivy-results/mosaic.json → trivy-results/mosaic.md.
+      # The .md file is appended to $GITHUB_STEP_SUMMARY in the "Append publish summary"
+      # step below. See .github/scripts/render_trivy_summary.py for rendering logic.
+      - name: Render Trivy markdown summary
+        if: always()
+        continue-on-error: true
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: python3 .github/scripts/render_trivy_summary.py
+
+      # Uploads SARIF to the repository's Security → Code scanning tab.
+      # Requires security-events: write permission (set at job level above).
+      - name: Upload Trivy SARIF to GitHub Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
+        with:
+          sarif_file: trivy-results/mosaic.sarif
+          category: mosaic-ecr
+
+      # Bundles JSON, SARIF, SBOM, and Markdown as a downloadable artifact.
+      # Artifact name includes the image tag so runs can be compared side-by-side.
+      - name: Upload Trivy results artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-mosaic-${{ env.IMAGE_TAG }}
+          if-no-files-found: ignore
+          path: |
+            trivy-results/mosaic.json
+            trivy-results/mosaic.sarif
+            trivy-results/mosaic.sbom.json
+            trivy-results/mosaic.md
+
+      # Push only reaches this step if the hard gate scan above passed.
+      - name: Push Mosaic image to private ECR
+        run: docker push "${IMAGE_REF}"
 
       - name: Configure public ECR credentials
         uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
@@ -196,72 +292,6 @@ jobs:
             --output text)"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
-      - name: Create Trivy output directory
-        run: mkdir -p trivy-results
-
-      # Two Trivy scans are intentional:
-      #   1. JSON  → parsed by .github/scripts/render_trivy_summary.py to produce a
-      #              Markdown table that renders natively in the workflow summary page.
-      #   2. SARIF → uploaded to the GitHub Security tab for structured CVE tracking.
-      # Both scans are advisory (exit-code: "0") — findings never block the publish.
-      - name: Scan Mosaic image with Trivy (JSON — summary table)
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_REF }}
-          format: json
-          output: trivy-results/mosaic.json
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-
-      - name: Scan Mosaic image with Trivy (SARIF — Security tab)
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_REF }}
-          format: sarif
-          output: trivy-results/mosaic.sarif
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-
-      # Converts trivy-results/mosaic.json → trivy-results/mosaic.md.
-      # The .md file is appended to $GITHUB_STEP_SUMMARY in the "Append publish summary"
-      # step below. See .github/scripts/render_trivy_summary.py for rendering logic.
-      - name: Render Trivy markdown summary
-        if: always()
-        continue-on-error: true
-        env:
-          IMAGE_REF: ${{ env.IMAGE_REF }}
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
-        run: python3 .github/scripts/render_trivy_summary.py
-
-      # Uploads SARIF to the repository's Security → Code scanning tab.
-      # Requires security-events: write permission (set at job level above).
-      - name: Upload Trivy SARIF to GitHub Security tab
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
-        with:
-          sarif_file: trivy-results/mosaic.sarif
-          category: mosaic-ecr
-
-      # Bundles all three Trivy output formats as a downloadable artifact.
-      # Artifact name includes the image tag so runs can be compared side-by-side.
-      - name: Upload Trivy results artifact
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: trivy-mosaic-${{ env.IMAGE_TAG }}
-          if-no-files-found: ignore
-          path: |
-            trivy-results/mosaic.json
-            trivy-results/mosaic.sarif
-            trivy-results/mosaic.md
-
       - name: Append publish summary
         if: always()
         env:
@@ -275,7 +305,7 @@ jobs:
             echo "- Resolved SHA: \`${RESOLVED_SHA}\`"
             echo "- Image: \`${IMAGE_REF}\`"
             echo "- Public image: \`${PUBLIC_IMAGE_REF}\`"
-            echo "- Digest: \`${IMAGE_DIGEST}\`"
+            echo "- Digest: \`${IMAGE_DIGEST:-not pushed}\`"
             echo "- Trivy artifact: \`${trivy_artifact}\`"
             echo
             # Render the Trivy markdown table produced by render_trivy_summary.py.
