@@ -41,12 +41,36 @@ impl CanonicalDeserialize for Index {
         validate: Validate,
     ) -> Result<Self, ark_serialize::SerializationError> {
         let value = u64::deserialize_with_mode(reader, compress, validate)?;
-        Ok(Self(value as usize))
+        let index = Self(value as usize);
+        // Honor `Validate::Yes` for direct calls. Container types
+        // (`HeapArray<Index, _>`, derived structs containing `Index`, …)
+        // batch-check elements via `Valid::check`, but a top-level
+        // `Index::deserialize` / `deserialize_compressed` would otherwise
+        // skip the bounds check and accept out-of-range values.
+        if matches!(validate, Validate::Yes) {
+            index.check()?;
+        }
+        Ok(index)
     }
 }
 
 impl Valid for Index {
     fn check(&self) -> Result<(), ark_serialize::SerializationError> {
+        // Reject indices above `MAX` outright. Such values can only arise
+        // from a malformed wire encoding (the safe `Index::new` never
+        // produces them) and would otherwise reach downstream array
+        // indexing or fixed-length conversions that assume `<= MAX`.
+        //
+        // `Index(0)` (the reserved evaluation point) is intentionally
+        // accepted: it is not a legitimate *challenge* index but it IS
+        // legitimately serialized in protocol messages — e.g. shares at
+        // the reserved point in
+        // `ChallengeResponseMsgHeader::reserved_setup_input_shares`.
+        // Challenge-index range/uniqueness is enforced at the protocol
+        // boundary in `is_valid_challenge`.
+        if self.0 > Self::MAX {
+            return Err(ark_serialize::SerializationError::InvalidData);
+        }
         Ok(())
     }
 }
@@ -307,6 +331,46 @@ mod tests {
         // Test invalid indices
         assert!(Index::new(0).is_none()); // Below MIN
         assert!(Index::new(Index::MAX + 1).is_none()); // Above MAX
+    }
+
+    #[test]
+    fn deserialize_with_validate_yes_rejects_above_max() {
+        // Encode a u64 above MAX directly and confirm `deserialize_compressed`
+        // (which uses `Validate::Yes`) rejects it. `deserialize_compressed_unchecked`
+        // (`Validate::No`) must accept the same bytes — the validation gate is
+        // the only difference.
+        let mut buf = Vec::new();
+        ((Index::MAX as u64) + 1)
+            .serialize_compressed(&mut buf)
+            .unwrap();
+
+        assert!(Index::deserialize_compressed(&buf[..]).is_err());
+        let unchecked = Index::deserialize_compressed_unchecked(&buf[..]).unwrap();
+        assert_eq!(unchecked.get(), Index::MAX + 1);
+
+        // Reserved index 0 round-trips with validation.
+        let mut buf = Vec::new();
+        Index::reserved().serialize_compressed(&mut buf).unwrap();
+        let round = Index::deserialize_compressed(&buf[..]).unwrap();
+        assert_eq!(round, Index::reserved());
+    }
+
+    #[test]
+    fn valid_check_rejects_above_max_but_accepts_reserved_zero() {
+        // `Index(0)` (reserved) must round-trip through canonical
+        // (de)serialization with validation, since it appears in
+        // legitimate protocol messages (e.g. shares at the reserved
+        // evaluation point).
+        assert!(Index::reserved().check().is_ok());
+        // Within-range values are accepted.
+        assert!(Index::new(Index::MIN).unwrap().check().is_ok());
+        assert!(Index::new(Index::MAX).unwrap().check().is_ok());
+        // Above-MAX values can only appear from a malformed wire
+        // encoding and must be rejected at the validation boundary.
+        let bad = Index(Index::MAX + 1);
+        assert!(bad.check().is_err());
+        let way_bad = Index(usize::MAX);
+        assert!(way_bad.check().is_err());
     }
 
     #[test]
