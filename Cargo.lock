@@ -119,8 +119,8 @@ dependencies = [
  "ahash",
  "ark-ff",
  "ark-poly",
- "ark-serialize",
- "ark-std",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
  "educe",
  "fnv",
  "hashbrown 0.15.5",
@@ -139,8 +139,8 @@ checksum = "a177aba0ed1e0fbb62aa9f6d0502e9b46dad8c2eab04c14258a1212d2557ea70"
 dependencies = [
  "ark-ff-asm",
  "ark-ff-macros",
- "ark-serialize",
- "ark-std",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
  "arrayvec",
  "digest",
  "educe",
@@ -182,8 +182,8 @@ checksum = "579305839da207f02b89cd1679e50e67b4331e2f9294a57693e5051b7703fe27"
 dependencies = [
  "ahash",
  "ark-ff",
- "ark-serialize",
- "ark-std",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
  "educe",
  "fnv",
  "hashbrown 0.15.5",
@@ -197,7 +197,7 @@ checksum = "f8bd211c48debd3037b48873a7aa22c3aba034e83388aa4124795c9f220b88c7"
 dependencies = [
  "ark-ec",
  "ark-ff",
- "ark-std",
+ "ark-std 0.5.0",
 ]
 
 [[package]]
@@ -206,9 +206,21 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f4d068aaf107ebcd7dfb52bc748f8030e0fc930ac8e360146ca54c1203088f7"
 dependencies = [
- "ark-serialize-derive",
- "ark-std",
+ "ark-serialize-derive 0.5.0",
+ "ark-std 0.5.0",
  "arrayvec",
+ "digest",
+ "num-bigint",
+]
+
+[[package]]
+name = "ark-serialize"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a74dd304fd536fb95d0a328e72be759209cc496a9da094c5bc56e5fea4f9e86b"
+dependencies = [
+ "ark-serialize-derive 0.6.0",
+ "ark-std 0.6.0",
  "digest",
  "num-bigint",
 ]
@@ -225,10 +237,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-serialize-derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f153690697a2b91e5e1251ff98411ee5371500a111a0fd317a70e588eb300f9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "ark-std"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "246a225cc6131e9ee4f24619af0f19d67761fff15d7ccc22e42b80846e69449a"
+dependencies = [
+ "num-traits",
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "ark-std"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "367c9c827ed431bff6868b7aa926e05b16eb46603cc8b6e768e4a5553fa1d155"
 dependencies = [
  "num-traits",
  "rand 0.8.5",
@@ -2299,7 +2332,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-secp256k1",
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "bitcoin",
  "bitcoin-script",
  "bitcoin-scriptexec",
@@ -2348,7 +2381,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-secp256k1",
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "criterion",
  "fasm",
  "futures",
@@ -2367,7 +2400,7 @@ dependencies = [
 name = "mosaic-common"
 version = "0.1.0"
 dependencies = [
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "serde",
 ]
 
@@ -2375,7 +2408,7 @@ dependencies = [
 name = "mosaic-heap-array"
 version = "0.1.0"
 dependencies = [
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "postcard",
  "serde",
 ]
@@ -2432,7 +2465,7 @@ dependencies = [
 name = "mosaic-net-client"
 version = "0.1.0"
 dependencies = [
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "ed25519-dalek",
  "futures-timer",
  "futures-util",
@@ -2525,7 +2558,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-secp256k1",
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "async-trait",
  "bitcoin",
  "futures",
@@ -2569,7 +2602,7 @@ dependencies = [
 name = "mosaic-sm-executor"
 version = "0.1.0"
 dependencies = [
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "ed25519-dalek",
  "fasm",
  "futures",
@@ -2640,7 +2673,7 @@ dependencies = [
 name = "mosaic-storage-kvstore"
 version = "0.1.0"
 dependencies = [
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "async-trait",
  "futures",
  "mosaic-cac-types",
@@ -2678,7 +2711,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-secp256k1",
- "ark-serialize",
+ "ark-serialize 0.6.0",
  "blake3",
  "ckt-gobble",
  "criterion",
