@@ -30,5 +30,5 @@ pub use api::{
     BulkTransferExpectation, ExpectError, InboundProtocolStream, NetServiceHandle, OpenStreamError,
     PayloadBuf, Stream, StreamClosed,
 };
-pub use config::{NetServiceConfig, PeerConfig};
+pub use config::{NetServiceConfig, PeerConfig, PeerStreamRateLimit};
 pub use peer_id::{PeerId, peer_id_from_signing_key, peer_id_from_verifying_key};

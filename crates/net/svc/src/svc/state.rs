@@ -203,6 +203,9 @@ pub struct ServiceState {
 
     /// Last resolved outbound attempt ID by peer.
     pub resolved_outbound_attempt_by_peer: HashMap<PeerId, u64>,
+
+    /// Per-peer protocol-stream admission rate limiter.
+    pub peer_rate_limiter: super::peer_rate_limit::PeerStreamRateLimiter,
 }
 
 impl ServiceState {

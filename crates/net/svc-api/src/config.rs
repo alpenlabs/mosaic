@@ -26,6 +26,52 @@ impl PeerConfig {
     }
 }
 
+/// Per-peer protocol-stream rate limiter configuration.
+///
+/// Bounds how fast an authenticated peer can open new protocol streams
+/// against this node. Once authenticated, peers are otherwise free to open
+/// up to `MAX_CONCURRENT_BIDI_STREAMS` per connection — without this limit,
+/// a peer can drive the protocol message rate as fast as the wire allows.
+/// Each accepted stream consumes one token from the peer's bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerStreamRateLimit {
+    /// Maximum protocol streams the peer may have outstanding (bucket capacity).
+    /// Bursts up to this size are allowed.
+    pub burst: u32,
+    /// Steady-state refill rate in streams per second.
+    pub per_second: u32,
+}
+
+impl PeerStreamRateLimit {
+    /// Disable per-peer rate limiting (unlimited).
+    ///
+    /// Use only when an upstream admission control gate is already in place,
+    /// or in tests.
+    pub const UNLIMITED: Self = Self {
+        burst: u32::MAX,
+        per_second: u32::MAX,
+    };
+}
+
+impl Default for PeerStreamRateLimit {
+    fn default() -> Self {
+        // Sized comfortably above expected normal-operator traffic. Setup
+        // alone opens roughly
+        //   1 + N_COMMIT_MSG_CHUNKS + 1 + N_OPEN_CIRCUITS + N_EVAL_CIRCUITS
+        // protocol streams per peer pair (header + per-chunk + per-table-
+        // transfer messages), which for production constants is several
+        // hundred streams in tight succession. Defaults leave significant
+        // headroom for that legitimate burst while still bounding the
+        // sustained rate a malicious peer can drive.
+        //
+        // Tunable via [`NetServiceConfig::with_peer_stream_rate_limit`].
+        Self {
+            burst: 2048,
+            per_second: 512,
+        }
+    }
+}
+
 /// Network service configuration.
 ///
 /// This configuration is immutable after creation. The network service will
@@ -44,6 +90,8 @@ pub struct NetServiceConfig {
     pub idle_timeout: std::time::Duration,
     /// Backoff duration between reconnection attempts (default: 1 second).
     pub reconnect_backoff: std::time::Duration,
+    /// Per-peer protocol-stream rate limit. Defaults to [`PeerStreamRateLimit::default`].
+    pub peer_stream_rate_limit: PeerStreamRateLimit,
 }
 
 impl NetServiceConfig {
@@ -65,7 +113,14 @@ impl NetServiceConfig {
             keep_alive_interval: Self::DEFAULT_KEEP_ALIVE_INTERVAL,
             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             reconnect_backoff: Self::DEFAULT_RECONNECT_BACKOFF,
+            peer_stream_rate_limit: PeerStreamRateLimit::default(),
         }
+    }
+
+    /// Set the per-peer protocol-stream rate limit.
+    pub fn with_peer_stream_rate_limit(mut self, limit: PeerStreamRateLimit) -> Self {
+        self.peer_stream_rate_limit = limit;
+        self
     }
 
     /// Set the keep-alive interval.
