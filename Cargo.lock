@@ -2649,6 +2649,7 @@ dependencies = [
  "mosaic-storage-api",
  "mosaic-vs3",
  "postcard",
+ "serde",
  "thiserror 2.0.18",
 ]
 

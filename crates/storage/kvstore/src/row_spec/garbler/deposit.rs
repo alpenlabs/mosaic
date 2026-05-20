@@ -49,7 +49,7 @@ impl SerializableValue for DepositState {
     }
 
     fn deserialize(bytes: &[u8]) -> Result<Self, Self::DeserializeError> {
-        postcard::from_bytes(bytes)
+        crate::row_spec::common::decode_postcard_canonical(bytes)
     }
 }
 

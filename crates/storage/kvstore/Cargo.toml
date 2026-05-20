@@ -21,6 +21,7 @@ ark-serialize.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 postcard.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
