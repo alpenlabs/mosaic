@@ -65,8 +65,18 @@ crate::state_machine::define_step_phase! {
             eval_indices: EvaluationIndices,
             /// Expected commitments of garbling tables
             eval_commitments: EvalGarblingTableCommitments,
-            /// Track received garbling tables
+            /// Track received garbling tables.
             received: HeapArray<bool, N_EVAL_CIRCUITS>,
+            /// Track receipts whose `SendTableTransferReceipt` action has been
+            /// acked by the network layer. The step only transitions to
+            /// `SetupComplete` once every receipt has been acked — without
+            /// this gate, a crash between the eager step transition and the
+            /// ack would orphan in-flight `SendTableTransferReceipt` tracked
+            /// actions (restore for `SetupComplete` cannot re-emit them).
+            /// fasm's contract is that restore re-emits every tracked action
+            /// not yet completed at crash time, so the data needed to do so
+            /// must remain in the step until the action completes.
+            receipt_acked: HeapArray<bool, N_EVAL_CIRCUITS>,
         },
         /// Setup is completed, ready to be used for deposits.
         /// Accepts deposit inputs

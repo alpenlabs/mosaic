@@ -777,10 +777,16 @@ async fn handle_evaluator_processes_table<SP: StorageProvider + StorageProviderM
             .await
             .unwrap();
     }
-    assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // Step::SetupComplete, Action::SendTableTransferReceipt
-    assert_eq!(
-        eval_state.get_root_state().await.unwrap().unwrap().step,
-        EvalStep::SetupComplete
+    assert_eq!(eval_actions.len(), N_EVAL_CIRCUITS); // one Action::SendTableTransferReceipt per slot
+    // Step is still ReceivingGarblingTables: SetupComplete now waits for every
+    // SendTableTransferReceipt to be acked (see Step variant docs). The
+    // transition happens after `handle_evaluator_consumes_receipt_ack` runs.
+    assert!(
+        matches!(
+            eval_state.get_root_state().await.unwrap().unwrap().step,
+            EvalStep::ReceivingGarblingTables { .. }
+        ),
+        "expected ReceivingGarblingTables before receipt acks land"
     );
 }
 
@@ -852,7 +858,8 @@ async fn handle_evaluator_consumes_receipt_ack<SP: StorageProvider + StorageProv
         >,
     >,
 ) {
-    // Stf ignores ack as state has been transitioned to SetupComplete already
+    // Each TableTransferReceiptAcked sets receipt_acked[pos] = true; the
+    // step transitions to SetupComplete once every slot is acked.
     let mut eval_state = eval_exec
         .storage
         .evaluator_state_mut(garbler_peer_id)

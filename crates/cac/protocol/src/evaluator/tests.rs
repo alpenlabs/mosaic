@@ -3,14 +3,17 @@ use std::collections::BTreeSet;
 use fasm::actions::Action as FasmAction;
 use mosaic_cac_types::{
     ChallengeIndices, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk,
-    CommitMsgHeader, DepositId, EvaluationIndices, HeapArray, Index, Polynomial,
-    state_machine::evaluator::{Action, EvaluatorState, Input, StateMut, Step},
+    CommitMsgHeader, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
+    GarblingTableCommitment, HeapArray, Index, Polynomial,
+    state_machine::evaluator::{
+        Action, ActionId, ActionResult, EvaluatorState, Input, StateMut, StateRead, Step,
+    },
 };
 use mosaic_common::constants::N_EVAL_CIRCUITS;
 use mosaic_storage_inmemory::evaluator::StoredEvaluatorState;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
-use super::stf::{handle_event, restore};
+use super::stf::{handle_action_result, handle_event, restore};
 use crate::evaluator::stf::get_remaining_challenge_response_chunks;
 
 #[tokio::test]
@@ -482,4 +485,386 @@ async fn challenge_response_chunk_after_verifying_is_ack_and_ignore() {
 
     assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
     assert!(actions.is_empty(), "should produce no actions");
+}
+
+// ============================================================================
+// ReceivingGarblingTables -> SetupComplete transition + restore correctness
+//
+// The step transitions to `SetupComplete` only after every `received[i]` AND
+// `receipt_acked[i]` is true. Until then, `restore()` must be able to re-emit
+// any in-flight `SendTableTransferReceipt` tracked action, so the state stays
+// in `ReceivingGarblingTables` until the framework delivers every receipt's
+// ack via `ActionResult::TableTransferReceiptAcked`.
+// ============================================================================
+
+fn receiving_garbling_tables_state(
+    received: HeapArray<bool, N_EVAL_CIRCUITS>,
+    receipt_acked: HeapArray<bool, N_EVAL_CIRCUITS>,
+) -> (
+    EvaluatorState,
+    EvalGarblingTableCommitments,
+    EvaluationIndices,
+) {
+    let eval_indices: EvaluationIndices =
+        std::array::from_fn(|i| Index::new(i + 1).expect("valid index"));
+    let eval_commitments: EvalGarblingTableCommitments =
+        HeapArray::new(|i| GarblingTableCommitment::from([i as u8 + 1; 32]));
+    let state = EvaluatorState {
+        config: None,
+        step: Step::ReceivingGarblingTables {
+            eval_indices,
+            eval_commitments: eval_commitments.clone(),
+            received,
+            receipt_acked,
+        },
+    };
+    (state, eval_commitments, eval_indices)
+}
+
+#[tokio::test]
+async fn handle_table_received_does_not_advance_to_setup_complete() {
+    // Even when `received.all()` becomes true, the step must remain
+    // `ReceivingGarblingTables` so restore can re-emit any in-flight
+    // `SendTableTransferReceipt` actions.
+    let mut state = StoredEvaluatorState::default();
+
+    // Pre-fill so the (N-1) `received[i]` are already true; the last
+    // GarblingTableReceived will be the one that would have triggered the
+    // (old, buggy) eager transition.
+    let mut received = HeapArray::from_elem(true);
+    received[N_EVAL_CIRCUITS - 1] = false;
+    let (root, eval_commitments, eval_indices) =
+        receiving_garbling_tables_state(received, HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let last_pos = N_EVAL_CIRCUITS - 1;
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::ReceiveGarblingTable(eval_commitments[last_pos]),
+        ActionResult::GarblingTableReceived(eval_indices[last_pos], eval_commitments[last_pos]),
+        &mut actions,
+    )
+    .await
+    .expect("final GarblingTableReceived must succeed");
+
+    let stored = state.get_root_state().await.unwrap().unwrap();
+    let Step::ReceivingGarblingTables {
+        received,
+        receipt_acked,
+        ..
+    } = stored.step
+    else {
+        panic!(
+            "expected step to remain ReceivingGarblingTables before any receipt ack, got something else"
+        );
+    };
+    assert!(received.all(), "all tables should be received now");
+    assert_eq!(
+        receipt_acked.count_ones(),
+        0,
+        "no receipt has been acked yet"
+    );
+    assert_eq!(
+        actions.len(),
+        1,
+        "exactly one SendTableTransferReceipt should be emitted for the final table"
+    );
+}
+
+#[tokio::test]
+async fn table_transfer_receipt_acked_advances_only_when_all_received_and_acked() {
+    // Drive the full ack sequence and verify SetupComplete fires on the last
+    // ack, not the last GarblingTableReceived.
+    let mut state = StoredEvaluatorState::default();
+    let (root, eval_commitments, _eval_indices) =
+        receiving_garbling_tables_state(HeapArray::from_elem(true), HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    for i in 0..N_EVAL_CIRCUITS - 1 {
+        handle_action_result(
+            &mut state,
+            ActionId::SendTableTransferReceipt(eval_commitments[i]),
+            ActionResult::TableTransferReceiptAcked,
+            &mut actions,
+        )
+        .await
+        .expect("intermediate ack must succeed");
+
+        let stored = state.get_root_state().await.unwrap().unwrap();
+        assert!(
+            matches!(stored.step, Step::ReceivingGarblingTables { .. }),
+            "step must not advance until every receipt is acked"
+        );
+    }
+
+    handle_action_result(
+        &mut state,
+        ActionId::SendTableTransferReceipt(eval_commitments[N_EVAL_CIRCUITS - 1]),
+        ActionResult::TableTransferReceiptAcked,
+        &mut actions,
+    )
+    .await
+    .expect("final ack must succeed");
+
+    let stored = state.get_root_state().await.unwrap().unwrap();
+    assert!(
+        matches!(stored.step, Step::SetupComplete),
+        "step must advance to SetupComplete after the final receipt ack"
+    );
+    assert!(
+        actions.is_empty(),
+        "no actions should be emitted on the transition"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_receipt_ack_is_idempotent() {
+    // A duplicate `TableTransferReceiptAcked` (e.g. for a receipt re-emitted by
+    // restore on a previous boot whose ack also arrives) must be a no-op, not
+    // an error.
+    let mut state = StoredEvaluatorState::default();
+    let mut receipt_acked = HeapArray::from_elem(false);
+    receipt_acked[0] = true;
+    let (root, eval_commitments, _) =
+        receiving_garbling_tables_state(HeapArray::from_elem(true), receipt_acked);
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::SendTableTransferReceipt(eval_commitments[0]),
+        ActionResult::TableTransferReceiptAcked,
+        &mut actions,
+    )
+    .await
+    .expect("duplicate ack must be idempotent");
+
+    let stored = state.get_root_state().await.unwrap().unwrap();
+    let Step::ReceivingGarblingTables { receipt_acked, .. } = stored.step else {
+        panic!("expected ReceivingGarblingTables");
+    };
+    assert_eq!(
+        receipt_acked.count_ones(),
+        1,
+        "duplicate ack must not double-count"
+    );
+    assert!(actions.is_empty());
+}
+
+#[tokio::test]
+async fn late_receipt_ack_after_setup_complete_is_ignored() {
+    // Once the step has advanced past `ReceivingGarblingTables`, a stale
+    // ack (e.g. for a duplicate receipt re-emitted earlier) must be
+    // silently ignored rather than rejected as `UnexpectedInput`.
+    let mut state = StoredEvaluatorState::default();
+    state
+        .put_root_state(&EvaluatorState {
+            config: None,
+            step: Step::SetupComplete,
+        })
+        .await
+        .unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::SendTableTransferReceipt(GarblingTableCommitment::from([7u8; 32])),
+        ActionResult::TableTransferReceiptAcked,
+        &mut actions,
+    )
+    .await
+    .expect("late ack past SetupComplete must succeed (ack and ignore)");
+    assert!(actions.is_empty());
+}
+
+#[tokio::test]
+async fn restore_receiving_tables_re_emits_unacked_receipts_and_pending_receives() {
+    // Mixed state covering all three slot kinds:
+    //   - slot 0: !received                  → re-emit ReceiveGarblingTable
+    //   - slot 1: received but !receipt_acked → re-emit SendTableTransferReceipt
+    //   - slot 2+: received && receipt_acked  → no action
+    // Confirms the audit's required restore behaviour.
+    let mut state = StoredEvaluatorState::default();
+    let mut received = HeapArray::from_elem(true);
+    received[0] = false;
+    let mut receipt_acked = HeapArray::from_elem(true);
+    receipt_acked[0] = false;
+    receipt_acked[1] = false;
+    let (root, eval_commitments, _) = receiving_garbling_tables_state(received, receipt_acked);
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    restore(&state, &mut actions)
+        .await
+        .expect("restore succeeds");
+
+    let mut receive_targets: BTreeSet<GarblingTableCommitment> = BTreeSet::new();
+    let mut receipt_targets: BTreeSet<GarblingTableCommitment> = BTreeSet::new();
+    for action in actions {
+        let FasmAction::Tracked(tracked) = action;
+        let (_id, action) = tracked.into_parts();
+        match action {
+            Action::ReceiveGarblingTable(c) => {
+                receive_targets.insert(c);
+            }
+            Action::SendTableTransferReceipt(msg) => {
+                receipt_targets.insert(msg.garbling_table_commitment);
+            }
+            other => panic!("unexpected action in ReceivingGarblingTables restore: {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        receive_targets,
+        BTreeSet::from([eval_commitments[0]]),
+        "ReceiveGarblingTable must re-emit only for the unreceived slot"
+    );
+    assert_eq!(
+        receipt_targets,
+        BTreeSet::from([eval_commitments[1]]),
+        "SendTableTransferReceipt must re-emit only for received-but-unacked slots"
+    );
+}
+
+#[tokio::test]
+async fn restore_receiving_tables_emits_nothing_when_all_received_and_acked() {
+    // Steady state inside `ReceivingGarblingTables` just before the final ack
+    // would land: every receipt is acked but the transition has not yet
+    // happened. Restore must not re-emit anything (no in-flight tracked
+    // actions remain).
+    let mut state = StoredEvaluatorState::default();
+    let (root, _, _) =
+        receiving_garbling_tables_state(HeapArray::from_elem(true), HeapArray::from_elem(true));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    restore(&state, &mut actions)
+        .await
+        .expect("restore succeeds");
+    assert!(
+        actions.is_empty(),
+        "no actions expected when every slot is received and acked"
+    );
+}
+
+#[tokio::test]
+async fn ack_with_unknown_commitment_is_invalid_input() {
+    // If the ActionId doesn't match any commitment in the current step (only
+    // possible from a corrupted id), the handler must error rather than
+    // silently mutate.
+    let mut state = StoredEvaluatorState::default();
+    let (root, _, _) =
+        receiving_garbling_tables_state(HeapArray::from_elem(true), HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    let result = handle_action_result(
+        &mut state,
+        ActionId::SendTableTransferReceipt(GarblingTableCommitment::from([0xFFu8; 32])),
+        ActionResult::TableTransferReceiptAcked,
+        &mut actions,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "unknown commitment must be InvalidInputData"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_garbling_table_received_is_idempotent() {
+    // If `GarblingTableReceived` is delivered twice for the same slot, the
+    // second delivery must not emit a stray `SendTableTransferReceipt` or
+    // perturb state. Symmetric to the duplicate-ack guard.
+    let mut state = StoredEvaluatorState::default();
+    let mut received = HeapArray::from_elem(false);
+    received[0] = true;
+    let (root, eval_commitments, eval_indices) =
+        receiving_garbling_tables_state(received, HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::ReceiveGarblingTable(eval_commitments[0]),
+        ActionResult::GarblingTableReceived(eval_indices[0], eval_commitments[0]),
+        &mut actions,
+    )
+    .await
+    .expect("duplicate GarblingTableReceived must succeed");
+
+    assert!(
+        actions.is_empty(),
+        "duplicate GarblingTableReceived must not emit anything"
+    );
+    let stored = state.get_root_state().await.unwrap().unwrap();
+    let Step::ReceivingGarblingTables {
+        received,
+        receipt_acked,
+        ..
+    } = stored.step
+    else {
+        panic!("expected ReceivingGarblingTables");
+    };
+    assert_eq!(received.count_ones(), 1);
+    assert_eq!(receipt_acked.count_ones(), 0);
+}
+
+#[tokio::test]
+async fn ack_with_wrong_action_id_variant_is_invalid_input() {
+    // `ActionResult::TableTransferReceiptAcked` must be paired with
+    // `ActionId::SendTableTransferReceipt`. A mismatched pairing (only
+    // reachable from a framework bug or a corrupted id) must fail closed.
+    let mut state = StoredEvaluatorState::default();
+    let (root, _, _) =
+        receiving_garbling_tables_state(HeapArray::from_elem(true), HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    let result = handle_action_result(
+        &mut state,
+        ActionId::SendChallengeMsg, // wrong variant
+        ActionResult::TableTransferReceiptAcked,
+        &mut actions,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "mismatched ActionId variant must be InvalidInputData"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_garbling_table_received_with_mismatched_commitment_aborts() {
+    // A duplicate `GarblingTableReceived` with a *wrong* commitment for an
+    // already-received slot must still abort, not be swallowed by the
+    // idempotency guard. Defends the original abort-on-mismatch contract.
+    let mut state = StoredEvaluatorState::default();
+    let mut received = HeapArray::from_elem(false);
+    received[0] = true;
+    let (root, _eval_commitments, eval_indices) =
+        receiving_garbling_tables_state(received, HeapArray::from_elem(false));
+    state.put_root_state(&root).await.unwrap();
+
+    let mut actions = Vec::new();
+    handle_action_result(
+        &mut state,
+        ActionId::ReceiveGarblingTable(GarblingTableCommitment::from([0xAAu8; 32])),
+        ActionResult::GarblingTableReceived(
+            eval_indices[0],
+            GarblingTableCommitment::from([0xAAu8; 32]), // wrong commitment
+        ),
+        &mut actions,
+    )
+    .await
+    .expect("mismatch must produce Aborted, not Err");
+
+    let stored = state.get_root_state().await.unwrap().unwrap();
+    assert!(
+        matches!(stored.step, Step::Aborted { .. }),
+        "expected abort on commitment mismatch, got {:?}",
+        stored.step
+    );
 }

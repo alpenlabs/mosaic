@@ -332,9 +332,64 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             handle_table_received(&mut root_state, state, index, table_commitment, actions).await?;
         }
         ActionResult::TableTransferReceiptAcked => {
-            // The table transfer receipt message was sent. No further state change needed —
-            // state was already advanced to SetupComplete when
-            // we emitted the SendTableTransferReceipt action.
+            let ActionId::SendTableTransferReceipt(commitment) = id else {
+                return Err(SMError::InvalidInputData);
+            };
+            match &mut root_state.step {
+                Step::ReceivingGarblingTables {
+                    eval_commitments,
+                    received,
+                    receipt_acked,
+                    ..
+                } => {
+                    let Some(pos) = eval_commitments.iter().position(|c| *c == commitment) else {
+                        // Ack for a commitment we don't know about — only
+                        // possible from a corrupted action id.
+                        return Err(SMError::InvalidInputData);
+                    };
+
+                    if receipt_acked[pos] {
+                        // Duplicate ack for the same receipt: idempotent
+                        // (a redundant `SendTableTransferReceipt` re-emitted
+                        // by `restore()` can still produce an ack).
+                        debug!(pos, "duplicate table transfer receipt ack; ignored");
+                        return Ok(());
+                    }
+
+                    receipt_acked[pos] = true;
+                    debug!(
+                        pos,
+                        done = receipt_acked.count_ones(),
+                        total = receipt_acked.len(),
+                        "evaluator table transfer receipt acked"
+                    );
+
+                    // SetupComplete requires every receipt to have been
+                    // acked. Until then the step must remain
+                    // `ReceivingGarblingTables` so `restore()` can
+                    // re-emit any in-flight `SendTableTransferReceipt`
+                    // tracked actions on crash.
+                    if received.all() && receipt_acked.all() {
+                        info!("all garbling tables received and receipts acked, setup complete");
+                        root_state.step = Step::SetupComplete;
+                    }
+                }
+                // Late acks past the transition are no-ops. They can land
+                // after `SetupComplete` if a duplicate receipt was emitted
+                // (e.g. from a prior restore re-emit) and acked after the
+                // step had already moved forward via the original ack.
+                Step::SetupComplete
+                | Step::EvaluatingTables { .. }
+                | Step::SetupConsumed { .. }
+                | Step::Aborted { .. } => {
+                    debug!("late table transfer receipt ack after step advanced; ignoring");
+                }
+                // `SendTableTransferReceipt` is only emitted from
+                // `ReceivingGarblingTables`, and the step never moves
+                // backward. An ack landing here would imply a framework
+                // bug or stale id; fail closed.
+                _ => return Err(SMError::UnexpectedInput),
+            }
         }
         ActionResult::DepositAdaptorsGenerated(deposit_id, deposit_adaptors) => {
             match root_state.step {
@@ -964,6 +1019,7 @@ async fn handle_table_commitment_generated<S: StateMut>(
                     eval_indices,
                     eval_commitments,
                     received: HeapArray::from_elem(false),
+                    receipt_acked: HeapArray::from_elem(false),
                 };
             }
 
@@ -985,17 +1041,31 @@ async fn handle_table_received<S: StateMut>(
             eval_indices: eval_idxs,
             eval_commitments,
             received,
+            ..
         } => {
             let Some(pos) = eval_idxs.iter().position(|&x| x == index) else {
                 return Err(SMError::InvalidInputData);
             };
 
+            // Validate the commitment first so a mismatched duplicate still
+            // aborts (matching the original behaviour) instead of being
+            // silently dropped by the idempotency guard below.
             let expected_commitment = eval_commitments[pos];
             if table_commitment != expected_commitment {
                 warn!(%index, "evaluator received garbling table with mismatched commitment, aborting");
                 root_state.step = Step::Aborted {
                     reason: format!("invalid table for index {}", index),
                 };
+                return Ok(());
+            }
+
+            // Idempotency: a duplicate `GarblingTableReceived` for an already-
+            // marked slot would otherwise emit a stray `SendTableTransferReceipt`.
+            // The framework should not deliver completions twice, but the
+            // handler stays robust to that — symmetric to the duplicate-ack
+            // guard in `TableTransferReceiptAcked`.
+            if received[pos] {
+                debug!(%index, "duplicate GarblingTableReceived; ignoring");
                 return Ok(());
             }
 
@@ -1007,10 +1077,13 @@ async fn handle_table_received<S: StateMut>(
             received[pos] = true;
             debug!(%index, done = received.count_ones(), total = received.len(), "evaluator garbling table received");
 
-            if received.all() {
-                info!("all garbling tables received, setup complete");
-                root_state.step = Step::SetupComplete;
-            }
+            // SetupComplete transition deferred to the
+            // `TableTransferReceiptAcked` handler: both `received.all()` and
+            // `receipt_acked.all()` must hold. Transitioning here on
+            // `received.all()` alone would leave in-flight
+            // `SendTableTransferReceipt` actions unreachable to `restore()`
+            // (the `SetupComplete` branch cannot re-emit them), permanently
+            // orphaning them on crash.
 
             Ok(())
         }
@@ -1078,19 +1151,37 @@ pub(crate) async fn restore<S: StateRead>(
         Step::ReceivingGarblingTables {
             eval_commitments,
             received,
+            receipt_acked,
             ..
         } => {
-            for (commitment, received) in eval_commitments.iter().zip(received.iter()) {
-                if *received {
-                    // Notify the garbler that these tables have been received already.
-                    emit(
-                        actions,
-                        Action::SendTableTransferReceipt(TableTransferReceiptMsg::new(*commitment)),
-                    );
+            for i in 0..eval_commitments.len() {
+                let commitment = eval_commitments[i];
+                // (!received && receipt_acked) is unreachable by construction:
+                // `receipt_acked[i]` can only be set inside this step, and the
+                // ack handler requires `received[i] = true` to have been set
+                // previously (the receipt was emitted in
+                // `handle_table_received`). Asserting the invariant here keeps
+                // the loop honest if future changes accidentally violate it.
+                debug_assert!(
+                    !receipt_acked[i] || received[i],
+                    "receipt_acked[{i}] must imply received[{i}]"
+                );
+                if !received[i] {
+                    // Combined action: registers expectation, sends request,
+                    // receives table.
+                    emit(actions, Action::ReceiveGarblingTable(commitment));
                     continue;
                 }
-                // Combined action: registers expectation, sends request, receives table.
-                emit(actions, Action::ReceiveGarblingTable(*commitment));
+                if !receipt_acked[i] {
+                    // Receipt for this slot was emitted in `handle_table_received`
+                    // but not yet acked by the network layer. Re-emit so the
+                    // garbler is guaranteed to learn this table was received.
+                    emit(
+                        actions,
+                        Action::SendTableTransferReceipt(TableTransferReceiptMsg::new(commitment)),
+                    );
+                }
+                // received && receipt_acked: nothing in flight for this slot.
             }
         }
         Step::SetupComplete => {
@@ -1166,6 +1257,13 @@ pub(crate) async fn restore<S: StateRead>(
             }
         }
         Step::SetupConsumed { .. } => {}
+        // NOTE: an abort transition from `ReceivingGarblingTables` (commitment
+        // mismatch in `handle_table_received`) can leave earlier slots'
+        // `SendTableTransferReceipt` actions in flight, which this branch
+        // does not re-emit. Functionally acceptable here because the SM is
+        // terminating and will not act on the result, but it does leave the
+        // garbler peer without those receipts. Cleaner abort-propagation is
+        // tracked as a follow-up (see PR #257 review thread).
         Step::Aborted { .. } => {}
     }
 

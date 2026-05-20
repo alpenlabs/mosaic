@@ -74,7 +74,13 @@ pub enum ActionResult {
     /// Garbling table received from garbler and verified.
     GarblingTableReceived(Index, GarblingTableCommitment),
     /// Garbling table transfer receipt was acknowledged by the garbler.
-    /// NOTE: ignored
+    /// Per-slot acks are tracked in `Step::ReceivingGarblingTables.receipt_acked`;
+    /// the step only transitions to `SetupComplete` once every receipt has been
+    /// acked. Required for restore correctness — see `handle_action_result`.
+    ///
+    /// Must be paired with `ActionId::SendTableTransferReceipt(commitment)`;
+    /// the handler uses the commitment to locate the slot in `eval_commitments`.
+    /// A mismatched pairing is treated as `InvalidInputData`.
     TableTransferReceiptAcked,
     /// Adaptor signatures were generated for deposit wires.
     DepositAdaptorsGenerated(DepositId, DepositAdaptors),
