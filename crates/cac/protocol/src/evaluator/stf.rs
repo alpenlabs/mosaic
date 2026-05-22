@@ -144,7 +144,7 @@ pub(crate) async fn handle_event<S: StateMut>(
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::DepositUndisputedWithdrawal(deposit_id) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match deposit_state.step {
@@ -164,7 +164,7 @@ pub(crate) async fn handle_event<S: StateMut>(
         },
         Input::DisputedWithdrawal(deposit_id, EvaluatorDisputedWithdrawalData { signatures }) => {
             match root_state.step {
-                Step::SetupComplete => {
+                Step::SetupComplete | Step::SetupConsumed { .. } => {
                     let deposit_state = require_deposit(state, &deposit_id).await?;
 
                     match deposit_state.step {

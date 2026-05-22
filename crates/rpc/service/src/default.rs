@@ -461,10 +461,18 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .map_err(ServiceError::storage)?
                     .ok_or(ServiceError::StateMachineNotFound(*sm_id))?;
 
-                if statemachine.step != garbler::Step::SetupComplete {
-                    return Err(ServiceError::InvalidInputForState(
-                        statemachine.step.step_name().into(),
-                    ));
+                {
+                    use garbler::Step;
+                    if !matches!(
+                        statemachine.step,
+                        Step::SetupComplete
+                            | Step::CompletingAdaptors { .. }
+                            | Step::SetupConsumed { .. }
+                    ) {
+                        return Err(ServiceError::InvalidInputForState(
+                            statemachine.step.step_name().into(),
+                        ));
+                    }
                 }
 
                 let deposit = self
@@ -492,10 +500,18 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     .map_err(ServiceError::storage)?
                     .ok_or(ServiceError::StateMachineNotFound(*sm_id))?;
 
-                if statemachine.step != evaluator::Step::SetupComplete {
-                    return Err(ServiceError::InvalidInputForState(
-                        statemachine.step.step_name().into(),
-                    ));
+                {
+                    use evaluator::Step;
+                    if !matches!(
+                        statemachine.step,
+                        Step::SetupComplete
+                            | Step::EvaluatingTables { .. }
+                            | Step::SetupConsumed { .. }
+                    ) {
+                        return Err(ServiceError::InvalidInputForState(
+                            statemachine.step.step_name().into(),
+                        ));
+                    }
                 }
 
                 let deposit = self

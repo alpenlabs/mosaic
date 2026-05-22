@@ -275,7 +275,7 @@ pub(crate) async fn handle_event<S: StateMut>(
             .await?;
         }
         Input::DepositUndisputedWithdrawal(deposit_id) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::CompletingAdaptors { .. } | Step::SetupConsumed { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
@@ -295,7 +295,7 @@ pub(crate) async fn handle_event<S: StateMut>(
         },
         Input::DisputedWithdrawal(deposit_id, withdrawal_input) => {
             match &mut root_state.step {
-                Step::SetupComplete => {
+                Step::SetupComplete | Step::SetupConsumed { .. } => {
                     let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                     match &mut deposit_state.step {
