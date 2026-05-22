@@ -1209,7 +1209,7 @@ mod challenge_validation_tests {
             // bypassing `Index::new`. The Index API does not normally permit
             // 0 / out-of-range values, but a malicious peer can produce them
             // by hand-crafting wire bytes; the validator must catch that.
-            if raw == 0 {
+            if raw == Index::reserved().get() {
                 Index::reserved()
             } else {
                 Index::new(raw).unwrap_or_else(Index::reserved)
@@ -1222,7 +1222,7 @@ mod challenge_validation_tests {
     fn rejects_reserved_index() {
         // First entry is the reserved index (0).
         let mut indices: Vec<usize> = (1..=N_OPEN_CIRCUITS).collect();
-        indices[0] = 0;
+        indices[0] = Index::reserved().get();
         assert!(!is_valid_challenge(&make_challenge(&indices)));
     }
 
