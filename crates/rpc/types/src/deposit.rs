@@ -37,10 +37,6 @@ pub struct EvaluatorDepositConfig {
 }
 
 /// Configuration provided as part of contested withdrawal for evaluator.
-///
-/// The evaluator recovers the withdrawal input wire values from the completed adaptor
-/// signatures using locally stored adaptor state, so callers no longer need to supply
-/// withdrawal-input hints.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EvaluatorWithdrawalConfig {
     /// Completed adaptor signatures.
