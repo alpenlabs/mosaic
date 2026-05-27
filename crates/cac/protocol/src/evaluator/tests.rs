@@ -5,15 +5,16 @@ use mosaic_cac_types::{
     ChallengeIndices, ChallengeResponseMsgChunk, ChallengeResponseMsgHeader, CommitMsgChunk,
     CommitMsgHeader, DepositId, EvalGarblingTableCommitments, EvaluationIndices,
     GarblingTableCommitment, HeapArray, Index, OpenedOutputShares, Polynomial,
+    ReservedSetupInputShares, SetupInputs, Share, WideLabelZerothPolynomialCoefficients,
     state_machine::evaluator::{
         Action, ActionId, ActionResult, EvaluatorState, Input, StateMut, StateRead, Step,
     },
 };
-use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS};
+use mosaic_common::constants::{N_EVAL_CIRCUITS, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES};
 use mosaic_storage_inmemory::evaluator::StoredEvaluatorState;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
-use super::stf::{handle_action_result, handle_event, restore};
+use super::stf::{handle_action_result, handle_event, restore, verify_reserved_setup_input_shares};
 use crate::evaluator::stf::get_remaining_challenge_response_chunks;
 
 #[tokio::test]
@@ -1054,4 +1055,142 @@ async fn corrupted_opened_output_share_aborts_without_persisting() {
     assert_eq!(state.get_opened_output_shares().await.unwrap(), None);
     assert_eq!(state.get_reserved_setup_input_shares().await.unwrap(), None);
     assert_eq!(state.get_opened_garbling_seeds().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn opened_input_share_chunk_with_wrong_embedded_index_is_rejected() {
+    let challenge_indices = ChallengeIndices::new(|i| Index::new(i + 1).unwrap());
+    let target_idx = challenge_indices[0]; // chunk claims to be for this circuit
+    let other_idx = challenge_indices[1]; // but every share has this embedded index
+
+    let mut state = StoredEvaluatorState::default();
+    state
+        .put_challenge_indices(&challenge_indices)
+        .await
+        .unwrap();
+    let remaining = get_remaining_challenge_response_chunks(&challenge_indices);
+    state
+        .put_root_state(&EvaluatorState {
+            config: None,
+            step: Step::WaitingForChallengeResponse {
+                header: false,
+                remaining_chunks: remaining,
+            },
+        })
+        .await
+        .unwrap();
+
+    // Shares that are honest evaluations at `other_idx` (so .index() == other_idx),
+    // packed into a chunk claiming `circuit_index = target_idx`.
+    let mut rng = ChaCha20Rng::seed_from_u64(42);
+    let polynomial = Polynomial::rand(&mut rng);
+    let share_at_other = polynomial.eval(other_idx);
+    let chunk = ChallengeResponseMsgChunk {
+        circuit_index: target_idx.get() as u16,
+        shares: HeapArray::from_elem(HeapArray::from_elem(share_at_other)),
+    };
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::RecvChallengeResponseMsgChunk(chunk),
+        &mut actions,
+    )
+    .await;
+
+    let root = state.get_root_state().await.unwrap().unwrap();
+    let rejected = result.is_err() || matches!(root.step, Step::Aborted { .. });
+    assert!(
+        rejected,
+        "wrong-index chunk must be rejected; got result {result:?} and step {:?}",
+        root.step,
+    );
+    assert!(actions.is_empty(), "rejection path must not emit actions");
+
+    assert_eq!(
+        state
+            .get_opened_input_shares_for_circuit(target_idx.get() as u16)
+            .await
+            .unwrap(),
+        None,
+        "malicious chunk must not be persisted under the claimed circuit_index",
+    );
+}
+
+fn build_reserved_share_verification_inputs(
+    share_index: Index,
+) -> (
+    ReservedSetupInputShares,
+    SetupInputs,
+    Vec<WideLabelZerothPolynomialCoefficients>,
+) {
+    let mut rng = ChaCha20Rng::seed_from_u64(7);
+    let scalars: Vec<_> = (0..N_SETUP_INPUT_WIRES)
+        .map(|_| {
+            Polynomial::rand(&mut rng)
+                .eval(Index::new(1).unwrap())
+                .value()
+        })
+        .collect();
+
+    let setup_inputs: SetupInputs = std::array::from_fn(|i| (i as u8).wrapping_mul(3));
+
+    let shares = ReservedSetupInputShares::new(|wire| Share::new(share_index, scalars[wire]));
+
+    // Fill every slot of each row with g^{scalars[wire]} so the existing
+    // point-equality check passes regardless of which `val` setup_inputs picks.
+    let coefficients: Vec<WideLabelZerothPolynomialCoefficients> = scalars
+        .iter()
+        .map(|&scalar| {
+            let point = Share::new(Index::reserved(), scalar).commit().point();
+            HeapArray::from_elem(point)
+        })
+        .collect();
+
+    (shares, setup_inputs, coefficients)
+}
+
+#[test]
+fn verify_reserved_setup_input_shares_accepts_reserved_index() {
+    let (shares, setup_inputs, coefficients) =
+        build_reserved_share_verification_inputs(Index::reserved());
+
+    let result = verify_reserved_setup_input_shares(&shares, &setup_inputs, &coefficients);
+    assert!(
+        result.is_none(),
+        "honest reserved shares must verify, got: {result:?}"
+    );
+}
+
+#[test]
+fn verify_reserved_setup_input_shares_rejects_non_reserved_index() {
+    // Non-reserved index but the share's value still commits to the correct
+    // zeroth coefficient — i.e. the existing point check would accept it.
+    let attacker_index = Index::new(5).unwrap();
+    let (shares, setup_inputs, coefficients) =
+        build_reserved_share_verification_inputs(attacker_index);
+
+    let result = verify_reserved_setup_input_shares(&shares, &setup_inputs, &coefficients);
+    let reason = result.expect("non-reserved index must be rejected");
+    assert!(
+        reason.contains("expected reserved"),
+        "reason should mention reserved-index requirement, got: {reason}"
+    );
+}
+
+#[test]
+fn verify_reserved_setup_input_shares_rejects_first_offending_wire() {
+    // All wires honest except wire 0, which has a non-reserved index.
+    // The function must surface that specific wire in the failure reason.
+    let (mut shares, setup_inputs, coefficients) =
+        build_reserved_share_verification_inputs(Index::reserved());
+    let bad_value = shares[0].value();
+    shares[0] = Share::new(Index::new(2).unwrap(), bad_value);
+
+    let result = verify_reserved_setup_input_shares(&shares, &setup_inputs, &coefficients);
+    let reason = result.expect("non-reserved index must be rejected");
+    assert!(
+        reason.contains("wire 0"),
+        "reason should pinpoint the offending wire, got: {reason}"
+    );
 }

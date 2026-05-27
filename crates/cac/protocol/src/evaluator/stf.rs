@@ -897,6 +897,26 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                 return Err(SMError::InvalidInputData);
             }
 
+            // Bind every embedded share index to the chunk's circuit_index.
+            // batch_verify_shares uses share.index() as the evaluation
+            // x-coordinate, so without this a garbler could substitute
+            // honest (j, P(j)) shares into a chunk claimed for circuit i and
+            // pass verification — defeating cut-and-choose soundness.
+            let expected_index = Index::new(response_msg_chunk.circuit_index as usize)
+                .expect("circuit_index validated against challenge set above");
+            for wire_shares in response_msg_chunk.shares.iter() {
+                for share in wire_shares.iter() {
+                    if share.index() != expected_index {
+                        warn!(
+                            circuit_index = %expected_index,
+                            share_index = %share.index(),
+                            "evaluator opened input share index mismatch, rejecting chunk"
+                        );
+                        return Err(SMError::InvalidInputData);
+                    }
+                }
+            }
+
             let chunk_idx = (response_msg_chunk.circuit_index as usize)
                 .checked_sub(1)
                 .unwrap();
@@ -1345,7 +1365,7 @@ fn sample_challenge_indices(base_seed: Seed) -> ChallengeIndices {
 }
 
 /// Verify reserved setup input shares and return failure reason or None.
-fn verify_reserved_setup_input_shares(
+pub(super) fn verify_reserved_setup_input_shares(
     reserved_setup_input_shares: &ReservedSetupInputShares,
     setup_inputs: &SetupInputs,
     setup_wire_zeroth_coefficients: &[WideLabelZerothPolynomialCoefficients],
@@ -1353,6 +1373,17 @@ fn verify_reserved_setup_input_shares(
     for wire in 0..N_SETUP_INPUT_WIRES {
         let val = setup_inputs[wire];
         let reserved_share = reserved_setup_input_shares[wire];
+        // The point check below only constrains the share's value,
+        // not its embedded index. Downstream consumers (Lagrange interpolation)
+        // treat share.index() as the evaluation x-coordinate, so a malicious
+        // garbler could submit (j, P(0)) shares that pass here and then
+        // corrupt interpolation. Bind the index to Index::reserved() (== 0).
+        if reserved_share.index() != Index::reserved() {
+            return Some(format!(
+                "reserved setup share for wire {wire} has index {}, expected reserved",
+                reserved_share.index()
+            ));
+        }
         if setup_wire_zeroth_coefficients[wire][val as usize] != reserved_share.commit().point() {
             return Some(format!(
                 "verify reserved setup shares failed for wire {wire}",
