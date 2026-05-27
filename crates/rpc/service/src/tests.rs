@@ -673,6 +673,32 @@ async fn init_garbler_deposit_accepts_setup_consumed() {
 }
 
 #[tokio::test]
+async fn init_evaluator_deposit_accepts_evaluating_tables() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::EvaluatingTables {
+        deposit_id: test_deposit_id(99),
+        eval_indices: std::array::from_fn(|i| Index::new(i + 1).expect("valid index")),
+        eval_commitments: HeapArray::new(|i| [i as u8; 32].into()),
+        evaluated: HeapArray::from_elem(false),
+    })
+    .await;
+
+    let deposit_id = test_deposit_id(1);
+    let init = EvaluatorDepositInit {
+        sighashes: test_sighashes(),
+        deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
+    };
+
+    h.api
+        .init_evaluator_deposit(&h.evaluator_sm_id(), &deposit_id, init)
+        .await
+        .unwrap();
+
+    let cmd = h.recv_command().await;
+    assert!(matches!(cmd.kind, SmCommandKind::DepositInit { .. }));
+}
+
+#[tokio::test]
 async fn init_evaluator_deposit_accepts_setup_consumed() {
     let h = TestHarness::new();
     h.setup_evaluator(evaluator::Step::SetupConsumed {
