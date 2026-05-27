@@ -1191,60 +1191,7 @@ pub(crate) async fn restore<S: StateRead>(
             }
         }
         Step::SetupComplete => {
-            let mut all_deposits = pin!(state.stream_all_deposits());
-
-            while let Some(res) = all_deposits.next().await {
-                let (deposit_id, deposit_state) = res.map_err(SMError::storage)?;
-
-                match &deposit_state.step {
-                    DepositStep::GeneratingAdaptors {
-                        deposit,
-                        withdrawal_chunks,
-                    } => {
-                        if !deposit {
-                            emit(actions, Action::GenerateDepositAdaptors(deposit_id));
-                        }
-                        for (idx, generated) in withdrawal_chunks.iter().enumerate() {
-                            if !*generated {
-                                emit(
-                                    actions,
-                                    Action::GenerateWithdrawalAdaptorsChunk(
-                                        deposit_id,
-                                        ChunkIndex(idx as u8),
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                    DepositStep::SendingAdaptors { acked } => {
-                        let deposit_adaptors = state
-                            .get_deposit_adaptors(&deposit_id)
-                            .await
-                            .require("expected deposit adaptors")?;
-
-                        let withdrawal_adaptors = state
-                            .get_withdrawal_adaptors(&deposit_id)
-                            .await
-                            .require("expected withdrawal adaptors")?;
-
-                        for chunk in create_adaptor_message_chunks(
-                            deposit_id,
-                            deposit_adaptors,
-                            withdrawal_adaptors,
-                        ) {
-                            if !acked[chunk.chunk_index as usize] {
-                                emit(
-                                    actions,
-                                    Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
-                                );
-                            }
-                        }
-                    }
-                    DepositStep::DepositReady => {}
-                    DepositStep::WithdrawnUndisputed => {}
-                    DepositStep::Aborted { .. } => {}
-                }
-            }
+            restore_deposits(state, actions).await?;
         }
         Step::EvaluatingTables {
             eval_indices,
