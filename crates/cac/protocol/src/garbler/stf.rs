@@ -1205,14 +1205,10 @@ mod challenge_validation_tests {
     fn make_challenge(indices: &[usize]) -> ChallengeMsg {
         let challenge_indices: ChallengeIndices = HeapArray::new(|i| {
             let raw = indices[i];
-            // Allow constructing out-of-range entries for negative tests by
-            // bypassing `Index::new`. The Index API does not normally permit
-            // 0 / out-of-range values, but a malicious peer can produce them
-            // by hand-crafting wire bytes; the validator must catch that.
-            if raw == 0 {
+            if raw == Index::reserved().get() {
                 Index::reserved()
             } else {
-                Index::new(raw).unwrap_or_else(Index::reserved)
+                Index::new(raw).unwrap()
             }
         });
         ChallengeMsg { challenge_indices }
@@ -1222,7 +1218,7 @@ mod challenge_validation_tests {
     fn rejects_reserved_index() {
         // First entry is the reserved index (0).
         let mut indices: Vec<usize> = (1..=N_OPEN_CIRCUITS).collect();
-        indices[0] = 0;
+        indices[0] = Index::reserved().get();
         assert!(!is_valid_challenge(&make_challenge(&indices)));
     }
 
