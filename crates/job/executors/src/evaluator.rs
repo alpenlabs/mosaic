@@ -398,6 +398,9 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
                     let _ = ctx.table_store.delete(&table_id).await;
                     return HandlerOutcome::Retry;
                 }
+                if ciphertext_bytes_received == expected_ciphertext_bytes {
+                    break;
+                }
             }
         } else {
             // All translation received — remaining data is ciphertext.
@@ -420,6 +423,9 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
                 error!(%peer_id, "ciphertext write failed for receive_garbling_table");
                 let _ = ctx.table_store.delete(&table_id).await;
                 return HandlerOutcome::Retry;
+            }
+            if ciphertext_bytes_received == expected_ciphertext_bytes {
+                break;
             }
         }
     }
