@@ -89,7 +89,7 @@ ark-ff = "0.6.0"
 ark-secp256k1 = "0.6.0"
 ark-serialize = "0.6.0"
 async-trait = "0.1"
-bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
+bitcoin = { version = "0.32.9", features = ["rand", "rand-std"] }
 bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }
 bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" }
 bitvec = "1.0.1"
