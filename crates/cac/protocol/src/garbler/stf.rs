@@ -22,6 +22,10 @@ use crate::{
     common::{derive_stage_seed, get_eval_commitments, get_eval_indices},
 };
 
+// Note: deposit operations are accepted in any post-setup state (SetupComplete,
+// CompletingAdaptors, SetupConsumed), not only SetupComplete. This allows new deposits
+// to be created on a tableset even after the setup has been consumed by a withdrawal.
+
 // ============================================================================
 // External event handler
 // ============================================================================
@@ -225,7 +229,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 deposit_inputs,
             },
         ) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::CompletingAdaptors { .. } | Step::SetupConsumed { .. } => {
                 if state
                     .get_deposit(&deposit_id)
                     .await
@@ -271,7 +275,7 @@ pub(crate) async fn handle_event<S: StateMut>(
             .await?;
         }
         Input::DepositUndisputedWithdrawal(deposit_id) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::CompletingAdaptors { .. } | Step::SetupConsumed { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
@@ -533,7 +537,9 @@ pub(crate) async fn handle_action_result<S: StateMut>(
 
         ActionResult::DepositAdaptorVerificationResult(deposit_id, verification_success) => {
             match root_state.step {
-                Step::SetupComplete => {
+                Step::SetupComplete
+                | Step::CompletingAdaptors { .. }
+                | Step::SetupConsumed { .. } => {
                     let mut deposit_state = require_deposit(state, &deposit_id).await?;
                     match &mut deposit_state.step {
                         DepositStep::VerifyingAdaptors => {
@@ -773,7 +779,7 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
     actions: &mut ActionContainer,
 ) -> SMResult<()> {
     match &mut root_state.step {
-        Step::SetupComplete => {
+        Step::SetupComplete | Step::CompletingAdaptors { .. } | Step::SetupConsumed { .. } => {
             if adaptor_msg_chunk.deposit_id != deposit_id {
                 return Err(SMError::invalid_input_data());
             }
@@ -989,10 +995,29 @@ pub(crate) async fn restore<S: StateRead>(
             }
 
             emit(actions, Action::CompleteAdaptorSignatures(*deposit_id));
+
+            restore_deposits(state, actions).await?;
         }
-        Step::SetupConsumed { .. } => {}
+        Step::SetupConsumed { .. } => {
+            restore_deposits(state, actions).await?;
+        }
         Step::Aborted { .. } => {}
     };
+
+    Ok(())
+}
+
+/// Restore adaptor verification actions for in-progress deposits.
+async fn restore_deposits<S: StateRead>(state: &S, actions: &mut ActionContainer) -> SMResult<()> {
+    let mut all_deposits = pin!(state.stream_all_deposits());
+
+    while let Some(res) = all_deposits.next().await {
+        let (deposit_id, deposit_state) = res.map_err(SMError::storage)?;
+
+        if let DepositStep::VerifyingAdaptors = &deposit_state.step {
+            emit(actions, Action::DepositVerifyAdaptors(deposit_id));
+        }
+    }
 
     Ok(())
 }

@@ -540,8 +540,7 @@ async fn init_garbler_deposit_rejects_duplicate_deposit() {
 #[tokio::test]
 async fn init_evaluator_deposit_rejects_wrong_step() {
     let h = TestHarness::new();
-    h.setup_evaluator_with_config(evaluator::Step::Uninit, None)
-        .await;
+    h.setup_evaluator(evaluator::Step::Uninit).await;
 
     let deposit_id = test_deposit_id(1);
     let init = EvaluatorDepositInit {
@@ -613,6 +612,114 @@ async fn init_evaluator_deposit_dispatches_correct_input() {
         }
         other => panic!("expected Evaluator DepositInit, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Group 5b: deposit init accepted in post-setup states
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn init_garbler_deposit_accepts_completing_adaptors() {
+    let h = TestHarness::new();
+    h.setup_garbler(garbler::Step::CompletingAdaptors {
+        deposit_id: test_deposit_id(99),
+    })
+    .await;
+
+    let deposit_id = test_deposit_id(1);
+    let init = GarblerDepositInit {
+        adaptor_pk: try_into_x_only_pubkey(
+            KeyPair::rand(&mut ChaCha20Rng::seed_from_u64(0)).public_key(),
+        )
+        .unwrap(),
+        sighashes: test_sighashes(),
+        deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
+    };
+
+    h.api
+        .init_garbler_deposit(&h.garbler_sm_id(), &deposit_id, init)
+        .await
+        .unwrap();
+
+    let cmd = h.recv_command().await;
+    assert!(matches!(cmd.kind, SmCommandKind::DepositInit { .. }));
+}
+
+#[tokio::test]
+async fn init_garbler_deposit_accepts_setup_consumed() {
+    let h = TestHarness::new();
+    h.setup_garbler(garbler::Step::SetupConsumed {
+        deposit_id: test_deposit_id(99),
+    })
+    .await;
+
+    let deposit_id = test_deposit_id(1);
+    let init = GarblerDepositInit {
+        adaptor_pk: try_into_x_only_pubkey(
+            KeyPair::rand(&mut ChaCha20Rng::seed_from_u64(0)).public_key(),
+        )
+        .unwrap(),
+        sighashes: test_sighashes(),
+        deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
+    };
+
+    h.api
+        .init_garbler_deposit(&h.garbler_sm_id(), &deposit_id, init)
+        .await
+        .unwrap();
+
+    let cmd = h.recv_command().await;
+    assert!(matches!(cmd.kind, SmCommandKind::DepositInit { .. }));
+}
+
+#[tokio::test]
+async fn init_evaluator_deposit_accepts_evaluating_tables() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::EvaluatingTables {
+        deposit_id: test_deposit_id(99),
+        eval_indices: std::array::from_fn(|i| Index::new(i + 1).expect("valid index")),
+        eval_commitments: HeapArray::new(|i| [i as u8; 32].into()),
+        evaluated: HeapArray::from_elem(false),
+    })
+    .await;
+
+    let deposit_id = test_deposit_id(1);
+    let init = EvaluatorDepositInit {
+        sighashes: test_sighashes(),
+        deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
+    };
+
+    h.api
+        .init_evaluator_deposit(&h.evaluator_sm_id(), &deposit_id, init)
+        .await
+        .unwrap();
+
+    let cmd = h.recv_command().await;
+    assert!(matches!(cmd.kind, SmCommandKind::DepositInit { .. }));
+}
+
+#[tokio::test]
+async fn init_evaluator_deposit_accepts_setup_consumed() {
+    let h = TestHarness::new();
+    h.setup_evaluator(evaluator::Step::SetupConsumed {
+        deposit_id: test_deposit_id(99),
+        success: true,
+    })
+    .await;
+
+    let deposit_id = test_deposit_id(1);
+    let init = EvaluatorDepositInit {
+        sighashes: test_sighashes(),
+        deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
+    };
+
+    h.api
+        .init_evaluator_deposit(&h.evaluator_sm_id(), &deposit_id, init)
+        .await
+        .unwrap();
+
+    let cmd = h.recv_command().await;
+    assert!(matches!(cmd.kind, SmCommandKind::DepositInit { .. }));
 }
 
 // ---------------------------------------------------------------------------

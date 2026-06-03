@@ -25,6 +25,10 @@ use crate::{
     common::{derive_stage_seed, get_eval_commitments, get_eval_indices},
 };
 
+// Note: deposit operations are accepted in any post-setup state (SetupComplete,
+// EvaluatingTables, SetupConsumed), not only SetupComplete. This allows new deposits
+// to be created on a tableset even after the setup has been consumed by a withdrawal.
+
 // ============================================================================
 // External event handler
 // ============================================================================
@@ -92,7 +96,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 deposit_inputs,
             },
         ) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
                 if state
                     .get_deposit(&deposit_id)
                     .await
@@ -140,7 +144,7 @@ pub(crate) async fn handle_event<S: StateMut>(
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::DepositUndisputedWithdrawal(deposit_id) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match deposit_state.step {
@@ -393,7 +397,9 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         }
         ActionResult::DepositAdaptorsGenerated(deposit_id, deposit_adaptors) => {
             match root_state.step {
-                Step::SetupComplete => {
+                Step::SetupComplete
+                | Step::EvaluatingTables { .. }
+                | Step::SetupConsumed { .. } => {
                     let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                     match &mut deposit_state.step {
@@ -451,7 +457,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             chunk_idx,
             withdrawal_adaptor_chunk,
         ) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
@@ -516,7 +522,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             _ => return Err(SMError::UnexpectedInput),
         },
         ActionResult::DepositAdaptorChunkSent(deposit_id) => match root_state.step {
-            Step::SetupComplete => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
@@ -1185,60 +1191,7 @@ pub(crate) async fn restore<S: StateRead>(
             }
         }
         Step::SetupComplete => {
-            let mut all_deposits = pin!(state.stream_all_deposits());
-
-            while let Some(res) = all_deposits.next().await {
-                let (deposit_id, deposit_state) = res.map_err(SMError::storage)?;
-
-                match &deposit_state.step {
-                    DepositStep::GeneratingAdaptors {
-                        deposit,
-                        withdrawal_chunks,
-                    } => {
-                        if !deposit {
-                            emit(actions, Action::GenerateDepositAdaptors(deposit_id));
-                        }
-                        for (idx, generated) in withdrawal_chunks.iter().enumerate() {
-                            if !*generated {
-                                emit(
-                                    actions,
-                                    Action::GenerateWithdrawalAdaptorsChunk(
-                                        deposit_id,
-                                        ChunkIndex(idx as u8),
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                    DepositStep::SendingAdaptors { acked } => {
-                        let deposit_adaptors = state
-                            .get_deposit_adaptors(&deposit_id)
-                            .await
-                            .require("expected deposit adaptors")?;
-
-                        let withdrawal_adaptors = state
-                            .get_withdrawal_adaptors(&deposit_id)
-                            .await
-                            .require("expected withdrawal adaptors")?;
-
-                        for chunk in create_adaptor_message_chunks(
-                            deposit_id,
-                            deposit_adaptors,
-                            withdrawal_adaptors,
-                        ) {
-                            if !acked[chunk.chunk_index as usize] {
-                                emit(
-                                    actions,
-                                    Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
-                                );
-                            }
-                        }
-                    }
-                    DepositStep::DepositReady => {}
-                    DepositStep::WithdrawnUndisputed => {}
-                    DepositStep::Aborted { .. } => {}
-                }
-            }
+            restore_deposits(state, actions).await?;
         }
         Step::EvaluatingTables {
             eval_indices,
@@ -1255,8 +1208,12 @@ pub(crate) async fn restore<S: StateRead>(
                     Action::EvaluateGarblingTable(eval_indices[ii], eval_commitments[ii]),
                 );
             }
+
+            restore_deposits(state, actions).await?;
         }
-        Step::SetupConsumed { .. } => {}
+        Step::SetupConsumed { .. } => {
+            restore_deposits(state, actions).await?;
+        }
         // NOTE: an abort transition from `ReceivingGarblingTables` (commitment
         // mismatch in `handle_table_received`) can leave earlier slots'
         // `SendTableTransferReceipt` actions in flight, which this branch
@@ -1265,6 +1222,62 @@ pub(crate) async fn restore<S: StateRead>(
         // garbler peer without those receipts. Cleaner abort-propagation is
         // tracked as a follow-up (see PR #257 review thread).
         Step::Aborted { .. } => {}
+    }
+
+    Ok(())
+}
+
+/// Restore actions for in-progress deposits.
+async fn restore_deposits<S: StateRead>(state: &S, actions: &mut ActionContainer) -> SMResult<()> {
+    let mut all_deposits = pin!(state.stream_all_deposits());
+
+    while let Some(res) = all_deposits.next().await {
+        let (deposit_id, deposit_state) = res.map_err(SMError::storage)?;
+
+        match &deposit_state.step {
+            DepositStep::GeneratingAdaptors {
+                deposit,
+                withdrawal_chunks,
+            } => {
+                if !deposit {
+                    emit(actions, Action::GenerateDepositAdaptors(deposit_id));
+                }
+                for (idx, generated) in withdrawal_chunks.iter().enumerate() {
+                    if !*generated {
+                        emit(
+                            actions,
+                            Action::GenerateWithdrawalAdaptorsChunk(
+                                deposit_id,
+                                ChunkIndex(idx as u8),
+                            ),
+                        );
+                    }
+                }
+            }
+            DepositStep::SendingAdaptors { acked } => {
+                let deposit_adaptors = state
+                    .get_deposit_adaptors(&deposit_id)
+                    .await
+                    .require("expected deposit adaptors")?;
+
+                let withdrawal_adaptors = state
+                    .get_withdrawal_adaptors(&deposit_id)
+                    .await
+                    .require("expected withdrawal adaptors")?;
+
+                for chunk in
+                    create_adaptor_message_chunks(deposit_id, deposit_adaptors, withdrawal_adaptors)
+                {
+                    if !acked[chunk.chunk_index as usize] {
+                        emit(
+                            actions,
+                            Action::DepositSendAdaptorMsgChunk(deposit_id, chunk),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     Ok(())
