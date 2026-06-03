@@ -84,12 +84,12 @@ mosaic-storage-s3 = { path = "crates/storage/s3" }
 mosaic-vs3 = { path = "crates/vs3" }
 
 anyhow = "1.0"
-ark-ec = "0.5.0"
-ark-ff = "0.5.0"
-ark-secp256k1 = "0.5.0"
-ark-serialize = "0.5.0"
+ark-ec = "0.6.0"
+ark-ff = "0.6.0"
+ark-secp256k1 = "0.6.0"
+ark-serialize = "0.6.0"
 async-trait = "0.1"
-bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
+bitcoin = { version = "0.32.9", features = ["rand", "rand-std"] }
 bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }
 bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" }
 bitvec = "1.0.1"
@@ -123,7 +123,7 @@ secp256k1 = "0.29" # must match bitcoin's re-export
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "=1.0.149"
 serde_with = "3.19.0"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 thiserror = "2.0"
 tokio-util = "0.7"
