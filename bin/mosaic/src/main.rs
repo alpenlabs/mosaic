@@ -248,8 +248,11 @@ where
         storage,
         rng,
     );
-    let rpc_controller =
-        rpc::start_rpc_server(rpc_bind_addr, mosaic_api).context("failed to start RPC server")?;
+    let circuit_info =
+        mosaic_rpc_types::RpcCircuitInfoEntry::from_circuit_file(&config.circuit.path)
+            .context("failed to read circuit file header")?;
+    let rpc_controller = rpc::start_rpc_server(rpc_bind_addr, mosaic_api, circuit_info)
+        .context("failed to start RPC server")?;
 
     tracing::info!("all currently supported components started");
     Ok(RunningMosaic {

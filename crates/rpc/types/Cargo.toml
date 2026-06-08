@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 bitcoin = { workspace = true, features = ["serde"] }
+ckt-fmtv5-types.workspace = true
 mosaic-cac-types.workspace = true
 mosaic-common.workspace = true
 mosaic-net-svc-api.workspace = true

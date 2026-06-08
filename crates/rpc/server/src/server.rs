@@ -20,12 +20,16 @@ use crate::conversions::{
 #[derive(Debug)]
 pub struct RpcServerImpl<Svc: MosaicApi> {
     service: Svc,
+    circuit_info: RpcCircuitInfoEntry,
 }
 
 impl<Svc: MosaicApi> RpcServerImpl<Svc> {
     /// Constructs a new instance with the given service implementation.
-    pub fn new(service: Svc) -> Self {
-        Self { service }
+    pub fn new(service: Svc, circuit_info: RpcCircuitInfoEntry) -> Self {
+        Self {
+            service,
+            circuit_info,
+        }
     }
 }
 
@@ -37,7 +41,7 @@ fn parse_sm_id(tsid: RpcTablesetId) -> RpcResult<StateMachineId> {
 #[async_trait]
 impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
     fn get_circuit_defs(&self) -> RpcResult<Vec<RpcCircuitInfoEntry>> {
-        Ok(vec![RpcCircuitInfoEntry::from_config()])
+        Ok(vec![self.circuit_info.clone()])
     }
 
     fn get_peer_id(&self) -> RpcResult<RpcPeerId> {

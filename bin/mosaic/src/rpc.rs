@@ -10,6 +10,7 @@ use jsonrpsee::server::ServerHandle;
 use mosaic_rpc_api::MosaicRpcServer;
 use mosaic_rpc_server::RpcServerImpl;
 use mosaic_rpc_service::MosaicApi;
+use mosaic_rpc_types::RpcCircuitInfoEntry;
 
 /// Controller for a running RPC server.
 #[derive(Debug)]
@@ -46,8 +47,9 @@ impl RpcController {
 pub(crate) fn start_rpc_server(
     bind_addr: SocketAddr,
     service: impl MosaicApi,
+    circuit_info: RpcCircuitInfoEntry,
 ) -> Result<RpcController> {
-    let rpc_impl = RpcServerImpl::new(service);
+    let rpc_impl = RpcServerImpl::new(service, circuit_info);
 
     let (handle_tx, handle_rx) = std::sync::mpsc::sync_channel(1);
 

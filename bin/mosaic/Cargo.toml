@@ -25,6 +25,7 @@ mosaic-net-svc.workspace = true
 mosaic-rpc-api.workspace = true
 mosaic-rpc-server.workspace = true
 mosaic-rpc-service.workspace = true
+mosaic-rpc-types.workspace = true
 mosaic-sm-executor.workspace = true
 mosaic-sm-executor-api.workspace = true
 mosaic-storage-api.workspace = true
