@@ -1,3 +1,9 @@
+use std::{
+    io::{self, Read},
+    path::Path,
+};
+
+use ckt_fmtv5_types::v5::c::{HEADER_SIZE, HeaderV5c};
 use serde::{Deserialize, Serialize};
 
 use crate::RpcByte32;
@@ -14,20 +20,33 @@ pub struct RpcCircuitInfoEntry {
 }
 
 impl RpcCircuitInfoEntry {
-    /// Create circuit info from config.
-    pub fn from_config(/* TODO: mosaic config */) -> Self {
-        Self {
-            name: "default".into(),
-            commitment: [0; 32].into(),
+    /// Create circuit info by reading the v5c header from the circuit file at `path`.
+    pub fn from_circuit_file(path: &Path) -> io::Result<Self> {
+        let mut f = std::fs::File::open(path)?;
+        let mut header_bytes = [0u8; HEADER_SIZE];
+        f.read_exact(&mut header_bytes)?;
+        let header = HeaderV5c::from_bytes(&header_bytes)?;
+
+        let file_size = std::fs::metadata(path)?.len();
+
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(Self {
+            name,
+            commitment: header.checksum.into(),
             info: RpcCircuitInfo {
-                total_size_bytes: 0,
-                total_gates: 0,
-                levels: 0,
-                max_width: 0,
-                num_input_wires: 0,
-                num_output_wires: 0,
+                total_size_bytes: file_size,
+                total_gates: header.total_gates(),
+                xor_gates: header.xor_gates,
+                and_gates: header.and_gates,
+                num_input_wires: header.primary_inputs,
+                num_output_wires: header.num_outputs,
             },
-        }
+        })
     }
 }
 
@@ -38,10 +57,16 @@ impl RpcCircuitInfoEntry {
 /// going to take to work with it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RpcCircuitInfo {
-    total_size_bytes: u64,
-    total_gates: u64,
-    levels: u64,
-    max_width: u64,
-    num_input_wires: u64,
-    num_output_wires: u64,
+    /// total circuit file size in bytes
+    pub total_size_bytes: u64,
+    /// total number of gates (xor + and)
+    pub total_gates: u64,
+    /// number of XOR gates
+    pub xor_gates: u64,
+    /// number of AND gates
+    pub and_gates: u64,
+    /// number of primary input wires
+    pub num_input_wires: u64,
+    /// number of output wires
+    pub num_output_wires: u64,
 }

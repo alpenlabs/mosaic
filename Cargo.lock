@@ -2321,6 +2321,7 @@ dependencies = [
  "mosaic-rpc-api",
  "mosaic-rpc-server",
  "mosaic-rpc-service",
+ "mosaic-rpc-types",
  "mosaic-sm-executor",
  "mosaic-sm-executor-api",
  "mosaic-storage-api",
@@ -2598,6 +2599,7 @@ name = "mosaic-rpc-types"
 version = "0.1.0"
 dependencies = [
  "bitcoin",
+ "ckt-fmtv5-types",
  "hex",
  "jsonrpsee-types",
  "mosaic-cac-types",
