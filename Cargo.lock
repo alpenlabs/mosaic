@@ -2329,7 +2329,7 @@ dependencies = [
  "mosaic-storage-s3",
  "object_store",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.10.0",
  "serde",
  "tokio",
  "toml",
@@ -2351,7 +2351,7 @@ dependencies = [
  "k256",
  "mosaic-common",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.10.0",
  "sha2 0.11.0",
  "thiserror 2.0.18",
 ]
@@ -2379,7 +2379,7 @@ dependencies = [
  "mosaic-vs3",
  "object_store",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.10.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2453,7 +2453,7 @@ dependencies = [
  "mosaic-vs3",
  "parking_lot",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.10.0",
  "tracing",
 ]
 
@@ -2586,7 +2586,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.10.0",
  "secp256k1",
  "sha2 0.11.0",
  "thiserror 2.0.18",
@@ -2650,7 +2650,7 @@ dependencies = [
  "mosaic-common",
  "mosaic-net-svc-api",
  "mosaic-vs3",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.10.0",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -2729,7 +2729,7 @@ dependencies = [
  "criterion",
  "mosaic-common",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.10.0",
  "thiserror 2.0.18",
 ]
 
