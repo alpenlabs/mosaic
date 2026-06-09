@@ -46,7 +46,7 @@ hex = "0.4"
 tracing = "0.1"
 
 [dev-dependencies]
-rand = "0.8"
+rand = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # [lints]
