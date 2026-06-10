@@ -14,6 +14,9 @@
 //!   (shared by commitment and transfer actions).
 //! - [`polynomial_cache`] — bounded cache for polynomial data during setup.
 
+#[cfg(test)]
+use criterion as _;
+
 use std::path::PathBuf;
 
 pub mod circuit_sessions;

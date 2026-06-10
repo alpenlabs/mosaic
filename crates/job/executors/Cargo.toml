@@ -30,5 +30,12 @@ rand.workspace = true
 rand_chacha.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "verify_opened_input_shares"
+harness = false
+
 [lints]
 workspace = true

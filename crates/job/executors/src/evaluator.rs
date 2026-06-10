@@ -142,8 +142,6 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
 ) -> HandlerOutcome {
-    use mosaic_common::constants::{N_INPUT_WIRES, N_OPEN_CIRCUITS, WIDE_LABEL_VALUE_COUNT};
-
     let eval_state = match ctx.storage.evaluator_state(peer_id).await {
         Ok(state) => state,
         Err(_) => return HandlerOutcome::Retry,
@@ -163,39 +161,108 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
         return HandlerOutcome::Retry;
     };
 
-    // Batch-verify all opened shares against their polynomial commitments via RLC.
-    // Collects (commitment, shares) pairs and verifies in a single MSM.
-    #[allow(clippy::needless_range_loop)]
-    let failure_reason = {
-        let mut share_bufs: Vec<Vec<Share>> =
-            Vec::with_capacity(N_INPUT_WIRES * WIDE_LABEL_VALUE_COUNT);
-
-        for wire in 0..N_INPUT_WIRES {
-            for val in 0..WIDE_LABEL_VALUE_COUNT {
-                let wire_val_shares: Vec<Share> = (0..N_OPEN_CIRCUITS)
-                    .map(|idx| opened_input_shares[idx][wire][val])
-                    .collect();
-                share_bufs.push(wire_val_shares);
-            }
-        }
-
-        let pairs: Vec<_> = (0..N_INPUT_WIRES)
-            .flat_map(|wire| (0..WIDE_LABEL_VALUE_COUNT).map(move |val| (wire, val)))
-            .zip(share_bufs.iter())
-            .map(|((wire, val), buf)| (&commitments[wire][val], buf.as_slice()))
-            .collect();
-
-        let mut rng = rand::rngs::OsRng;
-        match batch_verify_shares(&pairs, &mut rng) {
+    // Batch-verify all opened shares against their polynomial commitments.
+    let failure_reason =
+        match verify_opened_input_shares(opened_input_shares.as_ref(), commitments.as_ref()) {
             Ok(()) => None,
             Err(_) => Some("batch verification of opened input shares failed".to_string()),
-        }
-    };
+        };
 
     completed(
         ActionId::VerifyOpenedInputShares,
         ActionResult::VerifyOpenedInputSharesResult(failure_reason),
     )
+}
+
+// ============================================================================
+// Pure computation: opened input share verification
+// ============================================================================
+
+/// Verify opened input shares against polynomial commitments in a single batch.
+///
+/// This is the pure-computation core of [`handle_verify_opened_input_shares`],
+/// extracted so it can be benchmarked without storage.
+///
+/// Transposes shares from `[circuit][wire][val]` to `[wire×val][circuit]` and
+/// delegates to [`batch_verify_shares`] in a single MSM.
+pub fn verify_opened_input_shares(
+    opened_input_shares: &[CircuitInputShares],
+    commitments: &[WideLabelWirePolynomialCommitments],
+) -> Result<(), mosaic_vs3::Error> {
+    let n_circuits = opened_input_shares.len();
+    let n_wires = commitments.len();
+    let n_values = commitments.first().map(|w| w.len()).unwrap_or(0);
+
+    let mut share_bufs: Vec<Vec<Share>> = Vec::with_capacity(n_wires * n_values);
+
+    for wire in 0..n_wires {
+        for val in 0..n_values {
+            let wire_val_shares: Vec<Share> = (0..n_circuits)
+                .map(|idx| opened_input_shares[idx][wire][val])
+                .collect();
+            share_bufs.push(wire_val_shares);
+        }
+    }
+
+    let pairs: Vec<_> = (0..n_wires)
+        .flat_map(|wire| (0..n_values).map(move |val| (wire, val)))
+        .zip(share_bufs.iter())
+        .map(|((wire, val), buf)| (&commitments[wire][val], buf.as_slice()))
+        .collect();
+
+    let mut rng = rand::rngs::OsRng;
+    batch_verify_shares(&pairs, &mut rng)
+}
+
+/// Verify opened input shares in bounded chunks.
+///
+/// Same verification as [`verify_opened_input_shares`] but processes at most
+/// `chunk_size` `(commitment, shares)` pairs per batch call. This bounds peak
+/// memory inside [`batch_verify_shares`] at roughly
+/// `chunk_size * N_COEFFICIENTS` points instead of
+/// `n_wires * n_values * N_COEFFICIENTS`.
+///
+/// Each chunk uses an independent RLC challenge, preserving per-chunk soundness.
+pub fn verify_opened_input_shares_chunked(
+    opened_input_shares: &[CircuitInputShares],
+    commitments: &[WideLabelWirePolynomialCommitments],
+    chunk_size: usize,
+) -> Result<(), mosaic_vs3::Error> {
+    let n_circuits = opened_input_shares.len();
+    let n_wires = commitments.len();
+    let n_values = commitments.first().map(|w| w.len()).unwrap_or(0);
+
+    let total_pairs = n_wires * n_values;
+    let mut rng = rand::rngs::OsRng;
+
+    let mut chunk_shares: Vec<Vec<Share>> = Vec::with_capacity(chunk_size);
+    let mut chunk_indices: Vec<(usize, usize)> = Vec::with_capacity(chunk_size);
+
+    for chunk_start in (0..total_pairs).step_by(chunk_size) {
+        let chunk_end = (chunk_start + chunk_size).min(total_pairs);
+        chunk_shares.clear();
+        chunk_indices.clear();
+
+        for pair_idx in chunk_start..chunk_end {
+            let wire = pair_idx / n_values;
+            let val = pair_idx % n_values;
+            let shares: Vec<Share> = (0..n_circuits)
+                .map(|idx| opened_input_shares[idx][wire][val])
+                .collect();
+            chunk_shares.push(shares);
+            chunk_indices.push((wire, val));
+        }
+
+        let pairs: Vec<_> = chunk_indices
+            .iter()
+            .zip(chunk_shares.iter())
+            .map(|(&(wire, val), buf)| (&commitments[wire][val], buf.as_slice()))
+            .collect();
+
+        batch_verify_shares(&pairs, &mut rng)?;
+    }
+
+    Ok(())
 }
 
 // ============================================================================
