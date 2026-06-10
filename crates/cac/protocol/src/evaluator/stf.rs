@@ -910,9 +910,15 @@ async fn handle_recv_challenge_response_msg<S: StateMut>(
                         warn!(
                             circuit_index = %expected_index,
                             share_index = %share.index(),
-                            "evaluator opened input share index mismatch, rejecting chunk"
+                            "evaluator opened input share index mismatch, aborting"
                         );
-                        return Err(SMError::InvalidInputData);
+                        root_state.step = Step::Aborted {
+                            reason: format!(
+                                "invalid opened input share: chunk circuit_index {expected_index} carries share with index {}",
+                                share.index()
+                            ),
+                        };
+                        return Ok(());
                     }
                 }
             }

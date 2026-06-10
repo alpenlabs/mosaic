@@ -1097,15 +1097,22 @@ async fn opened_input_share_chunk_with_wrong_embedded_index_is_rejected() {
         &mut actions,
     )
     .await;
+    assert!(
+        result.is_ok(),
+        "wrong-index chunk should abort, not error: {result:?}"
+    );
+    assert!(actions.is_empty(), "abort path must not emit actions");
 
     let root = state.get_root_state().await.unwrap().unwrap();
-    let rejected = result.is_err() || matches!(root.step, Step::Aborted { .. });
-    assert!(
-        rejected,
-        "wrong-index chunk must be rejected; got result {result:?} and step {:?}",
-        root.step,
-    );
-    assert!(actions.is_empty(), "rejection path must not emit actions");
+    match root.step {
+        Step::Aborted { reason } => {
+            assert!(
+                reason.starts_with("invalid opened input share"),
+                "unexpected abort reason: {reason}"
+            );
+        }
+        other => panic!("expected Aborted, got: {other:?}"),
+    }
 
     assert_eq!(
         state
