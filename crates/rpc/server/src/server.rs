@@ -10,7 +10,8 @@ use mosaic_rpc_service::{
 use mosaic_rpc_types::*;
 
 use crate::conversions::{
-    cac_role_to_domain, deposit_status_to_rpc, service_err, tableset_status_to_rpc,
+    cac_role_to_domain, deposit_status_to_rpc, node_info_to_rpc, service_err,
+    tableset_status_to_rpc,
 };
 
 /// Mosaic RPC server impl.
@@ -46,6 +47,10 @@ impl<Svc: MosaicApi> MosaicRpcServer for RpcServerImpl<Svc> {
 
     fn get_peer_id(&self) -> RpcResult<RpcPeerId> {
         Ok(RpcPeerId::new(*self.service.get_peer_id().as_bytes()))
+    }
+
+    fn node_info(&self) -> RpcResult<RpcNodeInfo> {
+        Ok(node_info_to_rpc(self.service.node_info()))
     }
 
     fn get_tableset_id(

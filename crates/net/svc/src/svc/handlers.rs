@@ -115,6 +115,16 @@ fn clear_reconnect(peer: PeerId, state: &mut ServiceState) {
 }
 
 fn start_outbound_attempt(peer: PeerId, state: &mut ServiceState) {
+    // Don't burn cycles reconnecting to a peer we know is incompatible.
+    // Cleared on process restart.
+    if state.incompatible_peers.contains(&peer) {
+        tracing::debug!(
+            peer = %hex::encode(peer),
+            "skipping outbound attempt: peer marked incompatible (version handshake failed)"
+        );
+        return;
+    }
+
     let addr = match state.config.get_peer_addr(&peer) {
         Some(addr) => addr,
         None => return,
@@ -137,6 +147,8 @@ fn start_outbound_attempt(peer: PeerId, state: &mut ServiceState) {
         attempt,
         addr,
         state.event_tx.clone(),
+        state.config.protocol_version,
+        state.config.deployment_version.clone(),
     );
 }
 
@@ -1385,6 +1397,29 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                 "outbound connection failed"
             );
             on_outbound_failed(peer, attempt_id, error, state);
+        }
+
+        ServiceEvent::MarkPeerIncompatible { peer, reason } => {
+            // First insertion logs at INFO; the ERROR-level log was already
+            // emitted by the spawn task at the point of failure. Repeated
+            // signals (e.g. multiple in-flight attempts converging) become
+            // a no-op at DEBUG.
+            if state.incompatible_peers.insert(peer) {
+                tracing::info!(
+                    peer = %hex::encode(peer),
+                    reason = %reason,
+                    "marking peer incompatible; future reconnect attempts suppressed until restart"
+                );
+            } else {
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    "duplicate MarkPeerIncompatible signal; already tracked"
+                );
+            }
+            // Clear any pending reconnect schedule for this peer so the
+            // suppression takes effect immediately rather than after one more
+            // attempt.
+            clear_reconnect(peer, state);
         }
 
         ServiceEvent::ConnectionLost {

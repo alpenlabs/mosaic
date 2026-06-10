@@ -19,6 +19,7 @@ mosaic-rpc-service.workspace = true
 mosaic-rpc-types.workspace = true
 
 bitcoin.workspace = true
+hex = "0.4"
 jsonrpsee = { workspace = true, features = ["server-core"] }
 
 [lints]

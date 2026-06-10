@@ -237,7 +237,11 @@ where
         .context("failed to spawn sm executor thread")?;
 
     let rpc_bind_addr = config.rpc_bind_addr()?;
-    let our_peer_id = config.build_net_service_config()?.our_peer_id();
+    let net_service_config = config.build_net_service_config()?;
+    let our_peer_id = net_service_config.our_peer_id();
+    let protocol_version = net_service_config.protocol_version;
+    let deployment_version = net_service_config.deployment_version.clone();
+    drop(net_service_config);
     let other_peer_ids = config.known_peers()?;
     let rng = rand_chacha::ChaCha20Rng::from_entropy();
 
@@ -247,6 +251,8 @@ where
         sm_executor_handle.clone(),
         storage,
         rng,
+        protocol_version,
+        deployment_version,
     );
     let circuit_info =
         mosaic_rpc_types::RpcCircuitInfoEntry::from_circuit_file(&config.circuit.path)

@@ -2496,6 +2496,7 @@ name = "mosaic-net-svc"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "ark-serialize",
  "blake3",
  "ed25519-dalek",
  "hashbrown 0.17.1",
@@ -2518,6 +2519,7 @@ dependencies = [
 name = "mosaic-net-svc-api"
 version = "0.1.0"
 dependencies = [
+ "ark-serialize",
  "ed25519-dalek",
  "hex",
  "kanal",
@@ -2553,6 +2555,7 @@ name = "mosaic-rpc-server"
 version = "0.1.0"
 dependencies = [
  "bitcoin",
+ "hex",
  "jsonrpsee",
  "mosaic-cac-types",
  "mosaic-common",

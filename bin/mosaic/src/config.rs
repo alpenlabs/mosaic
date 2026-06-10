@@ -54,10 +54,12 @@ impl MosaicConfig {
             .map(PeerEntry::to_peer_config)
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(NetServiceConfig::new(signing_key, bind_addr, peers)
+        NetServiceConfig::new(signing_key, bind_addr, peers)
             .with_keep_alive_interval(Duration::from_secs(self.network.keep_alive_interval_secs))
             .with_idle_timeout(Duration::from_secs(self.network.idle_timeout_secs))
-            .with_reconnect_backoff(Duration::from_secs(self.network.reconnect_backoff_secs)))
+            .with_reconnect_backoff(Duration::from_secs(self.network.reconnect_backoff_secs))
+            .with_deployment_version(self.network.deployment_version.clone())
+            .with_context(|| "invalid network.deployment_version")
     }
 
     pub(crate) fn build_net_client_config(&self) -> NetClientConfig {
@@ -237,6 +239,13 @@ pub(crate) struct NetworkConfig {
     pub(crate) idle_timeout_secs: u64,
     #[serde(default = "default_reconnect_backoff_secs")]
     pub(crate) reconnect_backoff_secs: u64,
+    /// Deployment-cohort identifier exchanged in the version handshake.
+    /// `None` (the default) skips cohort coordination — suitable for
+    /// single-operator dev. Coordinated deployments must set this to the
+    /// same string on every operator (e.g. `"tn3"`); mismatched or
+    /// asymmetric values cause the handshake to fail at connect time.
+    #[serde(default)]
+    pub(crate) deployment_version: Option<String>,
     #[serde(default)]
     pub(crate) client: NetworkClientConfig,
     #[serde(default)]

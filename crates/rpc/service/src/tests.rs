@@ -59,6 +59,8 @@ impl TestHarness {
             executor_handle,
             storage.clone(),
             rng,
+            mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+            None,
         );
         Self {
             api,
@@ -1450,6 +1452,8 @@ async fn dispatch_returns_executor_error_when_channel_closed() {
         executor_handle,
         storage.clone(),
         rng,
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
     );
 
     // Setup garbler at SetupComplete with a ready deposit

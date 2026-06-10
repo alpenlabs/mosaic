@@ -206,6 +206,13 @@ pub struct ServiceState {
 
     /// Per-peer protocol-stream admission rate limiter.
     pub peer_rate_limiter: super::peer_rate_limit::PeerStreamRateLimiter,
+
+    /// Peers that have failed the version handshake during this process
+    /// lifetime. Outbound reconnect attempts skip peers in this set so we
+    /// don't burn CPU and log lines re-handshaking a known-incompatible peer.
+    /// Cleared on process restart — if either side is upgraded, the next
+    /// startup gets a clean attempt.
+    pub incompatible_peers: HashSet<PeerId>,
 }
 
 impl ServiceState {
@@ -296,6 +303,14 @@ pub enum ServiceEvent {
         peer: PeerId,
         attempt_id: u64,
         error: String,
+    },
+    /// A peer failed the version handshake; mark it incompatible for the rest
+    /// of this process lifetime so reconnect attempts don't churn against it.
+    MarkPeerIncompatible {
+        peer: PeerId,
+        /// One-line reason from `HandshakeError::reason()`. Logged on first
+        /// entry only, to avoid log spam from reconnect loops.
+        reason: String,
     },
     /// A connection was lost.
     ConnectionLost {

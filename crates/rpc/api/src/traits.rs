@@ -27,6 +27,13 @@ pub trait MosaicRpc {
     #[method(name = "getRpcPeerId")]
     fn get_peer_id(&self) -> RpcResult<RpcPeerId>;
 
+    /// Identity / version information about this node — the protocol version
+    /// and deployment-cohort string exchanged in the peer version handshake.
+    /// Operators use this to verify build and cohort compatibility between
+    /// peers without log-diving.
+    #[method(name = "nodeInfo")]
+    fn node_info(&self) -> RpcResult<RpcNodeInfo>;
+
     /// Helper to get deterministic [`RpcTablesetId`].
     #[method(name = "getRpcTablesetId")]
     fn get_tableset_id(

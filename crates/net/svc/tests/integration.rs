@@ -991,3 +991,211 @@ fn test_large_payload() {
     peer_a.shutdown();
     peer_b.shutdown();
 }
+
+// ============================================================================
+// Version handshake (issue #265)
+// ============================================================================
+//
+// These tests exercise the post-TLS / pre-protocol version handshake. They
+// use the same dual-NetService scaffolding as the rest of the file but vary
+// `protocol_version` and `deployment_version` on each side.
+
+/// Set up a peer pair with explicit version-handshake parameters per side.
+/// Mirrors `create_peer_pair` but returns the controllers and peer ids so
+/// callers can drive the handshake.
+fn create_peer_pair_with_versions(
+    a_protocol_version: u32,
+    a_deployment_version: Option<String>,
+    b_protocol_version: u32,
+    b_deployment_version: Option<String>,
+) -> (TestPeer, TestPeer) {
+    init_tracing();
+    for attempt in 0..50 {
+        let port_a = next_port();
+        let port_b = next_port();
+
+        let key_a = test_key_from_tag(next_key_tag());
+        let key_b = test_key_from_tag(next_key_tag());
+
+        let peer_id_a = peer_id_from_signing_key(&key_a);
+        let peer_id_b = peer_id_from_signing_key(&key_b);
+
+        let addr_a = test_addr(port_a);
+        let addr_b = test_addr(port_b);
+
+        let config_a =
+            NetServiceConfig::new(key_a, addr_a, vec![PeerConfig::new(peer_id_b, addr_b)])
+                .with_reconnect_backoff(Duration::from_millis(50))
+                .with_protocol_version(a_protocol_version)
+                .with_deployment_version(a_deployment_version.clone())
+                .expect("valid deployment version");
+
+        let config_b =
+            NetServiceConfig::new(key_b, addr_b, vec![PeerConfig::new(peer_id_a, addr_a)])
+                .with_reconnect_backoff(Duration::from_millis(50))
+                .with_protocol_version(b_protocol_version)
+                .with_deployment_version(b_deployment_version.clone())
+                .expect("valid deployment version");
+
+        let (handle_a, ctrl_a) = match NetService::new(config_a) {
+            Ok(r) => r,
+            Err(_) if attempt < 49 => continue,
+            Err(e) => panic!("create net service A: {}", e),
+        };
+        let (handle_b, ctrl_b) = match NetService::new(config_b) {
+            Ok(r) => r,
+            Err(_) if attempt < 49 => {
+                let _ = shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
+                continue;
+            }
+            Err(e) => panic!("create net service B: {}", e),
+        };
+
+        return (
+            TestPeer {
+                handle: handle_a,
+                controller: ctrl_a,
+                peer_id: peer_id_a,
+            },
+            TestPeer {
+                handle: handle_b,
+                controller: ctrl_b,
+                peer_id: peer_id_b,
+            },
+        );
+    }
+    unreachable!()
+}
+
+/// Tight per-operation timeout used by the mismatch tests so a "no connection
+/// will ever succeed" outcome surfaces in seconds rather than the full
+/// `CI_TIMEOUT`.
+const MISMATCH_OBSERVATION_WINDOW: Duration = Duration::from_secs(3);
+
+#[test]
+fn version_handshake_matching_versions_allows_stream_open() {
+    let (peer_a, peer_b) = create_peer_pair_with_versions(
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        Some("tn3".to_string()),
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        Some("tn3".to_string()),
+    );
+
+    run_async(async {
+        let (_outbound, inbound) =
+            open_stream_pair_eventually(&peer_a, &peer_b, b"hello-versioned").await;
+        assert_eq!(inbound.payload(), Some(&b"hello-versioned"[..]));
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn version_handshake_protocol_mismatch_blocks_stream_open() {
+    // A advertises v=1, B advertises v=2. No protocol streams should ever
+    // open in either direction.
+    let (peer_a, peer_b) = create_peer_pair_with_versions(
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION.wrapping_add(1),
+        None,
+    );
+
+    run_async(async {
+        let result = tokio::time::timeout(
+            MISMATCH_OBSERVATION_WINDOW,
+            peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+        )
+        .await;
+        // We either get a timeout (no connection ever established) or an Err
+        // (incompatible-peer suppression took effect). Both confirm the
+        // handshake gate.
+        match result {
+            Err(_elapsed) => {}      // timeout: no stream opened
+            Ok(Err(_open_err)) => {} // open rejected
+            Ok(Ok(_)) => panic!("expected stream-open to be blocked by protocol-version mismatch"),
+        }
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn version_handshake_deployment_mismatch_blocks_stream_open() {
+    let (peer_a, peer_b) = create_peer_pair_with_versions(
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        Some("tn3".to_string()),
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        Some("tn4".to_string()),
+    );
+
+    run_async(async {
+        let result = tokio::time::timeout(
+            MISMATCH_OBSERVATION_WINDOW,
+            peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+        )
+        .await;
+        match result {
+            Err(_) | Ok(Err(_)) => {}
+            Ok(Ok(_)) => {
+                panic!("expected stream-open to be blocked by deployment-version mismatch")
+            }
+        }
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn version_handshake_deployment_asymmetry_blocks_stream_open() {
+    // One side has a deployment version, the other doesn't. Per spec this is
+    // a refusal — otherwise an unconfigured node could silently bypass
+    // cohort coordination.
+    let (peer_a, peer_b) = create_peer_pair_with_versions(
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        Some("tn3".to_string()),
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+    );
+
+    run_async(async {
+        let result = tokio::time::timeout(
+            MISMATCH_OBSERVATION_WINDOW,
+            peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+        )
+        .await;
+        match result {
+            Err(_) | Ok(Err(_)) => {}
+            Ok(Ok(_)) => {
+                panic!("expected stream-open to be blocked by deployment-version asymmetry")
+            }
+        }
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn version_handshake_no_deployment_either_side_allows_stream_open() {
+    // Single-operator / local-dev path: neither side sets a deployment
+    // version; protocol versions match. Handshake succeeds.
+    let (peer_a, peer_b) = create_peer_pair_with_versions(
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+    );
+
+    run_async(async {
+        let (_outbound, inbound) =
+            open_stream_pair_eventually(&peer_a, &peer_b, b"no-deployment").await;
+        assert_eq!(inbound.payload(), Some(&b"no-deployment"[..]));
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}

@@ -2,7 +2,9 @@
 
 use mosaic_cac_types::state_machine::Role;
 use mosaic_rpc_service::ServiceError;
-use mosaic_rpc_types::{CacRole, DepositStatus, RpcDepositId, RpcError, RpcTablesetStatus};
+use mosaic_rpc_types::{
+    CacRole, DepositStatus, RpcDepositId, RpcError, RpcNodeInfo, RpcTablesetStatus,
+};
 
 /// Converts [`CacRole`] to the domain [`Role`].
 pub(crate) fn cac_role_to_domain(role: CacRole) -> Role {
@@ -54,6 +56,15 @@ pub(crate) fn tableset_status_to_rpc(
         mosaic_rpc_service::TablesetStatus::Aborted { reason } => {
             RpcTablesetStatus::Aborted { reason }
         }
+    }
+}
+
+/// Converts a service [`mosaic_rpc_service::NodeInfo`] to wire [`RpcNodeInfo`].
+pub(crate) fn node_info_to_rpc(info: mosaic_rpc_service::NodeInfo) -> RpcNodeInfo {
+    RpcNodeInfo {
+        peer_id_hex: hex::encode(info.peer_id),
+        protocol_version: info.protocol_version,
+        deployment_version: info.deployment_version,
     }
 }
 

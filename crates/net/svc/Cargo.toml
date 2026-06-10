@@ -38,6 +38,7 @@ x509-parser = "0.18"
 
 # Wire format
 mosaic-net-wire = { path = "../wire" }
+ark-serialize = { workspace = true }
 
 # Utilities
 ahash = "0.8"

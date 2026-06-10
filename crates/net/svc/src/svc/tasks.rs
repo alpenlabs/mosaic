@@ -31,12 +31,13 @@ use super::{
         OutboundAttempt, OverlapKey, PROTOCOL_FIRST_PAYLOAD_TIMEOUT, ServiceEvent,
     },
     stream,
+    version_handshake::{HandshakeError, run_inbound_handshake, run_outbound_handshake},
 };
 use crate::{
     api::{InboundProtocolStream, OpenStreamError, Stream},
     close_codes::{
         CLOSE_INVALID_OVERLAP_KEY, CLOSE_INVALID_PEER_ID_INCOMING, CLOSE_INVALID_PEER_ID_OUTBOUND,
-        CLOSE_PEER_ID_MISMATCH, CLOSE_UNKNOWN_PEER,
+        CLOSE_PEER_ID_MISMATCH, CLOSE_UNKNOWN_PEER, CLOSE_VERSION_HANDSHAKE_FAILED,
     },
     svc::state::{STREAM_HEADER_WRITE_TIMEOUT, STREAM_OPEN_TIMEOUT},
     tls::PeerId,
@@ -62,6 +63,39 @@ const INBOUND_REJECT_MAX_TRACKED_IPS: usize = 8192;
 const OVERLAP_SERVER_NAME_PREFIX: &str = "ovk-";
 /// Suffix used for overlap-key metadata encoded in TLS server_name.
 const OVERLAP_SERVER_NAME_SUFFIX: &str = ".mosaic";
+
+/// Common path for both inbound and outbound version-handshake failure.
+///
+/// - Logs at ERROR with peer, direction, and reason.
+/// - Closes the QUIC connection with [`CLOSE_VERSION_HANDSHAKE_FAILED`].
+/// - Sends [`ServiceEvent::MarkPeerIncompatible`] so the service loop suppresses future reconnect
+///   attempts to this peer.
+/// - Optionally emits the per-direction reject/failed event so the existing bookkeeping
+///   (reject_tracker, candidate cleanup) runs.
+fn handle_version_handshake_failure(
+    direction: &'static str,
+    peer: PeerId,
+    err: &HandshakeError,
+    connection: &quinn::Connection,
+    event_tx: &UnboundedSender<ServiceEvent>,
+    direction_specific: Option<ServiceEvent>,
+) {
+    let reason = err.reason();
+    tracing::error!(
+        peer = %hex::encode(peer),
+        direction,
+        reason = %reason,
+        "version handshake failed; peer is incompatible until restart"
+    );
+    connection.close(CLOSE_VERSION_HANDSHAKE_FAILED, reason.as_bytes());
+    let _ = event_tx.send(ServiceEvent::MarkPeerIncompatible {
+        peer,
+        reason: reason.clone(),
+    });
+    if let Some(evt) = direction_specific {
+        let _ = event_tx.send(evt);
+    }
+}
 
 fn overlap_server_name(overlap_key: OverlapKey) -> String {
     format!(
@@ -168,6 +202,8 @@ struct IncomingHandshakeCtx {
     allowed_peers: Arc<HashSet<PeerId>>,
     event_tx: UnboundedSender<ServiceEvent>,
     reject_tracker: Arc<InboundRejectTracker>,
+    protocol_version: u32,
+    deployment_version: Option<String>,
     _handshake_permit: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -192,6 +228,7 @@ pub(super) fn normalize_socket_addr(addr: SocketAddr) -> SocketAddr {
 ///
 /// Each accepted connection is handed to a separate handshake task with an
 /// `accepted_at` timestamp captured at accept time.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_accept_loop(
     endpoint: Endpoint,
     allowed_peers: Arc<HashSet<PeerId>>,
@@ -199,6 +236,8 @@ pub fn spawn_accept_loop(
     peer_by_port: Arc<HashMap<u16, PeerId>>,
     peer_by_ip: Arc<HashMap<IpAddr, PeerId>>,
     event_tx: UnboundedSender<ServiceEvent>,
+    protocol_version: u32,
+    deployment_version: Option<String>,
 ) {
     tokio::spawn(
         async move {
@@ -269,6 +308,8 @@ pub fn spawn_accept_loop(
                         allowed_peers: allowed_peers.clone(),
                         event_tx: event_tx.clone(),
                         reject_tracker: reject_tracker.clone(),
+                        protocol_version,
+                        deployment_version: deployment_version.clone(),
                         _handshake_permit: permit,
                     },
                 );
@@ -296,6 +337,8 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
                 allowed_peers,
                 event_tx,
                 reject_tracker,
+                protocol_version,
+                deployment_version,
                 _handshake_permit,
             } = ctx;
 
@@ -372,6 +415,30 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
                 }
             };
 
+            // Version handshake: refuse before exposing protocol streams.
+            // On mismatch we mark this peer incompatible via the service event
+            // loop so future outbound reconnect attempts to it are suppressed
+            // until process restart.
+            if let Err(err) =
+                run_inbound_handshake(&connection, protocol_version, deployment_version.as_deref())
+                    .await
+            {
+                handle_version_handshake_failure(
+                    "incoming",
+                    peer_id,
+                    &err,
+                    &connection,
+                    &event_tx,
+                    Some(ServiceEvent::IncomingConnectionRejected {
+                        peer_guess: predicted_peer,
+                        peer_auth_opt: Some(peer_id),
+                        candidate_id,
+                        reason: format!("version handshake failed: {}", err.reason()),
+                    }),
+                );
+                return;
+            }
+
             let peer_guess = predicted_peer.unwrap_or(peer_id);
             if event_tx
                 .send(ServiceEvent::IncomingConnectionAccepted {
@@ -407,6 +474,7 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
 ///
 /// This attempts to connect to a peer with a timeout and sends the result
 /// back via the event channel.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_outbound_connection(
     endpoint: Endpoint,
     client_config: quinn::ClientConfig,
@@ -414,6 +482,8 @@ pub fn spawn_outbound_connection(
     attempt: OutboundAttempt,
     addr: std::net::SocketAddr,
     event_tx: UnboundedSender<ServiceEvent>,
+    protocol_version: u32,
+    deployment_version: Option<String>,
 ) {
     tokio::spawn(async move {
         tracing::debug!(peer = %hex::encode(peer), addr = %addr, "attempting outbound connection");
@@ -454,6 +524,29 @@ pub fn spawn_outbound_connection(
                         attempt_id: attempt.attempt_id,
                         error: "peer id mismatch".to_string(),
                     });
+                    return;
+                }
+
+                // Version handshake before we expose protocol streams.
+                if let Err(err) = run_outbound_handshake(
+                    &connection,
+                    protocol_version,
+                    deployment_version.as_deref(),
+                )
+                .await
+                {
+                    handle_version_handshake_failure(
+                        "outbound",
+                        peer,
+                        &err,
+                        &connection,
+                        &event_tx,
+                        Some(ServiceEvent::OutboundConnectionFailed {
+                            peer,
+                            attempt_id: attempt.attempt_id,
+                            error: format!("version handshake failed: {}", err.reason()),
+                        }),
+                    );
                     return;
                 }
 

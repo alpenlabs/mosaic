@@ -63,3 +63,32 @@ This layering means net-svc could theoretically be reused for other protocols.
 - Disconnections trigger automatic reconnection with backoff
 - Keep-alives prevent idle timeouts
 - On simultaneous connect (both sides dial), lower peer_id wins deterministically
+
+## Version Handshake
+
+After QUIC TLS authentication and the overlap-key check, both sides exchange a
+short version-handshake payload on a dedicated bi-stream. **No protocol streams
+are exposed until the handshake succeeds on both sides.**
+
+Two fields are checked:
+
+- **`protocol_version`** — a manually-maintained `u32` constant
+  (`PROTOCOL_VERSION` in `crates/net/svc-api/src/handshake.rs`). Bumped any
+  time the wire-visible surface changes — message types in `cac/types`,
+  garbler/evaluator STF semantics peers depend on, net-svc framing. Mismatch
+  → refuse communication.
+- **`deployment_version`** — operator-supplied cohort identifier via TOML
+  config (`network.deployment_version = "tn3"`). All-or-none: every operator
+  in a coordinated deployment must set the same value. Mismatched or
+  asymmetric → refuse. Single-operator dev / local testing leaves it unset
+  on every node.
+
+**On mismatch:** the connection is closed with `CLOSE_VERSION_HANDSHAKE_FAILED`
+(code 6), the local peer is marked incompatible for the rest of the process
+lifetime, and the reason is logged at ERROR once per peer. Subsequent reconnect
+attempts to that peer are suppressed — restart the process if the peer is
+upgraded out of the incompatible state.
+
+**Operator surface:** the `mosaic_nodeInfo` RPC returns the current
+`protocol_version` and `deployment_version` so two operators can compare
+configurations without log-diving.

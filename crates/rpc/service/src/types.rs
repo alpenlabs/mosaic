@@ -15,6 +15,18 @@ use mosaic_cac_types::{
 use mosaic_common::Byte32;
 use mosaic_net_svc_api::PeerId;
 
+/// Identity / version information about a running mosaic node. Returned by
+/// [`crate::MosaicApi::node_info`] for operator diagnostics.
+#[derive(Debug, Clone)]
+pub struct NodeInfo {
+    /// This node's peer id.
+    pub peer_id: PeerId,
+    /// Protocol version exchanged in the peer version handshake.
+    pub protocol_version: u32,
+    /// Deployment-cohort identifier exchanged in the peer version handshake.
+    pub deployment_version: Option<String>,
+}
+
 /// Status of a tableset (state machine).
 #[derive(Debug, Clone)]
 pub enum TablesetStatus {
