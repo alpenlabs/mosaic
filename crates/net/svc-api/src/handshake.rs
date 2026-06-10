@@ -46,7 +46,7 @@ pub const MAX_DEPLOYMENT_VERSION_LEN: usize = 64;
 /// Magic prefix identifying a mosaic version handshake payload. Lets the
 /// receiver fail fast on a stream that was opened against the wrong service or
 /// carrying an unrelated payload.
-pub const HANDSHAKE_MAGIC: [u8; 4] = *b"MSCV";
+pub const HANDSHAKE_MAGIC: [u8; 4] = *b"Zk2u";
 
 /// Payload exchanged on the version-handshake stream.
 ///
