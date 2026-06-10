@@ -418,7 +418,10 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
             // Version handshake: refuse before exposing protocol streams.
             // On mismatch we mark this peer incompatible via the service event
             // loop so future outbound reconnect attempts to it are suppressed
-            // until process restart.
+            // (until process restart, or until they dial us with matching
+            // versions). On success we proactively clear them from the
+            // cache so an upgraded peer who reconnects to us also unblocks
+            // our outbound reconnect logic.
             if let Err(err) =
                 run_inbound_handshake(&connection, protocol_version, deployment_version.as_deref())
                     .await
@@ -438,6 +441,7 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
                 );
                 return;
             }
+            let _ = event_tx.send(ServiceEvent::ClearPeerIncompatible { peer: peer_id });
 
             let peer_guess = predicted_peer.unwrap_or(peer_id);
             if event_tx
@@ -527,7 +531,8 @@ pub fn spawn_outbound_connection(
                     return;
                 }
 
-                // Version handshake before we expose protocol streams.
+                // Version handshake before we expose protocol streams. See
+                // the inbound counterpart for the cache-clear rationale.
                 if let Err(err) = run_outbound_handshake(
                     &connection,
                     protocol_version,
@@ -549,6 +554,7 @@ pub fn spawn_outbound_connection(
                     );
                     return;
                 }
+                let _ = event_tx.send(ServiceEvent::ClearPeerIncompatible { peer });
 
                 tracing::debug!(peer = %hex::encode(peer), "outbound handshake completed");
                 if let Err(error) = event_tx.send(ServiceEvent::OutboundConnectionReady {

@@ -1199,3 +1199,131 @@ fn version_handshake_no_deployment_either_side_allows_stream_open() {
     peer_a.shutdown();
     peer_b.shutdown();
 }
+
+#[test]
+fn version_handshake_incompatible_cache_clears_on_upgraded_reconnect() {
+    // Scenario: A and B start with mismatched protocol versions. A's
+    // outbound to B fails the handshake; A adds B to incompatible_peers.
+    // B is then "upgraded" (restarted with matching protocol version on the
+    // same signing key and the same port). B dials A — inbound handshake
+    // succeeds — and the cache clears, so subsequent traffic flows normally.
+    init_tracing();
+
+    for attempt in 0..50 {
+        let port_a = next_port();
+        let port_b = next_port();
+
+        let key_a = test_key_from_tag(next_key_tag());
+        let key_b = test_key_from_tag(next_key_tag());
+
+        let peer_id_a = peer_id_from_signing_key(&key_a);
+        let peer_id_b = peer_id_from_signing_key(&key_b);
+
+        let addr_a = test_addr(port_a);
+        let addr_b = test_addr(port_b);
+
+        let local_pv = mosaic_net_svc_api::handshake::PROTOCOL_VERSION;
+
+        let config_a = NetServiceConfig::new(
+            key_a.clone(),
+            addr_a,
+            vec![PeerConfig::new(peer_id_b, addr_b)],
+        )
+        .with_reconnect_backoff(Duration::from_millis(50))
+        .with_protocol_version(local_pv);
+
+        let config_b_v1 = NetServiceConfig::new(
+            key_b.clone(),
+            addr_b,
+            vec![PeerConfig::new(peer_id_a, addr_a)],
+        )
+        .with_reconnect_backoff(Duration::from_millis(50))
+        .with_protocol_version(local_pv.wrapping_add(1)); // mismatched
+
+        let (handle_a, ctrl_a) = match NetService::new(config_a) {
+            Ok(r) => r,
+            Err(_) if attempt < 49 => continue,
+            Err(e) => panic!("create A: {}", e),
+        };
+        let (_handle_b_v1, ctrl_b_v1) = match NetService::new(config_b_v1) {
+            Ok(r) => r,
+            Err(_) if attempt < 49 => {
+                let _ = shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
+                continue;
+            }
+            Err(e) => panic!("create B v1: {}", e),
+        };
+
+        let peer_a = TestPeer {
+            handle: handle_a,
+            controller: ctrl_a,
+            peer_id: peer_id_a,
+        };
+
+        run_async(async {
+            // Phase 1 — confirm the mismatch path: A→B fails to open a stream.
+            let result = tokio::time::timeout(
+                MISMATCH_OBSERVATION_WINDOW,
+                peer_a.handle.open_protocol_stream(peer_id_b, 0),
+            )
+            .await;
+            assert!(
+                !matches!(result, Ok(Ok(_))),
+                "stream-open should be blocked by initial version mismatch"
+            );
+        });
+
+        // Phase 2 — "upgrade" B: shut it down and bring it back up on the
+        // same key + port with the matching protocol version.
+        let _ = shutdown_controller_with_timeout(ctrl_b_v1, Duration::from_secs(2));
+
+        // QUIC/UDP socket sometimes needs a moment to release the port after
+        // shutdown; retry the rebind a few times to absorb scheduling jitter.
+        let build_config_b_v2 = || {
+            NetServiceConfig::new(
+                key_b.clone(),
+                addr_b,
+                vec![PeerConfig::new(peer_id_a, addr_a)],
+            )
+            .with_reconnect_backoff(Duration::from_millis(50))
+            .with_protocol_version(local_pv) // matching
+        };
+        let mut handle_ctrl = None;
+        for _ in 0..40 {
+            match NetService::new(build_config_b_v2()) {
+                Ok(hc) => {
+                    handle_ctrl = Some(hc);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+        let (handle_b_v2, ctrl_b_v2) = handle_ctrl.expect("rebind B v2 on the same port");
+        let peer_b = TestPeer {
+            handle: handle_b_v2,
+            controller: ctrl_b_v2,
+            peer_id: peer_id_b,
+        };
+
+        run_async(async {
+            // After B reconnects with matching versions, a stream should
+            // open in either direction. Going B→A here exercises the
+            // inbound-handshake-clears-cache path explicitly (A had B
+            // marked incompatible at this point).
+            let (_outbound, inbound) =
+                open_stream_pair_eventually(&peer_b, &peer_a, b"recovered").await;
+            assert_eq!(inbound.payload(), Some(&b"recovered"[..]));
+
+            // And after the cache is cleared, A→B works too (i.e. A's
+            // outbound logic is no longer suppressed).
+            let (_outbound, inbound) =
+                open_stream_pair_eventually(&peer_a, &peer_b, b"a-can-dial-too").await;
+            assert_eq!(inbound.payload(), Some(&b"a-can-dial-too"[..]));
+        });
+
+        peer_a.shutdown();
+        peer_b.shutdown();
+        return;
+    }
+    unreachable!()
+}

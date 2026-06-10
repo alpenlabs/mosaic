@@ -84,10 +84,15 @@ Two fields are checked:
   on every node.
 
 **On mismatch:** the connection is closed with `CLOSE_VERSION_HANDSHAKE_FAILED`
-(code 6), the local peer is marked incompatible for the rest of the process
-lifetime, and the reason is logged at ERROR once per peer. Subsequent reconnect
-attempts to that peer are suppressed — restart the process if the peer is
-upgraded out of the incompatible state.
+(code 6), the peer is added to an in-memory `incompatible_peers` cache, and
+the reason is logged at ERROR once per peer. Outbound reconnect attempts to
+peers in the cache are suppressed to avoid log spam.
+
+**Recovery:** inbound connections always run the handshake regardless of
+cache state — an upgraded peer is free to dial us. A successful handshake
+(inbound or outbound) clears the entry, so once they reconnect with matching
+versions our outbound reconnect logic resumes normally too. The cache is
+also fully cleared on process restart.
 
 **Operator surface:** the `mosaic_nodeInfo` RPC returns the current
 `protocol_version` and `deployment_version` so two operators can compare

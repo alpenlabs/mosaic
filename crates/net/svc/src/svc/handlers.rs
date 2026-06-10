@@ -1408,7 +1408,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                 tracing::info!(
                     peer = %hex::encode(peer),
                     reason = %reason,
-                    "marking peer incompatible; future reconnect attempts suppressed until restart"
+                    "marking peer incompatible; future reconnect attempts suppressed until they reconnect or we restart"
                 );
             } else {
                 tracing::debug!(
@@ -1420,6 +1420,18 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
             // suppression takes effect immediately rather than after one more
             // attempt.
             clear_reconnect(peer, state);
+        }
+
+        ServiceEvent::ClearPeerIncompatible { peer } => {
+            // Successful handshake — peer has been upgraded (or always was
+            // compatible). Drop them from the cache so outbound reconnect
+            // attempts resume normally if the connection later drops.
+            if state.incompatible_peers.remove(&peer) {
+                tracing::info!(
+                    peer = %hex::encode(peer),
+                    "peer reconnected with matching versions; clearing incompatible flag"
+                );
+            }
         }
 
         ServiceEvent::ConnectionLost {

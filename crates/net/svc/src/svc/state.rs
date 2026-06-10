@@ -210,8 +210,14 @@ pub struct ServiceState {
     /// Peers that have failed the version handshake during this process
     /// lifetime. Outbound reconnect attempts skip peers in this set so we
     /// don't burn CPU and log lines re-handshaking a known-incompatible peer.
-    /// Cleared on process restart — if either side is upgraded, the next
-    /// startup gets a clean attempt.
+    ///
+    /// Entries are cleared on:
+    /// - Process restart (cache is in-memory only), OR
+    /// - A successful version handshake with that peer (typically because they upgraded and either
+    ///   dialed us inbound or our outbound succeeded on a path that wasn't suppressed).
+    ///
+    /// Inbound connections always run the handshake regardless of this set
+    /// — an upgraded peer dialing us is always free to reconnect.
     pub incompatible_peers: HashSet<PeerId>,
 }
 
@@ -305,13 +311,20 @@ pub enum ServiceEvent {
         error: String,
     },
     /// A peer failed the version handshake; mark it incompatible for the rest
-    /// of this process lifetime so reconnect attempts don't churn against it.
+    /// of this process lifetime (or until cleared by a successful subsequent
+    /// handshake, see `ClearPeerIncompatible`) so reconnect attempts don't
+    /// churn against it.
     MarkPeerIncompatible {
         peer: PeerId,
         /// One-line reason from `HandshakeError::reason()`. Logged on first
         /// entry only, to avoid log spam from reconnect loops.
         reason: String,
     },
+    /// A peer that was previously marked incompatible just completed a
+    /// successful version handshake (typically because they restarted with
+    /// matching versions and dialed us). Removes them from the cache so our
+    /// outbound reconnect logic stops suppressing attempts to them too.
+    ClearPeerIncompatible { peer: PeerId },
     /// A connection was lost.
     ConnectionLost {
         peer: PeerId,
