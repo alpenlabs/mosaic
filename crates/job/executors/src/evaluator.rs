@@ -662,6 +662,23 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     selected_input[N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
         .copy_from_slice(&withdrawal_inputs);
 
+    // Log the full cleartext circuit input. `withdrawal_inputs` is the
+    // gnark-compressed groth16 proof; `setup_inputs ‖ deposit_inputs` is the
+    // proof's public values, so the proof can be verified externally straight
+    // from this log line.
+    tracing::info!(
+        circuit_index = index.get(),
+        %deposit_id,
+        setup_inputs = %hex::encode(&selected_input[..N_SETUP_INPUT_WIRES]),
+        deposit_inputs = %hex::encode(
+            &selected_input[N_SETUP_INPUT_WIRES..N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES]
+        ),
+        withdrawal_inputs = %hex::encode(
+            &selected_input[N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
+        ),
+        "selected circuit input for evaluation"
+    );
+
     // ── Select opened shares at the known input values ──────────────────
     let selected_opened: Vec<[Share; N_INPUT_WIRES]> = (0..N_OPEN_CIRCUITS)
         .map(|i| {

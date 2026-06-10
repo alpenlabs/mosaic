@@ -1261,24 +1261,43 @@ async fn test_e2e() {
     use mosaic_cac_types::WithdrawalInputs;
     use mosaic_common::constants::N_SETUP_INPUT_WIRES;
 
-    let test_vector = {
-        let mut test_vecs = vec![];
-        let mut rng = ChaCha20Rng::seed_from_u64(70);
+    // Real inputs captured from the mosaic evaluator log line
+    // ("selected circuit input for evaluation"), against the production
+    // counterproof-verifier circuit. setup ‖ deposit (36 bytes) is the SSZ
+    // CounterproofOutput public values; withdrawal is the gnark-compressed
+    // groth16 proof.
+    /// 32-byte `setup_inputs` — operator x-only pubkey.
+    const SETUP_INPUTS: &str =
+        "ac407ba319846e25d69c1c0cb2a845ab75ef93ad2e9e846cdc5cf6da766e00b2";
+    /// 4-byte little-endian `deposit_inputs` — game index.
+    const DEPOSIT_INPUTS: &str = "02000000";
+    /// 128-byte gnark-compressed Groth16 proof (A ‖ B ‖ C).
+    const WITHDRAWAL_INPUTS: &str = "cc713055509996f1ae7d88dc1f094d7d2340a398a1e7c86f003b3ffdcfacb52b\
+                                     9a1deb7babc6b6579f00958bf278282d00d9b3cb206b38824f0c353271bde180\
+                                     12b60ddab5dad22d811a56865c58fd1a6807b5e0229c0fbbd98a951e09763f82\
+                                     b04dab29d62a6820c9c8b9439bf7bd9d2cfaddc16feb32b0319a8ab10fdca9d4";
 
+    let test_vector = {
         let mut setup_inputs = [0; N_SETUP_INPUT_WIRES];
         let mut deposit_inputs = [0u8; N_DEPOSIT_INPUT_WIRES];
         let mut withdrawal_input: WithdrawalInputs = [0; N_WITHDRAWAL_INPUT_WIRES];
-        rng.fill_bytes(&mut setup_inputs);
-        rng.fill_bytes(&mut deposit_inputs);
-        rng.fill_bytes(&mut withdrawal_input);
+        setup_inputs.copy_from_slice(&hex::decode(SETUP_INPUTS).unwrap());
+        deposit_inputs.copy_from_slice(&hex::decode(DEPOSIT_INPUTS).unwrap());
+        withdrawal_input
+            .copy_from_slice(&hex::decode(WITHDRAWAL_INPUTS.replace(char::is_whitespace, "")).unwrap());
 
-        deposit_inputs[0] = 0;
-        test_vecs.push((setup_inputs, deposit_inputs, withdrawal_input, true)); // reveal secret = true because output is 0
+        // The g16 verifier circuit outputs 1 for a VALID proof
+        // (g16ckt groth16_verify -> all_valid, no inversion), and mosaic
+        // releases the fault secret only for output value 0. So:
+        //   valid proof    -> output 1 -> secret NOT revealed (success=false)
+        //   tampered proof -> output 0 -> secret revealed     (success=true)
+        let mut tampered_input = withdrawal_input;
+        tampered_input[17] ^= 0x01;
 
-        deposit_inputs[0] = 1;
-        test_vecs.push((setup_inputs, deposit_inputs, withdrawal_input, false)); // reveal secret = false because output is 1
-
-        test_vecs
+        vec![
+            (setup_inputs, deposit_inputs, withdrawal_input, false),
+            (setup_inputs, deposit_inputs, tampered_input, true),
+        ]
     };
 
     for (iter, (setup_inputs, deposit_inputs, withdrawal_input, reveals_secret)) in
@@ -1294,7 +1313,9 @@ async fn test_e2e() {
         let local = LocalFileSystem::new_with_prefix(temp_dir.clone()).unwrap();
         let ts = S3TableStore::new(Arc::new(local) as Arc<dyn ObjectStore>, prefix);
 
-        let circuit_path = PathBuf::from(env!("MOSAIC_ARTIFACTS_DIR")).join("g16.v5c");
+        // Production counterproof-verifier circuit (133 GB v5c).
+        let circuit_path =
+            PathBuf::from("/Users/abishekbashyal/Codes/g16/pipeline-runs/run-20260611-090007/v5c.ckt");
         assert!(
             std::fs::exists(circuit_path.clone()).unwrap(),
             "expects v5c format ckt file on circuit_path"
