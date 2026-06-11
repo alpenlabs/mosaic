@@ -145,6 +145,13 @@ impl MosaicConfig {
             bail!("job scheduler thread counts must be greater than zero");
         }
 
+        if self.job_scheduler.light.concurrency_per_worker == 0
+            || self.job_scheduler.heavy.concurrency_per_worker == 0
+            || self.job_scheduler.memory_heavy.concurrency_per_worker == 0
+        {
+            bail!("job scheduler concurrency_per_worker must be greater than zero");
+        }
+
         if !self.circuit.path.is_file() {
             bail!(
                 "circuit.path does not point to an existing file: {}",
