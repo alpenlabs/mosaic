@@ -15,7 +15,7 @@ crates/job/
 
 **job-executors** provides `MosaicExecutor<SP, TS>`, the concrete implementation of both executor traits. Contains all 17 handler implementations, the `GarblingSession` core, `PolynomialCache`, and three `CircuitSession` types (commitment, transfer, evaluation). Generic over `StorageProvider` and `TableStore`.
 
-**job-scheduler** contains the scheduling infrastructure: light pool, heavy pool, multi-threaded garbling coordinator, action classification, priority queue, and worker retry logic. Generic over the executor traits — has no compile-time dependency on `job-executors`.
+**job-scheduler** contains the scheduling infrastructure: light pool, heavy pool, memory-heavy pool, multi-threaded garbling coordinator, action classification, priority queue, and worker retry logic. Generic over the executor traits — has no compile-time dependency on `job-executors`.
 
 ```
    ┌──────────────┐
@@ -41,18 +41,18 @@ crates/job/
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                   JobScheduler (monoio thread)                           │
-│                                                                          │
-│  dispatch_batch: classify action → route to pool or coordinator          │
-├──────────────────┬───────────────────┬───────────────────────────────────┤
-│  Light Pool      │   Heavy Pool      │   Garbling Coordinator            │
-│                  │                   │                                   │
-│  Pull model      │  Pull model       │  Push model                      │
-│  FIFO queue      │  Priority queue   │  Multi-threaded barrier sync     │
-│  1 monoio worker │  2 monoio workers │  1 main thread + N worker threads│
-│  32 concurrency  │  8 concurrency    │  SessionFactory + retry          │
-└──────────────────┴───────────────────┴───────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                            JobScheduler (monoio thread)                                      │
+│                                                                                              │
+│  dispatch_batch: classify action → route to pool or coordinator                              │
+├──────────────────┬───────────────────┬────────────────────┬─────────────────────────────────-┤
+│  Light Pool      │   Heavy Pool      │  Memory-Heavy Pool │   Garbling Coordinator           │
+│                  │                   │                    │                                  │
+│  Pull model      │  Pull model       │  Pull model        │  Push model                      │
+│  FIFO queue      │  Priority queue   │  Priority queue    │  Multi-threaded barrier sync     │
+│  1 monoio worker │  2 monoio workers │  1 monoio worker   │  1 main thread + N worker threads│
+│  32 concurrency  │  8 concurrency    │  2 concurrency     │  SessionFactory + retry          │
+└──────────────────┴───────────────────┴────────────────────┴──────────────────────────────────┘
 ```
 
 The scheduler thread runs its own monoio runtime. Each pool worker thread runs its own monoio runtime with bounded concurrency via a permit pool (kanal channel-based). Workers pull jobs from a shared queue as `!Send` local tasks.
@@ -64,10 +64,11 @@ The garbling coordinator runs on a dedicated main thread that reads the circuit 
 | Category | Time | Pool | Examples |
 |----------|------|------|----------|
 | Light | Milliseconds | FIFO, 1 thread | SendCommitMsgChunk, SendChallengeMsg, ReceiveGarblingTable |
-| Heavy | Seconds–minutes | Priority, 2 threads | VerifyOpenedInputShares, DepositVerifyAdaptors |
+| Heavy | Seconds–minutes | Priority, 2 threads | DepositVerifyAdaptors, GeneratePolynomialCommitments |
+| Memory-Heavy | Seconds–minutes | Priority, 1 thread, 2 concurrency | VerifyOpenedInputShares |
 | Garbling | Minutes | Coordinator, N threads | GenerateTableCommitment, TransferGarblingTable, EvaluateGarblingTable |
 
-Light actions are I/O-bound (outbound protocol sends via net-client, inbound bulk receives). Heavy actions are CPU-bound. Garbling actions are CPU-bound and require coordinated sequential reads of a ~130 GB circuit file.
+Light actions are I/O-bound (outbound protocol sends via net-client, inbound bulk receives). Heavy actions are CPU-bound. Memory-heavy actions have high peak memory (~4.5 GB per call) and are isolated in a low-concurrency pool to cap aggregate memory usage. Garbling actions are CPU-bound and require coordinated sequential reads of a ~130 GB circuit file.
 
 ## All 19 Actions
 
@@ -91,7 +92,7 @@ Light actions are I/O-bound (outbound protocol sends via net-client, inbound bul
 | # | Action | Category | Priority | Handler |
 |---|--------|----------|----------|---------|
 | E1 | `SendChallengeMsg(ChallengeMsg)` | Light | Normal | Net send + retry |
-| E2 | `VerifyOpenedInputShares` | Heavy | Normal | Verify 7.7M shares against polynomial commitments |
+| E2 | `VerifyOpenedInputShares` | Memory-Heavy | Normal | Verify 7.7M shares against polynomial commitments |
 | E3 | `GenerateTableCommitment(Index, GarblingSeed)` | Garbling | Normal | CommitmentSession — re-garble to verify commitment |
 | E4 | `ReceiveGarblingTable(GarblingTableCommitment)` | Light | Normal | Register bulk expectation, send transfer request, receive stream, hash verify, store to TableStore |
 | E5 | `GenerateDepositAdaptors(DepositId)` | Heavy | High | Generate adaptors from zeroth-coefficient commitments |
@@ -258,6 +259,12 @@ Handles CPU-intensive non-garbling work. Workers pull from a priority queue with
 
 Workers drain Critical → High → Normal. Withdrawal disputes are never blocked by background setup.
 
+## Memory-Heavy Pool
+
+Handles tasks with high peak memory. Currently only `VerifyOpenedInputShares` (E2), which allocates ~4.5 GB per call for batch share verification via a 7.3M-point multi-scalar multiplication. Low concurrency (default: 2) caps aggregate memory at ~9 GB regardless of peer count, while the heavy pool's slots remain fully available for other crypto work.
+
+Workers pull from a priority queue (same as heavy pool). The pool uses the same `JobThreadPool` infrastructure — the only difference is the concurrency configuration.
+
 ## Garbling Coordinator
 
 The coordinator solves the **shared reader problem**: garbling reads a ~130 GB circuit file. With independent readers at different offsets, disk thrashing destroys throughput. Sequential reads are dramatically faster.
@@ -267,14 +274,14 @@ The coordinator solves the **shared reader problem**: garbling reads a ~130 GB c
 ### Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────┐
 │               Main thread (coordinator_loop)                      │
-│                                                                    │
+│                                                                   │
 │  1. Collect PendingCircuitJobs (channel + retry list)             │
 │  2. Create sessions via SessionFactory (retry StorageUnavailable) │
 │  3. Distribute sessions round-robin across workers                │
 │  4. Read circuit file sequentially                                │
-│                                                                    │
+│                                                                   │
 │  For each chunk:                                                  │
 │    ReaderV5c → convert → Arc<OwnedChunk>                          │
 │        │                                                          │
@@ -282,13 +289,13 @@ The coordinator solves the **shared reader problem**: garbling reads a ~130 GB c
 │        ├── send to Worker 1 ──► process sessions ──► ChunkReport  │
 │        ├── send to Worker 2 ──► process sessions ──► ChunkReport  │
 │        └── send to Worker 3 ──► process sessions ──► ChunkReport  │
-│                                                                    │
+│                                                                   │
 │    Barrier: wait for all ChunkReports                             │
 │    Collect evicted jobs → retry list                              │
-│                                                                    │
+│                                                                   │
 │  5. Send FinishPass → workers call session.finish()               │
 │  6. Workers send completions directly to SM                       │
-└──────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ### Session Distribution
@@ -369,7 +376,7 @@ This prevents busy-spinning on transient failures (unresponsive peer, full polyn
 
 `JobScheduler` implements `Drop`. On drop, it:
 
-1. Closes the light and heavy pool queues (workers drain remaining jobs and exit)
+1. Closes the light, heavy, and memory-heavy pool queues (workers drain remaining jobs and exit)
 2. Shuts down the garbling coordinator (closes channel, joins coordinator thread, which in turn shuts down worker threads)
 
 The explicit `shutdown(&mut self)` method does the same but can be called manually for deterministic teardown. All operations are idempotent — calling `shutdown()` then dropping is safe.
@@ -384,6 +391,10 @@ Bursts of send operations queue up and execute as earlier tasks complete. All ar
 
 Setup generates many Normal-priority actions. They queue and process as workers become available. If a Critical withdrawal action arrives mid-setup, it jumps the queue immediately.
 
+### Memory-Heavy Pool
+
+Low concurrency (default: 2) ensures that at most two batch share verifications run simultaneously, capping peak memory from this path at ~9 GB. Additional requests queue without consuming slots in other pools.
+
 ### Garbling Coordinator
 
 Multiple peers need garbling tables simultaneously. Sessions are distributed across workers and process their chunks concurrently. A per-session timeout evicts slow consumers (e.g. G8 streaming to a congested peer) without blocking other sessions. Evicted sessions are automatically retried on the next pass.
@@ -394,7 +405,7 @@ The async submission channel prevents the garbling coordinator from blocking the
 
 | Resource | Protection |
 |----------|------------|
-| Memory | `max_concurrent` caps sessions (~1 GB each); bounded queues; chunk-at-a-time processing |
+| Memory | `max_concurrent` caps garbling sessions (~1 GB each); memory-heavy pool caps batch verification (~4.5 GB each); bounded queues; chunk-at-a-time processing |
 | CPU | Concurrency limits per worker; separate pools prevent interference |
 | Disk I/O | Single sequential circuit reader per pass; shared via Arc |
 | Network | Async I/O yields during waits; per-session timeout evicts slow streams |
@@ -406,6 +417,7 @@ The async submission channel prevents the garbling coordinator from blocking the
 pub struct JobSchedulerConfig {
     pub light: PoolConfig,            // default: 1 thread, 32 concurrency, FIFO
     pub heavy: PoolConfig,            // default: 2 threads, 8 concurrency, priority
+    pub memory_heavy: PoolConfig,     // default: 1 thread, 2 concurrency, priority
     pub garbling: GarblingConfig,     // default: 4 workers, 8 max sessions
     pub submission_queue_size: usize, // default: 256
     pub completion_queue_size: usize, // default: 256

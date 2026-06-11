@@ -86,6 +86,11 @@ impl MosaicConfig {
                 concurrency_per_worker: self.job_scheduler.heavy.concurrency_per_worker,
                 priority_queue: true,
             },
+            memory_heavy: PoolConfig {
+                threads: self.job_scheduler.memory_heavy.threads,
+                concurrency_per_worker: self.job_scheduler.memory_heavy.concurrency_per_worker,
+                priority_queue: true,
+            },
             garbling: GarblingConfig {
                 worker_threads: self.job_scheduler.garbling.worker_threads,
                 max_concurrent: self.job_scheduler.garbling.max_concurrent,
@@ -133,7 +138,10 @@ impl MosaicConfig {
             bail!("job_scheduler.garbling.worker_threads must be greater than zero");
         }
 
-        if self.job_scheduler.light.threads == 0 || self.job_scheduler.heavy.threads == 0 {
+        if self.job_scheduler.light.threads == 0
+            || self.job_scheduler.heavy.threads == 0
+            || self.job_scheduler.memory_heavy.threads == 0
+        {
             bail!("job scheduler thread counts must be greater than zero");
         }
 
@@ -348,6 +356,8 @@ pub(crate) struct JobSchedulerSection {
     pub(crate) light: PoolSection,
     #[serde(default = "default_heavy_pool_section")]
     pub(crate) heavy: PoolSection,
+    #[serde(default = "default_memory_heavy_pool_section")]
+    pub(crate) memory_heavy: PoolSection,
     #[serde(default)]
     pub(crate) garbling: GarblingSection,
     #[serde(default = "default_submission_queue_size")]
@@ -378,6 +388,13 @@ fn default_heavy_pool_section() -> PoolSection {
     PoolSection {
         threads: 2,
         concurrency_per_worker: 8,
+    }
+}
+
+fn default_memory_heavy_pool_section() -> PoolSection {
+    PoolSection {
+        threads: 1,
+        concurrency_per_worker: 2,
     }
 }
 

@@ -1,10 +1,12 @@
 //! Job scheduler implementation for Mosaic.
 //!
 //! This crate contains the execution infrastructure for actions emitted by
-//! Garbler and Evaluator state machines. It provides three specialized pools:
+//! Garbler and Evaluator state machines. It provides four specialized pools:
 //!
 //! - **Light pool**: FIFO queue for I/O-bound tasks (sends, acks)
 //! - **Heavy pool**: Priority queue for CPU-bound tasks (verification, crypto)
+//! - **Memory-heavy pool**: Priority queue with low concurrency for tasks with high peak memory
+//!   (e.g. batch share verification)
 //! - **Garbling coordinator**: Barrier-synchronized circuit reads for garbling
 //!
 //! The scheduler is generic over `ExecuteGarblerJob` + `ExecuteEvaluatorJob`, which decouples

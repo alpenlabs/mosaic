@@ -32,6 +32,9 @@ pub struct JobSchedulerConfig {
     pub light: PoolConfig,
     /// Heavy pool: CPU-bound non-garbling tasks.
     pub heavy: PoolConfig,
+    /// Memory-heavy pool: tasks with large peak memory (e.g. batch share
+    /// verification). Low concurrency to cap aggregate memory usage.
+    pub memory_heavy: PoolConfig,
     /// Garbling coordinator: coordinated topology reads + garbling.
     pub garbling: GarblingConfig,
     /// Capacity of the submission channel.
@@ -60,6 +63,11 @@ impl Default for JobSchedulerConfig {
                 concurrency_per_worker: 8,
                 priority_queue: true,
             },
+            memory_heavy: PoolConfig {
+                threads: 1,
+                concurrency_per_worker: 2,
+                priority_queue: true,
+            },
             garbling: GarblingConfig::default(),
             submission_queue_size: 256,
             completion_queue_size: 256,
@@ -69,9 +77,10 @@ impl Default for JobSchedulerConfig {
 
 /// The job scheduler — executes actions emitted by state machines.
 ///
-/// Owns three execution pools:
+/// Owns four execution pools:
 /// - **Light pool**: FIFO queue, single thread, high concurrency (network I/O)
 /// - **Heavy pool**: Priority queue, multiple threads (crypto, verification)
+/// - **Memory-heavy pool**: Priority queue, low concurrency (large peak memory tasks)
 /// - **Garbling coordinator**: Barrier-synchronized topology reads + garbling
 ///
 /// Constructed by the main binary. The SM Scheduler interacts with it
@@ -79,6 +88,7 @@ impl Default for JobSchedulerConfig {
 pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     light: Option<JobThreadPool<D>>,
     heavy: Option<JobThreadPool<D>>,
+    memory_heavy: Option<JobThreadPool<D>>,
     garbling: Option<GarblingCoordinator>,
     /// Receives batch submissions from the SM Scheduler.
     submission_rx: kanal::AsyncReceiver<JobBatch>,
@@ -179,6 +189,12 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             completion_tx.clone(),
             fault_tx.clone(),
         );
+        let memory_heavy = JobThreadPool::new(
+            config.memory_heavy,
+            Arc::clone(&executor),
+            completion_tx.clone(),
+            fault_tx.clone(),
+        );
         let garbling = GarblingCoordinator::new(config.garbling, factory, completion_tx, fault_tx);
 
         let handle = JobSchedulerHandle::new(submit_tx, completion_rx);
@@ -186,6 +202,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         let scheduler = Self {
             light: Some(light),
             heavy: Some(heavy),
+            memory_heavy: Some(memory_heavy),
             garbling: Some(garbling),
             submission_rx,
             fault_rx,
@@ -328,6 +345,12 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                                     .expect("heavy pool must exist while scheduler is running")
                                                     .submit(priority, worker_job);
                                             }
+                                            ActionCategory::MemoryHeavy => {
+                                                self.memory_heavy
+                                                    .as_ref()
+                                                    .expect("memory_heavy pool must exist while scheduler is running")
+                                                    .submit(priority, worker_job);
+                                            }
                                             _ => unreachable!(),
                                         }
                                     }
@@ -362,6 +385,12 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                                 self.heavy
                                                     .as_ref()
                                                     .expect("heavy pool must exist while scheduler is running")
+                                                    .submit(priority, worker_job);
+                                            }
+                                            ActionCategory::MemoryHeavy => {
+                                                self.memory_heavy
+                                                    .as_ref()
+                                                    .expect("memory_heavy pool must exist while scheduler is running")
                                                     .submit(priority, worker_job);
                                             }
                                             _ => unreachable!(),
@@ -473,6 +502,9 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         if let Some(heavy) = self.heavy.take() {
             heavy.shutdown();
         }
+        if let Some(memory_heavy) = self.memory_heavy.take() {
+            memory_heavy.shutdown();
+        }
         if let Some(mut garbling) = self.garbling.take() {
             garbling.shutdown();
         }
@@ -491,6 +523,9 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Drop for JobScheduler<D> {
         if let Some(heavy) = self.heavy.as_ref() {
             heavy.close_queue();
         }
+        if let Some(memory_heavy) = self.memory_heavy.as_ref() {
+            memory_heavy.close_queue();
+        }
         if let Some(garbling) = self.garbling.as_mut() {
             garbling.shutdown();
         }
@@ -505,6 +540,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Drop for JobScheduler<D> {
 enum ActionCategory {
     Light,
     Heavy,
+    MemoryHeavy,
     Garbling,
 }
 
@@ -577,10 +613,13 @@ impl Classify for EvaluatorAction {
                 ActionCategory::Garbling
             }
 
+            // Memory-heavy (large peak memory — batch share verification)
+            Self::VerifyOpenedInputShares => ActionCategory::MemoryHeavy,
+
             // Heavy (everything else)
-            Self::VerifyOpenedInputShares
-            | Self::GenerateDepositAdaptors(_)
-            | Self::GenerateWithdrawalAdaptorsChunk(..) => ActionCategory::Heavy,
+            Self::GenerateDepositAdaptors(_) | Self::GenerateWithdrawalAdaptorsChunk(..) => {
+                ActionCategory::Heavy
+            }
         }
     }
 

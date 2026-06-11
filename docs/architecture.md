@@ -18,7 +18,8 @@ Bridge Core communicates with Mosaic via private RPC.
 | SM Scheduler | monoio pool | Runs Garbler/Evaluator state machines (1 pair per peer) |
 | JobScheduler | monoio | Routes actions to pools, manages requeue |
 | Job Light Pool | monoio (1 thread) | Network I/O (sends, acks, bulk receives) |
-| Job Heavy Pool | monoio (2 threads) | CPU-bound crypto (verification, polynomial ops, adaptors) |
+| Job Heavy Pool | monoio (2 threads) | CPU-bound crypto (polynomial ops, adaptors) |
+| Job Memory-Heavy Pool | monoio (1 thread) | High peak memory tasks (batch share verification) |
 | Garbling Coordinator | monoio (1+N threads) | Coordinated circuit reads + garbling/evaluation |
 | net-svc | tokio (isolated) | P2P QUIC between Mosaic instances |
 | S3TableStore | tokio (isolated) | Garbling table persistence via object_store |
@@ -42,7 +43,7 @@ Key insight: Jobs handle all outgoing traffic. Incoming protocol messages go to 
 - `crates/cac/types/` — Protocol message types, SM inputs/actions, StateRead/StateMut traits
 - `crates/job/api/` — Executor traits (`ExecuteGarblerJob`, `ExecuteEvaluatorJob`), `CircuitSession`, `SessionFactory`, submission/completion types
 - `crates/job/executors/` — `MosaicExecutor`, all 18 handler implementations, `GarblingSession`, `PolynomialCache`, circuit session types
-- `crates/job/scheduler/` — `JobScheduler`, light/heavy pools, multi-threaded garbling coordinator, action classification, priority queue
+- `crates/job/scheduler/` — `JobScheduler`, light/heavy/memory-heavy pools, multi-threaded garbling coordinator, action classification, priority queue
 - `crates/storage/api/` — `StorageProvider`, `StorageProviderMut`, `TableStore` traits
 - `crates/storage/inmemory/` — In-memory `StateRead`/`StateMut` impl (testing)
 - `crates/storage/s3/` — S3-backed `TableStore` via `object_store` + tokio bridge
