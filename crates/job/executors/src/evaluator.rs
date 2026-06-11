@@ -210,6 +210,177 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
 // Network handler (E4 — pool action, not circuit session)
 // ============================================================================
 
+/// Minimal stream interface used by [`drain_table_payload`]. Lets tests inject
+/// a scripted chunk source without spinning up a real QUIC stream.
+trait PayloadStream {
+    async fn read_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<mosaic_net_svc_api::PayloadBuf, BulkReadError>;
+}
+
+impl PayloadStream for mosaic_net_client::BulkReceiver {
+    async fn read_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<mosaic_net_svc_api::PayloadBuf, BulkReadError> {
+        mosaic_net_client::BulkReceiver::read_with_timeout(self, timeout).await
+    }
+}
+
+/// Outcome of [`drain_table_payload`]. The caller maps these onto
+/// `HandlerOutcome` + stream/store cleanup; the helper itself is I/O-free
+/// beyond the trait read.
+#[derive(Debug)]
+enum DrainOutcome {
+    /// Stream sent exactly `translation_size + expected_ciphertext_bytes`
+    /// bytes followed by FIN (or an empty frame), and every chunk was
+    /// successfully forwarded to the writer.
+    Complete {
+        translation_buf: Vec<u8>,
+        translate_hash: blake3::Hash,
+        ct_hash: blake3::Hash,
+    },
+    /// Stream sent more ciphertext bytes than the circuit header allowed.
+    OversizedCiphertext { received: usize, expected: usize },
+    /// Stream closed before all translation bytes were received.
+    TranslationIncomplete { remaining: usize },
+    /// Stream closed cleanly but the ciphertext count was short.
+    LengthMismatch { received: usize, expected: usize },
+    /// Writer rejected a chunk.
+    WriteFailed {
+        /// `true` if the failing chunk was the ciphertext spill-over from the
+        /// same frame that completed the translation segment; `false` for a
+        /// steady-state ciphertext chunk. Preserved so the caller can keep
+        /// the two paths distinguishable in logs/alerting.
+        during_translation_overflow: bool,
+    },
+    /// `read_with_timeout` returned `TimedOut` before the next chunk arrived.
+    ReadTimedOut,
+}
+
+/// Consume a bulk stream carrying translation bytes followed by ciphertext
+/// bytes, hashing each domain and forwarding the ciphertext to `writer`.
+///
+/// Termination is via:
+/// - `BulkReadError::Closed` (FIN) → fall through to the post-loop length checks; either
+///   `Complete`, `TranslationIncomplete`, or `LengthMismatch`.
+/// - Empty chunk → treated as Closed.
+/// - `BulkReadError::TimedOut` → returns `ReadTimedOut` immediately.
+/// - Trailing bytes past `expected_ciphertext_bytes` → returns `OversizedCiphertext` immediately
+///   (closing the trailing-garbage acceptance hole that earlier versions had with an early-equality
+///   `break`).
+#[allow(clippy::too_many_arguments)]
+async fn drain_table_payload<S, W>(
+    stream: &mut S,
+    writer: &mut W,
+    translation_size: usize,
+    expected_ciphertext_bytes: usize,
+    read_timeout: Duration,
+    read_warn_after: Duration,
+    peer_id: &PeerId,
+    index: Index,
+) -> DrainOutcome
+where
+    S: PayloadStream,
+    W: mosaic_storage_api::table_store::TableWriter,
+{
+    let mut translate_hasher = blake3::Hasher::new();
+    let mut ct_hasher = blake3::Hasher::new();
+    let mut translation_buf = Vec::with_capacity(translation_size);
+    let mut translation_remaining = translation_size;
+    let mut ciphertext_bytes_received = 0usize;
+
+    loop {
+        let read_started = Instant::now();
+        let chunk = match stream.read_with_timeout(read_timeout).await {
+            Ok(data) => {
+                let elapsed = read_started.elapsed();
+                if elapsed >= read_warn_after {
+                    warn!(
+                        %peer_id,
+                        ?index,
+                        ?elapsed,
+                        "bulk stream read was slower than expected for receive_garbling_table"
+                    );
+                }
+                data
+            }
+            Err(BulkReadError::TimedOut) => return DrainOutcome::ReadTimedOut,
+            Err(BulkReadError::Closed(_)) => break,
+        };
+
+        if chunk.is_empty() {
+            break;
+        }
+
+        if translation_remaining > 0 {
+            // Still reading translation material; split the chunk on the
+            // boundary so each domain hashes independently.
+            let take = chunk.len().min(translation_remaining);
+            let (translate_part, ct_part) = chunk.split_at(take);
+
+            translation_buf.extend_from_slice(translate_part);
+            translate_hasher.update(translate_part);
+            translation_remaining -= take;
+
+            if !ct_part.is_empty() {
+                let next_ciphertext_bytes = ciphertext_bytes_received + ct_part.len();
+                if next_ciphertext_bytes > expected_ciphertext_bytes {
+                    return DrainOutcome::OversizedCiphertext {
+                        received: next_ciphertext_bytes,
+                        expected: expected_ciphertext_bytes,
+                    };
+                }
+                ciphertext_bytes_received = next_ciphertext_bytes;
+                ct_hasher.update(ct_part);
+                if writer.write_ciphertext(ct_part).await.is_err() {
+                    return DrainOutcome::WriteFailed {
+                        during_translation_overflow: true,
+                    };
+                }
+            }
+        } else {
+            // Translation already consumed — everything else is ciphertext.
+            // Don't break on equality with `expected`; let the next iteration's
+            // `>` check catch any trailing bytes and exit via `Closed` /
+            // empty-chunk / timeout otherwise.
+            let next_ciphertext_bytes = ciphertext_bytes_received + chunk.len();
+            if next_ciphertext_bytes > expected_ciphertext_bytes {
+                return DrainOutcome::OversizedCiphertext {
+                    received: next_ciphertext_bytes,
+                    expected: expected_ciphertext_bytes,
+                };
+            }
+            ciphertext_bytes_received = next_ciphertext_bytes;
+            ct_hasher.update(&chunk);
+            if writer.write_ciphertext(&chunk).await.is_err() {
+                return DrainOutcome::WriteFailed {
+                    during_translation_overflow: false,
+                };
+            }
+        }
+    }
+
+    if translation_remaining > 0 {
+        return DrainOutcome::TranslationIncomplete {
+            remaining: translation_remaining,
+        };
+    }
+    if ciphertext_bytes_received != expected_ciphertext_bytes {
+        return DrainOutcome::LengthMismatch {
+            received: ciphertext_bytes_received,
+            expected: expected_ciphertext_bytes,
+        };
+    }
+
+    DrainOutcome::Complete {
+        translation_buf,
+        translate_hash: translate_hasher.finalize(),
+        ct_hash: ct_hasher.finalize(),
+    }
+}
+
 pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: TableStore>(
     ctx: &MosaicExecutor<SP, TS>,
     peer_id: &PeerId,
@@ -327,133 +498,85 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         return HandlerOutcome::Retry;
     };
 
-    // Receive and process all data from the stream.
-    let mut translate_hasher = blake3::Hasher::new();
-    let mut ct_hasher = blake3::Hasher::new();
-    let mut translation_buf = Vec::with_capacity(translation_size);
-    let mut translation_remaining = translation_size;
-    let mut ciphertext_bytes_received = 0usize;
-
-    loop {
-        let read_started = Instant::now();
-        let chunk = match stream.read_with_timeout(BULK_READ_TIMEOUT).await {
-            Ok(data) => {
-                let elapsed = read_started.elapsed();
-                if elapsed >= BULK_READ_WARN_AFTER {
-                    warn!(
-                        %peer_id,
-                        ?index,
-                        ?elapsed,
-                        "bulk stream read was slower than expected for receive_garbling_table"
-                    );
-                }
-                data
-            }
-            Err(BulkReadError::TimedOut) => {
-                warn!(
-                    %peer_id,
-                    ?index,
-                    timeout = ?BULK_READ_TIMEOUT,
-                    "timed out waiting for bulk payload in receive_garbling_table"
-                );
-                stream.reset(0).await;
-                let _ = ctx.table_store.delete(&table_id).await;
-                return HandlerOutcome::Retry;
-            }
-            Err(BulkReadError::Closed(_closed)) => break,
-        };
-
-        if chunk.is_empty() {
-            break;
+    // Drain the bulk stream into `writer` and the translation buffer, hashing
+    // each domain along the way. The helper returns one of several outcomes;
+    // we apply stream-reset / table cleanup at this layer based on the outcome
+    // so the helper itself stays I/O-free below the read trait.
+    let (translation_buf, translate_hash, ct_hash) = match drain_table_payload(
+        &mut stream,
+        &mut writer,
+        translation_size,
+        expected_ciphertext_bytes,
+        BULK_READ_TIMEOUT,
+        BULK_READ_WARN_AFTER,
+        peer_id,
+        index,
+    )
+    .await
+    {
+        DrainOutcome::Complete {
+            translation_buf,
+            translate_hash,
+            ct_hash,
+        } => (translation_buf, translate_hash, ct_hash),
+        DrainOutcome::ReadTimedOut => {
+            warn!(
+                %peer_id,
+                ?index,
+                timeout = ?BULK_READ_TIMEOUT,
+                "timed out waiting for bulk payload in receive_garbling_table"
+            );
+            stream.reset(0).await;
+            let _ = ctx.table_store.delete(&table_id).await;
+            return HandlerOutcome::Retry;
         }
-
-        if translation_remaining > 0 {
-            // Still reading translation material.
-            let take = chunk.len().min(translation_remaining);
-            let (translate_part, ct_part) = chunk.split_at(take);
-
-            translation_buf.extend_from_slice(translate_part);
-            translate_hasher.update(translate_part);
-            translation_remaining -= take;
-
-            // Any overflow goes to ciphertext.
-            if !ct_part.is_empty() {
-                let next_ciphertext_bytes = ciphertext_bytes_received + ct_part.len();
-                if next_ciphertext_bytes > expected_ciphertext_bytes {
-                    error!(
-                        %peer_id,
-                        ?index,
-                        received = next_ciphertext_bytes,
-                        expected = expected_ciphertext_bytes,
-                        "received oversized ciphertext stream for receive_garbling_table"
-                    );
-                    stream.reset(0).await;
-                    let _ = ctx.table_store.delete(&table_id).await;
-                    return HandlerOutcome::Retry;
-                }
-                ciphertext_bytes_received = next_ciphertext_bytes;
-                ct_hasher.update(ct_part);
-                if writer.write_ciphertext(ct_part).await.is_err() {
-                    error!(%peer_id, "ciphertext write failed (translation overflow) for receive_garbling_table");
-                    let _ = ctx.table_store.delete(&table_id).await;
-                    return HandlerOutcome::Retry;
-                }
-                // Don't break on `ciphertext_bytes_received == expected`:
-                // continue the loop so any trailing bytes from a buggy or
-                // malicious sender are caught by the `>` check above
-                // instead of being silently accepted. The loop exits via
-                // the existing branches at the top: `Closed` (FIN), an
-                // empty chunk, or the read timeout.
-            }
-        } else {
-            // All translation received — remaining data is ciphertext.
-            let next_ciphertext_bytes = ciphertext_bytes_received + chunk.len();
-            if next_ciphertext_bytes > expected_ciphertext_bytes {
+        DrainOutcome::OversizedCiphertext { received, expected } => {
+            error!(
+                %peer_id,
+                ?index,
+                received,
+                expected,
+                "received oversized ciphertext stream for receive_garbling_table"
+            );
+            stream.reset(0).await;
+            let _ = ctx.table_store.delete(&table_id).await;
+            return HandlerOutcome::Retry;
+        }
+        DrainOutcome::WriteFailed {
+            during_translation_overflow,
+        } => {
+            if during_translation_overflow {
                 error!(
                     %peer_id,
-                    ?index,
-                    received = next_ciphertext_bytes,
-                    expected = expected_ciphertext_bytes,
-                    "received oversized ciphertext stream for receive_garbling_table"
+                    "ciphertext write failed (translation overflow) for receive_garbling_table"
                 );
-                stream.reset(0).await;
-                let _ = ctx.table_store.delete(&table_id).await;
-                return HandlerOutcome::Retry;
-            }
-            ciphertext_bytes_received = next_ciphertext_bytes;
-            ct_hasher.update(&chunk);
-            if writer.write_ciphertext(&chunk).await.is_err() {
+            } else {
                 error!(%peer_id, "ciphertext write failed for receive_garbling_table");
-                let _ = ctx.table_store.delete(&table_id).await;
-                return HandlerOutcome::Retry;
             }
-            // See above: keep reading rather than break on equality, so
-            // any trailing bytes are caught by the `>` check on the next
-            // chunk. Normal termination is the `Closed` / empty-chunk
-            // branches at the top of the loop.
+            let _ = ctx.table_store.delete(&table_id).await;
+            return HandlerOutcome::Retry;
         }
-    }
-
-    // Verify we received enough translation data.
-    if translation_remaining > 0 {
-        error!(%peer_id, translation_remaining, "incomplete translation data for receive_garbling_table");
-        let _ = ctx.table_store.delete(&table_id).await;
-        return HandlerOutcome::Retry;
-    }
-    if ciphertext_bytes_received != expected_ciphertext_bytes {
-        error!(
-            %peer_id,
-            ?index,
-            received = ciphertext_bytes_received,
-            expected = expected_ciphertext_bytes,
-            "ciphertext length mismatch for receive_garbling_table"
-        );
-        let _ = ctx.table_store.delete(&table_id).await;
-        return HandlerOutcome::Retry;
-    }
-
-    let translate_hash = translate_hasher.finalize();
-    let ct_hash = ct_hasher.finalize();
+        DrainOutcome::TranslationIncomplete { remaining } => {
+            error!(
+                %peer_id,
+                translation_remaining = remaining,
+                "incomplete translation data for receive_garbling_table"
+            );
+            let _ = ctx.table_store.delete(&table_id).await;
+            return HandlerOutcome::Retry;
+        }
+        DrainOutcome::LengthMismatch { received, expected } => {
+            error!(
+                %peer_id,
+                ?index,
+                received,
+                expected,
+                "ciphertext length mismatch for receive_garbling_table"
+            );
+            let _ = ctx.table_store.delete(&table_id).await;
+            return HandlerOutcome::Retry;
+        }
+    };
 
     // Load metadata from evaluator state. These were stored when the garbler's
     // CommitMsgHeader (aes keys, public S) and ChallengeResponseMsgHeader
@@ -976,4 +1099,597 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         output_label_ct_bytes,
         header.total_gates(),
     ))
+}
+
+// ============================================================================
+// Tests for the bulk-payload drain helper
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
+
+    use super::*;
+
+    /// Scripted `PayloadStream` for tests. Each `read_with_timeout` call pops
+    /// from the front of the queue; an empty queue returns `Closed` (FIN).
+    struct ScriptedStream {
+        chunks: VecDeque<StreamReply>,
+    }
+
+    enum StreamReply {
+        Chunk(Vec<u8>),
+        TimedOut,
+    }
+
+    impl ScriptedStream {
+        fn from_chunks<I>(chunks: I) -> Self
+        where
+            I: IntoIterator<Item = Vec<u8>>,
+        {
+            Self {
+                chunks: chunks.into_iter().map(StreamReply::Chunk).collect(),
+            }
+        }
+    }
+
+    impl PayloadStream for ScriptedStream {
+        async fn read_with_timeout(
+            &mut self,
+            _timeout: Duration,
+        ) -> Result<mosaic_net_svc_api::PayloadBuf, BulkReadError> {
+            match self.chunks.pop_front() {
+                Some(StreamReply::Chunk(c)) => Ok(c),
+                Some(StreamReply::TimedOut) => Err(BulkReadError::TimedOut),
+                // Empty queue = FIN. Build a `Closed(StreamClosed)` via the
+                // PeerFinished variant which models a clean stream close.
+                None => Err(BulkReadError::Closed(
+                    mosaic_net_svc_api::StreamClosed::PeerFinished,
+                )),
+            }
+        }
+    }
+
+    /// In-memory [`TableWriter`] that just records what was written. Lets us
+    /// verify the helper passed every accepted ciphertext byte through to the
+    /// writer in order.
+    struct CollectingWriter {
+        ciphertext: Vec<u8>,
+        /// When set, `write_ciphertext` returns `Err` after this many calls
+        /// (used to test the WriteFailed outcome).
+        fail_after_calls: Option<usize>,
+        calls: usize,
+    }
+
+    impl CollectingWriter {
+        fn new() -> Self {
+            Self {
+                ciphertext: Vec::new(),
+                fail_after_calls: None,
+                calls: 0,
+            }
+        }
+        fn failing_at(call: usize) -> Self {
+            Self {
+                ciphertext: Vec::new(),
+                fail_after_calls: Some(call),
+                calls: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("collecting-writer test failure")]
+    struct CollectingWriterError;
+
+    impl TableWriter for CollectingWriter {
+        type Error = CollectingWriterError;
+
+        async fn write_ciphertext(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+            self.calls += 1;
+            if let Some(threshold) = self.fail_after_calls
+                && self.calls > threshold
+            {
+                return Err(CollectingWriterError);
+            }
+            self.ciphertext.extend_from_slice(data);
+            Ok(())
+        }
+
+        async fn finish(
+            &mut self,
+            _translation: &[u8],
+            _metadata: TableMetadata,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    fn peer() -> PeerId {
+        PeerId::from_bytes([0xAB; 32])
+    }
+    fn idx() -> Index {
+        Index::new(1).unwrap()
+    }
+
+    const TRANSLATION_SIZE: usize = 32;
+    const READ_TIMEOUT: Duration = Duration::from_secs(1);
+    const READ_WARN: Duration = Duration::from_secs(1);
+
+    fn translation_input() -> Vec<u8> {
+        (0..TRANSLATION_SIZE as u8).collect()
+    }
+
+    fn ciphertext_input(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i as u8).wrapping_mul(7)).collect()
+    }
+
+    #[tokio::test]
+    async fn complete_on_exact_bytes_with_fin() {
+        let translation = translation_input();
+        let ciphertext = ciphertext_input(48);
+        let mut stream = ScriptedStream::from_chunks([translation.clone(), ciphertext.clone()]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            ciphertext.len(),
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::Complete {
+                translation_buf,
+                translate_hash,
+                ct_hash,
+            } => {
+                assert_eq!(translation_buf, translation);
+                assert_eq!(translate_hash, blake3::hash(&translation));
+                assert_eq!(ct_hash, blake3::hash(&ciphertext));
+                assert_eq!(writer.ciphertext, ciphertext);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_ciphertext_in_later_frame_is_rejected() {
+        // This is the trailing-bytes attack from the codex P2 finding: peer
+        // sends exactly the expected count, then a *separate* trailing frame.
+        let translation = translation_input();
+        let ciphertext = ciphertext_input(48);
+        let trailing = vec![0xCC; 8];
+        let mut stream =
+            ScriptedStream::from_chunks([translation, ciphertext.clone(), trailing.clone()]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            ciphertext.len(),
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::OversizedCiphertext { received, expected } => {
+                assert_eq!(expected, ciphertext.len());
+                assert_eq!(received, ciphertext.len() + trailing.len());
+            }
+            other => panic!("expected OversizedCiphertext, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_ciphertext_in_same_frame_is_rejected() {
+        // Single chunk that includes trailing bytes past the expected count.
+        let translation = translation_input();
+        let mut combined = ciphertext_input(48);
+        combined.extend_from_slice(&[0xDD; 4]);
+        let mut stream = ScriptedStream::from_chunks([translation, combined]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            48,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, DrainOutcome::OversizedCiphertext { .. }),
+            "expected OversizedCiphertext, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn translation_ciphertext_boundary_within_a_single_chunk() {
+        // One chunk straddles the translation/ciphertext boundary: the
+        // helper must hash the first `TRANSLATION_SIZE` bytes into
+        // `translate_hasher` and the rest into `ct_hasher`.
+        let translation = translation_input();
+        let ciphertext = ciphertext_input(16);
+        let mut combined = translation.clone();
+        combined.extend_from_slice(&ciphertext);
+        let mut stream = ScriptedStream::from_chunks([combined]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            ciphertext.len(),
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::Complete {
+                translation_buf,
+                translate_hash,
+                ct_hash,
+            } => {
+                assert_eq!(translation_buf, translation);
+                assert_eq!(translate_hash, blake3::hash(&translation));
+                assert_eq!(ct_hash, blake3::hash(&ciphertext));
+                assert_eq!(writer.ciphertext, ciphertext);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn translation_incomplete_when_stream_closes_early() {
+        // Stream closes after partial translation.
+        let mut partial = vec![0u8; TRANSLATION_SIZE - 4];
+        partial[0] = 0x10;
+        let mut stream = ScriptedStream::from_chunks([partial]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            16,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::TranslationIncomplete { remaining } => assert_eq!(remaining, 4),
+            other => panic!("expected TranslationIncomplete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn length_mismatch_when_ciphertext_short_then_close() {
+        let translation = translation_input();
+        let short = ciphertext_input(40);
+        let mut stream = ScriptedStream::from_chunks([translation, short]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            48,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::LengthMismatch { received, expected } => {
+                assert_eq!(received, 40);
+                assert_eq!(expected, 48);
+            }
+            other => panic!("expected LengthMismatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_failed_surfaces_writer_error() {
+        let translation = translation_input();
+        let ciphertext = ciphertext_input(48);
+        let mut stream = ScriptedStream::from_chunks([translation, ciphertext.clone()]);
+        // Fail on the very first ciphertext write call.
+        let mut writer = CollectingWriter::failing_at(0);
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            ciphertext.len(),
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                outcome,
+                DrainOutcome::WriteFailed {
+                    during_translation_overflow: false,
+                }
+            ),
+            "expected WriteFailed{{during_translation_overflow: false}}, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_failed_during_translation_overflow_keeps_discriminator() {
+        // Single chunk straddling the translation/ciphertext boundary, so the
+        // first ciphertext write happens inside the translation-still-remaining
+        // branch. The writer is rigged to fail on that very call.
+        let mut combined = translation_input();
+        combined.extend_from_slice(&ciphertext_input(8));
+        let mut stream = ScriptedStream::from_chunks([combined]);
+        let mut writer = CollectingWriter::failing_at(0);
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            8,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                outcome,
+                DrainOutcome::WriteFailed {
+                    during_translation_overflow: true,
+                }
+            ),
+            "expected WriteFailed{{during_translation_overflow: true}}, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn boundary_byte_lands_in_ciphertext_hash_not_translation() {
+        // Negative-direction boundary check: put a distinctive sentinel byte
+        // at the *first* ciphertext position in a chunk that straddles the
+        // translation/ciphertext boundary. If `split_at(take)` were ever
+        // flipped or off-by-one'd, the sentinel would leak into the
+        // translation hash instead of the ciphertext hash.
+        let translation = translation_input();
+        let mut chunk = translation.clone();
+        let sentinel: u8 = 0xAA;
+        chunk.push(sentinel); // first ciphertext byte
+        chunk.extend_from_slice(&[0u8; 7]); // pad to 8 bytes of ciphertext
+        let expected_ct: Vec<u8> = std::iter::once(sentinel).chain([0u8; 7]).collect();
+
+        let mut stream = ScriptedStream::from_chunks([chunk]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            8,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::Complete {
+                translation_buf,
+                translate_hash,
+                ct_hash,
+            } => {
+                assert_eq!(translation_buf, translation);
+                // Translation hash must NOT include the sentinel.
+                assert_eq!(translate_hash, blake3::hash(&translation));
+                // Ciphertext hash MUST include the sentinel as its first byte.
+                assert_eq!(ct_hash, blake3::hash(&expected_ct));
+                assert_eq!(writer.ciphertext, expected_ct);
+                assert_eq!(writer.ciphertext[0], sentinel);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_timed_out_returns_timeout_outcome() {
+        let translation = translation_input();
+        let mut stream = ScriptedStream {
+            chunks: [StreamReply::Chunk(translation), StreamReply::TimedOut]
+                .into_iter()
+                .collect(),
+        };
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            16,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, DrainOutcome::ReadTimedOut),
+            "expected ReadTimedOut, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_chunk_terminates_loop_like_fin() {
+        let translation = translation_input();
+        let ciphertext = ciphertext_input(16);
+        let mut stream = ScriptedStream::from_chunks([
+            translation.clone(),
+            ciphertext.clone(),
+            Vec::new(), // empty frame = treat as FIN
+        ]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            ciphertext.len(),
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::Complete {
+                translation_buf,
+                translate_hash,
+                ct_hash,
+            } => {
+                assert_eq!(translation_buf, translation);
+                assert_eq!(translate_hash, blake3::hash(&translation));
+                assert_eq!(ct_hash, blake3::hash(&ciphertext));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_expected_ciphertext_completes_on_translation_only() {
+        // Edge case: a circuit with zero AND gates produces
+        // `expected_ciphertext_bytes == 0`. Stream sends only translation
+        // bytes followed by FIN; the helper must accept it.
+        let translation = translation_input();
+        let mut stream = ScriptedStream::from_chunks([translation.clone()]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            0,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::Complete {
+                translation_buf,
+                ct_hash,
+                ..
+            } => {
+                assert_eq!(translation_buf, translation);
+                assert_eq!(ct_hash, blake3::hash(b""));
+                assert!(writer.ciphertext.is_empty());
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_expected_ciphertext_rejects_any_trailing_bytes() {
+        let mut combined = translation_input();
+        combined.push(0xFF); // one extra byte past translation
+        let mut stream = ScriptedStream::from_chunks([combined]);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            0,
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::OversizedCiphertext { received, expected } => {
+                assert_eq!(received, 1);
+                assert_eq!(expected, 0);
+            }
+            other => panic!("expected OversizedCiphertext, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn many_small_chunks_accumulate_correctly() {
+        let translation = translation_input();
+        let ciphertext = ciphertext_input(64);
+        // Break each into 4-byte pieces to stress the chunk-handling loop.
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
+        for c in translation.chunks(4) {
+            chunks.push(c.to_vec());
+        }
+        for c in ciphertext.chunks(4) {
+            chunks.push(c.to_vec());
+        }
+        let mut stream = ScriptedStream::from_chunks(chunks);
+        let mut writer = CollectingWriter::new();
+
+        let outcome = drain_table_payload(
+            &mut stream,
+            &mut writer,
+            TRANSLATION_SIZE,
+            ciphertext.len(),
+            READ_TIMEOUT,
+            READ_WARN,
+            &peer(),
+            idx(),
+        )
+        .await;
+
+        match outcome {
+            DrainOutcome::Complete {
+                translation_buf,
+                translate_hash,
+                ct_hash,
+            } => {
+                assert_eq!(translation_buf, translation);
+                assert_eq!(translate_hash, blake3::hash(&translation));
+                assert_eq!(ct_hash, blake3::hash(&ciphertext));
+                assert_eq!(writer.ciphertext, ciphertext);
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
 }

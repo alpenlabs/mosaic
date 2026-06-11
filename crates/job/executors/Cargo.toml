@@ -33,5 +33,9 @@ rand.workspace = true
 rand_chacha.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+thiserror.workspace = true
+tokio = { version = "1.50.0", features = ["macros", "rt"] }
+
 [lints]
 workspace = true
