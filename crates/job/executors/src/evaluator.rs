@@ -398,9 +398,12 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
                     let _ = ctx.table_store.delete(&table_id).await;
                     return HandlerOutcome::Retry;
                 }
-                if ciphertext_bytes_received == expected_ciphertext_bytes {
-                    break;
-                }
+                // Don't break on `ciphertext_bytes_received == expected`:
+                // continue the loop so any trailing bytes from a buggy or
+                // malicious sender are caught by the `>` check above
+                // instead of being silently accepted. The loop exits via
+                // the existing branches at the top: `Closed` (FIN), an
+                // empty chunk, or the read timeout.
             }
         } else {
             // All translation received — remaining data is ciphertext.
@@ -424,9 +427,10 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
                 let _ = ctx.table_store.delete(&table_id).await;
                 return HandlerOutcome::Retry;
             }
-            if ciphertext_bytes_received == expected_ciphertext_bytes {
-                break;
-            }
+            // See above: keep reading rather than break on equality, so
+            // any trailing bytes are caught by the `>` check on the next
+            // chunk. Normal termination is the `Closed` / empty-chunk
+            // branches at the top of the loop.
         }
     }
 
