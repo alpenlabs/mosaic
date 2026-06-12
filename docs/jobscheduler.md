@@ -50,8 +50,8 @@ crates/job/
 │                  │                   │                    │                                  │
 │  Pull model      │  Pull model       │  Pull model        │  Push model                      │
 │  FIFO queue      │  Priority queue   │  Priority queue    │  Multi-threaded barrier sync     │
-│  1 monoio worker │  2 monoio workers │  1 monoio worker   │  1 main thread + N worker threads│
-│  32 concurrency  │  8 concurrency    │  2 concurrency     │  SessionFactory + retry          │
+│  1 monoio worker │  2 monoio workers │  2 monoio workers  │  1 main thread + N worker threads│
+│  32 concurrency  │  8 concurrency    │  1 concurrency     │  SessionFactory + retry          │
 └──────────────────┴───────────────────┴────────────────────┴──────────────────────────────────┘
 ```
 
@@ -65,7 +65,7 @@ The garbling coordinator runs on a dedicated main thread that reads the circuit 
 |----------|------|------|----------|
 | Light | Milliseconds | FIFO, 1 thread | SendCommitMsgChunk, SendChallengeMsg, ReceiveGarblingTable |
 | Heavy | Seconds–minutes | Priority, 2 threads | DepositVerifyAdaptors, GeneratePolynomialCommitments |
-| Memory-Heavy | Seconds–minutes | Priority, 1 thread, 2 concurrency | VerifyOpenedInputShares |
+| Memory-Heavy | Seconds–minutes | Priority, 2 threads, 1 concurrency each | VerifyOpenedInputShares |
 | Garbling | Minutes | Coordinator, N threads | GenerateTableCommitment, TransferGarblingTable, EvaluateGarblingTable |
 
 Light actions are I/O-bound (outbound protocol sends via net-client, inbound bulk receives). Heavy actions are CPU-bound. Memory-heavy actions have high peak memory (~4.5 GB per call) and are isolated in a low-concurrency pool to cap aggregate memory usage. Garbling actions are CPU-bound and require coordinated sequential reads of a ~130 GB circuit file.
@@ -393,7 +393,7 @@ Setup generates many Normal-priority actions. They queue and process as workers 
 
 ### Memory-Heavy Pool
 
-Low concurrency (default: 2) ensures that at most two batch share verifications run simultaneously, capping peak memory from this path at ~9 GB. Additional requests queue without consuming slots in other pools.
+Two dedicated threads (default: 1 concurrency each) ensure that at most two batch share verifications run simultaneously, capping peak memory from this path at ~9 GB. Additional requests queue without consuming slots in other pools.
 
 ### Garbling Coordinator
 
@@ -417,7 +417,7 @@ The async submission channel prevents the garbling coordinator from blocking the
 pub struct JobSchedulerConfig {
     pub light: PoolConfig,            // default: 1 thread, 32 concurrency, FIFO
     pub heavy: PoolConfig,            // default: 2 threads, 8 concurrency, priority
-    pub memory_heavy: PoolConfig,     // default: 1 thread, 2 concurrency, priority
+    pub memory_heavy: PoolConfig,     // default: 2 threads, 1 concurrency, priority
     pub garbling: GarblingConfig,     // default: 4 workers, 8 max sessions
     pub submission_queue_size: usize, // default: 256
     pub completion_queue_size: usize, // default: 256

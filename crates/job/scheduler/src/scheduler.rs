@@ -64,8 +64,8 @@ impl Default for JobSchedulerConfig {
                 priority_queue: true,
             },
             memory_heavy: PoolConfig {
-                threads: 1,
-                concurrency_per_worker: 2,
+                threads: 2,
+                concurrency_per_worker: 1,
                 priority_queue: true,
             },
             garbling: GarblingConfig::default(),

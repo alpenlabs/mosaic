@@ -400,8 +400,8 @@ fn default_heavy_pool_section() -> PoolSection {
 
 fn default_memory_heavy_pool_section() -> PoolSection {
     PoolSection {
-        threads: 1,
-        concurrency_per_worker: 2,
+        threads: 2,
+        concurrency_per_worker: 1,
     }
 }
 

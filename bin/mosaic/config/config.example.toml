@@ -41,8 +41,8 @@ threads = 2
 concurrency_per_worker = 8
 
 [job_scheduler.memory_heavy]
-threads = 1
-concurrency_per_worker = 2
+threads = 2
+concurrency_per_worker = 1
 
 [job_scheduler.garbling]
 worker_threads = 4

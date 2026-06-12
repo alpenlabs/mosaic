@@ -19,7 +19,7 @@ Bridge Core communicates with Mosaic via private RPC.
 | JobScheduler | monoio | Routes actions to pools, manages requeue |
 | Job Light Pool | monoio (1 thread) | Network I/O (sends, acks, bulk receives) |
 | Job Heavy Pool | monoio (2 threads) | CPU-bound crypto (polynomial ops, adaptors) |
-| Job Memory-Heavy Pool | monoio (1 thread) | High peak memory tasks (batch share verification) |
+| Job Memory-Heavy Pool | monoio (2 threads) | High peak memory tasks (batch share verification) |
 | Garbling Coordinator | monoio (1+N threads) | Coordinated circuit reads + garbling/evaluation |
 | net-svc | tokio (isolated) | P2P QUIC between Mosaic instances |
 | S3TableStore | tokio (isolated) | Garbling table persistence via object_store |
