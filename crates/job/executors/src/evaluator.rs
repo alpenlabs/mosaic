@@ -24,7 +24,7 @@ use mosaic_storage_api::{
     table_store::{TableId, TableReader as _, TableStore, TableWriter as _},
 };
 use mosaic_vs3::{Index, Share, batch_verify_shares, interpolate};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::MosaicExecutor;
 use crate::{
@@ -661,6 +661,8 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .copy_from_slice(&deposit_inputs);
     selected_input[N_SETUP_INPUT_WIRES + N_DEPOSIT_INPUT_WIRES..]
         .copy_from_slice(&withdrawal_inputs);
+
+    debug!(%peer_id, %index, ?selected_input, "selected input values for evaluation");
 
     // ── Select opened shares at the known input values ──────────────────
     let selected_opened: Vec<[Share; N_INPUT_WIRES]> = (0..N_OPEN_CIRCUITS)
