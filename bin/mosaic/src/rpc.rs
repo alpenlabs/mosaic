@@ -64,7 +64,14 @@ pub(crate) fn start_rpc_server(
                 .expect("failed to build tokio runtime for RPC server");
 
             runtime.block_on(async move {
+                // Log every RPC request and response (method + payload) at TRACE
+                // level under the `jsonrpsee` target. Payloads are truncated to
+                // `max_log_len` chars. Enable with e.g. `RUST_LOG=jsonrpsee=trace`.
+                let rpc_middleware =
+                    jsonrpsee::server::middleware::rpc::RpcServiceBuilder::new().rpc_logger(4096);
+
                 let server = jsonrpsee::server::ServerBuilder::default()
+                    .set_rpc_middleware(rpc_middleware)
                     .build(bind_addr)
                     .await
                     .expect("failed to build RPC server");
