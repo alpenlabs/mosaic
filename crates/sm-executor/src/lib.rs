@@ -1,6 +1,8 @@
 //! SM executor implementation.
 
-use std::{collections::VecDeque, panic::AssertUnwindSafe, thread::JoinHandle, time::Duration};
+use std::{
+    collections::VecDeque, panic::AssertUnwindSafe, sync::Arc, thread::JoinHandle, time::Duration,
+};
 
 use fasm::{Input as FasmInput, StateMachine};
 use futures::FutureExt;
@@ -24,6 +26,22 @@ const COMPLETION_RETRY_BACKOFF_BASE: Duration = Duration::from_millis(100);
 
 /// Maximum backoff between repeated completion-application attempts.
 const COMPLETION_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(10);
+
+/// Wall-clock budget for sending a single inbound-request ack in the
+/// background. Acks are best-effort: a peer whose receive window is full will
+/// block our ack-write indefinitely (the write awaits `recv_buffer`, which
+/// depends on the peer draining), wedging the executor's select loop if we
+/// stay inline. We spawn the ack with this timeout so a stalled peer can only
+/// burn one background task, not the entire executor.
+const ACK_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Maximum number of inbound-request acks the executor may have in flight at
+/// once. Each spawned ack holds one [`tokio::sync::Semaphore`] permit until
+/// it completes (or times out). When the semaphore is exhausted — e.g. a
+/// peer is dropping every ack on the floor — new acks are dropped with a
+/// warning rather than queued indefinitely. Sized comfortably above any
+/// legitimate burst.
+const MAX_INFLIGHT_ACKS: usize = 1024;
 
 /// Compute exponential backoff with cap: `min(base * 2^attempts, max)`.
 fn completion_retry_backoff(attempts: u32) -> Duration {
@@ -75,16 +93,6 @@ pub enum SmExecutorError {
     /// Network receive failed.
     #[error("network receive failed: {0}")]
     NetRecv(#[from] RecvError),
-
-    /// Ack failed.
-    #[error("protocol ack failed for peer={peer_id:?}: {source}")]
-    Ack {
-        /// Peer that sent the inbound message.
-        peer_id: PeerId,
-        /// Underlying ack error.
-        #[source]
-        source: mosaic_net_client::AckError,
-    },
 
     /// Job submission channel has closed.
     #[error("job submission failed for peer={peer_id:?}: {source}")]
@@ -209,6 +217,8 @@ where
     job_handle: JobSchedulerHandle,
     net_client: NetClient,
     command_rx: kanal::AsyncReceiver<SmCommand>,
+    /// Bounds the number of in-flight background acks (see [`MAX_INFLIGHT_ACKS`]).
+    inflight_acks: Arc<tokio::sync::Semaphore>,
 }
 
 impl<S> SmExecutor<S>
@@ -242,6 +252,7 @@ where
                 job_handle,
                 net_client,
                 command_rx,
+                inflight_acks: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_ACKS)),
             },
             handle,
         )
@@ -800,15 +811,62 @@ where
                     .await?;
                 }
             }
-            tracing::debug!("inbound request applied; acking");
+            tracing::debug!("inbound request applied; spawning ack");
 
-            match request.ack().await {
-                Ok(()) => {
-                    tracing::debug!("inbound request acked");
-                    Ok(())
+            // Spawn the ack off the executor task. `request.ack()` calls
+            // `Stream::write` on the underlying QUIC bi-stream, which awaits
+            // `recv_buffer()` — and that completes only when the peer drains
+            // its receive window. A peer whose window is full would otherwise
+            // wedge our entire select loop, freezing all forward progress for
+            // every other peer until QUIC's idle timeout finally tore the
+            // connection down (see ~30-second freeze cascade reported during
+            // testnet).
+            //
+            // Spawning makes the ack best-effort:
+            // - bounded by `ACK_BACKGROUND_TIMEOUT` so a stalled write eventually drops the stream
+            //   rather than holding a task forever;
+            // - bounded by `inflight_acks` so a peer dropping every ack on the floor can't exhaust
+            //   task slots — once we hit the cap, new acks are dropped with a warning instead of
+            //   queued.
+            //
+            // If the ack never reaches the peer the peer will eventually
+            // retransmit the request (or its higher-level retry logic will
+            // reopen the stream). That's strictly better than wedging.
+            let permit = match self.inflight_acks.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::warn!(
+                        peer = ?peer_id,
+                        limit = MAX_INFLIGHT_ACKS,
+                        "in-flight ack cap reached; dropping ack (peer is not draining)"
+                    );
+                    return Ok(());
                 }
-                Err(source) => Err(SmExecutorError::Ack { peer_id, source }),
-            }
+            };
+            monoio::spawn(async move {
+                match monoio::time::timeout(ACK_BACKGROUND_TIMEOUT, request.ack()).await {
+                    Ok(Ok(())) => {
+                        tracing::debug!(peer = ?peer_id, "inbound request acked");
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            peer = ?peer_id,
+                            error = ?err,
+                            "background ack failed; peer will retransmit",
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            peer = ?peer_id,
+                            timeout = ?ACK_BACKGROUND_TIMEOUT,
+                            "background ack timed out; peer not draining stream",
+                        );
+                    }
+                }
+                drop(permit);
+            });
+
+            Ok(())
         }
         .instrument(span)
         .await
@@ -1188,7 +1246,6 @@ where
             SmExecutorError::Stf { source, .. } => source.is_retryable_storage(),
             SmExecutorError::SourceClosed(_)
             | SmExecutorError::NetRecv(_)
-            | SmExecutorError::Ack { .. }
             | SmExecutorError::JobSubmission { .. }
             | SmExecutorError::RoleMismatch(_)
             | SmExecutorError::StfPanic { .. } => false,
@@ -1243,7 +1300,6 @@ where
             | SmExecutorError::StfPanic { .. }
             | SmExecutorError::SourceClosed(_)
             | SmExecutorError::NetRecv(_)
-            | SmExecutorError::Ack { .. }
             | SmExecutorError::Storage { .. }
             | SmExecutorError::Commit { .. } => CompletionErrorAction::Fatal,
         }
