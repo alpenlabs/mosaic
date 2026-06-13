@@ -53,10 +53,14 @@ pub struct DefaultMosaicApi<S: StorageProvider, R: CryptoRng + Rng + Send> {
     /// Deployment-cohort identifier advertised in the peer version handshake.
     /// Exposed via [`MosaicApi::node_info`] for operator diagnostics.
     deployment_version: Option<String>,
+    /// Whether this node is running reduced-circuits mode. Hard-matched in the
+    /// peer version handshake. Exposed via [`MosaicApi::node_info`].
+    reduced_circuits: bool,
 }
 
 impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
     /// Creates a new instance.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         own_peer_id: PeerId,
         other_peer_ids: Vec<PeerId>,
@@ -65,6 +69,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
         rng: R,
         protocol_version: u32,
         deployment_version: Option<String>,
+        reduced_circuits: bool,
     ) -> Self {
         Self {
             own_peer_id,
@@ -74,6 +79,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
             rng: Mutex::new(rng),
             protocol_version,
             deployment_version,
+            reduced_circuits,
         }
     }
 
@@ -114,6 +120,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
             peer_id: self.own_peer_id,
             protocol_version: self.protocol_version,
             deployment_version: self.deployment_version.clone(),
+            reduced_circuits: self.reduced_circuits,
         }
     }
 

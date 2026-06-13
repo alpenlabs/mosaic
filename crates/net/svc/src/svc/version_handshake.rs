@@ -63,11 +63,13 @@ pub async fn run_outbound_handshake(
     connection: &Connection,
     local_protocol_version: u32,
     local_deployment_version: Option<&str>,
+    local_reduced_circuits: bool,
 ) -> Result<HandshakePayload, HandshakeError> {
     let local = HandshakePayload {
         magic: mosaic_net_svc_api::handshake::HANDSHAKE_MAGIC,
         protocol_version: local_protocol_version,
         deployment_version: local_deployment_version.map(str::to_string),
+        reduced_circuits: local_reduced_circuits,
     };
 
     let stream_result = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.open_bi()).await;
@@ -83,6 +85,7 @@ pub async fn run_outbound_handshake(
         &local,
         local_protocol_version,
         local_deployment_version,
+        local_reduced_circuits,
     )
     .await
 }
@@ -93,11 +96,13 @@ pub async fn run_inbound_handshake(
     connection: &Connection,
     local_protocol_version: u32,
     local_deployment_version: Option<&str>,
+    local_reduced_circuits: bool,
 ) -> Result<HandshakePayload, HandshakeError> {
     let local = HandshakePayload {
         magic: mosaic_net_svc_api::handshake::HANDSHAKE_MAGIC,
         protocol_version: local_protocol_version,
         deployment_version: local_deployment_version.map(str::to_string),
+        reduced_circuits: local_reduced_circuits,
     };
 
     let stream_result = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_bi()).await;
@@ -113,6 +118,7 @@ pub async fn run_inbound_handshake(
         &local,
         local_protocol_version,
         local_deployment_version,
+        local_reduced_circuits,
     )
     .await
 }
@@ -120,12 +126,14 @@ pub async fn run_inbound_handshake(
 /// Symmetric exchange: write our payload, read theirs, validate. Both halves
 /// run concurrently so a slow peer on one direction doesn't extend wall-clock
 /// past the timeout.
+#[allow(clippy::too_many_arguments)]
 async fn exchange(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     local: &HandshakePayload,
     local_protocol_version: u32,
     local_deployment_version: Option<&str>,
+    local_reduced_circuits: bool,
 ) -> Result<HandshakePayload, HandshakeError> {
     let mut bytes = Vec::new();
     local
@@ -175,7 +183,12 @@ async fn exchange(
         Err(_) => return Err(HandshakeError::Timeout),
     };
 
-    validate_handshake(local_protocol_version, local_deployment_version, &remote)
-        .map_err(HandshakeError::Mismatch)?;
+    validate_handshake(
+        local_protocol_version,
+        local_deployment_version,
+        local_reduced_circuits,
+        &remote,
+    )
+    .map_err(HandshakeError::Mismatch)?;
     Ok(remote)
 }

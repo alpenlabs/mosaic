@@ -63,15 +63,21 @@ pub struct HandshakePayload {
     /// uncoordinated deployments; `Some` for coordinated cohorts where every
     /// operator must set the same value.
     pub deployment_version: Option<String>,
+    /// Whether this node is built / configured to run reduced-circuits mode.
+    /// Hard-matched: peers with different values cannot interop because the
+    /// circuit definitions (and therefore tableset shapes, wire counts, and
+    /// commitment material) diverge.
+    pub reduced_circuits: bool,
 }
 
 impl HandshakePayload {
     /// Construct the local payload for this node.
-    pub fn new(deployment_version: Option<String>) -> Self {
+    pub fn new(deployment_version: Option<String>, reduced_circuits: bool) -> Self {
         Self {
             magic: HANDSHAKE_MAGIC,
             protocol_version: PROTOCOL_VERSION,
             deployment_version,
+            reduced_circuits,
         }
     }
 }
@@ -98,12 +104,14 @@ impl CanonicalSerialize for HandshakePayload {
                 writer.write_all(s.as_bytes())?;
             }
         }
+        (self.reduced_circuits as u8).serialize_with_mode(&mut writer, compress)?;
         Ok(())
     }
 
     fn serialized_size(&self, compress: ark_serialize::Compress) -> usize {
-        let base =
-            self.magic.serialized_size(compress) + self.protocol_version.serialized_size(compress);
+        let base = self.magic.serialized_size(compress)
+            + self.protocol_version.serialized_size(compress)
+            + 0u8.serialized_size(compress); // reduced_circuits byte
         match &self.deployment_version {
             None => base + 0u8.serialized_size(compress),
             Some(s) => {
@@ -154,10 +162,17 @@ impl CanonicalDeserialize for HandshakePayload {
             }
             _ => return Err(ark_serialize::SerializationError::InvalidData),
         };
+        let reduced_byte = u8::deserialize_with_mode(&mut reader, compress, validate)?;
+        let reduced_circuits = match reduced_byte {
+            0 => false,
+            1 => true,
+            _ => return Err(ark_serialize::SerializationError::InvalidData),
+        };
         Ok(Self {
             magic,
             protocol_version,
             deployment_version,
+            reduced_circuits,
         })
     }
 }
@@ -176,6 +191,10 @@ pub enum HandshakeMismatch {
     DeploymentVersionMissingRemote { local: String },
     /// Remote has `deployment_version` set, local does not.
     DeploymentVersionMissingLocal { remote: String },
+    /// Reduced-circuits mode differed. One side is running full circuits and
+    /// the other reduced (or vice versa) — wire-incompatible because the
+    /// circuit shape diverges.
+    ReducedCircuitsMismatch { local: bool, remote: bool },
 }
 
 impl HandshakeMismatch {
@@ -191,6 +210,7 @@ impl HandshakeMismatch {
             Self::DeploymentVersionMissingLocal { .. } => {
                 "local missing deployment version (remote set)"
             }
+            Self::ReducedCircuitsMismatch { .. } => "reduced-circuits mode mismatch",
         }
     }
 }
@@ -211,6 +231,9 @@ impl std::fmt::Display for HandshakeMismatch {
             Self::DeploymentVersionMissingLocal { remote } => {
                 write!(f, "{}: remote={remote:?}", self.reason())
             }
+            Self::ReducedCircuitsMismatch { local, remote } => {
+                write!(f, "{}: local={local} remote={remote}", self.reason())
+            }
         }
     }
 }
@@ -220,9 +243,11 @@ impl std::error::Error for HandshakeMismatch {}
 /// Validate a received handshake payload against the local configuration.
 /// `local_deployment_version` is the deployment-version this node is
 /// configured with (or `None` for uncoordinated single-operator dev).
+/// `local_reduced_circuits` is whether this node is running reduced circuits.
 pub fn validate_handshake(
     local_protocol_version: u32,
     local_deployment_version: Option<&str>,
+    local_reduced_circuits: bool,
     remote: &HandshakePayload,
 ) -> Result<(), HandshakeMismatch> {
     if remote.magic != HANDSHAKE_MAGIC {
@@ -232,6 +257,12 @@ pub fn validate_handshake(
         return Err(HandshakeMismatch::ProtocolVersionMismatch {
             local: local_protocol_version,
             remote: remote.protocol_version,
+        });
+    }
+    if remote.reduced_circuits != local_reduced_circuits {
+        return Err(HandshakeMismatch::ReducedCircuitsMismatch {
+            local: local_reduced_circuits,
+            remote: remote.reduced_circuits,
         });
     }
     match (local_deployment_version, &remote.deployment_version) {
@@ -271,27 +302,31 @@ mod tests {
 
     #[test]
     fn roundtrip_no_deployment_version() {
-        let p = HandshakePayload::new(None);
-        assert_eq!(roundtrip(&p), p);
+        for rc in [false, true] {
+            let p = HandshakePayload::new(None, rc);
+            assert_eq!(roundtrip(&p), p);
+        }
     }
 
     #[test]
     fn roundtrip_with_deployment_version() {
-        let p = HandshakePayload::new(Some("tn3".to_string()));
-        assert_eq!(roundtrip(&p), p);
+        for rc in [false, true] {
+            let p = HandshakePayload::new(Some("tn3".to_string()), rc);
+            assert_eq!(roundtrip(&p), p);
+        }
     }
 
     #[test]
     fn roundtrip_with_max_length_deployment_version() {
         let s = "x".repeat(MAX_DEPLOYMENT_VERSION_LEN);
-        let p = HandshakePayload::new(Some(s));
+        let p = HandshakePayload::new(Some(s), true);
         assert_eq!(roundtrip(&p), p);
     }
 
     #[test]
     fn over_length_deployment_version_fails_to_serialize() {
         let s = "x".repeat(MAX_DEPLOYMENT_VERSION_LEN + 1);
-        let p = HandshakePayload::new(Some(s));
+        let p = HandshakePayload::new(Some(s), false);
         let mut buf = Vec::new();
         assert!(p.serialize_with_mode(&mut buf, Compress::No).is_err());
     }
@@ -306,6 +341,7 @@ mod tests {
         buf.push(1u8); // has_deployment
         buf.push((MAX_DEPLOYMENT_VERSION_LEN as u8) + 1); // over-cap length
         buf.extend(std::iter::repeat_n(b'x', MAX_DEPLOYMENT_VERSION_LEN + 1));
+        buf.push(0u8); // reduced_circuits
         let r =
             HandshakePayload::deserialize_with_mode(buf.as_slice(), Compress::No, Validate::Yes);
         assert!(r.is_err());
@@ -317,6 +353,20 @@ mod tests {
         buf.extend_from_slice(b"XXXX");
         buf.extend_from_slice(&1u32.to_le_bytes());
         buf.push(0u8);
+        buf.push(0u8); // reduced_circuits
+        let r =
+            HandshakePayload::deserialize_with_mode(buf.as_slice(), Compress::No, Validate::Yes);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn invalid_reduced_circuits_byte_fails_to_deserialize() {
+        // Anything other than 0/1 in the reduced_circuits position is invalid.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&HANDSHAKE_MAGIC);
+        buf.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+        buf.push(0u8); // no deployment
+        buf.push(2u8); // invalid reduced_circuits
         let r =
             HandshakePayload::deserialize_with_mode(buf.as_slice(), Compress::No, Validate::Yes);
         assert!(r.is_err());
@@ -324,21 +374,21 @@ mod tests {
 
     #[test]
     fn validate_matching_passes() {
-        let remote = HandshakePayload::new(Some("tn3".to_string()));
-        assert!(validate_handshake(PROTOCOL_VERSION, Some("tn3"), &remote).is_ok());
+        let remote = HandshakePayload::new(Some("tn3".to_string()), true);
+        assert!(validate_handshake(PROTOCOL_VERSION, Some("tn3"), true, &remote).is_ok());
     }
 
     #[test]
     fn validate_no_deployment_passes() {
-        let remote = HandshakePayload::new(None);
-        assert!(validate_handshake(PROTOCOL_VERSION, None, &remote).is_ok());
+        let remote = HandshakePayload::new(None, false);
+        assert!(validate_handshake(PROTOCOL_VERSION, None, false, &remote).is_ok());
     }
 
     #[test]
     fn validate_protocol_mismatch_rejects() {
-        let mut remote = HandshakePayload::new(None);
+        let mut remote = HandshakePayload::new(None, false);
         remote.protocol_version = PROTOCOL_VERSION.wrapping_add(1);
-        let err = validate_handshake(PROTOCOL_VERSION, None, &remote).unwrap_err();
+        let err = validate_handshake(PROTOCOL_VERSION, None, false, &remote).unwrap_err();
         assert!(matches!(
             err,
             HandshakeMismatch::ProtocolVersionMismatch { .. }
@@ -347,8 +397,8 @@ mod tests {
 
     #[test]
     fn validate_deployment_mismatch_rejects() {
-        let remote = HandshakePayload::new(Some("tn4".to_string()));
-        let err = validate_handshake(PROTOCOL_VERSION, Some("tn3"), &remote).unwrap_err();
+        let remote = HandshakePayload::new(Some("tn4".to_string()), false);
+        let err = validate_handshake(PROTOCOL_VERSION, Some("tn3"), false, &remote).unwrap_err();
         assert!(matches!(
             err,
             HandshakeMismatch::DeploymentVersionMismatch { .. }
@@ -357,15 +407,15 @@ mod tests {
 
     #[test]
     fn validate_deployment_asymmetry_rejects_both_directions() {
-        let local_set = HandshakePayload::new(None);
-        let err = validate_handshake(PROTOCOL_VERSION, Some("tn3"), &local_set).unwrap_err();
+        let local_set = HandshakePayload::new(None, false);
+        let err = validate_handshake(PROTOCOL_VERSION, Some("tn3"), false, &local_set).unwrap_err();
         assert!(matches!(
             err,
             HandshakeMismatch::DeploymentVersionMissingRemote { .. }
         ));
 
-        let remote_set = HandshakePayload::new(Some("tn3".to_string()));
-        let err = validate_handshake(PROTOCOL_VERSION, None, &remote_set).unwrap_err();
+        let remote_set = HandshakePayload::new(Some("tn3".to_string()), false);
+        let err = validate_handshake(PROTOCOL_VERSION, None, false, &remote_set).unwrap_err();
         assert!(matches!(
             err,
             HandshakeMismatch::DeploymentVersionMissingLocal { .. }
@@ -374,9 +424,32 @@ mod tests {
 
     #[test]
     fn validate_bad_magic_rejects() {
-        let mut remote = HandshakePayload::new(None);
+        let mut remote = HandshakePayload::new(None, false);
         remote.magic = [0u8; 4];
-        let err = validate_handshake(PROTOCOL_VERSION, None, &remote).unwrap_err();
+        let err = validate_handshake(PROTOCOL_VERSION, None, false, &remote).unwrap_err();
         assert!(matches!(err, HandshakeMismatch::MagicMismatch));
+    }
+
+    #[test]
+    fn validate_reduced_circuits_mismatch_rejects_both_directions() {
+        let remote_reduced = HandshakePayload::new(None, true);
+        let err = validate_handshake(PROTOCOL_VERSION, None, false, &remote_reduced).unwrap_err();
+        match err {
+            HandshakeMismatch::ReducedCircuitsMismatch { local, remote } => {
+                assert!(!local);
+                assert!(remote);
+            }
+            other => panic!("expected ReducedCircuitsMismatch, got {other:?}"),
+        }
+
+        let remote_full = HandshakePayload::new(None, false);
+        let err = validate_handshake(PROTOCOL_VERSION, None, true, &remote_full).unwrap_err();
+        match err {
+            HandshakeMismatch::ReducedCircuitsMismatch { local, remote } => {
+                assert!(local);
+                assert!(!remote);
+            }
+            other => panic!("expected ReducedCircuitsMismatch, got {other:?}"),
+        }
     }
 }

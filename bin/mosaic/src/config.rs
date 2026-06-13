@@ -60,6 +60,7 @@ impl MosaicConfig {
             .with_reconnect_backoff(Duration::from_secs(self.network.reconnect_backoff_secs))
             .with_deployment_version(self.network.deployment_version.clone())
             .with_context(|| "invalid network.deployment_version")
+            .map(|cfg| cfg.with_reduced_circuits(cfg!(feature = "reduced-circuits")))
     }
 
     pub(crate) fn build_net_client_config(&self) -> NetClientConfig {

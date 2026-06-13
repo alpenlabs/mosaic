@@ -401,6 +401,7 @@ async fn run_service_async(
         event_tx.clone(),
         config.protocol_version,
         config.deployment_version.clone(),
+        config.reduced_circuits,
     );
 
     // Main event loop - NEVER blocks on I/O, only receives and dispatches

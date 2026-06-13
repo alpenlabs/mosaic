@@ -105,6 +105,12 @@ pub struct NetServiceConfig {
     /// (e.g. `"tn3"` for testnet 3). Mismatched or asymmetric → handshake
     /// refused.
     pub deployment_version: Option<String>,
+    /// Whether this node is configured to run reduced-circuits mode.
+    /// Hard-matched across peers: a node running reduced circuits cannot
+    /// interop with one running full circuits because the circuit shape
+    /// (wire counts, tableset commitments, etc.) diverges. Defaults to
+    /// `false`; the binary sets this from its own circuit configuration.
+    pub reduced_circuits: bool,
 }
 
 impl NetServiceConfig {
@@ -129,6 +135,7 @@ impl NetServiceConfig {
             peer_stream_rate_limit: PeerStreamRateLimit::default(),
             protocol_version: PROTOCOL_VERSION,
             deployment_version: None,
+            reduced_circuits: false,
         }
     }
 
@@ -185,6 +192,13 @@ impl NetServiceConfig {
         Ok(self)
     }
 
+    /// Set whether this node is running reduced-circuits mode. Hard-matched
+    /// against peers during the version handshake.
+    pub fn with_reduced_circuits(mut self, reduced: bool) -> Self {
+        self.reduced_circuits = reduced;
+        self
+    }
+
     /// Check if a peer is in the known peers list.
     pub fn has_peer(&self, peer_id: &PeerId) -> bool {
         self.peers.iter().any(|p| &p.peer_id == peer_id)
@@ -221,6 +235,7 @@ impl std::fmt::Debug for NetServiceConfig {
             .field("idle_timeout", &self.idle_timeout)
             .field("protocol_version", &self.protocol_version)
             .field("deployment_version", &self.deployment_version)
+            .field("reduced_circuits", &self.reduced_circuits)
             .finish()
     }
 }

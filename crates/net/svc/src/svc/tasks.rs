@@ -204,6 +204,7 @@ struct IncomingHandshakeCtx {
     reject_tracker: Arc<InboundRejectTracker>,
     protocol_version: u32,
     deployment_version: Option<String>,
+    reduced_circuits: bool,
     _handshake_permit: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -238,6 +239,7 @@ pub fn spawn_accept_loop(
     event_tx: UnboundedSender<ServiceEvent>,
     protocol_version: u32,
     deployment_version: Option<String>,
+    reduced_circuits: bool,
 ) {
     tokio::spawn(
         async move {
@@ -310,6 +312,7 @@ pub fn spawn_accept_loop(
                         reject_tracker: reject_tracker.clone(),
                         protocol_version,
                         deployment_version: deployment_version.clone(),
+                        reduced_circuits,
                         _handshake_permit: permit,
                     },
                 );
@@ -339,6 +342,7 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
                 reject_tracker,
                 protocol_version,
                 deployment_version,
+                reduced_circuits,
                 _handshake_permit,
             } = ctx;
 
@@ -422,9 +426,13 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
             // versions). On success we proactively clear them from the
             // cache so an upgraded peer who reconnects to us also unblocks
             // our outbound reconnect logic.
-            if let Err(err) =
-                run_inbound_handshake(&connection, protocol_version, deployment_version.as_deref())
-                    .await
+            if let Err(err) = run_inbound_handshake(
+                &connection,
+                protocol_version,
+                deployment_version.as_deref(),
+                reduced_circuits,
+            )
+            .await
             {
                 handle_version_handshake_failure(
                     "incoming",
@@ -488,6 +496,7 @@ pub fn spawn_outbound_connection(
     event_tx: UnboundedSender<ServiceEvent>,
     protocol_version: u32,
     deployment_version: Option<String>,
+    reduced_circuits: bool,
 ) {
     tokio::spawn(async move {
         tracing::debug!(peer = %hex::encode(peer), addr = %addr, "attempting outbound connection");
@@ -537,6 +546,7 @@ pub fn spawn_outbound_connection(
                     &connection,
                     protocol_version,
                     deployment_version.as_deref(),
+                    reduced_circuits,
                 )
                 .await
                 {

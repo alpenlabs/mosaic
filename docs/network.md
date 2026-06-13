@@ -70,7 +70,7 @@ After QUIC TLS authentication and the overlap-key check, both sides exchange a
 short version-handshake payload on a dedicated bi-stream. **No protocol streams
 are exposed until the handshake succeeds on both sides.**
 
-Two fields are checked:
+Three fields are checked:
 
 - **`protocol_version`** — a manually-maintained `u32` constant
   (`PROTOCOL_VERSION` in `crates/net/svc-api/src/handshake.rs`). Bumped any
@@ -82,6 +82,12 @@ Two fields are checked:
   in a coordinated deployment must set the same value. Mismatched or
   asymmetric → refuse. Single-operator dev / local testing leaves it unset
   on every node.
+- **`reduced_circuits`** — a `bool` derived at build time from the
+  `reduced-circuits` Cargo feature. A node built with reduced circuits
+  cannot interop with one built without: the circuit shape (wire counts,
+  tableset commitments, garbling tables) diverges, so even an otherwise
+  compatible protocol exchange will produce nonsense. Hard-matched; any
+  mismatch refuses the connection.
 
 **On mismatch:** the connection is closed with `CLOSE_VERSION_HANDSHAKE_FAILED`
 (code 6), the peer is added to an in-memory `incompatible_peers` cache, and
@@ -95,5 +101,5 @@ versions our outbound reconnect logic resumes normally too. The cache is
 also fully cleared on process restart.
 
 **Operator surface:** the `mosaic_nodeInfo` RPC returns the current
-`protocol_version` and `deployment_version` so two operators can compare
-configurations without log-diving.
+`protocol_version`, `deployment_version`, and `reduced_circuits` so two
+operators can compare configurations without log-diving.

@@ -19,4 +19,7 @@ pub struct RpcNodeInfo {
     /// uncoordinated dev nodes; `Some` for coordinated deployments where every
     /// operator must set the same value (e.g. `"tn3"`).
     pub deployment_version: Option<String>,
+    /// Whether this node is running reduced-circuits mode. Hard-matched in the
+    /// version handshake — peers running mismatched modes cannot interop.
+    pub reduced_circuits: bool,
 }

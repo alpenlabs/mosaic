@@ -1009,6 +1009,25 @@ fn create_peer_pair_with_versions(
     b_protocol_version: u32,
     b_deployment_version: Option<String>,
 ) -> (TestPeer, TestPeer) {
+    create_peer_pair_with_versions_full(
+        a_protocol_version,
+        a_deployment_version,
+        false,
+        b_protocol_version,
+        b_deployment_version,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_peer_pair_with_versions_full(
+    a_protocol_version: u32,
+    a_deployment_version: Option<String>,
+    a_reduced_circuits: bool,
+    b_protocol_version: u32,
+    b_deployment_version: Option<String>,
+    b_reduced_circuits: bool,
+) -> (TestPeer, TestPeer) {
     init_tracing();
     for attempt in 0..50 {
         let port_a = next_port();
@@ -1028,14 +1047,16 @@ fn create_peer_pair_with_versions(
                 .with_reconnect_backoff(Duration::from_millis(50))
                 .with_protocol_version(a_protocol_version)
                 .with_deployment_version(a_deployment_version.clone())
-                .expect("valid deployment version");
+                .expect("valid deployment version")
+                .with_reduced_circuits(a_reduced_circuits);
 
         let config_b =
             NetServiceConfig::new(key_b, addr_b, vec![PeerConfig::new(peer_id_a, addr_a)])
                 .with_reconnect_backoff(Duration::from_millis(50))
                 .with_protocol_version(b_protocol_version)
                 .with_deployment_version(b_deployment_version.clone())
-                .expect("valid deployment version");
+                .expect("valid deployment version")
+                .with_reduced_circuits(b_reduced_circuits);
 
         let (handle_a, ctrl_a) = match NetService::new(config_a) {
             Ok(r) => r,
@@ -1173,6 +1194,59 @@ fn version_handshake_deployment_asymmetry_blocks_stream_open() {
                 panic!("expected stream-open to be blocked by deployment-version asymmetry")
             }
         }
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn version_handshake_reduced_circuits_mismatch_blocks_stream_open() {
+    // A runs full circuits, B runs reduced circuits. Hard incompatibility:
+    // the circuit shapes diverge, so no protocol streams may open.
+    let (peer_a, peer_b) = create_peer_pair_with_versions_full(
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+        false,
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+        true,
+    );
+
+    run_async(async {
+        let result = tokio::time::timeout(
+            MISMATCH_OBSERVATION_WINDOW,
+            peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+        )
+        .await;
+        match result {
+            Err(_) | Ok(Err(_)) => {}
+            Ok(Ok(_)) => {
+                panic!("expected stream-open to be blocked by reduced-circuits mismatch")
+            }
+        }
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn version_handshake_reduced_circuits_both_sides_allows_stream_open() {
+    // Both sides run reduced circuits — handshake succeeds.
+    let (peer_a, peer_b) = create_peer_pair_with_versions_full(
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+        true,
+        mosaic_net_svc_api::handshake::PROTOCOL_VERSION,
+        None,
+        true,
+    );
+
+    run_async(async {
+        let (_outbound, inbound) =
+            open_stream_pair_eventually(&peer_a, &peer_b, b"reduced-both").await;
+        assert_eq!(inbound.payload(), Some(&b"reduced-both"[..]));
     });
 
     peer_a.shutdown();

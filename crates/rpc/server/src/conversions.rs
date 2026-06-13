@@ -65,6 +65,7 @@ pub(crate) fn node_info_to_rpc(info: mosaic_rpc_service::NodeInfo) -> RpcNodeInf
         peer_id_hex: hex::encode(info.peer_id),
         protocol_version: info.protocol_version,
         deployment_version: info.deployment_version,
+        reduced_circuits: info.reduced_circuits,
     }
 }
 

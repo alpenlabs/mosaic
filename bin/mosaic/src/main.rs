@@ -241,6 +241,7 @@ where
     let our_peer_id = net_service_config.our_peer_id();
     let protocol_version = net_service_config.protocol_version;
     let deployment_version = net_service_config.deployment_version.clone();
+    let reduced_circuits = net_service_config.reduced_circuits;
     drop(net_service_config);
     let other_peer_ids = config.known_peers()?;
     let rng = rand_chacha::ChaCha20Rng::from_entropy();
@@ -253,6 +254,7 @@ where
         rng,
         protocol_version,
         deployment_version,
+        reduced_circuits,
     );
     let circuit_info =
         mosaic_rpc_types::RpcCircuitInfoEntry::from_circuit_file(&config.circuit.path)

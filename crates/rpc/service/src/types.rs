@@ -25,6 +25,9 @@ pub struct NodeInfo {
     pub protocol_version: u32,
     /// Deployment-cohort identifier exchanged in the peer version handshake.
     pub deployment_version: Option<String>,
+    /// Whether this node is running reduced-circuits mode. Hard-matched in the
+    /// version handshake.
+    pub reduced_circuits: bool,
 }
 
 /// Status of a tableset (state machine).

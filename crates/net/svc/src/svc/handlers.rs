@@ -149,6 +149,7 @@ fn start_outbound_attempt(peer: PeerId, state: &mut ServiceState) {
         state.event_tx.clone(),
         state.config.protocol_version,
         state.config.deployment_version.clone(),
+        state.config.reduced_circuits,
     );
 }
 
@@ -545,6 +546,23 @@ fn handle_open_stream_request(
     if !state.config.has_peer(&peer) {
         tokio::spawn(async move {
             let _ = respond_to.send(Err(OpenStreamError::PeerNotFound)).await;
+        });
+        return;
+    }
+
+    // Peer is in the incompatible-peer cache (failed version handshake during
+    // this process lifetime). `start_outbound_attempt` will skip dialing, so
+    // queueing the request would just leave it pending until the caller's
+    // timeout / cancel fires. Reject immediately so the caller surfaces the
+    // failure right away.
+    if state.incompatible_peers.contains(&peer) {
+        tokio::spawn(async move {
+            let _ = respond_to
+                .send(Err(OpenStreamError::ConnectionFailed(
+                    "peer marked incompatible (version handshake failed); reconnect suppressed until restart or inbound handshake"
+                        .to_string(),
+                )))
+                .await;
         });
         return;
     }
