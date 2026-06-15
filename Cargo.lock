@@ -2631,7 +2631,6 @@ dependencies = [
  "mosaic-storage-api",
  "mosaic-storage-inmemory",
  "thiserror 2.0.18",
- "tokio",
  "tracing",
 ]
 

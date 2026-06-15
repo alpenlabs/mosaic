@@ -24,7 +24,6 @@ futures.workspace = true
 kanal = "0.1.1"
 monoio.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["sync"] }
 tracing.workspace = true
 
 [dev-dependencies]

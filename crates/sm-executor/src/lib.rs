@@ -1,8 +1,6 @@
 //! SM executor implementation.
 
-use std::{
-    collections::VecDeque, panic::AssertUnwindSafe, sync::Arc, thread::JoinHandle, time::Duration,
-};
+use std::{collections::VecDeque, panic::AssertUnwindSafe, thread::JoinHandle, time::Duration};
 
 use fasm::{Input as FasmInput, StateMachine};
 use futures::FutureExt;
@@ -34,14 +32,6 @@ const COMPLETION_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(10);
 /// stay inline. We spawn the ack with this timeout so a stalled peer can only
 /// burn one background task, not the entire executor.
 const ACK_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Maximum number of inbound-request acks the executor may have in flight at
-/// once. Each spawned ack holds one [`tokio::sync::Semaphore`] permit until
-/// it completes (or times out). When the semaphore is exhausted — e.g. a
-/// peer is dropping every ack on the floor — new acks are dropped with a
-/// warning rather than queued indefinitely. Sized comfortably above any
-/// legitimate burst.
-const MAX_INFLIGHT_ACKS: usize = 1024;
 
 /// Compute exponential backoff with cap: `min(base * 2^attempts, max)`.
 fn completion_retry_backoff(attempts: u32) -> Duration {
@@ -217,8 +207,6 @@ where
     job_handle: JobSchedulerHandle,
     net_client: NetClient,
     command_rx: kanal::AsyncReceiver<SmCommand>,
-    /// Bounds the number of in-flight background acks (see [`MAX_INFLIGHT_ACKS`]).
-    inflight_acks: Arc<tokio::sync::Semaphore>,
 }
 
 impl<S> SmExecutor<S>
@@ -252,7 +240,6 @@ where
                 job_handle,
                 net_client,
                 command_rx,
-                inflight_acks: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_ACKS)),
             },
             handle,
         )
@@ -818,31 +805,19 @@ where
             // `recv_buffer()` — and that completes only when the peer drains
             // its receive window. A peer whose window is full would otherwise
             // wedge our entire select loop, freezing all forward progress for
-            // every other peer until QUIC's idle timeout finally tore the
-            // connection down (see ~30-second freeze cascade reported during
-            // testnet).
+            // every other peer until QUIC's idle timeout tore the connection
+            // down.
             //
-            // Spawning makes the ack best-effort:
-            // - bounded by `ACK_BACKGROUND_TIMEOUT` so a stalled write eventually drops the stream
-            //   rather than holding a task forever;
-            // - bounded by `inflight_acks` so a peer dropping every ack on the floor can't exhaust
-            //   task slots — once we hit the cap, new acks are dropped with a warning instead of
-            //   queued.
+            // Best-effort: bounded by `ACK_BACKGROUND_TIMEOUT` so a stalled
+            // write drops the future rather than holding a task forever.
+            // Per-peer task accumulation is hard-bounded by QUIC's
+            // `MAX_CONCURRENT_BIDI_STREAMS = 100` per connection — a peer
+            // can't have more streams open than QUIC permits, so they can't
+            // make us hold more spawned ack tasks than that either.
             //
             // If the ack never reaches the peer the peer will eventually
             // retransmit the request (or its higher-level retry logic will
             // reopen the stream). That's strictly better than wedging.
-            let permit = match self.inflight_acks.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    tracing::warn!(
-                        peer = ?peer_id,
-                        limit = MAX_INFLIGHT_ACKS,
-                        "in-flight ack cap reached; dropping ack (peer is not draining)"
-                    );
-                    return Ok(());
-                }
-            };
             monoio::spawn(async move {
                 match monoio::time::timeout(ACK_BACKGROUND_TIMEOUT, request.ack()).await {
                     Ok(Ok(())) => {
@@ -863,7 +838,6 @@ where
                         );
                     }
                 }
-                drop(permit);
             });
 
             Ok(())
