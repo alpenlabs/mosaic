@@ -66,10 +66,10 @@ const OVERLAP_SERVER_NAME_SUFFIX: &str = ".mosaic";
 
 /// Common path for both inbound and outbound version-handshake failure.
 ///
-/// - Logs at ERROR with peer, direction, and reason.
 /// - Closes the QUIC connection with [`CLOSE_VERSION_HANDSHAKE_FAILED`].
 /// - Sends [`ServiceEvent::MarkPeerIncompatible`] so the service loop suppresses future reconnect
-///   attempts to this peer.
+///   attempts. The handler logs at ERROR on first entry and DEBUG on repeats, so a peer that keeps
+///   retrying inbound (allowed by design) doesn't generate ERROR-level log spam.
 /// - Optionally emits the per-direction reject/failed event so the existing bookkeeping
 ///   (reject_tracker, candidate cleanup) runs.
 fn handle_version_handshake_failure(
@@ -81,16 +81,11 @@ fn handle_version_handshake_failure(
     direction_specific: Option<ServiceEvent>,
 ) {
     let reason = err.reason();
-    tracing::error!(
-        peer = %hex::encode(peer),
-        direction,
-        reason = %reason,
-        "version handshake failed; peer is incompatible until restart"
-    );
     connection.close(CLOSE_VERSION_HANDSHAKE_FAILED, reason.as_bytes());
     let _ = event_tx.send(ServiceEvent::MarkPeerIncompatible {
         peer,
-        reason: reason.clone(),
+        direction,
+        reason,
     });
     if let Some(evt) = direction_specific {
         let _ = event_tx.send(evt);
@@ -435,7 +430,7 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
             .await
             {
                 handle_version_handshake_failure(
-                    "incoming",
+                    "inbound",
                     peer_id,
                     &err,
                     &connection,

@@ -1417,20 +1417,26 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
             on_outbound_failed(peer, attempt_id, error, state);
         }
 
-        ServiceEvent::MarkPeerIncompatible { peer, reason } => {
-            // First insertion logs at INFO; the ERROR-level log was already
-            // emitted by the spawn task at the point of failure. Repeated
-            // signals (e.g. multiple in-flight attempts converging) become
-            // a no-op at DEBUG.
+        ServiceEvent::MarkPeerIncompatible {
+            peer,
+            direction,
+            reason,
+        } => {
+            // First insertion logs at ERROR; repeats become DEBUG so a peer
+            // hammering inbound retries (which are allowed by design — see
+            // `incompatible_peers` doc) doesn't generate ERROR-level spam.
             if state.incompatible_peers.insert(peer) {
-                tracing::info!(
+                tracing::error!(
                     peer = %hex::encode(peer),
+                    direction,
                     reason = %reason,
-                    "marking peer incompatible; future reconnect attempts suppressed until they reconnect or we restart"
+                    "version handshake failed; peer is incompatible until restart or successful inbound handshake"
                 );
             } else {
                 tracing::debug!(
                     peer = %hex::encode(peer),
+                    direction,
+                    reason = %reason,
                     "duplicate MarkPeerIncompatible signal; already tracked"
                 );
             }

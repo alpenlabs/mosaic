@@ -316,6 +316,9 @@ pub enum ServiceEvent {
     /// churn against it.
     MarkPeerIncompatible {
         peer: PeerId,
+        /// "inbound" or "outbound", for the ERROR-level log emitted on first
+        /// entry.
+        direction: &'static str,
         /// One-line reason from `HandshakeError::reason()`. Logged on first
         /// entry only, to avoid log spam from reconnect loops.
         reason: String,
