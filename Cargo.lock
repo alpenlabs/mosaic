@@ -2443,6 +2443,8 @@ dependencies = [
  "blake3",
  "ckt-fmtv5-types",
  "ckt-gobble",
+ "futures",
+ "futures-timer",
  "mosaic-cac-types",
  "mosaic-common",
  "mosaic-heap-array",

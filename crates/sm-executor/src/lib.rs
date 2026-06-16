@@ -25,6 +25,14 @@ const COMPLETION_RETRY_BACKOFF_BASE: Duration = Duration::from_millis(100);
 /// Maximum backoff between repeated completion-application attempts.
 const COMPLETION_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(10);
 
+/// Wall-clock budget for sending a single inbound-request ack in the
+/// background. Acks are best-effort: a peer whose receive window is full will
+/// block our ack-write indefinitely (the write awaits `recv_buffer`, which
+/// depends on the peer draining), wedging the executor's select loop if we
+/// stay inline. We spawn the ack with this timeout so a stalled peer can only
+/// burn one background task, not the entire executor.
+const ACK_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Compute exponential backoff with cap: `min(base * 2^attempts, max)`.
 fn completion_retry_backoff(attempts: u32) -> Duration {
     let multiplier = 1u32.checked_shl(attempts).unwrap_or(u32::MAX);
@@ -75,16 +83,6 @@ pub enum SmExecutorError {
     /// Network receive failed.
     #[error("network receive failed: {0}")]
     NetRecv(#[from] RecvError),
-
-    /// Ack failed.
-    #[error("protocol ack failed for peer={peer_id:?}: {source}")]
-    Ack {
-        /// Peer that sent the inbound message.
-        peer_id: PeerId,
-        /// Underlying ack error.
-        #[source]
-        source: mosaic_net_client::AckError,
-    },
 
     /// Job submission channel has closed.
     #[error("job submission failed for peer={peer_id:?}: {source}")]
@@ -800,15 +798,49 @@ where
                     .await?;
                 }
             }
-            tracing::debug!("inbound request applied; acking");
+            tracing::debug!("inbound request applied; spawning ack");
 
-            match request.ack().await {
-                Ok(()) => {
-                    tracing::debug!("inbound request acked");
-                    Ok(())
+            // Spawn the ack off the executor task. `request.ack()` calls
+            // `Stream::write` on the underlying QUIC bi-stream, which awaits
+            // `recv_buffer()` — and that completes only when the peer drains
+            // its receive window. A peer whose window is full would otherwise
+            // wedge our entire select loop, freezing all forward progress for
+            // every other peer until QUIC's idle timeout tore the connection
+            // down.
+            //
+            // Best-effort: bounded by `ACK_BACKGROUND_TIMEOUT` so a stalled
+            // write drops the future rather than holding a task forever.
+            // Per-peer task accumulation is hard-bounded by QUIC's
+            // `MAX_CONCURRENT_BIDI_STREAMS = 100` per connection — a peer
+            // can't have more streams open than QUIC permits, so they can't
+            // make us hold more spawned ack tasks than that either.
+            //
+            // If the ack never reaches the peer the peer will eventually
+            // retransmit the request (or its higher-level retry logic will
+            // reopen the stream). That's strictly better than wedging.
+            monoio::spawn(async move {
+                match monoio::time::timeout(ACK_BACKGROUND_TIMEOUT, request.ack()).await {
+                    Ok(Ok(())) => {
+                        tracing::debug!(peer = ?peer_id, "inbound request acked");
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            peer = ?peer_id,
+                            error = ?err,
+                            "background ack failed; peer will retransmit",
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            peer = ?peer_id,
+                            timeout = ?ACK_BACKGROUND_TIMEOUT,
+                            "background ack timed out; peer not draining stream",
+                        );
+                    }
                 }
-                Err(source) => Err(SmExecutorError::Ack { peer_id, source }),
-            }
+            });
+
+            Ok(())
         }
         .instrument(span)
         .await
@@ -1188,7 +1220,6 @@ where
             SmExecutorError::Stf { source, .. } => source.is_retryable_storage(),
             SmExecutorError::SourceClosed(_)
             | SmExecutorError::NetRecv(_)
-            | SmExecutorError::Ack { .. }
             | SmExecutorError::JobSubmission { .. }
             | SmExecutorError::RoleMismatch(_)
             | SmExecutorError::StfPanic { .. } => false,
@@ -1243,7 +1274,6 @@ where
             | SmExecutorError::StfPanic { .. }
             | SmExecutorError::SourceClosed(_)
             | SmExecutorError::NetRecv(_)
-            | SmExecutorError::Ack { .. }
             | SmExecutorError::Storage { .. }
             | SmExecutorError::Commit { .. } => CompletionErrorAction::Fatal,
         }

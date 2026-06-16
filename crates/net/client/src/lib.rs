@@ -221,8 +221,27 @@ impl NetClient {
             });
         }
 
-        // Write to stream
-        let _ = stream.write(bytes).await.map_err(SendError::Write)?;
+        // Write to stream. `Stream::write` awaits `recv_buffer()` for
+        // backpressure — if the peer's QUIC receive window is full, the call
+        // blocks until they drain it. Without a timeout here, a stalled peer
+        // wedges the caller indefinitely (`ack_timeout` further down only
+        // covers the read half). Use `ack_timeout` as a single budget for the
+        // post-open send-and-ack round-trip; peers that don't free buffer
+        // space within that window are surfaced as a write failure.
+        match timeout_in_any_runtime(self.config.ack_timeout, stream.write(bytes)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => return Err(SendError::Write(err)),
+            Err(TimeoutElapsed) => {
+                // Enqueue a reset and surface the failure. NB: `reset` only
+                // queues a `StreamRequest::Reset` to the per-stream write task;
+                // if that task is itself blocked inside QUIC `write_all`, the
+                // reset won't take effect until the write returns (or QUIC
+                // tears the connection down at idle-timeout). The caller is
+                // unblocked either way — that's the freeze-prevention point.
+                stream.reset(0).await;
+                return Err(SendError::Write(mosaic_net_svc::StreamClosed::Disconnected));
+            }
+        }
         let written_at = started.elapsed();
 
         // Wait for ack (empty response)

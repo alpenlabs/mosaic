@@ -1,6 +1,13 @@
 //! Executors for garbler state machine actions.
 
+use std::time::Duration;
+
 use ckt_fmtv5_types::v5::c::ReaderV5c;
+use futures::{
+    FutureExt,
+    future::{Either, select},
+    pin_mut,
+};
 use mosaic_cac_types::{
     AllPolynomials, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositInputs,
     GarblingSeed, InputPolynomials, OutputPolynomial, PubKey, ReservedDepositInputShares,
@@ -16,7 +23,8 @@ use mosaic_common::constants::{
 };
 use mosaic_heap_array::HeapArray;
 use mosaic_job_api::{ActionCompletion, CircuitError, HandlerOutcome};
-use mosaic_net_svc_api::PeerId;
+use mosaic_net_client::BulkSender;
+use mosaic_net_svc_api::{PeerId, StreamClosed};
 use mosaic_storage_api::{StorageProvider, table_store::TableStore};
 use mosaic_vs3::{Index, Polynomial, PolynomialCommitment, Share};
 
@@ -592,11 +600,25 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
     let translation_bytes = std::mem::take(&mut setup.translation_bytes);
 
     const MAX_CHUNK: usize = 2 * 1024 * 1024; // 2 MiB — well under 4 MiB frame limit
+    // `Stream::write` awaits `recv_buffer()` for backpressure; if the peer's
+    // QUIC window fills it blocks indefinitely. Bound each chunk to surface a
+    // stalled receiver as a transient failure that the scheduler retries.
+    const TRANSLATION_CHUNK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
     for chunk in translation_bytes.chunks(MAX_CHUNK) {
-        let _ = stream
-            .write(chunk.to_vec())
-            .await
-            .map_err(|e| CircuitError::TransientFailure(format!("translation send: {e:?}")))?;
+        match write_with_timeout(&mut stream, chunk.to_vec(), TRANSLATION_CHUNK_WRITE_TIMEOUT).await
+        {
+            Ok(()) => {}
+            Err(WriteTimeoutError::Write(e)) => {
+                return Err(CircuitError::TransientFailure(format!(
+                    "translation send: {e:?}"
+                )));
+            }
+            Err(WriteTimeoutError::Timeout) => {
+                return Err(CircuitError::TransientFailure(format!(
+                    "translation send: timed out after {TRANSLATION_CHUNK_WRITE_TIMEOUT:?}"
+                )));
+            }
+        }
     }
 
     Ok(TransferSession::new(
@@ -606,4 +628,34 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         commitment,
         outputs,
     ))
+}
+
+#[derive(Debug)]
+enum WriteTimeoutError {
+    Write(StreamClosed),
+    Timeout,
+}
+
+/// Wraps a [`BulkSender::write`] with a runtime-agnostic timeout.
+///
+/// `BulkSender::write` awaits `recv_buffer()` for backpressure — under a
+/// peer whose QUIC receive window is full the call would otherwise block
+/// indefinitely. We use [`futures_timer::Delay`] rather than
+/// `monoio::time::timeout` to keep the returned future `Send`, since the
+/// circuit-session trait surface requires `Send` futures.
+async fn write_with_timeout(
+    stream: &mut BulkSender,
+    payload: Vec<u8>,
+    duration: Duration,
+) -> Result<(), WriteTimeoutError> {
+    let write = stream.write(payload).map(|r| match r {
+        Ok(_) => Ok(()),
+        Err(e) => Err(WriteTimeoutError::Write(e)),
+    });
+    let delay = futures_timer::Delay::new(duration).map(|_| Err(WriteTimeoutError::Timeout));
+    pin_mut!(write);
+    pin_mut!(delay);
+    match select(write, delay).await {
+        Either::Left((r, _)) | Either::Right((r, _)) => r,
+    }
 }
