@@ -71,6 +71,27 @@ jobs:
               echo "::error::image_tag must match [A-Za-z0-9._-]{1,128}"
               exit 1
             fi
+
+            # Refuse user-supplied image_tag values that could overwrite
+            # production-meaningful tags from an arbitrary ref. The default
+            # path (no override) tags by short SHA, which cannot collide.
+            #
+            # Reserved exact tags:
+            case "${INPUT_IMAGE_TAG}" in
+              latest|main|master|stable|prod|production|release)
+                echo "::error::image_tag '${INPUT_IMAGE_TAG}' is reserved; not allowed via workflow_dispatch"
+                exit 1
+                ;;
+            esac
+            # Reserved release-shaped tags (e.g. v1.2.3, 1.2.3, release-*).
+            if [[ "${INPUT_IMAGE_TAG}" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?([._-].*)?$ ]]; then
+              echo "::error::image_tag '${INPUT_IMAGE_TAG}' looks like a release tag; release tags must come from a release workflow, not workflow_dispatch"
+              exit 1
+            fi
+            if [[ "${INPUT_IMAGE_TAG}" =~ ^release([._-].*)?$ ]]; then
+              echo "::error::image_tag '${INPUT_IMAGE_TAG}' is reserved (release-*); not allowed via workflow_dispatch"
+              exit 1
+            fi
           fi
 
       # Workflow scripts (render_trivy_summary.py, cleanup action) always come from
