@@ -67,8 +67,12 @@ const OVERLAP_SERVER_NAME_SUFFIX: &str = ".mosaic";
 /// Common path for both inbound and outbound version-handshake failure.
 ///
 /// - Closes the QUIC connection with [`CLOSE_VERSION_HANDSHAKE_FAILED`].
-/// - Sends [`ServiceEvent::MarkPeerIncompatible`] so the service loop suppresses future reconnect
-///   attempts. The handler logs at ERROR on first entry and DEBUG on repeats, so a peer that keeps
+/// - Sends [`ServiceEvent::MarkPeerIncompatible`] **only when the error indicates actual protocol
+///   disagreement** (`Mismatch`, `Decode`, `PayloadTooLarge`). Transient transport errors
+///   (`Timeout`, `Transport`) close the connection but leave `incompatible_peers` alone so the
+///   normal reconnect logic retries — otherwise a single network blip mid-handshake could
+///   permanently wedge both sides. See [`HandshakeError::indicates_incompatibility`].
+/// - The mark handler logs at ERROR on first entry and DEBUG on repeats, so a peer that keeps
 ///   retrying inbound (allowed by design) doesn't generate ERROR-level log spam.
 /// - Optionally emits the per-direction reject/failed event so the existing bookkeeping
 ///   (reject_tracker, candidate cleanup) runs.
@@ -82,11 +86,20 @@ fn handle_version_handshake_failure(
 ) {
     let reason = err.reason();
     connection.close(CLOSE_VERSION_HANDSHAKE_FAILED, reason.as_bytes());
-    let _ = event_tx.send(ServiceEvent::MarkPeerIncompatible {
-        peer,
-        direction,
-        reason,
-    });
+    if err.indicates_incompatibility() {
+        let _ = event_tx.send(ServiceEvent::MarkPeerIncompatible {
+            peer,
+            direction,
+            reason,
+        });
+    } else {
+        tracing::warn!(
+            peer = %hex::encode(peer),
+            direction,
+            reason = %reason,
+            "version handshake failed transiently; will retry on reconnect"
+        );
+    }
     if let Some(evt) = direction_specific {
         let _ = event_tx.send(evt);
     }
@@ -429,6 +442,15 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
             )
             .await
             {
+                // Feed transient handshake failures into the per-IP reject
+                // tracker so a peer that gets through TLS + peer-id but fails
+                // handshake repeatedly still contributes to IP-level rate
+                // limiting. Skip incompatibility-class failures — those are
+                // already handled by `MarkPeerIncompatible`, so double-
+                // penalizing the IP just adds noise.
+                if !err.indicates_incompatibility() {
+                    reject_tracker.on_reject(remote_ip, tokio::time::Instant::now());
+                }
                 handle_version_handshake_failure(
                     "inbound",
                     peer_id,

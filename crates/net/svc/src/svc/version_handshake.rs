@@ -44,6 +44,28 @@ impl HandshakeError {
             Self::Decode(e) => format!("decode error: {e}"),
         }
     }
+
+    /// Whether this error reflects actual peer-protocol disagreement (versus
+    /// a transient transport hiccup). Only disagreement marks the peer as
+    /// incompatible; transient errors are surfaced as a failed connection
+    /// attempt that the normal reconnect logic will retry.
+    ///
+    /// Marking on `Timeout`/`Transport` would mean a single network blip mid-
+    /// handshake could permanently wedge both sides (each marks the other
+    /// incompatible, neither side reconnects, requires operator restart).
+    ///
+    /// Note this is asymmetric: when the peer's side hits a decode/mismatch
+    /// they may reset the stream, surfacing on our side as `Transport`. We
+    /// will treat that as transient and retry while they mark us
+    /// incompatible. Behaviorally fine — our retries either keep failing
+    /// (and the peer keeps suppressing) or succeed once one side is
+    /// upgraded, at which point a successful inbound clears both sides.
+    pub fn indicates_incompatibility(&self) -> bool {
+        match self {
+            Self::Mismatch(_) | Self::PayloadTooLarge { .. } | Self::Decode(_) => true,
+            Self::Timeout | Self::Transport(_) => false,
+        }
+    }
 }
 
 impl std::fmt::Display for HandshakeError {
@@ -191,4 +213,29 @@ async fn exchange(
     )
     .map_err(HandshakeError::Mismatch)?;
     Ok(remote)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indicates_incompatibility_classification() {
+        // Real protocol disagreement → mark.
+        assert!(
+            HandshakeError::Mismatch(HandshakeMismatch::ProtocolVersionMismatch {
+                local: 1,
+                remote: 2,
+            })
+            .indicates_incompatibility()
+        );
+        assert!(HandshakeError::Decode("bad".to_string()).indicates_incompatibility());
+        assert!(HandshakeError::PayloadTooLarge { len: 9999 }.indicates_incompatibility());
+
+        // Transient transport-layer issues → don't mark, let reconnect retry.
+        assert!(!HandshakeError::Timeout.indicates_incompatibility());
+        assert!(
+            !HandshakeError::Transport("connection reset".to_string()).indicates_incompatibility()
+        );
+    }
 }
