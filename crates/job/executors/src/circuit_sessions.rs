@@ -44,7 +44,20 @@ use mosaic_net_client::BulkSender;
 use mosaic_storage_api::table_store::TableReader;
 use mosaic_vs3::{Index, Scalar, Share};
 
-use crate::garbling::{GarblingSession, GarblingSetup, compute_commitment, hash_garbling_params};
+use crate::{
+    garbling::{GarblingSession, GarblingSetup, compute_commitment, hash_garbling_params},
+    progress::{HEARTBEAT_PERIOD, HeartbeatTracker, ProgressUnit},
+};
+
+/// Short-id helper used to label progress logs. Renders the first 4 bytes
+/// of a digest as `0x........`. Truncates gracefully if shorter.
+fn short_id(digest: &[u8]) -> String {
+    let mut s = String::from("0x");
+    for b in digest.iter().take(4) {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Gate parsing helpers for OwnedBlock
@@ -198,6 +211,10 @@ pub struct CommitmentSession {
     is_garbler: bool,
     /// Reusable buffer for ciphertext bytes per chunk.
     ct_buffer: Vec<u8>,
+    /// Heartbeat progress tracker for operator visibility.
+    heartbeat: HeartbeatTracker,
+    /// Cumulative gates processed so far (matches `HeaderV5c::total_gates`).
+    gates_processed: u64,
 }
 
 impl std::fmt::Debug for CommitmentSession {
@@ -218,8 +235,21 @@ impl CommitmentSession {
         output_wire_ids: Vec<u32>,
         index: Index,
         is_garbler: bool,
+        total_gates: u64,
     ) -> Self {
         let translate_hash = blake3::hash(&setup.translation_bytes);
+        let label = if is_garbler {
+            "garbling.commit"
+        } else {
+            "garbling.verify"
+        };
+        let heartbeat = HeartbeatTracker::new(
+            label,
+            format!("ckt{index}"),
+            Some(total_gates),
+            ProgressUnit::Blocks,
+            HEARTBEAT_PERIOD,
+        );
 
         Self {
             setup,
@@ -229,6 +259,8 @@ impl CommitmentSession {
             index,
             is_garbler,
             ct_buffer: Vec::new(),
+            heartbeat,
+            gates_processed: 0,
         }
     }
 }
@@ -248,12 +280,15 @@ impl CircuitSession for CommitmentSession {
                     &mut self.ct_buffer,
                 );
                 self.ct_hasher.update(&self.ct_buffer);
+                self.gates_processed = self.gates_processed.saturating_add(block.num_gates as u64);
             }
+            self.heartbeat.maybe_log(self.gates_processed);
             Ok(())
         })
     }
 
-    fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+    fn finish(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+        self.heartbeat.done(self.gates_processed);
         Box::pin(async move {
             let ct_hash = self.ct_hasher.finalize();
 
@@ -329,6 +364,10 @@ pub struct TransferSession {
     output_wire_ids: Vec<u32>,
     /// Reusable buffer for ciphertext bytes per block.
     ct_buffer: Vec<u8>,
+    /// Heartbeat progress tracker for operator visibility.
+    heartbeat: HeartbeatTracker,
+    /// Cumulative bytes written to the bulk stream so far.
+    bytes_sent: u64,
 }
 
 impl std::fmt::Debug for TransferSession {
@@ -350,7 +389,17 @@ impl TransferSession {
         seed: GarblingSeed,
         commitment: GarblingTableCommitment,
         output_wire_ids: Vec<u32>,
+        total_and_gates: u64,
     ) -> Self {
+        // Each AND gate emits 16 ciphertext bytes on the wire.
+        let total_bytes = total_and_gates.saturating_mul(16);
+        let heartbeat = HeartbeatTracker::new(
+            "table.upload",
+            short_id(commitment.as_ref()),
+            Some(total_bytes),
+            ProgressUnit::Bytes,
+            HEARTBEAT_PERIOD,
+        );
         Self {
             session,
             stream,
@@ -358,6 +407,8 @@ impl TransferSession {
             commitment,
             output_wire_ids,
             ct_buffer: Vec::new(),
+            heartbeat,
+            bytes_sent: 0,
         }
     }
 }
@@ -376,18 +427,26 @@ impl CircuitSession for TransferSession {
                 self.ct_buffer.clear();
                 process_owned_block_garble(&mut self.session.instance, block, &mut self.ct_buffer);
                 if !self.ct_buffer.is_empty() {
+                    let n = self.ct_buffer.len() as u64;
                     let out = std::mem::take(&mut self.ct_buffer);
                     self.ct_buffer =
                         self.stream.write(out).await.map_err(|e| {
                             CircuitError::ChunkFailed(format!("stream write: {e:?}"))
                         })?;
+                    self.bytes_sent = self.bytes_sent.saturating_add(n);
                 }
             }
+            self.heartbeat.maybe_log(self.bytes_sent);
             Ok(())
         })
     }
 
-    fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+    fn finish(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+        // NB: the summary log fires here, before the returned future runs and
+        // the stream is FIN'd on drop. For multi-minute uploads the gap is
+        // negligible, but the log marks "session work done" rather than
+        // "bytes-on-wire FIN".
+        self.heartbeat.done(self.bytes_sent);
         Box::pin(async move {
             // Finalize the garbling session to properly release the ~1 GB
             // working space. We discard the output — the commitment was
@@ -443,6 +502,10 @@ pub struct EvaluationSession {
     /// to a share value. Stored as raw bytes ([u8; 32]) since Byte32 may
     /// not be Copy.
     output_label_ct: [u8; 32],
+    /// Heartbeat progress tracker for operator visibility.
+    heartbeat: HeartbeatTracker,
+    /// Cumulative gates evaluated so far (matches `HeaderV5c::total_gates`).
+    gates_processed: u64,
 }
 
 impl std::fmt::Debug for EvaluationSession {
@@ -465,7 +528,15 @@ impl EvaluationSession {
         commitment: GarblingTableCommitment,
         output_wire_ids: Vec<u32>,
         output_label_ct: [u8; 32],
+        total_gates: u64,
     ) -> Self {
+        let heartbeat = HeartbeatTracker::new(
+            "table.eval",
+            short_id(commitment.as_ref()),
+            Some(total_gates),
+            ProgressUnit::Blocks,
+            HEARTBEAT_PERIOD,
+        );
         Self {
             instance,
             ct_reader,
@@ -473,6 +544,8 @@ impl EvaluationSession {
             commitment,
             output_wire_ids,
             output_label_ct,
+            heartbeat,
+            gates_processed: 0,
         }
     }
 }
@@ -511,14 +584,17 @@ impl CircuitSession for EvaluationSession {
             let mut ct_offset = 0;
             for block in &chunk.blocks {
                 process_owned_block_eval(&mut self.instance, block, &ct_data, &mut ct_offset);
+                self.gates_processed = self.gates_processed.saturating_add(block.num_gates as u64);
             }
             debug_assert_eq!(ct_offset, ct_bytes_needed);
+            self.heartbeat.maybe_log(self.gates_processed);
 
             Ok(())
         })
     }
 
-    fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+    fn finish(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+        self.heartbeat.done(self.gates_processed);
         Box::pin(async move {
             // Extract output labels and values from the evaluation instance.
             let wire_ids: Vec<u64> = self.output_wire_ids.iter().map(|&w| w as u64).collect();
