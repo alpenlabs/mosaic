@@ -21,6 +21,7 @@ pub mod evaluator;
 pub mod garbler;
 pub mod garbling;
 pub mod polynomial_cache;
+pub mod progress;
 
 use ckt_fmtv5_types::v5::c::ReaderV5c;
 use mosaic_cac_types::state_machine::{evaluator::StateRead as _, garbler::StateRead as _};
@@ -201,7 +202,11 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
 
             Ok(circuit_sessions::GarblerCircuitSession::Commitment(
                 Box::new(circuit_sessions::CommitmentSession::new(
-                    setup, outputs, index, true,
+                    setup,
+                    outputs,
+                    index,
+                    true,
+                    header.total_gates(),
                 )),
             ))
         }
@@ -322,7 +327,11 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
 
             Ok(circuit_sessions::EvaluatorCircuitSession::Commitment(
                 Box::new(circuit_sessions::CommitmentSession::new(
-                    setup, outputs, index, false,
+                    setup,
+                    outputs,
+                    index,
+                    false,
+                    header.total_gates(),
                 )),
             ))
         }
