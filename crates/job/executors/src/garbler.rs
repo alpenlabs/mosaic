@@ -627,6 +627,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         seed,
         commitment,
         outputs,
+        header.and_gates,
     ))
 }
 

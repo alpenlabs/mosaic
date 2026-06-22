@@ -862,5 +862,6 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         commitment,
         outputs,
         output_label_ct_bytes,
+        header.total_gates(),
     ))
 }
