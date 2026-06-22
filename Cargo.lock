@@ -90,7 +90,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -101,7 +101,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -445,7 +445,7 @@ checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 [[package]]
 name = "bitcoin-script"
 version = "0.4.0"
-source = "git+https://github.com/BitVM/rust-bitcoin-script#01b4cb66cbf5b525079cabe006f9f99627da97cd"
+source = "git+https://github.com/BitVM/rust-bitcoin-script?rev=01b4cb66cbf5b525079cabe006f9f99627da97cd#01b4cb66cbf5b525079cabe006f9f99627da97cd"
 dependencies = [
  "bitcoin",
  "script-macro",
@@ -455,7 +455,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-scriptexec"
 version = "0.0.0"
-source = "git+https://github.com/BitVM/rust-bitcoin-scriptexec#ba96bc2bd76774c9d1b011461cb79d983c2c43a1"
+source = "git+https://github.com/BitVM/rust-bitcoin-scriptexec?rev=ba96bc2bd76774c9d1b011461cb79d983c2c43a1#ba96bc2bd76774c9d1b011461cb79d983c2c43a1"
 dependencies = [
  "bitcoin",
  "clap",
@@ -665,7 +665,7 @@ dependencies = [
 [[package]]
 name = "ckt-fmtv5-types"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/ckt#3044c4c6984c912ed3546f3d6a5de56df7b76426"
+source = "git+https://github.com/alpenlabs/ckt?rev=432cdd11eb5780bbf7edcaad698850deb5b49675#432cdd11eb5780bbf7edcaad698850deb5b49675"
 dependencies = [
  "blake3",
  "cynosure",
@@ -677,7 +677,7 @@ dependencies = [
 [[package]]
 name = "ckt-gobble"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/ckt#3044c4c6984c912ed3546f3d6a5de56df7b76426"
+source = "git+https://github.com/alpenlabs/ckt?rev=432cdd11eb5780bbf7edcaad698850deb5b49675#432cdd11eb5780bbf7edcaad698850deb5b49675"
 dependencies = [
  "bitvec",
  "blake3",
@@ -1220,7 +1220,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1286,12 +1286,6 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
-
-[[package]]
-name = "foldhash"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
@@ -1581,8 +1575,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "allocator-api2",
- "equivalent",
- "foldhash",
 ]
 
 [[package]]
@@ -2501,7 +2493,6 @@ dependencies = [
  "ark-serialize",
  "blake3",
  "ed25519-dalek",
- "hashbrown 0.17.1",
  "hex",
  "kanal",
  "mosaic-net-svc-api",
@@ -2511,7 +2502,6 @@ dependencies = [
  "rcgen",
  "rustls",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "x509-parser",
@@ -2788,7 +2778,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3505,7 +3495,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3562,7 +3552,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3657,7 +3647,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "script-macro"
 version = "0.4.0"
-source = "git+https://github.com/BitVM/rust-bitcoin-script#01b4cb66cbf5b525079cabe006f9f99627da97cd"
+source = "git+https://github.com/BitVM/rust-bitcoin-script?rev=01b4cb66cbf5b525079cabe006f9f99627da97cd#01b4cb66cbf5b525079cabe006f9f99627da97cd"
 dependencies = [
  "bitcoin",
  "proc-macro-error",
@@ -4085,7 +4075,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4271,7 +4261,6 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
- "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -4682,7 +4671,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
