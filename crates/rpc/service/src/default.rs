@@ -27,7 +27,8 @@ use tracing::error;
 
 use crate::{
     DepositStatus, DepositWithStatus, EvaluatorDepositInit, EvaluatorWithdrawalData,
-    GarblerDepositInit, MosaicApi, ServiceError, ServiceResult, SetupConfig, TablesetStatus,
+    GarblerDepositInit, MosaicApi, NodeInfo, ServiceError, ServiceResult, SetupConfig,
+    TablesetStatus,
     crypto_conversions::{
         into_schnorr_signature, try_from_schnorr_signature, try_from_x_only_pubkey,
         try_into_x_only_pubkey,
@@ -46,16 +47,29 @@ pub struct DefaultMosaicApi<S: StorageProvider, R: CryptoRng + Rng + Send> {
     executor_handle: SmExecutorHandle,
     storage: S,
     rng: Mutex<R>,
+    /// Protocol version advertised in the peer version handshake. Exposed via
+    /// [`MosaicApi::node_info`] for operator diagnostics.
+    protocol_version: u32,
+    /// Deployment-cohort identifier advertised in the peer version handshake.
+    /// Exposed via [`MosaicApi::node_info`] for operator diagnostics.
+    deployment_version: Option<String>,
+    /// Whether this node is running reduced-circuits mode. Hard-matched in the
+    /// peer version handshake. Exposed via [`MosaicApi::node_info`].
+    reduced_circuits: bool,
 }
 
 impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
     /// Creates a new instance.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         own_peer_id: PeerId,
         other_peer_ids: Vec<PeerId>,
         executor_handle: SmExecutorHandle,
         storage: S,
         rng: R,
+        protocol_version: u32,
+        deployment_version: Option<String>,
+        reduced_circuits: bool,
     ) -> Self {
         Self {
             own_peer_id,
@@ -63,6 +77,9 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
             executor_handle,
             storage,
             rng: Mutex::new(rng),
+            protocol_version,
+            deployment_version,
+            reduced_circuits,
         }
     }
 
@@ -96,6 +113,15 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send> DefaultMosaicApi<S, R> {
 impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for DefaultMosaicApi<S, R> {
     fn get_peer_id(&self) -> PeerId {
         self.own_peer_id
+    }
+
+    fn node_info(&self) -> NodeInfo {
+        NodeInfo {
+            peer_id: self.own_peer_id,
+            protocol_version: self.protocol_version,
+            deployment_version: self.deployment_version.clone(),
+            reduced_circuits: self.reduced_circuits,
+        }
     }
 
     fn get_tableset_id(&self, role: Role, peer_id: &PeerId, _instance: &Byte32) -> StateMachineId {

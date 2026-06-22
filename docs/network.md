@@ -63,3 +63,43 @@ This layering means net-svc could theoretically be reused for other protocols.
 - Disconnections trigger automatic reconnection with backoff
 - Keep-alives prevent idle timeouts
 - On simultaneous connect (both sides dial), lower peer_id wins deterministically
+
+## Version Handshake
+
+After QUIC TLS authentication and the overlap-key check, both sides exchange a
+short version-handshake payload on a dedicated bi-stream. **No protocol streams
+are exposed until the handshake succeeds on both sides.**
+
+Three fields are checked:
+
+- **`protocol_version`** — a manually-maintained `u32` constant
+  (`PROTOCOL_VERSION` in `crates/net/svc-api/src/handshake.rs`). Bumped any
+  time the wire-visible surface changes — message types in `cac/types`,
+  garbler/evaluator STF semantics peers depend on, net-svc framing. Mismatch
+  → refuse communication.
+- **`deployment_version`** — operator-supplied cohort identifier via TOML
+  config (`network.deployment_version = "tn3"`). All-or-none: every operator
+  in a coordinated deployment must set the same value. Mismatched or
+  asymmetric → refuse. Single-operator dev / local testing leaves it unset
+  on every node.
+- **`reduced_circuits`** — a `bool` derived at build time from the
+  `reduced-circuits` Cargo feature. A node built with reduced circuits
+  cannot interop with one built without: the circuit shape (wire counts,
+  tableset commitments, garbling tables) diverges, so even an otherwise
+  compatible protocol exchange will produce nonsense. Hard-matched; any
+  mismatch refuses the connection.
+
+**On mismatch:** the connection is closed with `CLOSE_VERSION_HANDSHAKE_FAILED`
+(code 6), the peer is added to an in-memory `incompatible_peers` cache, and
+the reason is logged at ERROR once per peer. Outbound reconnect attempts to
+peers in the cache are suppressed to avoid log spam.
+
+**Recovery:** inbound connections always run the handshake regardless of
+cache state — an upgraded peer is free to dial us. A successful handshake
+(inbound or outbound) clears the entry, so once they reconnect with matching
+versions our outbound reconnect logic resumes normally too. The cache is
+also fully cleared on process restart.
+
+**Operator surface:** the `mosaic_nodeInfo` RPC returns the current
+`protocol_version`, `deployment_version`, and `reduced_circuits` so two
+operators can compare configurations without log-diving.

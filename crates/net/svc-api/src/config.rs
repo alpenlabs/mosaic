@@ -8,7 +8,10 @@ use std::net::SocketAddr;
 
 use ed25519_dalek::SigningKey;
 
-use crate::peer_id::{PeerId, peer_id_from_signing_key};
+use crate::{
+    handshake::{MAX_DEPLOYMENT_VERSION_LEN, PROTOCOL_VERSION},
+    peer_id::{PeerId, peer_id_from_signing_key},
+};
 
 /// Configuration for a known peer.
 #[derive(Debug, Clone)]
@@ -92,6 +95,22 @@ pub struct NetServiceConfig {
     pub reconnect_backoff: std::time::Duration,
     /// Per-peer protocol-stream rate limit. Defaults to [`PeerStreamRateLimit::default`].
     pub peer_stream_rate_limit: PeerStreamRateLimit,
+    /// Protocol version this node advertises during the version handshake.
+    /// Defaults to [`PROTOCOL_VERSION`]; overridable for testing the mismatch
+    /// path.
+    pub protocol_version: u32,
+    /// Operator-supplied deployment-cohort identifier exchanged during the
+    /// version handshake. `None` for single-operator / local dev; `Some` for
+    /// coordinated deployments where every operator must set the same value
+    /// (e.g. `"tn3"` for testnet 3). Mismatched or asymmetric → handshake
+    /// refused.
+    pub deployment_version: Option<String>,
+    /// Whether this node is configured to run reduced-circuits mode.
+    /// Hard-matched across peers: a node running reduced circuits cannot
+    /// interop with one running full circuits because the circuit shape
+    /// (wire counts, tableset commitments, etc.) diverges. Defaults to
+    /// `false`; the binary sets this from its own circuit configuration.
+    pub reduced_circuits: bool,
 }
 
 impl NetServiceConfig {
@@ -114,6 +133,9 @@ impl NetServiceConfig {
             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             reconnect_backoff: Self::DEFAULT_RECONNECT_BACKOFF,
             peer_stream_rate_limit: PeerStreamRateLimit::default(),
+            protocol_version: PROTOCOL_VERSION,
+            deployment_version: None,
+            reduced_circuits: false,
         }
     }
 
@@ -138,6 +160,42 @@ impl NetServiceConfig {
     /// Set the reconnection backoff duration.
     pub fn with_reconnect_backoff(mut self, backoff: std::time::Duration) -> Self {
         self.reconnect_backoff = backoff;
+        self
+    }
+
+    /// Override the protocol version this node advertises. Intended for tests
+    /// that exercise the mismatch path; production callers should leave the
+    /// default ([`PROTOCOL_VERSION`]) in place.
+    pub fn with_protocol_version(mut self, version: u32) -> Self {
+        self.protocol_version = version;
+        self
+    }
+
+    /// Set the deployment-cohort identifier. Empty strings are treated as
+    /// `None` (no cohort coordination). Strings exceeding
+    /// [`MAX_DEPLOYMENT_VERSION_LEN`] bytes are rejected.
+    pub fn with_deployment_version(
+        mut self,
+        version: Option<String>,
+    ) -> Result<Self, DeploymentVersionError> {
+        match version {
+            Some(s) if s.is_empty() => self.deployment_version = None,
+            Some(s) if s.len() > MAX_DEPLOYMENT_VERSION_LEN => {
+                return Err(DeploymentVersionError::TooLong {
+                    len: s.len(),
+                    max: MAX_DEPLOYMENT_VERSION_LEN,
+                });
+            }
+            Some(s) => self.deployment_version = Some(s),
+            None => self.deployment_version = None,
+        }
+        Ok(self)
+    }
+
+    /// Set whether this node is running reduced-circuits mode. Hard-matched
+    /// against peers during the version handshake.
+    pub fn with_reduced_circuits(mut self, reduced: bool) -> Self {
+        self.reduced_circuits = reduced;
         self
     }
 
@@ -175,9 +233,31 @@ impl std::fmt::Debug for NetServiceConfig {
             .field("peers", &self.peers.len())
             .field("keep_alive_interval", &self.keep_alive_interval)
             .field("idle_timeout", &self.idle_timeout)
+            .field("protocol_version", &self.protocol_version)
+            .field("deployment_version", &self.deployment_version)
+            .field("reduced_circuits", &self.reduced_circuits)
             .finish()
     }
 }
+
+/// Error returned when an invalid deployment-version string is supplied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeploymentVersionError {
+    /// String exceeded [`MAX_DEPLOYMENT_VERSION_LEN`] bytes.
+    TooLong { len: usize, max: usize },
+}
+
+impl std::fmt::Display for DeploymentVersionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLong { len, max } => {
+                write!(f, "deployment version is {len} bytes, max is {max}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DeploymentVersionError {}
 
 #[cfg(test)]
 mod tests {

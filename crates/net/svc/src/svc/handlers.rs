@@ -115,6 +115,16 @@ fn clear_reconnect(peer: PeerId, state: &mut ServiceState) {
 }
 
 fn start_outbound_attempt(peer: PeerId, state: &mut ServiceState) {
+    // Don't burn cycles reconnecting to a peer we know is incompatible.
+    // Cleared on process restart.
+    if state.incompatible_peers.contains(&peer) {
+        tracing::debug!(
+            peer = %hex::encode(peer),
+            "skipping outbound attempt: peer marked incompatible (version handshake failed)"
+        );
+        return;
+    }
+
     let addr = match state.config.get_peer_addr(&peer) {
         Some(addr) => addr,
         None => return,
@@ -137,6 +147,9 @@ fn start_outbound_attempt(peer: PeerId, state: &mut ServiceState) {
         attempt,
         addr,
         state.event_tx.clone(),
+        state.config.protocol_version,
+        state.config.deployment_version.clone(),
+        state.config.reduced_circuits,
     );
 }
 
@@ -533,6 +546,23 @@ fn handle_open_stream_request(
     if !state.config.has_peer(&peer) {
         tokio::spawn(async move {
             let _ = respond_to.send(Err(OpenStreamError::PeerNotFound)).await;
+        });
+        return;
+    }
+
+    // Peer is in the incompatible-peer cache (failed version handshake during
+    // this process lifetime). `start_outbound_attempt` will skip dialing, so
+    // queueing the request would just leave it pending until the caller's
+    // timeout / cancel fires. Reject immediately so the caller surfaces the
+    // failure right away.
+    if state.incompatible_peers.contains(&peer) {
+        tokio::spawn(async move {
+            let _ = respond_to
+                .send(Err(OpenStreamError::ConnectionFailed(
+                    "peer marked incompatible (version handshake failed); reconnect suppressed until restart or inbound handshake"
+                        .to_string(),
+                )))
+                .await;
         });
         return;
     }
@@ -1385,6 +1415,47 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                 "outbound connection failed"
             );
             on_outbound_failed(peer, attempt_id, error, state);
+        }
+
+        ServiceEvent::MarkPeerIncompatible {
+            peer,
+            direction,
+            reason,
+        } => {
+            // First insertion logs at ERROR; repeats become DEBUG so a peer
+            // hammering inbound retries (which are allowed by design — see
+            // `incompatible_peers` doc) doesn't generate ERROR-level spam.
+            if state.incompatible_peers.insert(peer) {
+                tracing::error!(
+                    peer = %hex::encode(peer),
+                    direction,
+                    reason = %reason,
+                    "version handshake failed; peer is incompatible until restart or successful inbound handshake"
+                );
+            } else {
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    direction,
+                    reason = %reason,
+                    "duplicate MarkPeerIncompatible signal; already tracked"
+                );
+            }
+            // Clear any pending reconnect schedule for this peer so the
+            // suppression takes effect immediately rather than after one more
+            // attempt.
+            clear_reconnect(peer, state);
+        }
+
+        ServiceEvent::ClearPeerIncompatible { peer } => {
+            // Successful handshake — peer has been upgraded (or always was
+            // compatible). Drop them from the cache so outbound reconnect
+            // attempts resume normally if the connection later drops.
+            if state.incompatible_peers.remove(&peer) {
+                tracing::info!(
+                    peer = %hex::encode(peer),
+                    "peer reconnected with matching versions; clearing incompatible flag"
+                );
+            }
         }
 
         ServiceEvent::ConnectionLost {

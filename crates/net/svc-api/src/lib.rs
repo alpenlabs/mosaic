@@ -23,6 +23,7 @@
 
 pub mod api;
 pub mod config;
+pub mod handshake;
 pub mod peer_id;
 
 // Re-export main types for convenience.
@@ -31,4 +32,8 @@ pub use api::{
     PayloadBuf, Stream, StreamClosed,
 };
 pub use config::{NetServiceConfig, PeerConfig, PeerStreamRateLimit};
+pub use handshake::{
+    HANDSHAKE_MAGIC, HandshakeMismatch, HandshakePayload, MAX_DEPLOYMENT_VERSION_LEN,
+    MAX_HANDSHAKE_PAYLOAD_BYTES, PROTOCOL_VERSION, validate_handshake,
+};
 pub use peer_id::{PeerId, peer_id_from_signing_key, peer_id_from_verifying_key};

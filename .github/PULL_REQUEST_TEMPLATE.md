@@ -38,6 +38,7 @@ Ensure all the following are checked:
 - [ ] My changes do not introduce new warnings.
 - [ ] I have added tests that prove my changes are effective or that my feature works.
 - [ ] New and existing tests pass with my changes.
+- [ ] If this PR touches the wire-visible protocol surface — message types in `crates/cac/types`, garbler/evaluator STF semantics peers depend on in `crates/cac/protocol`, or net-svc framing/priorities — I bumped `PROTOCOL_VERSION` in `crates/net/svc-api/src/handshake.rs`.
 
 ## Related Issues
 

@@ -206,6 +206,19 @@ pub struct ServiceState {
 
     /// Per-peer protocol-stream admission rate limiter.
     pub peer_rate_limiter: super::peer_rate_limit::PeerStreamRateLimiter,
+
+    /// Peers that have failed the version handshake during this process
+    /// lifetime. Outbound reconnect attempts skip peers in this set so we
+    /// don't burn CPU and log lines re-handshaking a known-incompatible peer.
+    ///
+    /// Entries are cleared on:
+    /// - Process restart (cache is in-memory only), OR
+    /// - A successful version handshake with that peer (typically because they upgraded and either
+    ///   dialed us inbound or our outbound succeeded on a path that wasn't suppressed).
+    ///
+    /// Inbound connections always run the handshake regardless of this set
+    /// — an upgraded peer dialing us is always free to reconnect.
+    pub incompatible_peers: HashSet<PeerId>,
 }
 
 impl ServiceState {
@@ -297,6 +310,24 @@ pub enum ServiceEvent {
         attempt_id: u64,
         error: String,
     },
+    /// A peer failed the version handshake; mark it incompatible for the rest
+    /// of this process lifetime (or until cleared by a successful subsequent
+    /// handshake, see `ClearPeerIncompatible`) so reconnect attempts don't
+    /// churn against it.
+    MarkPeerIncompatible {
+        peer: PeerId,
+        /// "inbound" or "outbound", for the ERROR-level log emitted on first
+        /// entry.
+        direction: &'static str,
+        /// One-line reason from `HandshakeError::reason()`. Logged on first
+        /// entry only, to avoid log spam from reconnect loops.
+        reason: String,
+    },
+    /// A peer that was previously marked incompatible just completed a
+    /// successful version handshake (typically because they restarted with
+    /// matching versions and dialed us). Removes them from the cache so our
+    /// outbound reconnect logic stops suppressing attempts to them too.
+    ClearPeerIncompatible { peer: PeerId },
     /// A connection was lost.
     ConnectionLost {
         peer: PeerId,

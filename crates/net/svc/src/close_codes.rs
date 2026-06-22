@@ -14,6 +14,7 @@
 //! | 3    | Invalid peer ID in certificate (outbound)    |
 //! | 4    | Peer ID mismatch (connected to wrong peer)   |
 //! | 5    | Invalid overlap key metadata                 |
+//! | 6    | Version handshake failed (mismatch / timeout / decode error) |
 
 use quinn::VarInt;
 
@@ -51,3 +52,10 @@ pub const CLOSE_PEER_ID_MISMATCH: VarInt = VarInt::from_u32(4);
 /// The client did not present a parseable overlap-key server name, so the
 /// connection cannot participate in deterministic race resolution.
 pub const CLOSE_INVALID_OVERLAP_KEY: VarInt = VarInt::from_u32(5);
+
+/// Version handshake failed.
+///
+/// Either the protocol version, deployment version, or magic-prefix check did
+/// not match; or the handshake stream timed out / failed to decode. The
+/// concrete reason is logged at ERROR on the local side.
+pub const CLOSE_VERSION_HANDSHAKE_FAILED: VarInt = VarInt::from_u32(6);

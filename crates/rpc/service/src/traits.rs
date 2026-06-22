@@ -11,7 +11,7 @@ use mosaic_net_svc_api::PeerId;
 
 use crate::{
     DepositStatus, DepositWithStatus, EvaluatorDepositInit, EvaluatorWithdrawalData,
-    GarblerDepositInit, ServiceResult, SetupConfig, TablesetStatus,
+    GarblerDepositInit, NodeInfo, ServiceResult, SetupConfig, TablesetStatus,
 };
 
 /// Main programmatic interface for controlling Mosaic.
@@ -22,6 +22,11 @@ use crate::{
 pub trait MosaicApi: Send + Sync + 'static {
     /// Returns this node's peer ID.
     fn get_peer_id(&self) -> PeerId;
+
+    /// Returns identity / version information about this node. Operators
+    /// use this to verify build compatibility and deployment-cohort
+    /// alignment with their peers without log-diving.
+    fn node_info(&self) -> NodeInfo;
 
     /// Computes the deterministic tableset (state machine) ID for a given
     /// role, peer, and instance.

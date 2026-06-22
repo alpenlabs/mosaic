@@ -24,6 +24,7 @@ mod peer_rate_limit;
 mod state;
 mod stream;
 mod tasks;
+mod version_handshake;
 
 use std::{
     collections::HashSet,
@@ -317,6 +318,7 @@ async fn run_service_async(
         next_connection_generation: 1,
         resolved_outbound_attempt_by_peer: HashMap::new(),
         peer_rate_limiter,
+        incompatible_peers: ahash::HashSet::default(),
     };
 
     // Schedule initial connections to all peers.
@@ -397,6 +399,9 @@ async fn run_service_async(
         peer_by_port,
         peer_by_ip,
         event_tx.clone(),
+        config.protocol_version,
+        config.deployment_version.clone(),
+        config.reduced_circuits,
     );
 
     // Main event loop - NEVER blocks on I/O, only receives and dispatches
