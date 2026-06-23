@@ -90,13 +90,13 @@ ark-secp256k1 = "0.6.0"
 ark-serialize = "0.6.0"
 async-trait = "0.1"
 bitcoin = { version = "0.32.9", features = ["rand", "rand-std"] }
-bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script" }
-bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec" }
+bitcoin-script = { git = "https://github.com/BitVM/rust-bitcoin-script", rev = "01b4cb66cbf5b525079cabe006f9f99627da97cd" }
+bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec", rev = "ba96bc2bd76774c9d1b011461cb79d983c2c43a1" }
 bitvec = "1.0.1"
 blake3 = "1.8"
 bytes = "1.10"
-ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt" }
-ckt-gobble = { git = "https://github.com/alpenlabs/ckt" }
+ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt", rev = "432cdd11eb5780bbf7edcaad698850deb5b49675" }
+ckt-gobble = { git = "https://github.com/alpenlabs/ckt", rev = "432cdd11eb5780bbf7edcaad698850deb5b49675" }
 criterion = "0.8"
 fasm = "0.4.0"
 # TODO(alpenlabs): switch back to crates.io foundationdb >= 0.11 once released.
@@ -117,15 +117,11 @@ postcard = { version = "1.1.3", features = ["alloc"] }
 proptest = "1.11"
 rand = "0.8.5"
 rand_chacha = "0.3.1" # constrained by ark-std::rand_core
-rand_core = "0.9"
 secp256k1 = "0.29" # must match bitcoin's re-export
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "=1.0.150"
 serde_with = "3.19.0"
 sha2 = "0.11.0"
-strata-codec = { git = "https://github.com/alpenlabs/strata-common.git" }
 thiserror = "2.0"
-tokio-util = "0.7"
 tracing = "0.1"
 
 [profile.release]
