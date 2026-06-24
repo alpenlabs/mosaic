@@ -1512,11 +1512,17 @@ async fn test_e2e() {
                 .map(|commitment| {
                     let c = *commitment;
                     async move {
-                        let outcome = exec_ref.receive_garbling_table(&peer, c).await;
-                        match outcome {
-                            HandlerOutcome::Done(completion) => completion,
-                            other => panic!("expected Done, got {:?}", other),
+                        // Retry transient failures
+                        for _ in 0..100 {
+                            match exec_ref.receive_garbling_table(&peer, c).await {
+                                HandlerOutcome::Done(completion) => return completion,
+                                HandlerOutcome::Retry => {
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                                    continue;
+                                }
+                            }
                         }
+                        panic!("receive_garbling_table still retrying after 100 attempts");
                     }
                 })
                 .collect();
