@@ -125,7 +125,7 @@ fn start_outbound_attempt(peer: PeerId, state: &mut ServiceState) {
         return;
     }
 
-    let addr = match state.config.get_peer_addr(&peer) {
+    let host_port = match state.config.get_peer_host_port(&peer) {
         Some(addr) => addr,
         None => return,
     };
@@ -145,7 +145,7 @@ fn start_outbound_attempt(peer: PeerId, state: &mut ServiceState) {
         state.client_config.clone(),
         peer,
         attempt,
-        addr,
+        host_port,
         state.event_tx.clone(),
         state.config.protocol_version,
         state.config.deployment_version.clone(),

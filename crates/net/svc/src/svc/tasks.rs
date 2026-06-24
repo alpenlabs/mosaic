@@ -509,24 +509,51 @@ pub fn spawn_outbound_connection(
     client_config: quinn::ClientConfig,
     peer: PeerId,
     attempt: OutboundAttempt,
-    addr: std::net::SocketAddr,
+    host_port: String,
     event_tx: UnboundedSender<ServiceEvent>,
     protocol_version: u32,
     deployment_version: Option<String>,
     reduced_circuits: bool,
 ) {
+    let span_host_port = host_port.clone();
     tokio::spawn(async move {
-        tracing::debug!(peer = %hex::encode(peer), addr = %addr, "attempting outbound connection");
+        tracing::debug!(peer = %hex::encode(peer), host_port = %host_port, "attempting outbound connection");
 
         let server_name = overlap_server_name(attempt.overlap_key);
+        // Per-attempt DNS gets a fraction of the overall budget so a slow
+        // resolver can't eat the whole connect window. Phase-distinct error
+        // strings help operator triage (DNS vs connect timeout look the
+        // same on the wire otherwise).
+        // `lookup_host` picks the first record; multi-A-record consistency
+        // across attempts is not guaranteed (resolver order can vary), but
+        // that's pre-existing behavior — peer identity is authenticated by
+        // TLS regardless.
+        let dns_timeout = CONNECTION_TIMEOUT / 2;
         let result = async {
+            let addr = match tokio::time::timeout(
+                dns_timeout,
+                tokio::net::lookup_host(host_port.as_str()),
+            )
+            .await
+            {
+                Ok(Ok(mut iter)) => iter
+                    .next()
+                    .ok_or_else(|| format!("dns returned no addresses for `{host_port}`"))?,
+                Ok(Err(e)) => return Err(format!("dns resolution failed for `{host_port}`: {e}")),
+                Err(_) => {
+                    return Err(format!(
+                        "dns resolution timed out for `{host_port}` after {dns_timeout:?}"
+                    ));
+                }
+            };
+
             let connecting = endpoint
                 .connect_with(client_config, addr, &server_name)
                 .map_err(|e| e.to_string())?;
 
             tokio::time::timeout(CONNECTION_TIMEOUT, connecting)
                 .await
-                .map_err(|_| "connection timed out".to_string())?
+                .map_err(|_| format!("quic connect timed out to {addr}"))?
                 .map_err(|e| e.to_string())
         }
         .await;
@@ -618,7 +645,7 @@ pub fn spawn_outbound_connection(
         "net_svc.outbound_connect",
         peer = %hex::encode(peer),
         attempt_id = attempt.attempt_id,
-        addr = %addr
+        host_port = %span_host_port
     )));
 }
 

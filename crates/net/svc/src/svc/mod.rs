@@ -286,9 +286,6 @@ async fn run_service_async(
         .map_err(|e| ServiceError::TlsConfig(e.to_string()))?;
     let client_config = apply_client_transport_config(client_config, &config);
 
-    // Signal successful startup now that endpoint + TLS config are created.
-    let _ = startup_tx.send(Ok(())).await;
-
     // Internal event channel for spawned tasks to communicate back to main loop.
     // Unbounded is used to prevent race-resolution liveness from depending on
     // bounded internal backpressure.
@@ -354,23 +351,77 @@ async fn run_service_async(
         "network service started"
     );
 
+    // Build pre-handshake peer-id prediction maps. Best-effort: we try to
+    // resolve each peer's hostname so an inbound connection from a known IP
+    // can be tagged with the likely peer id before TLS confirms. If a peer's
+    // hostname can't be resolved at startup (e.g. its DNS isn't published
+    // yet), we just log and skip — TLS still authenticates inbound
+    // connections, the map is only a hint. The same hostname will be
+    // re-resolved on every outbound attempt, so the peer becomes reachable
+    // as soon as DNS catches up.
+    //
+    // Lookups run in parallel with a short per-peer timeout so startup is
+    // bounded by the slowest single resolver round-trip, not by N×default.
+    // The startup budget is intentionally tighter than the per-reconnect
+    // `CONNECTION_TIMEOUT / 2` DNS budget: at startup we just want the
+    // prediction map, and missing entries are recovered as peers dial in.
+    const STARTUP_DNS_TIMEOUT: Duration = Duration::from_secs(2);
+    let lookups = state.config.peers.iter().map(|peer| {
+        let peer_id = peer.peer_id;
+        let host_port = peer.host_port();
+        async move {
+            // Clone the host_port for `lookup_host` so we can return the
+            // original in the tuple for logging purposes regardless of
+            // outcome.
+            let result = tokio::time::timeout(
+                STARTUP_DNS_TIMEOUT,
+                tokio::net::lookup_host(host_port.clone()),
+            )
+            .await;
+            (peer_id, host_port, result)
+        }
+    });
+    let resolved_peers = futures::future::join_all(lookups).await;
+
     let mut addr_candidates = HashMap::<std::net::SocketAddr, Option<PeerId>>::new();
     let mut port_candidates = HashMap::<u16, Option<PeerId>>::new();
     let mut ip_candidates = HashMap::<std::net::IpAddr, Option<PeerId>>::new();
-    for peer in state.config.peers.iter() {
-        let normalized = tasks::normalize_socket_addr(peer.addr);
+    for (peer_id, host_port, result) in resolved_peers {
+        let resolved = match result {
+            Ok(Ok(mut iter)) => iter.next(),
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    peer = %hex::encode(peer_id),
+                    host_port = %host_port,
+                    %err,
+                    "could not resolve peer at startup; outbound will retry on each reconnect"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    peer = %hex::encode(peer_id),
+                    host_port = %host_port,
+                    timeout = ?STARTUP_DNS_TIMEOUT,
+                    "peer DNS lookup timed out at startup; outbound will retry on each reconnect"
+                );
+                None
+            }
+        };
+        let Some(addr) = resolved else { continue };
+        let normalized = tasks::normalize_socket_addr(addr);
         addr_candidates
             .entry(normalized)
             .and_modify(|slot| *slot = None)
-            .or_insert(Some(peer.peer_id));
+            .or_insert(Some(peer_id));
         port_candidates
             .entry(normalized.port())
             .and_modify(|slot| *slot = None)
-            .or_insert(Some(peer.peer_id));
+            .or_insert(Some(peer_id));
         ip_candidates
             .entry(normalized.ip())
             .and_modify(|slot| *slot = None)
-            .or_insert(Some(peer.peer_id));
+            .or_insert(Some(peer_id));
     }
     let peer_by_addr = Arc::new(
         addr_candidates
@@ -390,6 +441,13 @@ async fn run_service_async(
             .filter_map(|(ip, maybe_peer)| maybe_peer.map(|peer| (ip, peer)))
             .collect::<HashMap<_, _>>(),
     );
+
+    // Signal successful startup now that the endpoint, TLS config, and
+    // best-effort peer-prediction maps are all ready. We deliberately wait
+    // until after the DNS lookups so callers of `NetService::new` don't see
+    // it return Ok before the service thread is actually ready to accept
+    // and process commands.
+    let _ = startup_tx.send(Ok(())).await;
 
     // Dedicated accept loop so accept timestamps are captured at source.
     tasks::spawn_accept_loop(

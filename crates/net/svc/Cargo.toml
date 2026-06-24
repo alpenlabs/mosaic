@@ -41,6 +41,7 @@ mosaic-net-wire = { path = "../wire" }
 # Utilities
 ahash = "0.8"
 blake3 = "1"
+futures = { workspace = true }
 hex = "0.4"
 tracing = "0.1"
 

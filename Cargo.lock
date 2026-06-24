@@ -2493,6 +2493,7 @@ dependencies = [
  "ark-serialize",
  "blake3",
  "ed25519-dalek",
+ "futures",
  "hex",
  "kanal",
  "mosaic-net-svc-api",
