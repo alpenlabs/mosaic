@@ -659,6 +659,14 @@ impl BulkTransferExpectation {
         self.rx.recv().await
     }
 
+    /// Explicitly cancel the registered expectation.
+    ///
+    /// Cancellation is sent best-effort by the [`Drop`] impl, which uses
+    /// `try_send` so it never blocks the caller if net-svc's command queue
+    /// is full. Consuming `self` here makes intent explicit and lets the
+    /// `Drop` run immediately.
+    pub fn cancel(self) {}
+
     /// Borrow the underlying receiver.
     pub fn receiver(&self) -> &AsyncReceiver<Stream> {
         &self.rx

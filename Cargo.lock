@@ -2437,6 +2437,7 @@ dependencies = [
  "ckt-gobble",
  "futures",
  "futures-timer",
+ "kanal",
  "mosaic-cac-types",
  "mosaic-common",
  "mosaic-heap-array",
@@ -2448,6 +2449,8 @@ dependencies = [
  "parking_lot",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
