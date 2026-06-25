@@ -284,10 +284,13 @@ impl PeerEntry {
     }
 
     pub(crate) fn to_peer_config(&self) -> Result<PeerConfig> {
-        Ok(PeerConfig::new(
-            self.peer_id()?,
-            parse_socket_addr(&self.addr)?,
-        ))
+        // Address is validated as `host:port` shape but **not** resolved here
+        // — resolution happens at every outbound connection attempt. This
+        // lets mosaic boot cleanly even when a peer's DNS hasn't been
+        // published yet, and lets operators rotate their A records without
+        // requiring restarts on the other side.
+        let (host, port) = parse_host_port(&self.addr)?;
+        Ok(PeerConfig::from_host(self.peer_id()?, host, port))
     }
 }
 
@@ -441,6 +444,44 @@ fn parse_socket_addr(value: &str) -> Result<SocketAddr> {
         .with_context(|| format!("no addresses found for `{value}`"))
 }
 
+/// Split a `host:port` config string into its parts WITHOUT performing DNS
+/// resolution. Accepts IPv4 literals (`127.0.0.1:9000`), bracketed IPv6
+/// literals (`[::1]:9000`), and hostnames (`peer.example.com:9000`). Bare
+/// (unbracketed) IPv6 literals are rejected because the host:port split is
+/// ambiguous — operators must bracket.
+fn parse_host_port(value: &str) -> Result<(String, u16)> {
+    if let Some(rest) = value.strip_prefix('[') {
+        let (host, port) = rest
+            .split_once("]:")
+            .with_context(|| format!("invalid bracketed address `{value}`"))?;
+        if host.is_empty() {
+            bail!("address `{value}` has empty host");
+        }
+        let port = port
+            .parse::<u16>()
+            .with_context(|| format!("invalid port in `{value}`"))?;
+        return Ok((host.to_string(), port));
+    }
+    let (host, port) = value
+        .rsplit_once(':')
+        .with_context(|| format!("address `{value}` must be in `host:port` form"))?;
+    if host.is_empty() {
+        bail!("address `{value}` has empty host");
+    }
+    // Reject bare IPv6: a host portion that itself contains ':' means the
+    // user wrote `2001:db8::1:9000`, which rsplit_once would mis-parse
+    // (the last `:9000` segment is `0` not the intended port).
+    if host.contains(':') {
+        bail!(
+            "address `{value}` looks like a bare IPv6 literal; use bracketed form `[<addr>]:<port>`"
+        );
+    }
+    let port = port
+        .parse::<u16>()
+        .with_context(|| format!("invalid port in `{value}`"))?;
+    Ok((host.to_string(), port))
+}
+
 fn decode_signing_key(value: &str) -> Result<SigningKey> {
     let bytes = decode_exact_hex::<32>(value, "signing key")?;
     Ok(SigningKey::from_bytes(&bytes))
@@ -562,6 +603,37 @@ mod tests {
     use object_store::ClientConfigKey;
 
     use super::*;
+
+    #[test]
+    fn parse_host_port_accepts_ipv4_and_hostname_and_bracketed_ipv6() {
+        assert_eq!(
+            parse_host_port("127.0.0.1:9000").unwrap(),
+            ("127.0.0.1".to_string(), 9000)
+        );
+        assert_eq!(
+            parse_host_port("operator.example.com:9000").unwrap(),
+            ("operator.example.com".to_string(), 9000)
+        );
+        assert_eq!(
+            parse_host_port("[::1]:9000").unwrap(),
+            ("::1".to_string(), 9000)
+        );
+    }
+
+    #[test]
+    fn parse_host_port_rejects_bare_ipv6_empty_host_and_missing_port() {
+        let err = parse_host_port("2001:db8::1:9000").unwrap_err();
+        assert!(err.to_string().contains("bracketed"));
+
+        let err = parse_host_port(":9000").unwrap_err();
+        assert!(err.to_string().contains("empty host"));
+
+        let err = parse_host_port("[]:9000").unwrap_err();
+        assert!(err.to_string().contains("empty host"));
+
+        let err = parse_host_port("operator.example.com").unwrap_err();
+        assert!(err.to_string().contains("host:port"));
+    }
 
     fn sample_config_toml(circuit_path: &Path) -> String {
         format!(

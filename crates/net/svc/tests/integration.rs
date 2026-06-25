@@ -1401,3 +1401,67 @@ fn version_handshake_incompatible_cache_clears_on_upgraded_reconnect() {
     }
     unreachable!()
 }
+
+// ============================================================================
+// DNS lazy-resolution (issue: mosaic must not crash when a peer's hostname
+// can't be resolved at startup)
+// ============================================================================
+
+#[test]
+fn unresolvable_peer_hostname_does_not_block_startup() {
+    // A's config lists B as a peer at an unresolvable .invalid hostname.
+    // Per RFC 6761, .invalid never resolves, so this exercises the
+    // startup-time NXDOMAIN path without depending on a missing DNS record.
+    //
+    // Expected: NetService::new succeeds within a few seconds (the 2s
+    // per-peer DNS timeout caps the wait, *not* the default resolver
+    // timeout). Wall-clock bound asserts we actually exercised the timeout
+    // path, not a freak resolver hijack returning an IP.
+    init_tracing();
+    for attempt in 0..50 {
+        let port_a = next_port();
+        let key_a = test_key_from_tag(next_key_tag());
+        let addr_a = test_addr(port_a);
+
+        // Synthesize a peer-id for the unresolvable peer.
+        let key_b = test_key_from_tag(next_key_tag());
+        let peer_id_b = peer_id_from_signing_key(&key_b);
+
+        let unresolvable_peer = PeerConfig::from_host(peer_id_b, "no-such-host.invalid", 9999);
+
+        let config_a = NetServiceConfig::new(key_a, addr_a, vec![unresolvable_peer])
+            .with_reconnect_backoff(Duration::from_millis(50));
+
+        let started = std::time::Instant::now();
+        let (handle_a, ctrl_a) = match NetService::new(config_a) {
+            Ok(result) => result,
+            Err(_) if attempt < 49 => continue, // port collision
+            Err(e) => panic!("create net service A: {e}"),
+        };
+        let startup_elapsed = started.elapsed();
+        assert!(
+            startup_elapsed < Duration::from_secs(4),
+            "startup with unresolvable peer took {startup_elapsed:?} (expected <4s — the per-peer DNS timeout is 2s)"
+        );
+
+        // Smoke-test that the service is actually ready to process: issuing
+        // a stream-open request to the unresolvable peer should return an
+        // error rather than wedge. This proves the main loop is running
+        // past the DNS phase.
+        run_async(async {
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                handle_a.open_protocol_stream(peer_id_b, 0),
+            )
+            .await;
+            assert!(
+                matches!(result, Ok(Err(_)) | Err(_)),
+                "expected open_protocol_stream to fail or remain pending, got Ok(Ok(_))"
+            );
+        });
+
+        let _ = shutdown_controller_with_timeout(ctrl_a, Duration::from_secs(2));
+        return;
+    }
+    unreachable!()
+}

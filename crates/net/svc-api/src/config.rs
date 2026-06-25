@@ -14,18 +14,55 @@ use crate::{
 };
 
 /// Configuration for a known peer.
+///
+/// The address is stored as a `host:port` string and resolved on demand at
+/// each outbound connection attempt. This allows mosaic to boot cleanly even
+/// when a peer's DNS hasn't been published yet — resolution failures at
+/// connect-time are treated the same as a connection-refused (fail the
+/// attempt, retry on the reconnect backoff). It also means an operator can
+/// rotate their A record without requiring restarts on the other side.
 #[derive(Debug, Clone)]
 pub struct PeerConfig {
     /// Peer's public key (32-byte Ed25519 public key).
     pub peer_id: PeerId,
-    /// Peer's network address.
-    pub addr: SocketAddr,
+    /// Hostname (or IP literal) where this peer can be reached.
+    pub host: String,
+    /// Port where this peer can be reached.
+    pub port: u16,
 }
 
 impl PeerConfig {
-    /// Create a new peer configuration.
+    /// Create a new peer configuration from an already-resolved address.
+    ///
+    /// Convenience for IP-literal callers (most tests). The hostname stored
+    /// is the IP string form, so on-connect re-resolution is a no-op.
     pub fn new(peer_id: PeerId, addr: SocketAddr) -> Self {
-        Self { peer_id, addr }
+        Self {
+            peer_id,
+            host: addr.ip().to_string(),
+            port: addr.port(),
+        }
+    }
+
+    /// Create a new peer configuration from a hostname and port. The host
+    /// will be resolved at every outbound connection attempt.
+    pub fn from_host(peer_id: PeerId, host: impl Into<String>, port: u16) -> Self {
+        Self {
+            peer_id,
+            host: host.into(),
+            port,
+        }
+    }
+
+    /// `host:port` representation, suitable for `lookup_host`. IPv6 literals
+    /// are emitted in bracketed form so the output round-trips through
+    /// `host:port` parsers without ambiguity.
+    pub fn host_port(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
     }
 }
 
@@ -209,9 +246,12 @@ impl NetServiceConfig {
         self.peers.iter().find(|p| &p.peer_id == peer_id)
     }
 
-    /// Get a peer's address by their ID.
-    pub fn get_peer_addr(&self, peer_id: &PeerId) -> Option<SocketAddr> {
-        self.get_peer(peer_id).map(|p| p.addr)
+    /// Get a peer's `host:port` string by their ID.
+    ///
+    /// Returns the address in `host:port` form for resolution at outbound
+    /// connect time via `tokio::net::lookup_host`.
+    pub fn get_peer_host_port(&self, peer_id: &PeerId) -> Option<String> {
+        self.get_peer(peer_id).map(|p| p.host_port())
     }
 
     /// Get all peer IDs.
@@ -290,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn get_peer_addr_works() {
+    fn get_peer_host_port_works() {
         let config = NetServiceConfig::new(
             test_signing_key(),
             "127.0.0.1:9000".parse().unwrap(),
@@ -301,10 +341,18 @@ mod tests {
         );
 
         assert_eq!(
-            config.get_peer_addr(&test_peer_id(1)),
-            Some("127.0.0.1:9001".parse().unwrap())
+            config.get_peer_host_port(&test_peer_id(1)).as_deref(),
+            Some("127.0.0.1:9001")
         );
-        assert_eq!(config.get_peer_addr(&test_peer_id(2)), None);
+        assert_eq!(config.get_peer_host_port(&test_peer_id(2)), None);
+    }
+
+    #[test]
+    fn from_host_keeps_hostname_for_lazy_resolution() {
+        let peer = PeerConfig::from_host(test_peer_id(1), "operator.example.com", 9000);
+        assert_eq!(peer.host, "operator.example.com");
+        assert_eq!(peer.port, 9000);
+        assert_eq!(peer.host_port(), "operator.example.com:9000");
     }
 
     #[test]
