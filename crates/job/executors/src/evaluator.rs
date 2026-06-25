@@ -171,33 +171,58 @@ pub(crate) async fn handle_verify_opened_input_shares<SP: StorageProvider, TS: T
         return HandlerOutcome::Retry;
     };
 
-    // Batch-verify all opened shares against their polynomial commitments via RLC.
-    // Collects (commitment, shares) pairs and verifies in a single MSM.
-    #[allow(clippy::needless_range_loop)]
+    // Batch-verify opened shares against their polynomial commitments in
+    // bounded chunks. The previous implementation materialized all
+    // `N_INPUT_WIRES * WIDE_LABEL_VALUE_COUNT * N_OPEN_CIRCUITS` shares plus
+    // a matching point/scalar vector before any verification ran, which
+    // under production constants is on the order of several million points
+    // and is a memory-pressure DoS vector for an authenticated peer (the
+    // verifier path is reachable with peer-supplied shares that fail late).
+    //
+    // Chunking preserves correctness: `batch_verify_shares` already uses an
+    // RLC-based check whose soundness error is `N / |F|`; running it on
+    // independent windows just yields a per-window check at the same
+    // soundness, with peak memory bounded by the chunk size.
     let failure_reason = {
-        let mut share_bufs: Vec<Vec<Share>> =
-            Vec::with_capacity(N_INPUT_WIRES * WIDE_LABEL_VALUE_COUNT);
+        // Tunable. Each chunk holds roughly
+        //   VERIFY_CHUNK_PAIRS * (N_OPEN_CIRCUITS shares + N_COEFFICIENTS points + scalars)
+        // so a chunk of 256 pairs is on the order of MBs at production sizes.
+        const VERIFY_CHUNK_PAIRS: usize = 256;
+        let total_pairs = N_INPUT_WIRES * WIDE_LABEL_VALUE_COUNT;
+        let mut rng = rand::rngs::OsRng;
+        let mut result: Option<String> = None;
 
-        for wire in 0..N_INPUT_WIRES {
-            for val in 0..WIDE_LABEL_VALUE_COUNT {
-                let wire_val_shares: Vec<Share> = (0..N_OPEN_CIRCUITS)
+        let mut chunk_shares: Vec<Vec<Share>> = Vec::with_capacity(VERIFY_CHUNK_PAIRS);
+        let mut chunk_pair_idx: Vec<(usize, usize)> = Vec::with_capacity(VERIFY_CHUNK_PAIRS);
+
+        for chunk_start in (0..total_pairs).step_by(VERIFY_CHUNK_PAIRS) {
+            let chunk_end = (chunk_start + VERIFY_CHUNK_PAIRS).min(total_pairs);
+            chunk_shares.clear();
+            chunk_pair_idx.clear();
+
+            for pair_idx in chunk_start..chunk_end {
+                let wire = pair_idx / WIDE_LABEL_VALUE_COUNT;
+                let val = pair_idx % WIDE_LABEL_VALUE_COUNT;
+                let shares: Vec<Share> = (0..N_OPEN_CIRCUITS)
                     .map(|idx| opened_input_shares[idx][wire][val])
                     .collect();
-                share_bufs.push(wire_val_shares);
+                chunk_shares.push(shares);
+                chunk_pair_idx.push((wire, val));
+            }
+
+            let pairs: Vec<_> = chunk_pair_idx
+                .iter()
+                .zip(chunk_shares.iter())
+                .map(|(&(wire, val), buf)| (&commitments[wire][val], buf.as_slice()))
+                .collect();
+
+            if batch_verify_shares(&pairs, &mut rng).is_err() {
+                result = Some("batch verification of opened input shares failed".to_string());
+                break;
             }
         }
 
-        let pairs: Vec<_> = (0..N_INPUT_WIRES)
-            .flat_map(|wire| (0..WIDE_LABEL_VALUE_COUNT).map(move |val| (wire, val)))
-            .zip(share_bufs.iter())
-            .map(|((wire, val), buf)| (&commitments[wire][val], buf.as_slice()))
-            .collect();
-
-        let mut rng = rand::rngs::OsRng;
-        match batch_verify_shares(&pairs, &mut rng) {
-            Ok(()) => None,
-            Err(_) => Some("batch verification of opened input shares failed".to_string()),
-        }
+        result
     };
 
     completed(
