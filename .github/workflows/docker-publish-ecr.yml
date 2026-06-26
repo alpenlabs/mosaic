@@ -20,11 +20,6 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '888577024788.dkr.ecr.us-east-1.amazonaws.com' }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'tn1/mosaic' }}
-  PUBLIC_ECR_REGISTRY: public.ecr.aws
-  PUBLIC_ECR_NAMESPACE: z5c7y9u9
-  PUBLIC_ECR_REPOSITORY: mosaic
-  PUBLIC_ECR_REGION: us-east-1
-  DOCKER_PLATFORMS: linux/amd64
 
 permissions:
   contents: read
@@ -34,15 +29,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build_and_publish:
-    name: Build and Publish Mosaic Image
+  # ---------------------------------------------------------------------------
+  # Resolve the build ref + image tag once, so the per-arch matrix and the
+  # final merge job all agree on the same values.
+  # ---------------------------------------------------------------------------
+  prepare:
+    name: Resolve build metadata
     runs-on: ubuntu-latest
-    environment: AWS
-    permissions:
-      contents: read
-      id-token: write
-      security-events: write
-    timeout-minutes: 30
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      resolved_sha: ${{ steps.meta.outputs.resolved_sha }}
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
     steps:
       - name: Validate manual inputs
         env:
@@ -73,8 +70,63 @@ jobs:
             fi
           fi
 
-      # Workflow scripts (render_trivy_summary.py, cleanup action) always come from
-      # main so they are reviewed code regardless of what inputs.ref points to.
+      # Shallow checkout of the requested build ref purely to resolve its SHA.
+      - name: Checkout build ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+
+      - name: Resolve build metadata
+        id: meta
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          resolved_sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=8 HEAD)"
+          checkout_ref="${INPUT_REF:-${GITHUB_SHA}}"
+          image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
+          {
+            echo "image_tag=${image_tag}"
+            echo "resolved_sha=${resolved_sha}"
+            echo "checkout_ref=${checkout_ref}"
+          } >> "${GITHUB_OUTPUT}"
+
+  # ---------------------------------------------------------------------------
+  # Build, scan (hard gate), and push one image per architecture, on native
+  # runners (no QEMU). Each arch is pushed under an arch-suffixed tag; the
+  # merge job assembles the final multi-arch manifest from them.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    environment: AWS
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    env:
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+    steps:
+      # Workflow scripts (render_trivy_summary.py, cleanup action, .trivyignore)
+      # always come from main so they are reviewed code regardless of inputs.ref.
       - name: Checkout workflow scripts from main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -92,45 +144,18 @@ jobs:
           fetch-depth: 0
           path: build-src
 
-      - name: Resolve build metadata
-        env:
-          INPUT_REF: ${{ inputs.ref }}
-          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+      - name: Resolve image refs
         run: |
           set -euo pipefail
-
-          # Resolve SHA from build-src/ (the requested ref), not the main checkout.
-          resolved_sha="$(git -C build-src rev-parse HEAD)"
-          short_sha="$(git -C build-src rev-parse --short=8 HEAD)"
-          checkout_ref="${INPUT_REF:-${GITHUB_SHA}}"
-          image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
-          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
-          public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${image_tag}"
-
+          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          arch_image_ref="${image_ref}-${ARCH}"
           {
-            echo "CHECKOUT_REF=${checkout_ref}"
-            echo "RESOLVED_SHA=${resolved_sha}"
-            echo "IMAGE_TAG=${image_tag}"
             echo "IMAGE_REF=${image_ref}"
-            echo "PUBLIC_IMAGE_REF=${public_image_ref}"
+            echo "ARCH_IMAGE_REF=${arch_image_ref}"
           } >> "${GITHUB_ENV}"
 
       - name: Cleanup space
         uses: ./.github/actions/cleanup # zizmor: ignore[unpinned-uses]
-
-      - name: Validate AWS publish configuration
-        env:
-          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
-          PUBLIC_AWS_ROLE_TO_ASSUME: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
-        run: |
-          if [[ -z "${AWS_ROLE_TO_ASSUME}" ]]; then
-            echo "::error::Repository variable AWS_ROLE_TO_ASSUME is required for ECR publishing"
-            exit 1
-          fi
-          if [[ -z "${PUBLIC_AWS_ROLE_TO_ASSUME}" ]]; then
-            echo "::error::Repository variable PUBLIC_AWS_ROLE_TO_ASSUME is required for public ECR publishing"
-            exit 1
-          fi
 
       - name: Configure private AWS credentials
         uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
@@ -146,16 +171,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-      # Build to local Docker daemon so Trivy can scan the image before any push.
-      - name: Build Mosaic image
+      # Build to local Docker daemon (single platform) so Trivy can scan the
+      # exact image before any push. Cache scope is per-arch to avoid collisions.
+      - name: Build Mosaic image (${{ matrix.arch }})
         run: |
           set -euo pipefail
           docker buildx build \
-            --platform "${DOCKER_PLATFORMS}" \
+            --platform "${PLATFORM}" \
             --file build-src/docker/Dockerfile \
-            --cache-from "type=gha,scope=mosaic" \
-            --cache-to "type=gha,scope=mosaic,mode=max" \
-            --tag "${IMAGE_REF}" \
+            --cache-from "type=gha,scope=mosaic-${ARCH}" \
+            --cache-to "type=gha,scope=mosaic-${ARCH},mode=max" \
+            --tag "${ARCH_IMAGE_REF}" \
             --load \
             build-src
 
@@ -163,8 +189,8 @@ jobs:
         run: mkdir -p trivy-results
 
       # .trivyignore lives in the root checkout (always main) so only reviewed,
-      # merged code can suppress CVEs — an untrusted inputs.ref cannot manipulate it.
-      # Guard creates an empty file for runs against refs that pre-date the file.
+      # merged code can suppress CVEs. Guard creates an empty file for refs that
+      # pre-date the file.
       - name: Ensure .trivyignore exists
         run: |
           if [[ ! -f .trivyignore ]]; then
@@ -172,11 +198,11 @@ jobs:
           fi
 
       # Hard gate — build fails and no image is pushed if CRITICAL or HIGH unfixed
-      # vulnerabilities are found. Add justified exceptions to .trivyignore via PR.
+      # vulnerabilities are found, per architecture.
       - name: Scan Mosaic image with Trivy (hard gate)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_REF }}
+          image-ref: ${{ env.ARCH_IMAGE_REF }}
           format: json
           output: trivy-results/mosaic.json
           scanners: vuln
@@ -185,14 +211,14 @@ jobs:
           exit-code: "1"
           trivyignores: .trivyignore
 
-      # Advisory SARIF scan — runs even if the hard gate failed so that findings
-      # are always visible in the Security tab for triage.
+      # Advisory SARIF scan — runs even if the hard gate failed so findings are
+      # always visible in the Security tab for triage.
       - name: Scan Mosaic image with Trivy (SARIF — Security tab)
         if: always()
         continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_REF }}
+          image-ref: ${{ env.ARCH_IMAGE_REF }}
           format: sarif
           output: trivy-results/mosaic.sarif
           scanners: vuln
@@ -207,41 +233,35 @@ jobs:
         continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_REF }}
+          image-ref: ${{ env.ARCH_IMAGE_REF }}
           format: cyclonedx
           output: trivy-results/mosaic.sbom.json
           scanners: vuln
           exit-code: "0"
           trivyignores: .trivyignore
 
-      # Converts trivy-results/mosaic.json → trivy-results/mosaic.md.
-      # The .md file is appended to $GITHUB_STEP_SUMMARY in the "Append publish summary"
-      # step below. See .github/scripts/render_trivy_summary.py for rendering logic.
       - name: Render Trivy markdown summary
         if: always()
         continue-on-error: true
         env:
-          IMAGE_REF: ${{ env.IMAGE_REF }}
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          IMAGE_REF: ${{ env.ARCH_IMAGE_REF }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}-${{ matrix.arch }}
         run: python3 .github/scripts/render_trivy_summary.py
 
-      # Uploads SARIF to the repository's Security → Code scanning tab.
-      # Requires security-events: write permission (set at job level above).
+      # Category is per-arch so the two matrix legs don't overwrite each other.
       - name: Upload Trivy SARIF to GitHub Security tab
         if: always()
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4
         with:
           sarif_file: trivy-results/mosaic.sarif
-          category: mosaic-ecr
+          category: mosaic-ecr-${{ matrix.arch }}
 
-      # Bundles JSON, SARIF, SBOM, and Markdown as a downloadable artifact.
-      # Artifact name includes the image tag so runs can be compared side-by-side.
       - name: Upload Trivy results artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: trivy-mosaic-${{ env.IMAGE_TAG }}
+          name: trivy-mosaic-${{ env.IMAGE_TAG }}-${{ matrix.arch }}
           if-no-files-found: ignore
           path: |
             trivy-results/mosaic.json
@@ -250,36 +270,56 @@ jobs:
             trivy-results/mosaic.md
 
       # Push only reaches this step if the hard gate scan above passed.
-      - name: Push Mosaic image to private ECR
-        run: docker push "${IMAGE_REF}"
+      - name: Push arch image to private ECR
+        run: docker push "${ARCH_IMAGE_REF}"
 
-      - name: Configure public ECR credentials
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
-        with:
-          role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.PUBLIC_ECR_REGION }}
-
-      - name: Login to public ECR
-        run: |
-          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
-            | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
-
-      - name: Push image to public ECR
-        run: |
-          set -euo pipefail
-          docker tag "${IMAGE_REF}" "${PUBLIC_IMAGE_REF}"
-          docker push "${PUBLIC_IMAGE_REF}"
-
-      - name: Restore private AWS credentials
+  # ---------------------------------------------------------------------------
+  # Assemble the final multi-arch manifest from the per-arch images.
+  #
+  # NOTE: public ECR publishing is intentionally omitted on this validation
+  # branch. Before merging to main, restore the public-ECR push as a multi-arch
+  # `buildx imagetools create` against the public registry.
+  # ---------------------------------------------------------------------------
+  merge:
+    name: Merge multi-arch manifest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    environment: AWS
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 15
+    env:
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+      CHECKOUT_REF: ${{ needs.prepare.outputs.checkout_ref }}
+      RESOLVED_SHA: ${{ needs.prepare.outputs.resolved_sha }}
+    steps:
+      - name: Configure private AWS credentials
         uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to private ECR for follow-up steps
+      - name: Login to private ECR
         run: |
           aws ecr get-login-password --region "${AWS_REGION}" \
             | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Create multi-arch manifest
+        run: |
+          set -euo pipefail
+          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker buildx imagetools create \
+            --tag "${image_ref}" \
+            "${image_ref}-amd64" \
+            "${image_ref}-arm64"
+          echo "IMAGE_REF=${image_ref}" >> "${GITHUB_ENV}"
+
+      - name: Inspect resulting manifest
+        run: docker buildx imagetools inspect "${IMAGE_REF}"
 
       - name: Resolve pushed image digest
         id: digest
@@ -297,24 +337,12 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
-          trivy_artifact="trivy-mosaic-${IMAGE_TAG}"
           {
-            echo "## Mosaic image publish"
+            echo "## Mosaic multi-arch image publish"
             echo
             echo "- Checkout ref: \`${CHECKOUT_REF}\`"
             echo "- Resolved SHA: \`${RESOLVED_SHA}\`"
             echo "- Image: \`${IMAGE_REF}\`"
-            echo "- Public image: \`${PUBLIC_IMAGE_REF}\`"
+            echo "- Architectures: \`linux/amd64\`, \`linux/arm64\`"
             echo "- Digest: \`${IMAGE_DIGEST:-not pushed}\`"
-            echo "- Trivy artifact: \`${trivy_artifact}\`"
-            echo
-            # Render the Trivy markdown table produced by render_trivy_summary.py.
-            # Falls back to a plain message if the script did not produce output.
-            if [[ -f trivy-results/mosaic.md ]]; then
-              cat trivy-results/mosaic.md
-            else
-              echo "### Trivy summary"
-              echo
-              echo "Trivy scan output was not generated."
-            fi
           } >> "${GITHUB_STEP_SUMMARY}"
