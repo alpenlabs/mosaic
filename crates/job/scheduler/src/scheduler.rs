@@ -52,7 +52,11 @@ impl Default for JobSchedulerConfig {
         Self {
             light: PoolConfig {
                 threads: 1,
-                concurrency_per_worker: 32,
+                // Sized to absorb a multi-peer setup burst without queueing
+                // other peers' send/ack work behind stalled bulk receives.
+                // Tasks are mostly parked on async I/O; unused slots cost a
+                // few KB each.
+                concurrency_per_worker: 512,
                 priority_queue: false,
             },
             heavy: PoolConfig {

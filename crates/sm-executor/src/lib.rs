@@ -1,6 +1,9 @@
 //! SM executor implementation.
 
-use std::{collections::VecDeque, panic::AssertUnwindSafe, thread::JoinHandle, time::Duration};
+use std::{
+    cell::RefCell, collections::VecDeque, panic::AssertUnwindSafe, thread::JoinHandle,
+    time::Duration,
+};
 
 use fasm::{Input as FasmInput, StateMachine};
 use futures::FutureExt;
@@ -207,6 +210,17 @@ where
     job_handle: JobSchedulerHandle,
     net_client: NetClient,
     command_rx: kanal::AsyncReceiver<SmCommand>,
+    /// Reusable action container for garbler STF calls.
+    ///
+    /// FASM recommends reusing the action container across STF invocations
+    /// (see `fasm::docs/03_performance.md`); we hold a single `Vec` and
+    /// `clear()` it before each use. Safe to use under interior mutability
+    /// because all STF call sites run serially on the SM executor's single
+    /// `select!` loop — there are no concurrent borrows.
+    garbler_actions: RefCell<garbler::ActionContainer>,
+    /// Reusable action container for evaluator STF calls. See
+    /// [`SmExecutor::garbler_actions`].
+    evaluator_actions: RefCell<evaluator::ActionContainer>,
 }
 
 impl<S> SmExecutor<S>
@@ -217,6 +231,39 @@ where
     <S as StorageProvider>::GarblerState: garbler::StateRead,
     <S as StorageProvider>::EvaluatorState: evaluator::StateRead,
 {
+    /// Take the reusable garbler action container out of `self`, leaving an
+    /// empty `Vec` in its place. The caller fills it during STF and returns
+    /// it via [`Self::restore_garbler_actions`] (or `drain`s into a fresh
+    /// `Vec` for submission, then returns the empty-but-allocated source).
+    ///
+    /// Taking-and-restoring (rather than borrowing across `.await`) keeps
+    /// clippy's `await_holding_refcell_ref` happy; the SM executor is
+    /// single-threaded so concurrent borrows are impossible, but the take
+    /// pattern is the conventional way to express that.
+    fn take_garbler_actions(&self) -> garbler::ActionContainer {
+        let mut taken = std::mem::take(&mut *self.garbler_actions.borrow_mut());
+        taken.clear();
+        taken
+    }
+
+    /// Put a previously-taken garbler action container back, preserving its
+    /// allocated capacity for the next STF call.
+    fn restore_garbler_actions(&self, actions: garbler::ActionContainer) {
+        *self.garbler_actions.borrow_mut() = actions;
+    }
+
+    /// Evaluator counterpart of [`Self::take_garbler_actions`].
+    fn take_evaluator_actions(&self) -> evaluator::ActionContainer {
+        let mut taken = std::mem::take(&mut *self.evaluator_actions.borrow_mut());
+        taken.clear();
+        taken
+    }
+
+    /// Evaluator counterpart of [`Self::restore_garbler_actions`].
+    fn restore_evaluator_actions(&self, actions: evaluator::ActionContainer) {
+        *self.evaluator_actions.borrow_mut() = actions;
+    }
+
     /// Create a new executor and handle.
     pub fn new(
         config: SmExecutorConfig,
@@ -240,6 +287,8 @@ where
                 job_handle,
                 net_client,
                 command_rx,
+                garbler_actions: RefCell::new(garbler::ActionContainer::default()),
+                evaluator_actions: RefCell::new(evaluator::ActionContainer::default()),
             },
             handle,
         )
@@ -487,24 +536,34 @@ where
                 tracing::debug!(role = ?SmRole::Garbler, "restoring garbler state machine");
                 match self.storage.garbler_state(&peer_id).await {
                     Ok(state) => {
-                        let mut actions = garbler::ActionContainer::default();
-                        match Self::stf_guard(peer_id, SmRole::Garbler, "restore", async {
-                            GarblerSM::<
-                                <S as StorageProviderMut>::GarblerState,
-                                <S as StorageProvider>::GarblerState,
-                            >::restore(&state, &mut actions)
-                            .await
-                        })
-                        .await
-                        {
+                        // Reuse the action container across STF calls
+                        // (FASM 03_performance.md). Take it out for the
+                        // duration so we don't hold a RefCell borrow across
+                        // .await; restore on every exit to preserve capacity.
+                        let mut actions = self.take_garbler_actions();
+                        let stf_result =
+                            Self::stf_guard(peer_id, SmRole::Garbler, "restore", async {
+                                GarblerSM::<
+                                    <S as StorageProviderMut>::GarblerState,
+                                    <S as StorageProvider>::GarblerState,
+                                >::restore(&state, &mut actions)
+                                .await
+                            })
+                            .await;
+                        match stf_result {
                             Ok(()) => {
                                 tracing::debug!(
                                     role = ?SmRole::Garbler,
                                     actions = actions.len(),
                                     "garbler restore STF completed"
                                 );
+                                // Drain leaves `actions` empty with capacity
+                                // preserved; restore returns it to the field
+                                // for the next call's reuse.
+                                let submitted: garbler::ActionContainer = actions.split_off(0);
+                                self.restore_garbler_actions(actions);
                                 match self
-                                    .submit_actions(peer_id, JobActions::Garbler(actions))
+                                    .submit_actions(peer_id, JobActions::Garbler(submitted))
                                     .await
                                 {
                                     Ok(()) => true,
@@ -522,6 +581,8 @@ where
                                 }
                             }
                             Err(err) => {
+                                // Preserve allocation on error too.
+                                self.restore_garbler_actions(actions);
                                 tracing::error!(
                                     role = ?SmRole::Garbler,
                                     error = ?err,
@@ -546,24 +607,27 @@ where
                 tracing::debug!(role = ?SmRole::Evaluator, "restoring evaluator state machine");
                 match self.storage.evaluator_state(&peer_id).await {
                     Ok(state) => {
-                        let mut actions = evaluator::ActionContainer::default();
-                        match Self::stf_guard(peer_id, SmRole::Evaluator, "restore", async {
-                            EvaluatorSM::<
-                                <S as StorageProviderMut>::EvaluatorState,
-                                <S as StorageProvider>::EvaluatorState,
-                            >::restore(&state, &mut actions)
-                            .await
-                        })
-                        .await
-                        {
+                        let mut actions = self.take_evaluator_actions();
+                        let stf_result =
+                            Self::stf_guard(peer_id, SmRole::Evaluator, "restore", async {
+                                EvaluatorSM::<
+                                    <S as StorageProviderMut>::EvaluatorState,
+                                    <S as StorageProvider>::EvaluatorState,
+                                >::restore(&state, &mut actions)
+                                .await
+                            })
+                            .await;
+                        match stf_result {
                             Ok(()) => {
                                 tracing::debug!(
                                     role = ?SmRole::Evaluator,
                                     actions = actions.len(),
                                     "evaluator restore STF completed"
                                 );
+                                let submitted: evaluator::ActionContainer = actions.split_off(0);
+                                self.restore_evaluator_actions(actions);
                                 match self
-                                    .submit_actions(peer_id, JobActions::Evaluator(actions))
+                                    .submit_actions(peer_id, JobActions::Evaluator(submitted))
                                     .await
                                 {
                                     Ok(()) => true,
@@ -581,6 +645,7 @@ where
                                 }
                             }
                             Err(err) => {
+                                self.restore_evaluator_actions(actions);
                                 tracing::error!(
                                     role = ?SmRole::Evaluator,
                                     error = ?err,
@@ -877,8 +942,8 @@ where
                         return Err(err);
                     }
                 };
-                let mut actions = garbler::ActionContainer::default();
-
+                // Reuse the garbler action container (FASM 03_performance.md).
+                let mut actions = self.take_garbler_actions();
                 if let Err(err) = Self::stf_guard(peer_id, SmRole::Garbler, "event", async {
                     GarblerSM::<<S as StorageProviderMut>::GarblerState>::stf(
                         &mut state,
@@ -889,6 +954,7 @@ where
                 })
                 .await
                 {
+                    self.restore_garbler_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable STF failure; retrying STF unit");
@@ -899,6 +965,7 @@ where
                 tracing::debug!(actions = actions.len(), "garbler event STF completed");
 
                 if let Err(err) = Self::commit_state(state, peer_id, SmRole::Garbler).await {
+                    self.restore_garbler_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable commit failure; retrying STF unit");
@@ -906,7 +973,9 @@ where
                     }
                     return Err(err);
                 }
-                return self.submit_actions(peer_id, JobActions::Garbler(actions)).await;
+                let submitted: garbler::ActionContainer = actions.split_off(0);
+                self.restore_garbler_actions(actions);
+                return self.submit_actions(peer_id, JobActions::Garbler(submitted)).await;
             }
         }
         .instrument(span)
@@ -944,8 +1013,7 @@ where
                         return Err(err);
                     }
                 };
-                let mut actions = evaluator::ActionContainer::default();
-
+                let mut actions = self.take_evaluator_actions();
                 if let Err(err) = Self::stf_guard(peer_id, SmRole::Evaluator, "event", async {
                     EvaluatorSM::<<S as StorageProviderMut>::EvaluatorState>::stf(
                         &mut state,
@@ -956,6 +1024,7 @@ where
                 })
                 .await
                 {
+                    self.restore_evaluator_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable STF failure; retrying STF unit");
@@ -966,6 +1035,7 @@ where
                 tracing::debug!(actions = actions.len(), "evaluator event STF completed");
 
                 if let Err(err) = Self::commit_state(state, peer_id, SmRole::Evaluator).await {
+                    self.restore_evaluator_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable commit failure; retrying STF unit");
@@ -973,8 +1043,10 @@ where
                     }
                     return Err(err);
                 }
+                let submitted: evaluator::ActionContainer = actions.split_off(0);
+                self.restore_evaluator_actions(actions);
                 return self
-                    .submit_actions(peer_id, JobActions::Evaluator(actions))
+                    .submit_actions(peer_id, JobActions::Evaluator(submitted))
                     .await;
             }
         }
@@ -1014,8 +1086,7 @@ where
                         return Err(err);
                     }
                 };
-                let mut actions = garbler::ActionContainer::default();
-
+                let mut actions = self.take_garbler_actions();
                 if let Err(err) =
                     Self::stf_guard(peer_id, SmRole::Garbler, "completion", async {
                         GarblerSM::<<S as StorageProviderMut>::GarblerState>::stf(
@@ -1030,6 +1101,7 @@ where
                     })
                     .await
                 {
+                    self.restore_garbler_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable STF failure; retrying STF unit");
@@ -1040,6 +1112,7 @@ where
                 tracing::debug!(actions = actions.len(), "garbler completion STF completed");
 
                 if let Err(err) = Self::commit_state(state, peer_id, SmRole::Garbler).await {
+                    self.restore_garbler_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Garbler, attempts, error = ?err, "retryable commit failure; retrying STF unit");
@@ -1047,7 +1120,9 @@ where
                     }
                     return Err(err);
                 }
-                return self.submit_actions(peer_id, JobActions::Garbler(actions)).await;
+                let submitted: garbler::ActionContainer = actions.split_off(0);
+                self.restore_garbler_actions(actions);
+                return self.submit_actions(peer_id, JobActions::Garbler(submitted)).await;
             }
         }
         .instrument(span)
@@ -1086,8 +1161,7 @@ where
                         return Err(err);
                     }
                 };
-                let mut actions = evaluator::ActionContainer::default();
-
+                let mut actions = self.take_evaluator_actions();
                 if let Err(err) =
                     Self::stf_guard(peer_id, SmRole::Evaluator, "completion", async {
                         EvaluatorSM::<<S as StorageProviderMut>::EvaluatorState>::stf(
@@ -1102,6 +1176,7 @@ where
                     })
                     .await
                 {
+                    self.restore_evaluator_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable STF failure; retrying STF unit");
@@ -1115,6 +1190,7 @@ where
                 );
 
                 if let Err(err) = Self::commit_state(state, peer_id, SmRole::Evaluator).await {
+                    self.restore_evaluator_actions(actions);
                     if Self::is_retryable_processing_error(&err) {
                         attempts = attempts.saturating_add(1);
                         tracing::warn!(peer = ?peer_id, role = ?SmRole::Evaluator, attempts, error = ?err, "retryable commit failure; retrying STF unit");
@@ -1122,8 +1198,10 @@ where
                     }
                     return Err(err);
                 }
+                let submitted: evaluator::ActionContainer = actions.split_off(0);
+                self.restore_evaluator_actions(actions);
                 return self
-                    .submit_actions(peer_id, JobActions::Evaluator(actions))
+                    .submit_actions(peer_id, JobActions::Evaluator(submitted))
                     .await;
             }
         }
