@@ -15,6 +15,10 @@ pub struct RpcCircuitInfoEntry {
     pub name: String,
     /// commitment to check circuit integrity
     pub commitment: RpcByte32,
+    /// vk hash the circuit was generated for, taken from the v5c header memo
+    /// field (all-zero for circuits generated without a vk, e.g. the test
+    /// circuit).
+    pub vk_hash: RpcByte32,
     /// additional metadata about the circuit
     pub info: RpcCircuitInfo,
 }
@@ -38,6 +42,7 @@ impl RpcCircuitInfoEntry {
         Ok(Self {
             name,
             commitment: header.checksum.into(),
+            vk_hash: header.memo.into(),
             info: RpcCircuitInfo {
                 total_size_bytes: file_size,
                 total_gates: header.total_gates(),
