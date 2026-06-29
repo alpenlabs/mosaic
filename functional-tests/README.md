@@ -96,4 +96,12 @@ Logs are written in tests data directory:
 
 The custom [circuit](./functional-tests/artifacts/mosaic_depositidx_ckt.v5c) used in the functional tests mirrors the full circuit's input/output wire structure but with simplified logic: its output is determined entirely by the least significant bit (LSB) of the deposit inputs. This allows valid and invalid counter-proofs to be trivially simulated for tests by choosing odd or even deposit indices.
 
-The circuit was generated from [g16@`2cc9a03`](https://github.com/alpenlabs/g16/commit/2cc9a03682833c68a2f64fa0098b0ec46f8d8a15).
+The circuit was generated from [g16@`7779611`](https://github.com/alpenlabs/g16/commit/7779611ab3cbf69113dce0e0e22b48a721fca5d6).
+
+This is the **same circuit** as the unit-test artifact at `artifacts/g16.v5c` (referenced from
+`crates/cac/protocol/src/tests.rs`); the two files are byte-identical, just stored under different
+names. See the regeneration steps in the comment above `tests::test_e2e` in that file. Because they
+are the same artifact, both copies must be regenerated together whenever the `ckt` dependency is
+bumped (e.g. a header-format change) — updating only one will pass unit tests but break the
+functional tests (or vice versa). After regenerating, copy the resulting `g16.v5c` to both
+`artifacts/g16.v5c` and `functional-tests/artifacts/mosaic_depositidx_ckt.v5c`.
