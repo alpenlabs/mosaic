@@ -504,7 +504,7 @@ fn decode_exact_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N]>
     }
 
     let mut out = [0u8; N];
-    for (i, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (i, chunk) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let chunk = std::str::from_utf8(chunk).context("hex input was not valid utf-8")?;
         out[i] = u8::from_str_radix(chunk, 16)
             .map_err(|e| anyhow!("invalid hex in {label} at byte {i}: {e}"))?;
