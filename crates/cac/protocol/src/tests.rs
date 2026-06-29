@@ -1242,20 +1242,33 @@ use fasm::StateMachine;
 use mosaic_storage_api::{StorageProvider, StorageProviderMut};
 
 #[tokio::test]
-// OPTIONAL steps to generate v5c file yourself:
-// 1. Clone g16 repo and switch to branch test/simple_circuit_postaudit_smallest
-//   test/simple_circuit_postaudit_smallest branch generates sample ckt meant for test purposes
-//   only. The binary circuit's function is as follows:
+// OPTIONAL steps to regenerate artifacts/g16.v5c yourself:
+//
+// The circuit comes from the g16 repo, branch test/simple_circuit_postaudit_smallest.
+// That branch builds a sample ckt meant for test purposes only; its function is:
 //   combine_all_wires <- AND(all_wires) // we use up all input wires
 //   wire_a <-XOR(combine_all_wires, combine_all_wires) // wire_a is now always zero
 //   output_wire <-  wire_a  OR deposit_id_lsb // result is dependent only on deposit_id_lsb
-// 2. generate v5a ckt file: cd g16gen && cargo run generate 6 && cargo run write-input-bits 6
-// 3. clone: ckt repo
-// 4. move g16gen/g16.ckt file to ckt/lvl/
-// 5. generate v5c file: cd crates/lvl && cargo run prealloc g16.ckt g16.v5c
-// 6. move lvl/g16.v5c to mosaic/cac/protocol/
-// 7. Run test with: cargo test --release --package mosaic-cac-protocol --lib -- tests::test_e2e
-//    --exact --show-output --nocapture
+// The branch pins its ckt deps to the rev used by this workspace (see Cargo.toml),
+// so g16gen + the bundled `lvl` tool emit the current v5c memo/header format. There is
+// no separate ckt clone: ckt-lvl is a cargo dependency of g16. Generation is fully
+// deterministic, so the output is byte-for-byte identical to the checked-in artifact.
+//
+// 1. Clone g16 and switch to branch test/simple_circuit_postaudit_smallest
+//
+// 2. Generate the v5a circuit (prints "Primary input count: 1312"):
+//
+//    cargo run -p g16gen --release -- generate 6
+//
+// 3. Preallocate into v5c (ckt-lvl is a git dep, so build it then run the binary):
+//
+//    cargo build -p ckt-lvl --bin lvl --release && ./target/release/lvl prealloc g16.ckt g16.v5c
+//
+// 4. Copy g16.v5c into this repo at artifacts/g16.v5c
+//
+// 5. Run the test:
+//
+//    cargo test --release -p mosaic-cac-protocol --lib -- tests::test_e2e --exact --nocapture
 
 async fn test_e2e() {
     use mosaic_cac_types::WithdrawalInputs;
