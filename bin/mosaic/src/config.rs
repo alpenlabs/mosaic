@@ -519,7 +519,14 @@ const DEFAULT_RECONNECT_BACKOFF_SECS: u64 = 1;
 const DEFAULT_OPEN_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_ACK_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_POOL_THREADS: usize = 1;
-const DEFAULT_POOL_CONCURRENCY: usize = 32;
+// Light pool default. Sized to comfortably absorb a multi-peer setup burst
+// (per-peer ceiling ~360 actions × ~3 peers ≈ 1000+ in flight at the worst
+// moment) without queueing other peers' send/ack work behind stalled bulk
+// receives. Tasks are mostly parked on async I/O, so the cost of unused
+// slots is a few KB each. Heavy pool retains its smaller default (8) since
+// it runs CPU-bound work where concurrency beyond a small multiplier of
+// thread count just queues.
+const DEFAULT_POOL_CONCURRENCY: usize = 512;
 const DEFAULT_GARBLING_WORKER_THREADS: usize = 4;
 const DEFAULT_GARBLING_MAX_CONCURRENT: usize = 8;
 const DEFAULT_BATCH_TIMEOUT_MS: u64 = 500;
