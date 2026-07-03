@@ -618,7 +618,7 @@ async fn init_evaluator_deposit_dispatches_correct_input() {
 }
 
 // ---------------------------------------------------------------------------
-// Group 5b: deposit init accepted in post-setup states
+// Group 5b: deposit init in post-setup states
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -649,7 +649,7 @@ async fn init_garbler_deposit_accepts_completing_adaptors() {
 }
 
 #[tokio::test]
-async fn init_garbler_deposit_accepts_setup_consumed() {
+async fn init_garbler_deposit_rejects_setup_consumed() {
     let h = TestHarness::new();
     h.setup_garbler(garbler::Step::SetupConsumed {
         deposit_id: test_deposit_id(99),
@@ -666,13 +666,16 @@ async fn init_garbler_deposit_accepts_setup_consumed() {
         deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
     };
 
-    h.api
+    let err = h
+        .api
         .init_garbler_deposit(&h.garbler_sm_id(), &deposit_id, init)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    let cmd = h.recv_command().await;
-    assert!(matches!(cmd.kind, SmCommandKind::DepositInit { .. }));
+    assert!(
+        matches!(err, ServiceError::InvalidInputForState(_)),
+        "expected InvalidInputForState, got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -702,7 +705,7 @@ async fn init_evaluator_deposit_accepts_evaluating_tables() {
 }
 
 #[tokio::test]
-async fn init_evaluator_deposit_accepts_setup_consumed() {
+async fn init_evaluator_deposit_rejects_setup_consumed() {
     let h = TestHarness::new();
     h.setup_evaluator(evaluator::Step::SetupConsumed {
         deposit_id: test_deposit_id(99),
@@ -716,13 +719,16 @@ async fn init_evaluator_deposit_accepts_setup_consumed() {
         deposit_inputs: [0u8; N_DEPOSIT_INPUT_WIRES],
     };
 
-    h.api
+    let err = h
+        .api
         .init_evaluator_deposit(&h.evaluator_sm_id(), &deposit_id, init)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    let cmd = h.recv_command().await;
-    assert!(matches!(cmd.kind, SmCommandKind::DepositInit { .. }));
+    assert!(
+        matches!(err, ServiceError::InvalidInputForState(_)),
+        "expected InvalidInputForState, got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

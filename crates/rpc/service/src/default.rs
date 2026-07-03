@@ -323,7 +323,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         use garbler::Step;
         if !matches!(
             statemachine.step,
-            Step::SetupComplete | Step::CompletingAdaptors { .. } | Step::SetupConsumed { .. }
+            Step::SetupComplete | Step::CompletingAdaptors { .. }
         ) {
             return Err(ServiceError::InvalidInputForState(
                 statemachine.step.step_name().into(),
@@ -370,7 +370,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
         use evaluator::Step;
         if !matches!(
             statemachine.step,
-            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. }
+            Step::SetupComplete | Step::EvaluatingTables { .. }
         ) {
             return Err(ServiceError::InvalidInputForState(
                 statemachine.step.step_name().into(),
@@ -491,9 +491,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     use garbler::Step;
                     if !matches!(
                         statemachine.step,
-                        Step::SetupComplete
-                            | Step::CompletingAdaptors { .. }
-                            | Step::SetupConsumed { .. }
+                        Step::SetupComplete | Step::CompletingAdaptors { .. }
                     ) {
                         return Err(ServiceError::InvalidInputForState(
                             statemachine.step.step_name().into(),
@@ -530,9 +528,7 @@ impl<S: StorageProvider, R: CryptoRng + Rng + Send + 'static> MosaicApi for Defa
                     use evaluator::Step;
                     if !matches!(
                         statemachine.step,
-                        Step::SetupComplete
-                            | Step::EvaluatingTables { .. }
-                            | Step::SetupConsumed { .. }
+                        Step::SetupComplete | Step::EvaluatingTables { .. }
                     ) {
                         return Err(ServiceError::InvalidInputForState(
                             statemachine.step.step_name().into(),

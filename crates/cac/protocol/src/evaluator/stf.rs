@@ -25,9 +25,9 @@ use crate::{
     common::{derive_stage_seed, get_eval_commitments, get_eval_indices},
 };
 
-// Note: deposit operations are accepted in any post-setup state (SetupComplete,
-// EvaluatingTables, SetupConsumed), not only SetupComplete. This allows new deposits
-// to be created on a tableset even after the setup has been consumed by a withdrawal.
+// Note: deposit initialization/progression is accepted while the setup is active
+// (SetupComplete or EvaluatingTables), but not after SetupConsumed because the
+// consumed setup cannot support a later disputed withdrawal.
 
 // ============================================================================
 // External event handler
@@ -96,7 +96,7 @@ pub(crate) async fn handle_event<S: StateMut>(
                 deposit_inputs,
             },
         ) => match root_state.step {
-            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } => {
                 if state
                     .get_deposit(&deposit_id)
                     .await
@@ -144,7 +144,7 @@ pub(crate) async fn handle_event<S: StateMut>(
             _ => return Err(SMError::UnexpectedInput),
         },
         Input::DepositUndisputedWithdrawal(deposit_id) => match root_state.step {
-            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match deposit_state.step {
@@ -397,9 +397,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
         }
         ActionResult::DepositAdaptorsGenerated(deposit_id, deposit_adaptors) => {
             match root_state.step {
-                Step::SetupComplete
-                | Step::EvaluatingTables { .. }
-                | Step::SetupConsumed { .. } => {
+                Step::SetupComplete | Step::EvaluatingTables { .. } => {
                     let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                     match &mut deposit_state.step {
@@ -457,7 +455,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             chunk_idx,
             withdrawal_adaptor_chunk,
         ) => match root_state.step {
-            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
@@ -522,7 +520,7 @@ pub(crate) async fn handle_action_result<S: StateMut>(
             _ => return Err(SMError::UnexpectedInput),
         },
         ActionResult::DepositAdaptorChunkSent(deposit_id) => match root_state.step {
-            Step::SetupComplete | Step::EvaluatingTables { .. } | Step::SetupConsumed { .. } => {
+            Step::SetupComplete | Step::EvaluatingTables { .. } => {
                 let mut deposit_state = require_deposit(state, &deposit_id).await?;
 
                 match &mut deposit_state.step {
