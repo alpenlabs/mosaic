@@ -74,8 +74,8 @@ use futures_util::{
     pin_mut,
 };
 pub use hint::{SchedulerMessage, SchedulerMessageError};
-pub use mosaic_net_svc::InboundHintStream;
 use mosaic_cac_types::Msg;
+pub use mosaic_net_svc::InboundHintStream;
 use mosaic_net_svc::{FrameLimits, NetServiceHandle};
 pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
 
@@ -158,10 +158,7 @@ impl NetClient {
             .await
             .map_err(SendHintError::Open)?;
         // Write; the sender drops the stream on function return which sends FIN.
-        stream
-            .write(bytes)
-            .await
-            .map_err(SendHintError::Write)?;
+        stream.write(bytes).await.map_err(SendHintError::Write)?;
         Ok(())
     }
 

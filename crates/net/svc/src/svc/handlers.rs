@@ -1576,12 +1576,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     }
                 }
                 mosaic_net_wire::StreamType::SchedulerHint => {
-                    tasks::spawn_hint_stream_router(
-                        peer,
-                        send,
-                        recv,
-                        state.hint_stream_tx.clone(),
-                    );
+                    tasks::spawn_hint_stream_router(peer, send, recv, state.hint_stream_tx.clone());
                 }
             }
         }

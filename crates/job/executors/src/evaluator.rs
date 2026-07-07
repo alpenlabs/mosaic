@@ -36,7 +36,15 @@ use crate::{
 };
 
 const BULK_OPEN_WARN_AFTER: Duration = Duration::from_secs(5);
-const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the evaluator waits for the sender's bulk stream to appear
+/// after registering the expectation and sending the `TableTransferRequest`.
+///
+/// Kept short because the sender fires a `TransferStarting` scheduler hint
+/// on the high-priority hint stream immediately before opening the bulk
+/// stream (see `garbler::begin_table_transfer`), so this timeout only needs
+/// to cover the hint→open→arrival gap plus one scheduler tick — not the
+/// sender's full queue-latency budget.
+const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const BULK_READ_WARN_AFTER: Duration = Duration::from_secs(5);
 const BULK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 

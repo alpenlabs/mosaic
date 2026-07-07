@@ -222,8 +222,12 @@ where
         table_store,
         config.circuit.path.clone(),
     );
-    let (job_scheduler, job_handle) =
-        JobScheduler::new(config.build_job_scheduler_config(), job_executor);
+    let hint_rx = net_client.handle().hint_streams().clone();
+    let (job_scheduler, job_handle) = JobScheduler::new(
+        config.build_job_scheduler_config(),
+        job_executor,
+        Some(hint_rx),
+    );
     let job_scheduler_controller = job_scheduler.run();
 
     let (sm_executor, sm_executor_handle) = SmExecutor::new(

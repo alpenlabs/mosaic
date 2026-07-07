@@ -738,10 +738,13 @@ pub fn spawn_stream_header_reader(
                 .map_err(|_| "header read timed out")?
                 .map_err(|e| e.to_string())?;
 
-            // Determine remaining bytes
+            // Determine remaining bytes. Keep this table in sync with
+            // `mosaic_net_wire::StreamHeader::decode`; a mismatch will drop
+            // otherwise-valid streams at the header stage.
             let remaining = match buf[0] {
                 0x00 => 0,  // Protocol
                 0x01 => 32, // BulkTransfer
+                0x02 => 0,  // SchedulerHint
                 tag => return Err(format!("unknown stream type: 0x{:02x}", tag)),
             };
 
@@ -956,10 +959,24 @@ pub fn spawn_hint_stream_router(
             Ok(payload) => {
                 let _ = recv.stop(0u32.into());
                 let mut send = send;
+                // The sender's write is fire-and-forget; the reset just
+                // frees the QUIC bidi slot on both ends promptly (nothing
+                // watches for the reset code).
                 let _ = send.reset(0u32.into());
                 let inbound = crate::api::InboundHintStream { peer, payload };
-                if hint_stream_tx.send(inbound).await.is_err() {
-                    tracing::debug!(peer = %hex::encode(peer), "hint stream channel closed");
+                // try_send: if the scheduler is slow to drain, drop the
+                // hint rather than blocking this router task. Hints are
+                // advisory — losing one just means FIFO scheduling for
+                // that job. Blocking here would let a hint flood pile up
+                // spawned router tasks and QUIC bidi slots.
+                match hint_stream_tx.try_send(inbound) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::debug!(peer = %hex::encode(peer), "hint stream channel full; dropping hint");
+                    }
+                    Err(_) => {
+                        tracing::debug!(peer = %hex::encode(peer), "hint stream channel closed");
+                    }
                 }
             }
             Err(error) => {

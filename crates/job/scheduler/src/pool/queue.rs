@@ -204,13 +204,12 @@ impl JobQueue {
     /// currently dropped. A short-TTL `pending_hints` stash would let them
     /// promote a soon-arriving job.
     pub(crate) fn apply_hint(&self, key: &HintKey) -> bool {
-        let promoted = self.state.lock().apply_hint(key);
-        if promoted {
-            // The job wasn't previously ahead of others in the queue; wake a
-            // worker in case one was idle and would benefit from the boost.
-            let _ = self.signal_tx.send(());
-        }
-        promoted
+        // No signal fired here: promotion doesn't add a job to the queue,
+        // and the push that originally added it already sent exactly one
+        // signal. Sending another would cause a redundant wake — the
+        // worker takes whichever job is at the head of boost or FIFO on
+        // its next pop regardless.
+        self.state.lock().apply_hint(key)
     }
 
     /// Number of jobs currently in the queue.
@@ -449,6 +448,13 @@ mod tests {
     use super::*;
 
     fn dummy_job() -> PoolJob {
+        job_with_attempts(0)
+    }
+
+    /// Build a distinguishable dummy job by encoding an integer marker
+    /// into `PoolJob::attempts`. Tests inspect this to verify boost/FIFO
+    /// ordering across pops.
+    fn job_with_attempts(attempts: u32) -> PoolJob {
         use mosaic_cac_types::state_machine::garbler::Action as GarblerAction;
 
         use crate::pool::worker::WorkerJob;
@@ -462,7 +468,7 @@ mod tests {
                     Wire::Output,
                 ),
             },
-            attempts: 0,
+            attempts,
             hint_key: None,
         }
     }
@@ -488,23 +494,63 @@ mod tests {
     #[test]
     fn hint_promotes_matching_job() {
         let q = JobQueue::new(false, Some(BoostConfig { max_slots: 64 }));
-        q.push(dummy_job(), Some(key(1)));
-        q.push(dummy_job(), Some(key(2)));
-        q.push(dummy_job(), Some(key(3)));
+        // Tag each job via `attempts` so we can identify who came out.
+        q.push(job_with_attempts(1), Some(key(1)));
+        q.push(job_with_attempts(2), Some(key(2)));
+        q.push(job_with_attempts(3), Some(key(3)));
 
-        // Promote the third job.
+        // Promote the third job (attempts=3).
         assert!(q.apply_hint(&key(3)));
 
-        // Boost drains first, so the promoted job comes out ahead.
+        // Boost drains first: the promoted job comes out ahead of the
+        // FIFO head. Then FIFO order (attempts=1, then attempts=2).
         let mut state = q.state.lock();
-        let first = state.pop().unwrap();
-        // We can't tell which key this was without extending PoolJob, but
-        // we can verify the promoted slot came out first by tracking that
-        // exactly one boost job was in the queue.
-        drop(first);
-        assert!(state.pop().is_some()); // FIFO: key 1
-        assert!(state.pop().is_some()); // FIFO: key 2
+        assert_eq!(state.pop().unwrap().attempts, 3);
+        assert_eq!(state.pop().unwrap().attempts, 1);
+        assert_eq!(state.pop().unwrap().attempts, 2);
         assert!(state.pop().is_none());
+    }
+
+    #[test]
+    fn multiple_promotions_boost_in_arrival_order() {
+        let q = JobQueue::new(false, Some(BoostConfig { max_slots: 64 }));
+        q.push(job_with_attempts(1), Some(key(1)));
+        q.push(job_with_attempts(2), Some(key(2)));
+        q.push(job_with_attempts(3), Some(key(3)));
+
+        // Promote 3 first, then 1. Boost queue tail-append means we get
+        // 3 before 1, then FIFO (which has only 2 left).
+        assert!(q.apply_hint(&key(3)));
+        assert!(q.apply_hint(&key(1)));
+
+        let mut state = q.state.lock();
+        assert_eq!(state.pop().unwrap().attempts, 3);
+        assert_eq!(state.pop().unwrap().attempts, 1);
+        assert_eq!(state.pop().unwrap().attempts, 2);
+        assert!(state.pop().is_none());
+    }
+
+    #[test]
+    fn hint_index_cleared_after_pop_and_promote() {
+        // Whitebox test: verify hint_index is empty after all matching
+        // paths (pop after promote, pop of FIFO head with hint, plain FIFO
+        // drain). Regression guard against slots leaking into the index.
+        let q = JobQueue::new(false, Some(BoostConfig { max_slots: 64 }));
+        q.push(job_with_attempts(1), Some(key(1)));
+        q.push(job_with_attempts(2), Some(key(2)));
+        assert!(q.apply_hint(&key(1)));
+
+        let mut state = q.state.lock();
+        state.pop(); // boosted key(1)
+        state.pop(); // FIFO key(2)
+        assert!(state.pop().is_none());
+
+        if let QueueBacking::Fifo(list) = &state.backing {
+            assert!(list.hint_index.is_empty(), "hint_index leaked entries");
+            assert_eq!(list.boost_len, 0);
+        } else {
+            unreachable!();
+        }
     }
 
     #[test]

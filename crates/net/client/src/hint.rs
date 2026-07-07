@@ -56,13 +56,18 @@ impl SchedulerMessage {
         Ok(buf)
     }
 
-    /// Deserialize from bytes.
+    /// Deserialize from bytes. The frame must be exactly the size of the
+    /// encoded variant — trailing bytes are rejected so a forward-compat
+    /// receiver can't be fed extra data smuggled after a known variant.
     pub fn decode(bytes: &[u8]) -> Result<Self, SchedulerMessageError> {
         let (tag, rest) = bytes
             .split_first()
             .ok_or(SchedulerMessageError::Truncated)?;
         match tag {
             1 => {
+                if rest.len() != 32 {
+                    return Err(SchedulerMessageError::Truncated);
+                }
                 let commitment = <[u8; 32] as CanonicalDeserialize>::deserialize_with_mode(
                     rest,
                     Compress::No,
@@ -127,6 +132,21 @@ mod tests {
     #[test]
     fn decode_empty_returns_truncated() {
         let err = SchedulerMessage::decode(&[]).unwrap_err();
+        assert!(matches!(err, SchedulerMessageError::Truncated));
+    }
+
+    #[test]
+    fn decode_trailing_bytes_returns_truncated() {
+        // TransferStarting is 1-byte tag + 32-byte commitment = 33 bytes.
+        // Extras must be rejected so a peer can't smuggle bytes past a
+        // known variant.
+        let mut bytes = SchedulerMessage::TransferStarting {
+            commitment: [1u8; 32],
+        }
+        .encode()
+        .expect("encode");
+        bytes.push(0xff);
+        let err = SchedulerMessage::decode(&bytes).unwrap_err();
         assert!(matches!(err, SchedulerMessageError::Truncated));
     }
 }

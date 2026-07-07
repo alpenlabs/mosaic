@@ -582,6 +582,21 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         .try_into()
         .expect("commitment is 32 bytes");
 
+    // Cooperative-scheduling hint: tell the peer we're about to send this
+    // table so their scheduler can promote the matching
+    // `ReceiveGarblingTable` job. Best-effort; failure just falls back to
+    // the FIFO ordering everyone had before.
+    let hint = mosaic_net_client::SchedulerMessage::TransferStarting {
+        commitment: identifier,
+    };
+    if let Err(e) = ctx.net_client.send_hint(*peer_id, &hint).await {
+        tracing::debug!(peer = ?peer_id, error = ?e, "scheduler hint send failed; proceeding");
+    }
+    // Small gap between the hint and the bulk open so the peer's scheduler
+    // has a chance to promote before the bulk stream lands on their net-svc.
+    // See design doc for the race analysis.
+    futures_timer::Delay::new(std::time::Duration::from_millis(5)).await;
+
     // If the bulk stream open or transfer fails for any reason,
     // the scheduler retries on the next pass.
 
