@@ -388,6 +388,26 @@ impl std::fmt::Debug for InboundProtocolStream {
     }
 }
 
+/// An inbound scheduler-hint stream payload.
+///
+/// Delivered via `NetServiceHandle::hint_streams`. Best-effort — a lost
+/// stream is not retried. Payload is the encoded `SchedulerMessage`.
+pub struct InboundHintStream {
+    /// The peer that sent the hint.
+    pub peer: PeerId,
+    /// The raw encoded scheduler-message payload.
+    pub payload: PayloadBuf,
+}
+
+impl std::fmt::Debug for InboundHintStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InboundHintStream")
+            .field("peer", &self.peer)
+            .field("payload_len", &self.payload.len())
+            .finish()
+    }
+}
+
 /// Handle to the network service.
 ///
 /// This is cheaply cloneable and can be sent to any thread. All methods use

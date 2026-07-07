@@ -1557,6 +1557,17 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                         );
                     }
                 }
+                mosaic_net_wire::StreamType::SchedulerHint => {
+                    // TODO: dispatch hint streams to the scheduler's hint
+                    // receiver. For now, drop with a debug log — the receive
+                    // side plumbing lands in a subsequent commit.
+                    tracing::debug!(
+                        peer = %hex::encode(peer),
+                        "SchedulerHint stream received but receive-side dispatch not yet wired; dropping"
+                    );
+                    let _ = send.reset(0u32.into());
+                    let _ = recv;
+                }
             }
         }
 

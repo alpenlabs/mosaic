@@ -54,6 +54,7 @@
 
 pub mod bulk;
 pub mod error;
+pub mod hint;
 pub mod protocol;
 
 use std::{
@@ -71,6 +72,7 @@ use futures_util::{
     future::{Either, select},
     pin_mut,
 };
+pub use hint::{SchedulerMessage, SchedulerMessageError};
 use mosaic_cac_types::Msg;
 use mosaic_net_svc::{FrameLimits, NetServiceHandle};
 pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};

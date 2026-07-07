@@ -104,6 +104,9 @@ impl StreamHeader {
                 buf.push(0x01);
                 buf.extend_from_slice(identifier);
             }
+            StreamType::SchedulerHint => {
+                buf.push(0x02);
+            }
         }
     }
 
@@ -112,6 +115,7 @@ impl StreamHeader {
         match &self.stream_type {
             StreamType::Protocol => 1,
             StreamType::BulkTransfer { .. } => 1 + 32,
+            StreamType::SchedulerHint => 1,
         }
     }
 
@@ -134,6 +138,7 @@ impl StreamHeader {
                     bytes[1..33].try_into().expect("slice is exactly 32 bytes");
                 Ok((Self::new(StreamType::BulkTransfer { identifier }), 33))
             }
+            0x02 => Ok((Self::new(StreamType::SchedulerHint), 1)),
             tag => Err(DecodeError::InvalidTag { tag }),
         }
     }
@@ -150,6 +155,11 @@ pub enum StreamType {
         /// 32-byte identifier (typically a commitment hash).
         identifier: [u8; 32],
     },
+    /// Scheduler-to-scheduler advisory hint stream (high priority).
+    /// Carries best-effort messages informing a peer's scheduler about
+    /// impending work — see `mosaic-net-client::hint::SchedulerMessage`.
+    /// Never touches the SM state machine.
+    SchedulerHint,
 }
 
 impl StreamType {
