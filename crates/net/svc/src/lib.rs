@@ -55,7 +55,7 @@ pub mod tls;
 
 // Re-export main API types for convenience.
 pub use mosaic_net_svc_api::{
-    BulkTransferExpectation, ExpectError, InboundProtocolStream, NetServiceConfig,
+    BulkTransferExpectation, ExpectError, InboundHintStream, InboundProtocolStream, NetServiceConfig,
     NetServiceHandle, OpenStreamError, PayloadBuf, PeerConfig, PeerId, Stream, StreamClosed,
     peer_id_from_signing_key, peer_id_from_verifying_key,
 };

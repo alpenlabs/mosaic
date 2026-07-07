@@ -941,6 +941,41 @@ pub fn spawn_protocol_stream_router(
     });
 }
 
+/// Spawn a task to read one payload from a scheduler-hint stream and push
+/// it to the hint stream channel. Best-effort — a failed read is silently
+/// dropped (hints are advisory).
+pub fn spawn_hint_stream_router(
+    peer: PeerId,
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+    hint_stream_tx: AsyncSender<crate::api::InboundHintStream>,
+) {
+    tokio::spawn(async move {
+        let mut recv = recv;
+        match read_first_protocol_payload(&mut recv).await {
+            Ok(payload) => {
+                let _ = recv.stop(0u32.into());
+                let mut send = send;
+                let _ = send.reset(0u32.into());
+                let inbound = crate::api::InboundHintStream { peer, payload };
+                if hint_stream_tx.send(inbound).await.is_err() {
+                    tracing::debug!(peer = %hex::encode(peer), "hint stream channel closed");
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    error = %error,
+                    "failed to read scheduler-hint payload"
+                );
+                let _ = recv.stop(0u32.into());
+                let mut send = send;
+                let _ = send.reset(0u32.into());
+            }
+        }
+    });
+}
+
 /// Spawn a task to route a bulk transfer stream to its expectation.
 ///
 /// This creates a Stream handle and sends it to the registered expectation channel.

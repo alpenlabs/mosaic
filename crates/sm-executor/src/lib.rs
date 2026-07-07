@@ -1577,7 +1577,9 @@ mod tests {
         let (command_tx, _command_rx) = kanal::bounded_async::<NetCommand>(8);
         let (protocol_tx, protocol_rx) =
             kanal::bounded_async::<mosaic_net_svc_api::InboundProtocolStream>(8);
-        let handle = NetServiceHandle::new(config, command_tx, protocol_rx);
+        let (_hint_tx, hint_rx) =
+            kanal::bounded_async::<mosaic_net_svc_api::InboundHintStream>(8);
+        let handle = NetServiceHandle::new(config, command_tx, protocol_rx, hint_rx);
         (NetClient::new(handle), protocol_tx)
     }
 

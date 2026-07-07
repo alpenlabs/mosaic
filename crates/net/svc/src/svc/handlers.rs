@@ -92,6 +92,24 @@ pub fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
         NetCommand::CancelOpen { request_id } => {
             cancel_open_request(request_id, state);
         }
+
+        NetCommand::OpenSchedulerHintStream {
+            request_id,
+            peer,
+            priority,
+            cancel_token,
+            respond_to,
+        } => {
+            handle_open_stream_request(
+                request_id,
+                peer,
+                cancel_token,
+                mosaic_net_wire::StreamType::SchedulerHint,
+                priority,
+                respond_to,
+                state,
+            );
+        }
     }
 }
 
@@ -1558,15 +1576,12 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     }
                 }
                 mosaic_net_wire::StreamType::SchedulerHint => {
-                    // TODO: dispatch hint streams to the scheduler's hint
-                    // receiver. For now, drop with a debug log — the receive
-                    // side plumbing lands in a subsequent commit.
-                    tracing::debug!(
-                        peer = %hex::encode(peer),
-                        "SchedulerHint stream received but receive-side dispatch not yet wired; dropping"
+                    tasks::spawn_hint_stream_router(
+                        peer,
+                        send,
+                        recv,
+                        state.hint_stream_tx.clone(),
                     );
-                    let _ = send.reset(0u32.into());
-                    let _ = recv;
                 }
             }
         }
