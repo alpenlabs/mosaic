@@ -54,11 +54,16 @@ impl Default for JobSchedulerConfig {
                 threads: 1,
                 concurrency_per_worker: 32,
                 priority_queue: false,
+                // Boost cap: small vs concurrency (512 in production
+                // config) so a single peer / attack surface can't reorder
+                // the whole queue. See `SchedulerHint` design.
+                max_boost_slots: Some(64),
             },
             heavy: PoolConfig {
                 threads: 2,
                 concurrency_per_worker: 8,
                 priority_queue: true,
+                max_boost_slots: None,
             },
             garbling: GarblingConfig::default(),
             submission_queue_size: 256,
@@ -320,13 +325,13 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                                 self.light
                                                     .as_ref()
                                                     .expect("light pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, None);
                                             }
                                             ActionCategory::Heavy => {
                                                 self.heavy
                                                     .as_ref()
                                                     .expect("heavy pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, None);
                                             }
                                             _ => unreachable!(),
                                         }
@@ -356,13 +361,13 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                                 self.light
                                                     .as_ref()
                                                     .expect("light pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, None);
                                             }
                                             ActionCategory::Heavy => {
                                                 self.heavy
                                                     .as_ref()
                                                     .expect("heavy pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, None);
                                             }
                                             _ => unreachable!(),
                                         }

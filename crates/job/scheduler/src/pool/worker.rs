@@ -281,7 +281,8 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
                                 "worker job requested retry"
                             );
                             monoio::time::sleep(backoff).await;
-                            queue.requeue(job);
+                            let hint_key = job.hint_key.clone();
+                            queue.requeue(job, hint_key);
                         }
                     }
                 }
@@ -671,7 +672,7 @@ mod tests {
     fn closed_completion_channel_reports_scheduler_fault() {
         run_monoio(async {
             let peer_id = PeerId::from_bytes([9; 32]);
-            let queue = Arc::new(JobQueue::new(false));
+            let queue = Arc::new(JobQueue::new(false, None));
             let dispatcher = Arc::new(TestDispatcher);
             let (completion_tx, completion_rx) = kanal::bounded_async(1);
             let (fault_tx, fault_rx) = kanal::bounded_async(1);
@@ -686,14 +687,18 @@ mod tests {
                 1,
             ));
 
-            queue.push(PoolJob {
-                priority: Priority::Normal,
-                job: WorkerJob::Garbler {
-                    peer_id,
-                    action: GarblerAction::SendCommitMsgChunk(0),
+            queue.push(
+                PoolJob {
+                    priority: Priority::Normal,
+                    job: WorkerJob::Garbler {
+                        peer_id,
+                        action: GarblerAction::SendCommitMsgChunk(0),
+                    },
+                    attempts: 0,
+                    hint_key: None,
                 },
-                attempts: 0,
-            });
+                None,
+            );
 
             let fault = monoio::time::timeout(Duration::from_secs(2), fault_rx.recv())
                 .await
