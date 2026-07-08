@@ -18,6 +18,28 @@
 
 use std::{collections::HashSet, fmt, sync::Arc};
 
+/// Install rustls' ring `CryptoProvider` as the process-level default.
+///
+/// rustls 0.23 requires a process-level provider whenever both `ring` and
+/// `aws-lc-rs` are compiled in — as they now are, transitively via
+/// `reqwest` / `object_store` on the object-store side and `quinn` on
+/// ours. Without this, `default_provider()` auto-select and any code
+/// path (mostly reqwest inside `object_store`) that goes through
+/// rustls' process-global lookup panic with *"Could not automatically
+/// determine the process-level CryptoProvider"*. Called from every TLS
+/// entry point so both the mosaic binary and unit tests are covered.
+///
+/// Idempotent: the underlying `install_default` errors on a second call,
+/// which we ignore. Serialised through a `Once` so overlapping callers
+/// (parallel tests) can't race.
+pub(crate) fn install_process_crypto_provider() {
+    use std::sync::Once;
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
 // Re-export peer identity types from svc-api so existing `crate::tls::PeerId` paths
 // and `use super::*` in tests continue to work.
@@ -100,6 +122,7 @@ pub struct PeerVerifier {
 impl PeerVerifier {
     /// Create a new verifier with the given set of allowed peer public keys.
     pub fn new(allowed_peers: impl IntoIterator<Item = PeerId>) -> Self {
+        install_process_crypto_provider();
         Self {
             allowed_peers: allowed_peers.into_iter().collect(),
             crypto_provider: Arc::new(rustls::crypto::ring::default_provider()),
