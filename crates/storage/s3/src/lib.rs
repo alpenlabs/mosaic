@@ -32,7 +32,7 @@ use std::{future::Future, sync::Arc};
 pub use error::S3Error;
 use futures::StreamExt;
 use mosaic_storage_api::table_store::{TableId, TableStore};
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 
 /// Minimum part size for S3 multipart uploads (5 MiB).
 #[allow(dead_code)]
@@ -190,7 +190,6 @@ impl TableStore for S3TableStore {
 mod tests {
     use std::{
         fmt,
-        ops::Range,
         sync::{
             Arc, Mutex,
             atomic::{AtomicBool, Ordering},
@@ -198,16 +197,15 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use bytes::Bytes;
     use futures::{StreamExt, stream::BoxStream};
     use mosaic_common::Byte32;
     use mosaic_net_svc_api::PeerId;
     use mosaic_storage_api::table_store::{TableMetadata, TableReader, TableStore, TableWriter};
     use mosaic_vs3::Index;
     use object_store::{
-        Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
-        ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult,
-        Result as ObjectStoreResult, memory::InMemory, path::Path,
+        Attributes, CopyOptions, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
+        MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload,
+        PutResult, Result as ObjectStoreResult, memory::InMemory, path::Path,
     };
 
     use super::*;
@@ -265,7 +263,7 @@ mod tests {
         async fn put_multipart_opts(
             &self,
             location: &Path,
-            opts: PutMultipartOpts,
+            opts: PutMultipartOptions,
         ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
             self.inner.put_multipart_opts(location, opts).await
         }
@@ -282,31 +280,14 @@ mod tests {
             self.inner.get_opts(location, options).await
         }
 
-        async fn get_range(
+        fn delete_stream(
             &self,
-            location: &Path,
-            range: Range<usize>,
-        ) -> ObjectStoreResult<Bytes> {
-            self.inner.get_range(location, range).await
+            locations: BoxStream<'static, ObjectStoreResult<Path>>,
+        ) -> BoxStream<'static, ObjectStoreResult<Path>> {
+            self.inner.delete_stream(locations)
         }
 
-        async fn get_ranges(
-            &self,
-            location: &Path,
-            ranges: &[Range<usize>],
-        ) -> ObjectStoreResult<Vec<Bytes>> {
-            self.inner.get_ranges(location, ranges).await
-        }
-
-        async fn head(&self, location: &Path) -> ObjectStoreResult<ObjectMeta> {
-            self.inner.head(location).await
-        }
-
-        async fn delete(&self, location: &Path) -> ObjectStoreResult<()> {
-            self.inner.delete(location).await
-        }
-
-        fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
             self.inner.list(prefix)
         }
 
@@ -317,12 +298,13 @@ mod tests {
             self.inner.list_with_delimiter(prefix).await
         }
 
-        async fn copy(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
-            self.inner.copy(from, to).await
-        }
-
-        async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
-            self.inner.copy_if_not_exists(from, to).await
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
         }
     }
 
@@ -330,7 +312,7 @@ mod tests {
     struct ResumeStore {
         inner: InMemory,
         fail_first_ciphertext_stream: AtomicBool,
-        seen_offsets: Mutex<Vec<usize>>,
+        seen_offsets: Mutex<Vec<u64>>,
     }
 
     impl fmt::Display for ResumeStore {
@@ -340,7 +322,7 @@ mod tests {
     }
 
     impl ResumeStore {
-        fn seen_offsets(&self) -> Vec<usize> {
+        fn seen_offsets(&self) -> Vec<u64> {
             self.seen_offsets.lock().unwrap().clone()
         }
     }
@@ -359,7 +341,7 @@ mod tests {
         async fn put_multipart_opts(
             &self,
             location: &Path,
-            opts: PutMultipartOpts,
+            opts: PutMultipartOptions,
         ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
             self.inner.put_multipart_opts(location, opts).await
         }
@@ -382,6 +364,8 @@ mod tests {
 
             let meta = self.inner.head(location).await?;
             let bytes = self.inner.get(location).await?.bytes().await?;
+            let total = bytes.len() as u64;
+            let offset_usize = offset as usize;
 
             let payload = if offset == 0
                 && self
@@ -398,43 +382,26 @@ mod tests {
                         .boxed();
                 GetResultPayload::Stream(stream)
             } else {
-                let stream = futures::stream::iter(vec![Ok(bytes.slice(offset..))]).boxed();
+                let stream = futures::stream::iter(vec![Ok(bytes.slice(offset_usize..))]).boxed();
                 GetResultPayload::Stream(stream)
             };
 
             Ok(GetResult {
                 payload,
                 meta,
-                range: offset..bytes.len(),
+                range: offset..total,
                 attributes: Attributes::default(),
             })
         }
 
-        async fn get_range(
+        fn delete_stream(
             &self,
-            location: &Path,
-            range: Range<usize>,
-        ) -> ObjectStoreResult<Bytes> {
-            self.inner.get_range(location, range).await
+            locations: BoxStream<'static, ObjectStoreResult<Path>>,
+        ) -> BoxStream<'static, ObjectStoreResult<Path>> {
+            self.inner.delete_stream(locations)
         }
 
-        async fn get_ranges(
-            &self,
-            location: &Path,
-            ranges: &[Range<usize>],
-        ) -> ObjectStoreResult<Vec<Bytes>> {
-            self.inner.get_ranges(location, ranges).await
-        }
-
-        async fn head(&self, location: &Path) -> ObjectStoreResult<ObjectMeta> {
-            self.inner.head(location).await
-        }
-
-        async fn delete(&self, location: &Path) -> ObjectStoreResult<()> {
-            self.inner.delete(location).await
-        }
-
-        fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
             self.inner.list(prefix)
         }
 
@@ -445,12 +412,13 @@ mod tests {
             self.inner.list_with_delimiter(prefix).await
         }
 
-        async fn copy(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
-            self.inner.copy(from, to).await
-        }
-
-        async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
-            self.inner.copy_if_not_exists(from, to).await
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
         }
     }
 

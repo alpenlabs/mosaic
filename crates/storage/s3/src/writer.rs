@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 use tracing::error;
 
 use crate::{
