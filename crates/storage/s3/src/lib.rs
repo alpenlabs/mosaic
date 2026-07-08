@@ -391,6 +391,7 @@ mod tests {
                 meta,
                 range: offset..total,
                 attributes: Attributes::default(),
+                extensions: Default::default(),
             })
         }
 

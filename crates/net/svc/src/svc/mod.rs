@@ -50,6 +50,27 @@ use crate::{
 const MAX_CONCURRENT_BIDI_STREAMS: u32 = 100;
 const MAX_CONCURRENT_UNI_STREAMS: u32 = 0;
 
+/// Install rustls' ring `CryptoProvider` as the process-level default.
+///
+/// rustls 0.23 requires a process-level provider whenever both `ring` and
+/// `aws-lc-rs` are compiled in (they now are, via `reqwest`/`object_store`
+/// on the object-store side and `quinn` on ours), otherwise the
+/// `default_provider()` auto-select panics. We already select `ring`
+/// explicitly for QUIC in `tls::PeerVerifier`; this just makes the same
+/// choice visible to code paths (mostly reqwest inside `object_store`)
+/// that go through rustls' process-global lookup.
+///
+/// Idempotent: the underlying `install_default` errors on a second call,
+/// which we ignore. Serialised through a `Once` so overlapping
+/// `NetService::new` calls in tests can't race.
+fn install_process_crypto_provider() {
+    use std::sync::Once;
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Handle to control the network service.
 pub struct NetServiceController {
     /// Thread handle for joining.
@@ -153,6 +174,7 @@ impl NetService {
     pub fn new(
         config: NetServiceConfig,
     ) -> Result<(NetServiceHandle, NetServiceController), ServiceError> {
+        install_process_crypto_provider();
         let config = Arc::new(config);
 
         // Precompute allowed peers set once (avoid per-accept allocation).
