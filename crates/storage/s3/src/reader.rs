@@ -12,7 +12,7 @@ use std::{future::Future, sync::Arc};
 use futures::StreamExt;
 use mosaic_common::Byte32;
 use mosaic_storage_api::table_store::{TableMetadata, TableReader};
-use object_store::{GetOptions, GetRange, ObjectStore};
+use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt};
 use tracing::{debug, error, warn};
 
 use crate::{error::S3Error, paths::TableRootPaths};
@@ -283,7 +283,7 @@ async fn stream_ciphertexts(
             GetOptions::default()
         } else {
             GetOptions {
-                range: Some(GetRange::Offset(bytes_delivered)),
+                range: Some(GetRange::Offset(bytes_delivered as u64)),
                 ..Default::default()
             }
         };
