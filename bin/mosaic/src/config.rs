@@ -437,7 +437,9 @@ pub(crate) struct SmExecutorSection {
 /// transitions, adaptor-sig completion, fault-secret signing) and must not
 /// be exposed to the public internet or to peers. Operators are responsible
 /// for firewalling `bind_addr` accordingly. The binary emits a `WARN` on
-/// startup if `bind_addr` is not a loopback address, as a reminder.
+/// startup if `bind_addr` is not a loopback address, and a louder one if
+/// it's a wildcard address (`0.0.0.0` / `::`) that exposes the API on
+/// every interface the host has.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RpcConfig {

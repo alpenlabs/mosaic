@@ -14,7 +14,10 @@
 //!
 //! Operators are responsible for firewalling the bind address. As a
 //! reminder, [`start_rpc_server`] emits a `WARN` on startup whenever
-//! `bind_addr` is not a loopback address.
+//! `bind_addr` is not a loopback address, and a louder one when it's a
+//! wildcard address (`0.0.0.0` / `::`) — a wildcard bind exposes the
+//! unauthenticated API on every interface the host has, so it's called
+//! out separately.
 
 use std::{net::SocketAddr, thread::JoinHandle};
 
@@ -67,7 +70,24 @@ pub(crate) fn start_rpc_server(
     service: impl MosaicApi,
     circuit_info: RpcCircuitInfoEntry,
 ) -> Result<RpcController> {
-    if !bind_addr.ip().is_loopback() {
+    let ip = bind_addr.ip();
+    if ip.is_unspecified() {
+        // 0.0.0.0 / :: — the API is now reachable on every interface the host
+        // has, including any public ones. This is almost never what an
+        // operator wants; call it out louder than the general non-loopback
+        // case, since the surface is strictly worse.
+        tracing::warn!(
+            %bind_addr,
+            "RPC server binding to a wildcard address — the unauthenticated RPC is now \
+             reachable on every interface this host has, including any public ones. \
+             Bind to a specific internal address the operator's own bridge node reaches, \
+             and firewall the port off from peers and the public internet."
+        );
+    } else if !ip.is_loopback() {
+        // Any other non-loopback bind (typically a private-subnet or
+        // container-network address). The docs bless these as valid
+        // deployments; the warn is a reminder that the firewall assumption
+        // is on the operator.
         tracing::warn!(
             %bind_addr,
             "RPC server binding to a non-loopback address — the RPC is unauthenticated \
