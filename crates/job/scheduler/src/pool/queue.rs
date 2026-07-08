@@ -443,6 +443,7 @@ impl SlotList {
 #[cfg(test)]
 mod tests {
     use mosaic_cac_types::{Seed, state_machine::garbler::Wire};
+    use mosaic_job_api::HintKind;
     use mosaic_net_svc_api::PeerId;
 
     use super::*;
@@ -474,7 +475,11 @@ mod tests {
     }
 
     fn key(byte: u8) -> HintKey {
-        HintKey::new(PeerId::from_bytes([0u8; 32]), 1, [byte; 32])
+        HintKey::new(
+            PeerId::from_bytes([0u8; 32]),
+            HintKind::TransferStarting,
+            [byte; 32],
+        )
     }
 
     #[test]

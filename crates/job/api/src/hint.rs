@@ -12,6 +12,18 @@
 
 use mosaic_net_svc_api::PeerId;
 
+/// Family of scheduler hint.
+///
+/// New variants are added at the tail. Wire-side `SchedulerMessage` types
+/// map their variants onto these at receive time; unknown wire tags never
+/// construct a [`HintKind`], so the enum stays closed at the queue layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HintKind {
+    /// Sender is about to open a bulk stream to transfer a garbling table.
+    /// Payload: the 32-byte commitment hash.
+    TransferStarting,
+}
+
 /// Identifier used to route a scheduler hint to a matching queued job.
 ///
 /// A hint fires from one peer's scheduler at another; the `peer` field
@@ -20,40 +32,25 @@ use mosaic_net_svc_api::PeerId;
 /// job-submission time and stores it alongside the job so incoming hints
 /// can locate the corresponding entry in O(1).
 ///
-/// `kind` discriminates the hint family (e.g. `HintKind::TRANSFER_STARTING`).
-/// `payload` is family-specific — typically a hash-like identifier such as
-/// a garbling-table commitment.
+/// `kind` discriminates the hint family; `payload` is family-specific —
+/// typically a hash-like identifier such as a garbling-table commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HintKey {
     /// Identity of the peer this hint is *from* / *for*.
     pub peer: PeerId,
-    /// Discriminates the hint family. See [`HintKind`] for defined values.
-    pub kind: u8,
+    /// Discriminates the hint family.
+    pub kind: HintKind,
     /// Family-specific identifier.
     pub payload: [u8; 32],
 }
 
 impl HintKey {
     /// Construct a new hint key.
-    pub fn new(peer: PeerId, kind: u8, payload: [u8; 32]) -> Self {
+    pub fn new(peer: PeerId, kind: HintKind, payload: [u8; 32]) -> Self {
         Self {
             peer,
             kind,
             payload,
         }
     }
-}
-
-/// Numeric discriminants for known hint families.
-///
-/// New families are added by allocating a new constant. Values are stable
-/// across mosaic versions (hints are advisory and best-effort; forward
-/// compatibility is maintained by receivers ignoring unknown kinds).
-#[derive(Debug)]
-pub struct HintKind;
-
-impl HintKind {
-    /// Sender is about to open a bulk stream to transfer a garbling table.
-    /// Payload: the 32-byte commitment hash.
-    pub const TRANSFER_STARTING: u8 = 1;
 }

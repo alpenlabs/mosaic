@@ -227,14 +227,14 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         };
         let key = match msg {
             SchedulerMessage::TransferStarting { commitment } => {
-                HintKey::new(peer_id, HintKind::TRANSFER_STARTING, commitment)
+                HintKey::new(peer_id, HintKind::TransferStarting, commitment)
             }
         };
         if let Some(light) = self.light.as_ref() {
             let promoted = light.apply_hint(&key);
             tracing::debug!(
                 peer = %hex::encode(peer_id),
-                kind = key.kind,
+                kind = ?key.kind,
                 promoted,
                 "applied SchedulerMessage hint"
             );
@@ -420,7 +420,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                                 let payload: [u8; 32] = (*commitment).into();
                                                 Some(HintKey::new(
                                                     peer_id,
-                                                    HintKind::TRANSFER_STARTING,
+                                                    HintKind::TransferStarting,
                                                     payload,
                                                 ))
                                             }
