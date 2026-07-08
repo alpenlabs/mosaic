@@ -1,19 +1,12 @@
 [advisories]
 ignore = [
-    # This vulnerability does not apply:
-    # - The `reqwest` dependency doesn't use the affected package:
-    #   https://github.com/seanmonstar/reqwest/pull/2987
-    # - This codebase uses pinned keys instead of a certificate chain
-    'RUSTSEC-2026-0049',
-
     # `quick-xml` advisories pulled in transitively via
     # `object_store` -> `reqwest` for AWS XML responses. Fixed in
-    # quick-xml >= 0.41.0, but `object_store` 0.14 still pins 0.40.x.
-    # Not exploitable here: mosaic never feeds attacker-controlled XML
-    # into `object_store`; the parser only sees S3 responses from our
-    # own bucket over a TLS-authenticated channel. Re-evaluate once
-    # `object_store` bumps the pin.
+    # quick-xml >= 0.41.0, but the latest `object_store` (0.14.0) still
+    # pins quick-xml < 0.41.0. Not exploitable here: mosaic never feeds
+    # attacker-controlled XML into `object_store`; the parser only sees
+    # S3 responses from our own bucket over a TLS-authenticated channel.
+    # Drop these once an `object_store` release admits quick-xml >= 0.41.0.
     'RUSTSEC-2026-0194', # quadratic time on duplicate attribute names
     'RUSTSEC-2026-0195', # unbounded namespace-declaration allocation
-    'RUSTSEC-2026-0204', # additional quick-xml advisory (same fix window)
 ]
