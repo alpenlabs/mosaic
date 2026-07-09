@@ -2,6 +2,22 @@
 //!
 //! The RPC server runs on a dedicated thread with its own tokio runtime because
 //! jsonrpsee requires tokio while the rest of the binary uses monoio.
+//!
+//! # Security
+//!
+//! The server is **unauthenticated** by design. Its intended reader is the
+//! operator's own bridge node on a trusted internal network — not remote
+//! peers, and not the public internet. The RPC methods can drive setup,
+//! deposits, adaptor-sig completion, and fault-secret signing, so exposing
+//! this port beyond the operator's own infrastructure is a full compromise
+//! of the mosaic instance.
+//!
+//! Operators are responsible for firewalling the bind address. As a
+//! reminder, [`start_rpc_server`] emits a `WARN` on startup whenever
+//! `bind_addr` is not a loopback address, and a louder one when it's a
+//! wildcard address (`0.0.0.0` / `::`) — a wildcard bind exposes the
+//! unauthenticated API on every interface the host has, so it's called
+//! out separately.
 
 use std::{net::SocketAddr, thread::JoinHandle};
 
@@ -44,11 +60,42 @@ impl RpcController {
 }
 
 /// Start the RPC server on a dedicated tokio thread.
+///
+/// The server is unauthenticated; see the module-level docs for the trust
+/// model. Emits a `WARN` when `bind_addr` is not a loopback address as a
+/// reminder that the port must be firewalled off from anything other than
+/// the operator's own bridge node.
 pub(crate) fn start_rpc_server(
     bind_addr: SocketAddr,
     service: impl MosaicApi,
     circuit_info: RpcCircuitInfoEntry,
 ) -> Result<RpcController> {
+    let ip = bind_addr.ip();
+    if ip.is_unspecified() {
+        // 0.0.0.0 / :: — the API is now reachable on every interface the host
+        // has, including any public ones. This is almost never what an
+        // operator wants; call it out louder than the general non-loopback
+        // case, since the surface is strictly worse.
+        tracing::warn!(
+            %bind_addr,
+            "RPC server binding to a wildcard address — the unauthenticated RPC is now \
+             reachable on every interface this host has, including any public ones. \
+             Bind to a specific internal address the operator's own bridge node reaches, \
+             and firewall the port off from peers and the public internet."
+        );
+    } else if !ip.is_loopback() {
+        // Any other non-loopback bind (typically a private-subnet or
+        // container-network address). The docs bless these as valid
+        // deployments; the warn is a reminder that the firewall assumption
+        // is on the operator.
+        tracing::warn!(
+            %bind_addr,
+            "RPC server binding to a non-loopback address — the RPC is unauthenticated \
+             and must only be reachable by this operator's own bridge node. Ensure the \
+             port is firewalled off from peers and the public internet."
+        );
+    }
+
     let rpc_impl = RpcServerImpl::new(service, circuit_info);
 
     let (handle_tx, handle_rx) = std::sync::mpsc::sync_channel(1);

@@ -77,7 +77,13 @@ Copy [`bin/mosaic/config/config.example.toml`](bin/mosaic/config/config.example.
 - `[[network.peers]]` — one entry per other operator (`peer_id_hex` + `addr`)
 - `storage.cluster_file` — path to your `fdb.cluster`
 - `table_store` — `local_filesystem` (set `root`) or `s3_compatible` (set `bucket`, `region`, credentials)
-- `rpc.bind_addr` — private RPC for Bridge Core
+- `rpc.bind_addr` — private RPC for Bridge Core. **Unauthenticated.** Bind
+  only where the operator's own bridge node can reach it (loopback, a
+  private container network, or a firewalled internal subnet). The API
+  drives lifecycle, deposits, and fault-secret signing; exposing it to
+  peers or the public internet is a full compromise of the mosaic
+  instance. The binary emits a `WARN` on startup for non-loopback binds
+  and a louder one for wildcard binds (`0.0.0.0` / `::`).
 
 ### Run
 

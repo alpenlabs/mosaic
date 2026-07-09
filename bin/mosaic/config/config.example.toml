@@ -49,5 +49,10 @@ chunk_timeout_secs = 30
 [sm_executor]
 command_queue_size = 256
 
+# The RPC server is UNAUTHENTICATED. Bind it only where the operator's own
+# bridge node can reach it (loopback, a private container network, or a
+# firewalled internal subnet). Never expose this port to peers or the
+# public internet — the API can drive setup, deposits, and fault-secret
+# signing. The binary emits a WARN on startup if this is non-loopback.
 [rpc]
 bind_addr = "127.0.0.1:8000"

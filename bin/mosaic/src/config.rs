@@ -425,6 +425,21 @@ pub(crate) struct SmExecutorSection {
     pub(crate) command_queue_size: usize,
 }
 
+/// JSON-RPC server configuration.
+///
+/// # Security
+///
+/// The RPC server is **unauthenticated**. It is intended to be reached only
+/// by the operator's own bridge node on a trusted internal network (typically
+/// a loopback bind, a container-network bind, or a private VPC subnet).
+///
+/// The RPC surface exposes lifecycle-changing methods (setup, deposit
+/// transitions, adaptor-sig completion, fault-secret signing) and must not
+/// be exposed to the public internet or to peers. Operators are responsible
+/// for firewalling `bind_addr` accordingly. The binary emits a `WARN` on
+/// startup if `bind_addr` is not a loopback address, and a louder one if
+/// it's a wildcard address (`0.0.0.0` / `::`) that exposes the API on
+/// every interface the host has.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RpcConfig {
