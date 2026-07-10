@@ -7,7 +7,9 @@ use mosaic_cac_types::{
         GarblerInitData, GarblerState, GarblingMetadata, Input, StateMut, StateRead, Step,
     },
 };
-use mosaic_common::constants::{N_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES};
+use mosaic_common::constants::{
+    N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES, N_SETUP_INPUT_WIRES,
+};
 use mosaic_storage_inmemory::garbler::StoredGarblerState;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
@@ -475,6 +477,64 @@ async fn duplicate_adaptor_chunk_is_ack_and_ignore() {
 
     assert!(result.is_ok(), "should ack and ignore, got: {result:?}");
     assert!(actions.is_empty(), "should produce no actions");
+}
+
+#[tokio::test]
+async fn out_of_range_adaptor_chunk_index_fails_closed() {
+    let mut state = StoredGarblerState::default();
+    let deposit_id = DepositId::from([0x05; 32]);
+    let pk = SecretKey::from_raw_bytes(&[5; 32]).to_pubkey();
+
+    state
+        .put_root_state(&GarblerState {
+            config: None,
+            step: Step::SetupComplete,
+        })
+        .await
+        .unwrap();
+
+    state
+        .put_deposit(
+            deposit_id,
+            &DepositState {
+                step: DepositStep::WaitingForAdaptors {
+                    chunks: HeapArray::from_elem(false),
+                },
+                pk,
+            },
+        )
+        .await
+        .unwrap();
+
+    let chunk = AdaptorMsgChunk {
+        deposit_id,
+        chunk_index: N_ADAPTOR_MSG_CHUNKS as u8,
+        deposit_adaptor: sample_adaptor(),
+        withdrawal_adaptors: WithdrawalAdaptorsChunk::new(|_| {
+            WideLabelWireAdaptors::new(|_| sample_adaptor())
+        }),
+    };
+
+    let mut actions = Vec::new();
+    let result = handle_event(
+        &mut state,
+        Input::DepositRecvAdaptorMsgChunk(deposit_id, chunk),
+        &mut actions,
+    )
+    .await;
+
+    assert!(result.is_err(), "out-of-range chunk index must fail closed");
+    assert!(actions.is_empty(), "invalid chunk must produce no actions");
+
+    let deposit_state = state
+        .get_deposit(&deposit_id)
+        .await
+        .unwrap()
+        .expect("deposit remains stored");
+    let DepositStep::WaitingForAdaptors { chunks } = deposit_state.step else {
+        panic!("deposit should remain waiting for adaptor chunks");
+    };
+    assert_eq!(chunks.count_ones(), 0, "invalid chunk is not recorded");
 }
 
 #[tokio::test]

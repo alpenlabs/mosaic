@@ -9,7 +9,7 @@ use mosaic_cac_types::{
     state_machine::garbler::*,
 };
 use mosaic_common::constants::{
-    N_CIRCUITS, N_INPUT_WIRES, SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS,
+    N_ADAPTOR_MSG_CHUNKS, N_CIRCUITS, N_INPUT_WIRES, SEED_CONTEXT_GENERATE_GARBLING_TABLE_SEEDS,
     SEED_CONTEXT_GENERATE_POLYNOMIAL,
 };
 use rand::{RngCore, SeedableRng};
@@ -795,6 +795,10 @@ async fn handle_recv_deposit_adaptor_msg_chunk<S: StateMut>(
                 };
 
                 let chunk_idx = adaptor_msg_chunk.chunk_index as usize;
+                if chunk_idx >= N_ADAPTOR_MSG_CHUNKS {
+                    warn!(%deposit_id, chunk_idx, max = N_ADAPTOR_MSG_CHUNKS, "invalid adaptor chunk index");
+                    return Err(SMError::invalid_input_data());
+                }
 
                 if chunks[chunk_idx] {
                     debug!("garbler received duplicate adaptor chunk, ack and ignore");
