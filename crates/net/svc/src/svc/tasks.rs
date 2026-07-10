@@ -953,9 +953,16 @@ pub fn spawn_hint_stream_router(
     recv: quinn::RecvStream,
     hint_stream_tx: AsyncSender<crate::api::InboundHintStream>,
 ) {
+    // Hint payloads are tiny (`SchedulerMessage::TransferStarting` is 33
+    // bytes today) but the enum is meant to grow additively. 256 bytes is
+    // comfortable headroom for foreseeable variants and drastically caps a
+    // buggy peer's ability to drive transient memory pressure through the
+    // 256-entry hint channel with valid-but-oversized frames.
+    const HINT_FRAME_MAX_SIZE: u32 = 256;
+    let hint_limits = mosaic_net_wire::FrameLimits::new(HINT_FRAME_MAX_SIZE, HINT_FRAME_MAX_SIZE);
     tokio::spawn(async move {
         let mut recv = recv;
-        match read_first_protocol_payload(&mut recv).await {
+        match read_first_framed_payload(&mut recv, hint_limits).await {
             Ok(payload) => {
                 let _ = recv.stop(0u32.into());
                 let mut send = send;
@@ -1010,9 +1017,22 @@ pub fn spawn_bulk_stream_router(
     });
 }
 
+/// Read the first framed payload from a stream using the default frame
+/// limits (4 MiB). Used by protocol streams.
 async fn read_first_protocol_payload(recv: &mut quinn::RecvStream) -> Result<Vec<u8>, String> {
-    let limits = mosaic_net_wire::FrameLimits::default();
-    let mut buf = Vec::with_capacity(4 * 1024);
+    read_first_framed_payload(recv, mosaic_net_wire::FrameLimits::default()).await
+}
+
+/// Read the first framed payload with caller-specified limits.
+///
+/// Hint streams pass a small cap (256 bytes) so a buggy peer can't drive
+/// hundreds of MiB of transient buffer allocation through the 256-entry
+/// hint channel by opening streams with valid-but-oversized frames.
+async fn read_first_framed_payload(
+    recv: &mut quinn::RecvStream,
+    limits: mosaic_net_wire::FrameLimits,
+) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::with_capacity((limits.max_recv_size as usize).min(4 * 1024));
     let mut read_buf = [0u8; 64 * 1024];
     let deadline = Instant::now() + PROTOCOL_FIRST_PAYLOAD_TIMEOUT;
 

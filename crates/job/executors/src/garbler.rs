@@ -584,13 +584,28 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
 
     // Cooperative-scheduling hint: tell the peer we're about to send this
     // table so their scheduler can promote the matching
-    // `ReceiveGarblingTable` job. Best-effort; failure just falls back to
-    // the FIFO ordering everyone had before.
+    // `ReceiveGarblingTable` job. Best-effort — bounded by a short timeout
+    // and its failure never blocks the bulk open. This preserves the
+    // "delivery failure → no regression vs pre-hint FIFO" contract:
+    // without the cap, a stalled hint-stream open (e.g. peer reconnecting)
+    // would wedge the transfer path.
+    const SEND_HINT_TIMEOUT: Duration = Duration::from_millis(500);
     let hint = mosaic_net_client::SchedulerMessage::TransferStarting {
         commitment: identifier,
     };
-    if let Err(e) = ctx.net_client.send_hint(*peer_id, &hint).await {
-        tracing::debug!(peer = ?peer_id, error = ?e, "scheduler hint send failed; proceeding");
+    let send = ctx.net_client.send_hint(*peer_id, &hint).map(|r| match r {
+        Ok(()) => Ok(()),
+        Err(e) => Err(format!("{e:?}")),
+    });
+    let delay = futures_timer::Delay::new(SEND_HINT_TIMEOUT).map(|_| Err("timed out".to_string()));
+    pin_mut!(send);
+    pin_mut!(delay);
+    match select(send, delay).await {
+        Either::Left((Ok(()), _)) => {}
+        Either::Left((Err(e), _)) | Either::Right((Err(e), _)) => {
+            tracing::debug!(peer = ?peer_id, error = %e, "scheduler hint send failed or timed out; proceeding");
+        }
+        Either::Right((Ok(()), _)) => {}
     }
     // Small gap between the hint and the bulk open so the peer's scheduler
     // has a chance to promote before the bulk stream lands on their net-svc.

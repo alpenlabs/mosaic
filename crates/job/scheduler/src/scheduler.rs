@@ -272,7 +272,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
 
     /// Main scheduler loop running on monoio.
     async fn scheduler_loop(self, shutdown_rx: kanal::AsyncReceiver<()>) {
-        let this = self;
+        let mut this = self;
         tracing::info!("job scheduler main loop started");
 
         // Optional hint receiver: if not present, we skip the select arm by
@@ -297,7 +297,13 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                     if let Some(inbound) = recv {
                         this.apply_scheduler_message(inbound);
                     } else {
-                        tracing::debug!("scheduler hint channel closed");
+                        // Channel closed: drop the receiver so this arm
+                        // reverts to `pending()` on the next iteration.
+                        // Otherwise `recv().await` returns `None`
+                        // immediately every iteration, busy-spinning the
+                        // scheduler thread and starving the other arms.
+                        tracing::debug!("scheduler hint channel closed; disabling hint arm");
+                        this.hint_stream_rx = None;
                     }
                 }
                 recv = shutdown_rx.recv() => {
