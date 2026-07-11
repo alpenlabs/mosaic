@@ -597,20 +597,22 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         Ok(()) => Ok(()),
         Err(e) => Err(format!("{e:?}")),
     });
-    let delay = futures_timer::Delay::new(SEND_HINT_TIMEOUT).map(|_| Err("timed out".to_string()));
+    let delay = futures_timer::Delay::new(SEND_HINT_TIMEOUT)
+        .map(|_| Err::<(), String>("timed out".to_string()));
     pin_mut!(send);
     pin_mut!(delay);
-    match select(send, delay).await {
-        Either::Left((Ok(()), _)) => {}
-        Either::Left((Err(e), _)) | Either::Right((Err(e), _)) => {
-            tracing::debug!(peer = ?peer_id, error = %e, "scheduler hint send failed or timed out; proceeding");
-        }
-        Either::Right((Ok(()), _)) => {}
+    let hint_delivered = matches!(select(send, delay).await, Either::Left((Ok(()), _)));
+    if !hint_delivered {
+        tracing::debug!(peer = ?peer_id, "scheduler hint send failed or timed out; proceeding");
     }
     // Small gap between the hint and the bulk open so the peer's scheduler
     // has a chance to promote before the bulk stream lands on their net-svc.
-    // See design doc for the race analysis.
-    futures_timer::Delay::new(std::time::Duration::from_millis(5)).await;
+    // See design doc for the race analysis. Only pay this on successful
+    // hint delivery — if the hint timed out, the peer never got the hint
+    // to act on and the sleep would just be dead weight per retry.
+    if hint_delivered {
+        futures_timer::Delay::new(std::time::Duration::from_millis(5)).await;
+    }
 
     // If the bulk stream open or transfer fails for any reason,
     // the scheduler retries on the next pass.

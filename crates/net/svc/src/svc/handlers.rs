@@ -1576,6 +1576,33 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     }
                 }
                 mosaic_net_wire::StreamType::SchedulerHint => {
+                    // Same per-peer bucket as protocol streams — a peer
+                    // can otherwise open many hint streams that trickle
+                    // or withhold the first frame, tying up
+                    // `spawn_hint_stream_router` tasks + QUIC bidi slots
+                    // for `PROTOCOL_FIRST_PAYLOAD_TIMEOUT` each. Hint
+                    // arrival rate is tiny (a handful per setup) so
+                    // sharing the protocol bucket costs nothing in
+                    // steady state.
+                    match state.peer_rate_limiter.try_admit(peer) {
+                        super::peer_rate_limit::AdmissionDecision::Admit => {}
+                        super::peer_rate_limit::AdmissionDecision::Reject { warn: true } => {
+                            tracing::warn!(
+                                peer = %hex::encode(peer),
+                                "rate limit exceeded for inbound scheduler-hint stream; resetting (further rejects within window will log at debug)"
+                            );
+                            let _ = send.reset(0u32.into());
+                            return;
+                        }
+                        super::peer_rate_limit::AdmissionDecision::Reject { warn: false } => {
+                            tracing::debug!(
+                                peer = %hex::encode(peer),
+                                "rate limit exceeded for inbound scheduler-hint stream; resetting"
+                            );
+                            let _ = send.reset(0u32.into());
+                            return;
+                        }
+                    }
                     tasks::spawn_hint_stream_router(peer, send, recv, state.hint_stream_tx.clone());
                 }
             }

@@ -17,7 +17,10 @@
 //! is delivered to exactly one worker. Workers block asynchronously when the
 //! queue is empty and wake on the next push or hint arrival.
 
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::{Duration, Instant},
+};
 
 use mosaic_job_api::HintKey;
 use parking_lot::Mutex;
@@ -32,6 +35,22 @@ pub(crate) struct BoostConfig {
     /// Additional promotion requests while at cap are dropped.
     pub max_slots: usize,
 }
+
+/// Maximum number of unmatched hints to remember, so a hint that arrives
+/// while its target job is transiently absent (e.g. a worker holding it
+/// during retry-backoff sleep) can still promote the job when it comes
+/// back. Sized to match `MAX_CONCURRENT_BIDI_STREAMS = 100` in net-svc
+/// (rounded down to a round number): a peer can't have more than that
+/// many hint streams in flight at once, so 64 covers the realistic burst
+/// with headroom while keeping the stash tiny (< 4 KiB). Excess entries
+/// evict FIFO — hints are advisory, so silent loss is acceptable.
+const PENDING_HINTS_CAP: usize = 64;
+
+/// Maximum age of a pending hint before it's dropped on the next push
+/// check. Comfortably covers the worker's max retry-backoff (10s) plus
+/// scheduler latency, without letting stale hints linger indefinitely
+/// and mis-promote unrelated future jobs that happen to reuse a key.
+const PENDING_HINTS_TTL: Duration = Duration::from_secs(15);
 
 /// Thread-safe, async-aware job queue with optional priority ordering.
 pub(crate) struct JobQueue {
@@ -200,9 +219,15 @@ impl JobQueue {
     /// no such job is currently queued or the boost queue is at its cap.
     /// Hints on priority-mode queues always return `false`.
     ///
-    /// TODO: hints that arrive before their matching job is submitted are
-    /// currently dropped. A short-TTL `pending_hints` stash would let them
-    /// promote a soon-arriving job.
+    /// A hint that arrives while no matching job is queued (e.g. because a
+    /// worker is holding the job during a retry-backoff sleep, or because
+    /// the sender's hint stream landed before the corresponding STF has
+    /// emitted the action) is stashed in a bounded FIFO with a TTL. The
+    /// next matching [`push`](Self::push) or [`requeue`](Self::requeue)
+    /// consumes the stashed entry and boosts the job on entry — same
+    /// effect as if the hint had fired after the push. If the boost queue
+    /// is at cap when the stashed hint is consumed, the promotion silently
+    /// no-ops and the stash entry is not re-added (the job stays in FIFO).
     pub(crate) fn apply_hint(&self, key: &HintKey) -> bool {
         // No signal fired here: promotion doesn't add a job to the queue,
         // and the push that originally added it already sent exactly one
@@ -275,6 +300,11 @@ struct SlotList {
     /// Boosted slots and free slots are NOT in this map (they can't be
     /// promoted again).
     hint_index: HashMap<HintKey, SlotId>,
+    /// Hints that arrived when no matching job was queued (e.g. because a
+    /// worker was holding the job during a retry-backoff sleep). Checked
+    /// on every `push_back`; a match promotes the job to the boost tail
+    /// immediately. Bounded FIFO with a TTL sweep on push.
+    pending_hints: VecDeque<(HintKey, Instant)>,
     /// Number of slots currently in the boost list.
     boost_len: usize,
     /// Boost configuration. `None` disables the boost mechanism entirely
@@ -292,9 +322,43 @@ impl SlotList {
             boost_head: None,
             boost_tail: None,
             hint_index: HashMap::new(),
+            pending_hints: VecDeque::new(),
             boost_len: 0,
             boost,
         }
+    }
+
+    /// Drop expired entries from `pending_hints`. Called on push_back and
+    /// apply_hint miss so the stash size stays bounded even if a stream
+    /// of unmatched hints comes in without matching pushes.
+    fn expire_pending_hints(&mut self, now: Instant) {
+        while let Some((_, ts)) = self.pending_hints.front() {
+            if now.duration_since(*ts) < PENDING_HINTS_TTL {
+                break;
+            }
+            self.pending_hints.pop_front();
+        }
+    }
+
+    /// Consume any pending hint matching `key` (removing it from the
+    /// stash). Returns true if such a hint was found and removed.
+    fn take_pending_hint(&mut self, key: &HintKey, now: Instant) -> bool {
+        self.expire_pending_hints(now);
+        if let Some(pos) = self.pending_hints.iter().position(|(k, _)| k == key) {
+            self.pending_hints.remove(pos);
+            return true;
+        }
+        false
+    }
+
+    /// Add `key` to the pending-hint stash. Evicts the oldest entry if
+    /// the stash is at capacity.
+    fn stash_pending_hint(&mut self, key: HintKey, now: Instant) {
+        self.expire_pending_hints(now);
+        if self.pending_hints.len() >= PENDING_HINTS_CAP {
+            self.pending_hints.pop_front();
+        }
+        self.pending_hints.push_back((key, now));
     }
 
     fn alloc_slot(&mut self, job: PoolJob, hint_key: Option<HintKey>) -> SlotId {
@@ -345,8 +409,16 @@ impl SlotList {
         if let Some(key) = hint_key
             && self.boost.is_some()
         {
-            // Only track hints if boost is enabled.
-            self.hint_index.insert(key, id);
+            self.hint_index.insert(key.clone(), id);
+            // Late-arriving hint: if `apply_hint` fired for this key while
+            // the job was absent (e.g. worker holding it during
+            // retry-backoff), promote immediately instead of leaving the
+            // job at the FIFO tail. Boost-cap enforcement lives inside
+            // `promote`.
+            let now = Instant::now();
+            if self.take_pending_hint(&key, now) {
+                let _ = self.promote(&key);
+            }
         }
     }
 
@@ -374,11 +446,19 @@ impl SlotList {
 
     /// Try to promote the job matching `key` to the boost list tail.
     /// Returns true if a job was promoted.
+    ///
+    /// If no job with `key` is currently in the FIFO index (worker may be
+    /// holding it during retry backoff, or the corresponding push hasn't
+    /// arrived yet), the key is stashed and will promote the next matching
+    /// `push_back` provided it arrives inside [`PENDING_HINTS_TTL`].
     fn promote(&mut self, key: &HintKey) -> bool {
-        let Some(&id) = self.hint_index.get(key) else {
+        let Some(BoostConfig { max_slots }) = self.boost else {
             return false;
         };
-        let Some(BoostConfig { max_slots }) = self.boost else {
+        let Some(&id) = self.hint_index.get(key) else {
+            // No matching queued job — stash the hint for a possible
+            // late-arriving push.
+            self.stash_pending_hint(key.clone(), Instant::now());
             return false;
         };
         if self.boost_len >= max_slots {
@@ -616,6 +696,94 @@ mod tests {
         let state = q.state.lock();
         if let QueueBacking::Fifo(list) = &state.backing {
             assert!(list.slots.len() <= 2, "slot vec grew unnecessarily");
+        } else {
+            unreachable!();
+        }
+    }
+
+    #[test]
+    fn late_arriving_push_gets_promoted_by_stashed_hint() {
+        // The scenario codex flagged: a hint fires while the target job
+        // isn't currently queued (worker holds it during retry-backoff
+        // sleep). The stash keeps the key alive; when the worker later
+        // requeues, `push_back` finds the stashed hint and boosts the
+        // job on entry — same effect as if the hint had fired after the
+        // push.
+        let q = JobQueue::new(false, Some(BoostConfig { max_slots: 64 }));
+        // Hint arrives first — no queued job matches, key gets stashed.
+        assert!(!q.apply_hint(&key(1)));
+
+        // Simulate the worker requeuing the retried job later.
+        q.push(job_with_attempts(42), Some(key(1)));
+        // A second job pushed WITHOUT a matching stashed hint should
+        // stay behind the boosted one in dispatch order.
+        q.push(job_with_attempts(43), Some(key(2)));
+
+        let mut state = q.state.lock();
+        assert_eq!(state.pop().unwrap().attempts, 42, "stash-promoted first");
+        assert_eq!(state.pop().unwrap().attempts, 43);
+        assert!(state.pop().is_none());
+    }
+
+    #[test]
+    fn stashed_hint_consumed_only_once() {
+        // A stashed hint must be single-use — otherwise a stale entry
+        // could keep boosting unrelated jobs that happen to reuse the
+        // key.
+        let q = JobQueue::new(false, Some(BoostConfig { max_slots: 64 }));
+        assert!(!q.apply_hint(&key(1)));
+
+        // First push consumes the stashed hint and gets boosted.
+        q.push(job_with_attempts(1), Some(key(1)));
+        // Second push with the same key must NOT be boosted (no matching
+        // stashed hint remaining).
+        q.push(job_with_attempts(2), Some(key(1)));
+        // FIFO tail-order for a third unmatched job.
+        q.push(job_with_attempts(3), Some(key(2)));
+
+        let mut state = q.state.lock();
+        assert_eq!(state.pop().unwrap().attempts, 1); // boosted
+        assert_eq!(state.pop().unwrap().attempts, 2); // FIFO
+        assert_eq!(state.pop().unwrap().attempts, 3); // FIFO
+    }
+
+    #[test]
+    fn stashed_hint_dropped_when_boost_cap_reached_on_push() {
+        // If the pending-hint stash yields a match on push but boost is
+        // at cap, the promote silently no-ops and the stashed entry is
+        // not re-added — the job stays in FIFO. Regression guard: verify
+        // subsequent operations don't see phantom stash entries.
+        let q = JobQueue::new(false, Some(BoostConfig { max_slots: 1 }));
+        // Fill the boost queue.
+        q.push(job_with_attempts(10), Some(key(10)));
+        assert!(q.apply_hint(&key(10)));
+        // Stash a hint whose target job doesn't yet exist.
+        assert!(!q.apply_hint(&key(1)));
+        // Push the matching job — stash entry consumed, but promote
+        // fails because boost is at cap. Job should land at FIFO tail.
+        q.push(job_with_attempts(1), Some(key(1)));
+
+        let mut state = q.state.lock();
+        // Boosted key(10) first, then FIFO key(1).
+        assert_eq!(state.pop().unwrap().attempts, 10);
+        assert_eq!(state.pop().unwrap().attempts, 1);
+        // Stash should be empty (entry was consumed, not re-added).
+        if let QueueBacking::Fifo(list) = &state.backing {
+            assert!(list.pending_hints.is_empty());
+        } else {
+            unreachable!();
+        }
+    }
+
+    #[test]
+    fn pending_hints_stash_bounded() {
+        let q = JobQueue::new(false, Some(BoostConfig { max_slots: 64 }));
+        for i in 0..(PENDING_HINTS_CAP as u8 + 8) {
+            assert!(!q.apply_hint(&key(i)));
+        }
+        let state = q.state.lock();
+        if let QueueBacking::Fifo(list) = &state.backing {
+            assert_eq!(list.pending_hints.len(), PENDING_HINTS_CAP);
         } else {
             unreachable!();
         }
