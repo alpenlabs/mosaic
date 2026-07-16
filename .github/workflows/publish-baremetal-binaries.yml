@@ -83,6 +83,8 @@ jobs:
         uses: ./.github/actions/setup-foundationdb-client
         with:
           version: "7.3.63" # match the deployed/documented target environment
+          # SHA-256 of foundationdb-clients_7.3.63-1_amd64.deb (immutable release asset)
+          sha256: "4241d43395d74f229b232e3dd2e71a693013db96d4924010cf403ee93119b423"
 
       - name: Install Rust toolchain (pinned nightly)
         run: |
