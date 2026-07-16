@@ -79,12 +79,19 @@ jobs:
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "Built commit: ${sha}"
 
-      - name: Install FoundationDB client (required to link)
-        uses: ./.github/actions/setup-foundationdb-client
-        with:
-          version: "7.3.63" # match the deployed/documented target environment
-          # SHA-256 of foundationdb-clients_7.3.63-1_amd64.deb (immutable release asset)
-          sha256: "4241d43395d74f229b232e3dd2e71a693013db96d4924010cf403ee93119b423"
+      - name: Install FoundationDB client 7.3.69 (verified, required to link)
+        # Inlined in the REVIEWED workflow (not ./.github/actions from the built
+        # ref), so the pinned version + checksum can't be silently bypassed by an
+        # old/modified ref. 7.3.69 matches mosaic's own CI build; libfdb_c is
+        # dynamically linked so operators still run their own cluster.
+        run: |
+          set -euo pipefail
+          deb="foundationdb-clients_7.3.69-1_amd64.deb"
+          curl -fsSLO --proto "=https" --tlsv1.2 \
+            "https://github.com/apple/foundationdb/releases/download/7.3.69/${deb}"
+          echo "ea59d1708519798c7bc4f514cd29af1ac8e41dccbec4371f22d86b713ea81cbf  ${deb}" | sha256sum -c -
+          sudo dpkg -i "${deb}"
+          rm -f "${deb}"
 
       - name: Install Rust toolchain (pinned nightly)
         run: |
@@ -154,8 +161,13 @@ jobs:
         run: |
           set -euo pipefail
           DEST="s3://${S3_BUCKET}/${S3_PREFIX_ROOT}/${COMMIT}/${PLATFORM}"
-          existing="$(aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX_ROOT}/${COMMIT}/" || true)"
-          if [ -n "${existing}" ]; then
+          # Fail closed: capture the list result OUTSIDE an `if` so a list error
+          # (missing ListBucket, transient) fails the job via set -e instead of
+          # being treated as "not published" and overwriting a trusted prefix.
+          key="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
+                  --prefix "${S3_PREFIX_ROOT}/${COMMIT}/" --max-items 1 \
+                  --query 'Contents[0].Key' --output text)"
+          if [ "${key}" != "None" ] && [ -n "${key}" ]; then
             echo "::error::${S3_PREFIX_ROOT}/${COMMIT}/ already published — refusing to overwrite"
             exit 1
           fi
