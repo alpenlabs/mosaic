@@ -25,7 +25,8 @@ name: Publish Bare-Metal Binaries (S3)
 # Objects land at:
 #   s3://alpen-mosaic-artifacts/binaries/mosaic/<built-commit>/linux-amd64/
 #     mosaic  mosaic-peer-id  (+ a .sha256 sidecar each)
-# A commit's prefix is write-once: publish refuses to overwrite an existing one.
+# A COMPLETED publish (`.publish-complete` marker, written last) is write-once;
+# an interrupted upload is healed by re-running, never wedged.
 
 on:
   workflow_dispatch:
@@ -157,21 +158,33 @@ jobs:
           role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Upload to S3 (write-once per commit)
+      - name: Upload to S3 (write-once per completed publish)
         run: |
           set -euo pipefail
-          DEST="s3://${S3_BUCKET}/${S3_PREFIX_ROOT}/${COMMIT}/${PLATFORM}"
-          # Fail closed: capture the list result OUTSIDE an `if` so a list error
-          # (missing ListBucket, transient) fails the job via set -e instead of
-          # being treated as "not published" and overwriting a trusted prefix.
-          key="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
-                  --prefix "${S3_PREFIX_ROOT}/${COMMIT}/" --max-items 1 \
-                  --query 'Contents[0].Key' --output text)"
-          if [ "${key}" != "None" ] && [ -n "${key}" ]; then
-            echo "::error::${S3_PREFIX_ROOT}/${COMMIT}/ already published — refusing to overwrite"
+          DEST_KEY="${S3_PREFIX_ROOT}/${COMMIT}/${PLATFORM}"
+          DEST="s3://${S3_BUCKET}/${DEST_KEY}"
+          # Write-once is keyed on a completion marker written LAST, so an
+          # interrupted upload never wedges the prefix: marker present = complete
+          # publish, refuse; objects without marker = interrupted, heal by
+          # re-uploading. List results are captured OUTSIDE an `if` so a list
+          # error (missing ListBucket, transient) fails the job via set -e
+          # instead of being treated as "not published".
+          marker="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
+                     --prefix "${DEST_KEY}/.publish-complete" --max-items 1 \
+                     --query 'Contents[0].Key' --output text)"
+          if [ "${marker}" != "None" ] && [ -n "${marker}" ]; then
+            echo "::error::${DEST_KEY}/ already published (completion marker present) — refusing to overwrite"
             exit 1
           fi
+          partial="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
+                      --prefix "${DEST_KEY}/" --max-items 1 \
+                      --query 'Contents[0].Key' --output text)"
+          if [ "${partial}" != "None" ] && [ -n "${partial}" ]; then
+            echo "::warning::${DEST_KEY}/ has objects but no completion marker (interrupted publish) — re-uploading"
+          fi
           aws s3 cp out/ "${DEST}/" --recursive --no-progress
+          printf 'commit=%s\ncompleted=%s\n' "${COMMIT}" "$(date -u +%FT%TZ)" \
+            | aws s3 cp - "${DEST}/.publish-complete"
           echo "Published to ${DEST}/"
 
       - name: Job summary
