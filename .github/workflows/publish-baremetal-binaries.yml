@@ -51,7 +51,12 @@ env:
   S3_BUCKET: alpen-mosaic-artifacts
   S3_PREFIX_ROOT: binaries/mosaic
   PLATFORM: linux-amd64
-  RUST_NIGHTLY: nightly-2026-07-10 # pinned for reproducible published binaries
+  # Pinned so published binaries aren't built against whatever nightly exists on
+  # dispatch day (compiler drift) and stay toolchain-consistent with the prod
+  # image build. NOT a bit-reproducibility claim - that would need
+  # remap-path-prefix/SOURCE_DATE_EPOCH etc. and is out of scope here; the
+  # .sha256 sidecars are integrity checks for the artifacts we built.
+  RUST_NIGHTLY: nightly-2026-07-10
 
 jobs:
   build:
@@ -100,10 +105,15 @@ jobs:
           rustup toolchain install "${RUST_NIGHTLY}" --profile minimal
           rustup default "${RUST_NIGHTLY}"
 
-      - name: Rust cache
+      - name: Rust cache (restore-only)
+        # This job compiles UNTRUSTED refs (see SECURITY MODEL), so it must never
+        # write back to the shared Actions cache: rust-cache keys on lockfiles,
+        # not the built commit, so a dispatched ref's build.rs/proc-macro output
+        # could otherwise seed a cache that later trusted builds restore.
+        # Restore-only keeps the speedup without the poisoning vector.
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
-          cache-on-failure: true
+          save-if: ${{ false }}
 
       - name: Build release binaries
         run: cargo build --release --locked --bin mosaic --bin mosaic-peer-id
