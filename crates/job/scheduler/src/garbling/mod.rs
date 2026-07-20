@@ -461,16 +461,17 @@ async fn coordinator_loop(
                         });
                     }
                     Err(CircuitError::AlreadyComplete) => {
-                        // The state machine has already recorded this work
-                        // as done (e.g. a duplicate transfer job for a
-                        // table the evaluator receipted). Idempotent
-                        // success — drop the job. No completion is sent:
-                        // the SM treats these completions as informational
-                        // and has already moved on.
+                        // The state machine no longer needs this work —
+                        // either it already recorded it as done (e.g. a
+                        // duplicate transfer job for a table the evaluator
+                        // receipted) or it has moved past the step (incl.
+                        // aborted setups). Idempotent success — drop the
+                        // job. No completion is sent: the SM treats these
+                        // completions as informational and has moved on.
                         tracing::info!(
                             peer = ?job.peer_id,
                             action = ?job.action,
-                            "action already complete per state machine — dropping job"
+                            "action no longer required per state machine — dropping job"
                         );
                     }
                     Err(CircuitError::StorageUnavailable) => {

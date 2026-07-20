@@ -527,6 +527,10 @@ fn resolve_pending_transfer(
         step if step.phase() > StepPhase::TransferringGarblingTables => {
             return Err(CircuitError::AlreadyComplete);
         }
+        // Steps before the transfer phase. In practice unreachable — the
+        // STF only emits transfer actions while in the transfer step and
+        // the SM never moves backward — but kept as defense: if a job
+        // did arrive early, retrying until the SM advances is correct.
         _ => return Err(CircuitError::StorageUnavailable),
     };
 
