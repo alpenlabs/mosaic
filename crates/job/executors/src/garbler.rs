@@ -530,8 +530,13 @@ pub(crate) fn resolve_pending_garbler_commitment(
 
     // Circuit indices are 1-based (`Index::MIN == 1`, max `N_CIRCUITS`);
     // `generated` is indexed by `index - 1`, matching the STF's completion
-    // handler. Out-of-range values are unrepresentable by `Index`.
-    if generated[index.get() - 1] {
+    // handler. Reject `Index::reserved()` (0) so the subtraction below
+    // cannot underflow — a jobs entry-path for the reserved index is a
+    // programming error.
+    let idx = index.get().checked_sub(1).ok_or(CircuitError::SetupFailed(
+        "reserved index (0) in commitment job".into(),
+    ))?;
+    if generated[idx] {
         return Err(CircuitError::AlreadyComplete);
     }
 
@@ -942,6 +947,18 @@ mod tests {
                 index(1)
             ),
             Err(CircuitError::StorageUnavailable)
+        ));
+    }
+
+    #[test]
+    fn resolve_garbler_commitment_setup_failed_for_reserved_index() {
+        // Index::reserved() (0) would cause `index.get() - 1` to underflow.
+        // Guard it with a checked_sub and return a permanent error instead
+        // of panicking — a reserved-index job is a programming error.
+        let step = commitment_step(&[false; N_CIRCUITS]);
+        assert!(matches!(
+            resolve_pending_garbler_commitment(&step, Index::reserved()),
+            Err(CircuitError::SetupFailed(_))
         ));
     }
 }
