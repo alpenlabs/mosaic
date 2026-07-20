@@ -499,6 +499,45 @@ pub(crate) async fn handle_complete_adaptor_signatures<SP: StorageProvider, TS: 
 // Circuit session setup (called by MosaicExecutor trait impls)
 // ============================================================================
 
+/// Classify a `GenerateTableCommitment` job against the garbler root state.
+///
+/// Commitment jobs must be idempotent: after a restart, restore may
+/// re-emit commitment actions whose completions were already recorded, and
+/// duplicate jobs can also be queued while an earlier one is in flight.
+/// A duplicate that runs to completion is rejected by the STF as
+/// `duplicate_action` — classifying it here skips the (expensive) garbling
+/// pass entirely.
+///
+/// - [`CircuitError::AlreadyComplete`] — the SM has already recorded this commitment, or has moved
+///   past the commitment step entirely. The coordinator drops the job.
+/// - [`CircuitError::StorageUnavailable`] — the SM hasn't reached the commitment step yet; the STF
+///   will write the state shortly. Retry.
+pub(crate) fn resolve_pending_garbler_commitment(
+    step: &Step,
+    index: Index,
+) -> Result<(), CircuitError> {
+    let generated = match step {
+        Step::GeneratingTableCommitments { generated, .. } => generated,
+        step if step.phase() > StepPhase::GeneratingTableCommitments => {
+            return Err(CircuitError::AlreadyComplete);
+        }
+        // Steps before the commitment phase. In practice unreachable — the
+        // STF only emits commitment actions while in the commitment step
+        // and the SM never moves backward — but kept as defense: if a job
+        // did arrive early, retrying until the SM advances is correct.
+        _ => return Err(CircuitError::StorageUnavailable),
+    };
+
+    // Circuit indices are 1-based (`Index::MIN == 1`, max `N_CIRCUITS`);
+    // `generated` is indexed by `index - 1`, matching the STF's completion
+    // handler. Out-of-range values are unrepresentable by `Index`.
+    if generated[index.get() - 1] {
+        return Err(CircuitError::AlreadyComplete);
+    }
+
+    Ok(())
+}
+
 /// Classify a `TransferGarblingTable` job against the garbler root state.
 ///
 /// Transfer jobs must be idempotent: the evaluator may legitimately
@@ -731,7 +770,8 @@ async fn write_with_timeout(
 #[cfg(test)]
 mod tests {
     use mosaic_cac_types::{EvalGarblingSeeds, EvalGarblingTableCommitments};
-    use mosaic_common::constants::N_EVAL_CIRCUITS;
+    use mosaic_common::constants::{N_CIRCUITS, N_EVAL_CIRCUITS};
+    use mosaic_vs3::Index;
 
     use super::*;
 
@@ -745,6 +785,14 @@ mod tests {
             eval_seeds: EvalGarblingSeeds::new(|i| seed(i as u8)),
             eval_commitments: EvalGarblingTableCommitments::new(|i| [i as u8; 32].into()),
             transferred: HeapArray::new(|i| transferred_mask[i]),
+        }
+    }
+
+    fn commitment_step(generated_mask: &[bool]) -> Step {
+        assert_eq!(generated_mask.len(), N_CIRCUITS);
+        Step::GeneratingTableCommitments {
+            generated: HeapArray::new(|i| generated_mask[i]),
+            seeds: mosaic_cac_types::AllGarblingSeeds::new(|i| seed(i as u8)),
         }
     }
 
@@ -800,6 +848,100 @@ mod tests {
         assert!(matches!(
             resolve_pending_transfer(&step, &seed(200)),
             Err(CircuitError::SetupFailed(_))
+        ));
+    }
+
+    // Tests for resolve_pending_garbler_commitment
+
+    /// Circuit indices are 1-based; helper for readable tests.
+    fn index(i: usize) -> Index {
+        Index::new(i).expect("test index in range")
+    }
+
+    #[test]
+    fn resolve_garbler_commitment_proceeds_for_ungenerated_circuit() {
+        let step = commitment_step(&[false; N_CIRCUITS]);
+        assert!(
+            resolve_pending_garbler_commitment(&step, index(N_CIRCUITS)).is_ok(),
+            "should proceed for valid index during commitment step"
+        );
+    }
+
+    #[test]
+    fn resolve_garbler_commitment_already_complete_for_generated_circuit() {
+        // The STF already recorded this circuit's commitment: a duplicate
+        // job resolves AlreadyComplete while others still proceed.
+        let mut mask = [false; N_CIRCUITS];
+        mask[N_CIRCUITS - 1] = true;
+        let step = commitment_step(&mask);
+        assert!(matches!(
+            resolve_pending_garbler_commitment(&step, index(N_CIRCUITS)),
+            Err(CircuitError::AlreadyComplete)
+        ));
+        assert!(resolve_pending_garbler_commitment(&step, index(1)).is_ok());
+    }
+
+    #[test]
+    fn resolve_garbler_commitment_already_complete_after_step_advances() {
+        // SM moved past the commitment phase: any straggler commitment job
+        // should resolve AlreadyComplete instead of StorageUnavailable.
+        assert!(matches!(
+            resolve_pending_garbler_commitment(&Step::SetupComplete, index(1)),
+            Err(CircuitError::AlreadyComplete)
+        ));
+        assert!(matches!(
+            resolve_pending_garbler_commitment(
+                &Step::TransferringGarblingTables {
+                    eval_seeds: EvalGarblingSeeds::new(|i| seed(i as u8)),
+                    eval_commitments: EvalGarblingTableCommitments::new(|i| [i as u8; 32].into()),
+                    transferred: HeapArray::new(|_| false),
+                },
+                index(1)
+            ),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_garbler_commitment_already_complete_for_aborted_setup() {
+        // Aborted phases after the commitment step in the variant order:
+        // stale jobs for an aborted setup must drop, not retry forever.
+        assert!(matches!(
+            resolve_pending_garbler_commitment(
+                &Step::Aborted {
+                    reason: "test".into(),
+                },
+                index(1)
+            ),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_transfer_already_complete_for_aborted_setup() {
+        assert!(matches!(
+            resolve_pending_transfer(
+                &Step::Aborted {
+                    reason: "test".into(),
+                },
+                &seed(0)
+            ),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_garbler_commitment_storage_unavailable_before_commitment_step() {
+        // SM not yet at the commitment step: state genuinely missing,
+        // retry is correct.
+        assert!(matches!(
+            resolve_pending_garbler_commitment(
+                &Step::GeneratingShares {
+                    generated: HeapArray::new(|_| false),
+                },
+                index(1)
+            ),
+            Err(CircuitError::StorageUnavailable)
         ));
     }
 }

@@ -216,6 +216,21 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
                 .garbler_state(&peer_id)
                 .await
                 .map_err(|_| CircuitError::StorageUnavailable)?;
+
+            // Idempotency guard: skip the (expensive) garbling pass for
+            // circuits the STF has already recorded, and drop stragglers
+            // whose step has advanced or aborted. Shares persist across
+            // step advances, so without this a stale job would run the
+            // full pass only for its completion to be discarded.
+            let root_state = garb_state
+                .get_root_state()
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CircuitError::StorageUnavailable)?;
+
+            garbler::resolve_pending_garbler_commitment(&root_state.step, index)?;
+
             let input_shares = garb_state
                 .get_input_shares_for_circuit(&index)
                 .await
@@ -333,6 +348,19 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                 .evaluator_state(&peer_id)
                 .await
                 .map_err(|_| CircuitError::StorageUnavailable)?;
+
+            // Idempotency guard: skip the (expensive) re-garbling pass for
+            // circuits the STF has already recorded as verified, and drop
+            // stragglers whose step has advanced or aborted.
+            let root_state = eval_state
+                .get_root_state()
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CircuitError::StorageUnavailable)?;
+
+            evaluator::resolve_pending_evaluator_commitment(&root_state.step, index)?;
+
             let challenge_indices = eval_state
                 .get_challenge_indices()
                 .await
