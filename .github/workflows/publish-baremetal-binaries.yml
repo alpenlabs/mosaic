@@ -113,7 +113,7 @@ jobs:
         # Restore-only keeps the speedup without the poisoning vector.
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
-          save-if: ${{ false }}
+          save-if: false
 
       - name: Build release binaries
         run: cargo build --release --locked --bin mosaic --bin mosaic-peer-id
