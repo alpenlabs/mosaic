@@ -12,9 +12,10 @@ use mosaic_cac_types::state_machine::{
     evaluator::Action as EvaluatorAction, garbler::Action as GarblerAction,
 };
 use mosaic_job_api::{
-    CircuitAction, ExecuteEvaluatorJob, ExecuteGarblerJob, JobActions, JobBatch,
+    CircuitAction, ExecuteEvaluatorJob, ExecuteGarblerJob, HintKey, HintKind, JobActions, JobBatch,
     JobSchedulerHandle, PendingCircuitJob, SessionFactory,
 };
+use mosaic_net_client::{InboundHintStream, SchedulerMessage};
 use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
 
@@ -54,11 +55,16 @@ impl Default for JobSchedulerConfig {
                 threads: 1,
                 concurrency_per_worker: 32,
                 priority_queue: false,
+                // Boost cap: small vs concurrency (512 in production
+                // config) so a single peer / attack surface can't reorder
+                // the whole queue. See `SchedulerHint` design.
+                max_boost_slots: Some(64),
             },
             heavy: PoolConfig {
                 threads: 2,
                 concurrency_per_worker: 8,
                 priority_queue: true,
+                max_boost_slots: None,
             },
             garbling: GarblingConfig::default(),
             submission_queue_size: 256,
@@ -84,6 +90,10 @@ pub struct JobScheduler<D: ExecuteGarblerJob + ExecuteEvaluatorJob> {
     submission_rx: kanal::AsyncReceiver<JobBatch>,
     /// Internal fatal faults reported by workers/coordinator.
     fault_rx: kanal::AsyncReceiver<SchedulerFault>,
+    /// Optional inbound scheduler-hint stream. When present, the main
+    /// loop consumes hints and promotes matching queued jobs in the
+    /// light pool. Absent = no hint support (tests, backwards compat).
+    hint_stream_rx: Option<kanal::AsyncReceiver<InboundHintStream>>,
 }
 
 /// Controller for graceful scheduler shutdown.
@@ -139,7 +149,11 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
     /// to the job system. It is cheaply cloneable.
     ///
     /// After construction, call [`run`](Self::run) to start the dispatch loop.
-    pub fn new(config: JobSchedulerConfig, dispatcher: D) -> (Self, JobSchedulerHandle) {
+    pub fn new(
+        config: JobSchedulerConfig,
+        dispatcher: D,
+        hint_stream_rx: Option<kanal::AsyncReceiver<InboundHintStream>>,
+    ) -> (Self, JobSchedulerHandle) {
         // Channel for SM Scheduler → Job Scheduler (batch submissions).
         //
         // Unbounded: the SM scheduler's STF can produce these inline while
@@ -189,9 +203,42 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             garbling: Some(garbling),
             submission_rx,
             fault_rx,
+            hint_stream_rx,
         };
 
         (scheduler, handle)
+    }
+
+    /// Handle an inbound `SchedulerMessage` by promoting the matching job
+    /// in the light pool. Best-effort; unknown / unmatched hints no-op.
+    fn apply_scheduler_message(&self, inbound: InboundHintStream) {
+        let InboundHintStream { peer, payload } = inbound;
+        let peer_id: mosaic_net_svc_api::PeerId = peer;
+        let msg = match SchedulerMessage::decode(&payload) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!(
+                    peer = %hex::encode(peer_id),
+                    error = %e,
+                    "failed to decode inbound SchedulerMessage; ignoring"
+                );
+                return;
+            }
+        };
+        let key = match msg {
+            SchedulerMessage::TransferStarting { commitment } => {
+                HintKey::new(peer_id, HintKind::TransferStarting, commitment)
+            }
+        };
+        if let Some(light) = self.light.as_ref() {
+            let promoted = light.apply_hint(&key);
+            tracing::debug!(
+                peer = %hex::encode(peer_id),
+                kind = ?key.kind,
+                promoted,
+                "applied SchedulerMessage hint"
+            );
+        }
     }
 
     /// Run the job scheduler on a dedicated thread with its own monoio runtime.
@@ -225,9 +272,11 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
 
     /// Main scheduler loop running on monoio.
     async fn scheduler_loop(self, shutdown_rx: kanal::AsyncReceiver<()>) {
-        let this = self;
+        let mut this = self;
         tracing::info!("job scheduler main loop started");
 
+        // Optional hint receiver: if not present, we skip the select arm by
+        // making it a never-completing future.
         loop {
             monoio::select! {
                 recv = this.submission_rx.recv() => {
@@ -237,6 +286,24 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                             tracing::info!("job scheduler submission channel closed; main loop exiting");
                             break;
                         }
+                    }
+                }
+                recv = async {
+                    match &this.hint_stream_rx {
+                        Some(rx) => rx.recv().await.ok(),
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(inbound) = recv {
+                        this.apply_scheduler_message(inbound);
+                    } else {
+                        // Channel closed: drop the receiver so this arm
+                        // reverts to `pending()` on the next iteration.
+                        // Otherwise `recv().await` returns `None`
+                        // immediately every iteration, busy-spinning the
+                        // scheduler thread and starving the other arms.
+                        tracing::debug!("scheduler hint channel closed; disabling hint arm");
+                        this.hint_stream_rx = None;
                     }
                 }
                 recv = shutdown_rx.recv() => {
@@ -320,13 +387,13 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                                 self.light
                                                     .as_ref()
                                                     .expect("light pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, None);
                                             }
                                             ActionCategory::Heavy => {
                                                 self.heavy
                                                     .as_ref()
                                                     .expect("heavy pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, None);
                                             }
                                             _ => unreachable!(),
                                         }
@@ -350,19 +417,34 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                                         self.dispatch_evaluator_circuit(peer_id, action).await;
                                     }
                                     _ => {
+                                        // For ReceiveGarblingTable, register a
+                                        // hint key so an inbound
+                                        // `TransferStarting` from `peer_id`
+                                        // can promote this job to the front.
+                                        let hint_key = match &action {
+                                            EvaluatorAction::ReceiveGarblingTable(commitment) => {
+                                                let payload: [u8; 32] = (*commitment).into();
+                                                Some(HintKey::new(
+                                                    peer_id,
+                                                    HintKind::TransferStarting,
+                                                    payload,
+                                                ))
+                                            }
+                                            _ => None,
+                                        };
                                         let worker_job = WorkerJob::Evaluator { peer_id, action };
                                         match category {
                                             ActionCategory::Light => {
                                                 self.light
                                                     .as_ref()
                                                     .expect("light pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, hint_key);
                                             }
                                             ActionCategory::Heavy => {
                                                 self.heavy
                                                     .as_ref()
                                                     .expect("heavy pool must exist while scheduler is running")
-                                                    .submit(priority, worker_job);
+                                                    .submit(priority, worker_job, None);
                                             }
                                             _ => unreachable!(),
                                         }

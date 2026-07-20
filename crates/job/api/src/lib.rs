@@ -33,9 +33,12 @@
 //! for retry on the next pass. No action is ever silently dropped.
 
 mod handle;
+mod hint;
 mod submission;
 
 use std::{future::Future, pin::Pin, sync::Arc};
+
+pub use hint::{HintKey, HintKind};
 
 /// Return type for [`SessionFactory::create_session`].
 ///

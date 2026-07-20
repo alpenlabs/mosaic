@@ -28,8 +28,8 @@ pub mod peer_id;
 
 // Re-export main types for convenience.
 pub use api::{
-    BulkTransferExpectation, ExpectError, InboundProtocolStream, NetServiceHandle, OpenStreamError,
-    PayloadBuf, Stream, StreamClosed,
+    BulkTransferExpectation, ExpectError, InboundHintStream, InboundProtocolStream,
+    NetServiceHandle, OpenStreamError, PayloadBuf, Stream, StreamClosed,
 };
 pub use config::{NetServiceConfig, PeerConfig, PeerStreamRateLimit};
 pub use handshake::{

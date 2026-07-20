@@ -4,6 +4,20 @@ use ark_serialize::SerializationError;
 use mosaic_net_svc::{ExpectError, StreamClosed, api::OpenStreamError};
 use mosaic_net_svc_api::PeerId;
 
+/// Error sending a scheduler-hint message.
+#[derive(Debug, thiserror::Error)]
+pub enum SendHintError {
+    /// Failed to encode the message.
+    #[error("encode failed: {0}")]
+    Encode(String),
+    /// Failed to open scheduler-hint stream to peer.
+    #[error("failed to open hint stream: {0}")]
+    Open(#[from] OpenStreamError),
+    /// Failed to write the encoded payload.
+    #[error("write failed: {0}")]
+    Write(#[source] StreamClosed),
+}
+
 /// Error sending a protocol message.
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {

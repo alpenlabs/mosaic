@@ -2581,10 +2581,12 @@ version = "0.1.0"
 dependencies = [
  "ckt-fmtv5-types",
  "fasm",
+ "hex",
  "kanal",
  "monoio",
  "mosaic-cac-types",
  "mosaic-job-api",
+ "mosaic-net-client",
  "mosaic-net-svc-api",
  "parking_lot",
  "tracing",

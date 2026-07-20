@@ -173,6 +173,10 @@ impl NetService {
         // #220) bounds peer fan-in upstream of this channel.
         let (protocol_stream_tx, protocol_stream_rx) = bounded_async(64);
 
+        // Scheduler-hint stream channel (service -> handles). Bounded — a
+        // slow consumer just drops hints (they're advisory and best-effort).
+        let (hint_stream_tx, hint_stream_rx) = bounded_async(256);
+
         // Shutdown channel
         let (shutdown_tx, shutdown_rx) = bounded_async(1);
 
@@ -180,7 +184,12 @@ impl NetService {
         // Bounded(1) so send is infallible unless receiver is dropped.
         let (startup_tx, startup_rx) = bounded_async::<Result<(), ServiceError>>(1);
 
-        let handle = NetServiceHandle::new(config.clone(), command_tx, protocol_stream_rx);
+        let handle = NetServiceHandle::new(
+            config.clone(),
+            command_tx,
+            protocol_stream_rx,
+            hint_stream_rx,
+        );
 
         // Clone for the thread
         let shutdown_tx_clone = shutdown_tx.clone();
@@ -193,6 +202,7 @@ impl NetService {
                     allowed_peers,
                     command_rx,
                     protocol_stream_tx,
+                    hint_stream_tx,
                     shutdown_rx,
                     startup_tx,
                 )
@@ -236,6 +246,7 @@ fn run_service(
     allowed_peers: Arc<HashSet<PeerId>>,
     command_rx: AsyncReceiver<NetCommand>,
     protocol_stream_tx: AsyncSender<InboundProtocolStream>,
+    hint_stream_tx: AsyncSender<crate::api::InboundHintStream>,
     shutdown_rx: AsyncReceiver<()>,
     startup_tx: AsyncSender<Result<(), ServiceError>>,
 ) -> Result<(), ServiceError> {
@@ -255,6 +266,7 @@ fn run_service(
         allowed_peers,
         command_rx,
         protocol_stream_tx,
+        hint_stream_tx,
         shutdown_rx,
         startup_tx,
     ))
@@ -266,6 +278,7 @@ async fn run_service_async(
     allowed_peers: Arc<HashSet<PeerId>>,
     command_rx: AsyncReceiver<NetCommand>,
     protocol_stream_tx: AsyncSender<InboundProtocolStream>,
+    hint_stream_tx: AsyncSender<crate::api::InboundHintStream>,
     shutdown_rx: AsyncReceiver<()>,
     startup_tx: AsyncSender<Result<(), ServiceError>>,
 ) -> Result<(), ServiceError> {
@@ -301,6 +314,7 @@ async fn run_service_async(
         peer_states: HashMap::<PeerId, PeerConnectionState>::new(),
         bulk_expectations: HashMap::new(),
         protocol_stream_tx,
+        hint_stream_tx,
         pending_reconnects: Vec::new(),
         pending_stream_requests: HashMap::new(),
         open_request_states: HashMap::new(),
