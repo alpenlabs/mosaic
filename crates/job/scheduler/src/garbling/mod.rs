@@ -460,6 +460,19 @@ async fn coordinator_loop(
                             session,
                         });
                     }
+                    Err(CircuitError::AlreadyComplete) => {
+                        // The state machine has already recorded this work
+                        // as done (e.g. a duplicate transfer job for a
+                        // table the evaluator receipted). Idempotent
+                        // success — drop the job. No completion is sent:
+                        // the SM treats these completions as informational
+                        // and has already moved on.
+                        tracing::info!(
+                            peer = ?job.peer_id,
+                            action = ?job.action,
+                            "action already complete per state machine — dropping job"
+                        );
+                    }
                     Err(CircuitError::StorageUnavailable) => {
                         // Transient — data not yet written by STF. Keep for retry.
                         tracing::debug!(

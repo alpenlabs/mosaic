@@ -10,11 +10,12 @@ use futures::{
 };
 use mosaic_cac_types::{
     AllPolynomials, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositInputs,
-    GarblingSeed, InputPolynomials, OutputPolynomial, PubKey, ReservedDepositInputShares,
-    ReservedInputShares, ReservedWithdrawalInputShares, Seed, WideLabelWireShares,
-    WithdrawalAdaptors,
+    GarblingSeed, GarblingTableCommitment, InputPolynomials, OutputPolynomial, PubKey,
+    ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares, Seed,
+    WideLabelWireShares, WithdrawalAdaptors,
     state_machine::garbler::{
-        ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Step, Wire,
+        ActionId, ActionResult, GeneratedPolynomialCommitments, StateRead as _, Step, StepPhase,
+        Wire,
     },
 };
 use mosaic_common::constants::{
@@ -498,6 +499,49 @@ pub(crate) async fn handle_complete_adaptor_signatures<SP: StorageProvider, TS: 
 // Circuit session setup (called by MosaicExecutor trait impls)
 // ============================================================================
 
+/// Classify a `TransferGarblingTable` job against the garbler root state.
+///
+/// Transfer jobs must be idempotent: the evaluator may legitimately
+/// re-request a table it hasn't receipted (see the garbler STF), so
+/// duplicate jobs for the same table are expected. Returns the
+/// eval-circuit position and expected commitment when the transfer should
+/// proceed, otherwise:
+///
+/// - [`CircuitError::AlreadyComplete`] — the evaluator has receipted this table (a receipt is only
+///   sent after the table is durably stored, so it will never be legitimately re-requested), or the
+///   SM has moved past the transfer step entirely. The coordinator drops the job.
+/// - [`CircuitError::StorageUnavailable`] — the SM hasn't reached the transfer step yet; the STF
+///   will write the state shortly. Retry.
+/// - [`CircuitError::SetupFailed`] — the seed is unknown (programming error; the STF only emits
+///   transfer actions for seeds it selected).
+fn resolve_pending_transfer(
+    step: &Step,
+    seed: &GarblingSeed,
+) -> Result<(usize, GarblingTableCommitment), CircuitError> {
+    let (eval_seeds, eval_commitments, transferred) = match step {
+        Step::TransferringGarblingTables {
+            eval_seeds,
+            eval_commitments,
+            transferred,
+        } => (eval_seeds, eval_commitments, transferred),
+        step if step.phase() > StepPhase::TransferringGarblingTables => {
+            return Err(CircuitError::AlreadyComplete);
+        }
+        _ => return Err(CircuitError::StorageUnavailable),
+    };
+
+    let pos = eval_seeds
+        .iter()
+        .position(|s| s == seed)
+        .ok_or(CircuitError::SetupFailed("seed not in eval_seeds".into()))?;
+
+    if transferred[pos] {
+        return Err(CircuitError::AlreadyComplete);
+    }
+
+    Ok((pos, eval_commitments[pos]))
+}
+
 /// Set up a [`TransferSession`] for G8 (`TransferGarblingTable`).
 ///
 /// Performs all setup work (load shares, resolve seed → commitment, create
@@ -522,20 +566,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
 
-    let (eval_seeds, eval_commitments) = match &root_state.step {
-        Step::TransferringGarblingTables {
-            eval_seeds,
-            eval_commitments,
-            ..
-        } => (eval_seeds.clone(), eval_commitments.clone()),
-        _ => return Err(CircuitError::StorageUnavailable),
-    };
-
-    let pos = eval_seeds
-        .iter()
-        .position(|s| *s == seed)
-        .ok_or(CircuitError::SetupFailed("seed not in eval_seeds".into()))?;
-    let commitment = eval_commitments[pos];
+    let (pos, commitment) = resolve_pending_transfer(&root_state.step, &seed)?;
 
     // Derive the circuit index from challenge indices.
     let challenge_indices = garb_state
@@ -690,5 +721,81 @@ async fn write_with_timeout(
     pin_mut!(delay);
     match select(write, delay).await {
         Either::Left((r, _)) | Either::Right((r, _)) => r,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mosaic_cac_types::{EvalGarblingSeeds, EvalGarblingTableCommitments};
+    use mosaic_common::constants::N_EVAL_CIRCUITS;
+
+    use super::*;
+
+    fn seed(byte: u8) -> GarblingSeed {
+        GarblingSeed::from([byte; 32])
+    }
+
+    fn transfer_step(transferred_mask: &[bool]) -> Step {
+        assert_eq!(transferred_mask.len(), N_EVAL_CIRCUITS);
+        Step::TransferringGarblingTables {
+            eval_seeds: EvalGarblingSeeds::new(|i| seed(i as u8)),
+            eval_commitments: EvalGarblingTableCommitments::new(|i| [i as u8; 32].into()),
+            transferred: HeapArray::new(|i| transferred_mask[i]),
+        }
+    }
+
+    #[test]
+    fn resolve_proceeds_for_untransferred_table() {
+        let last = N_EVAL_CIRCUITS - 1;
+        let step = transfer_step(&[false; N_EVAL_CIRCUITS]);
+        let (pos, commitment) =
+            resolve_pending_transfer(&step, &seed(last as u8)).expect("should proceed");
+        assert_eq!(pos, last);
+        assert_eq!(commitment, [last as u8; 32].into());
+    }
+
+    #[test]
+    fn resolve_already_complete_for_receipted_table() {
+        // The evaluator receipted the last table — a duplicate job for it
+        // must resolve AlreadyComplete, while other tables still proceed.
+        let last = N_EVAL_CIRCUITS - 1;
+        let mut mask = [false; N_EVAL_CIRCUITS];
+        mask[last] = true;
+        let step = transfer_step(&mask);
+        assert!(matches!(
+            resolve_pending_transfer(&step, &seed(last as u8)),
+            Err(CircuitError::AlreadyComplete)
+        ));
+        assert!(resolve_pending_transfer(&step, &seed(0)).is_ok());
+    }
+
+    #[test]
+    fn resolve_already_complete_after_setup_complete() {
+        // SM moved past the transfer step: any straggler job resolves
+        // AlreadyComplete instead of StorageUnavailable (which would
+        // retry forever).
+        assert!(matches!(
+            resolve_pending_transfer(&Step::SetupComplete, &seed(0)),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_storage_unavailable_before_transfer_step() {
+        // SM not yet at the transfer step: state genuinely missing,
+        // retry is correct.
+        assert!(matches!(
+            resolve_pending_transfer(&Step::WaitingForChallenge, &seed(0)),
+            Err(CircuitError::StorageUnavailable)
+        ));
+    }
+
+    #[test]
+    fn resolve_setup_failed_for_unknown_seed() {
+        let step = transfer_step(&[false; N_EVAL_CIRCUITS]);
+        assert!(matches!(
+            resolve_pending_transfer(&step, &seed(200)),
+            Err(CircuitError::SetupFailed(_))
+        ));
     }
 }
