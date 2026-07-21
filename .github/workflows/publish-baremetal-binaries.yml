@@ -116,12 +116,18 @@ jobs:
           save-if: false
 
       - name: Build release binaries
-        run: cargo build --release --locked --bin mosaic --bin mosaic-peer-id
+        # +toolchain overrides any rust-toolchain(.toml) the dispatched ref may
+        # carry (rustup gives such files precedence over the default), so the
+        # published binary is always built with the workflow-pinned nightly.
+        run: cargo +"${RUST_NIGHTLY}" build --release --locked --bin mosaic --bin mosaic-peer-id
 
       - name: Stage binaries + checksums
         run: |
           set -euo pipefail
-          mkdir -p out
+          # Recreate out/ from scratch: the dispatched ref (or its build
+          # scripts) may have planted files there, and the recursive S3 upload
+          # would publish anything in this directory under the approved prefix.
+          rm -rf out && mkdir out
           for b in mosaic mosaic-peer-id; do
             install -m 0755 "target/release/${b}" "out/${b}"
             ( cd out && sha256sum "${b}" > "${b}.sha256" )
@@ -134,7 +140,7 @@ jobs:
           name: mosaic-binaries-${{ steps.rev.outputs.sha }}
           path: out/
           if-no-files-found: error
-          retention-days: 7 # must outlast the publish job's reviewer-approval wait
+          retention-days: 30 # environment approval can wait up to 30 days (GitHub max)
 
   publish:
     name: Publish to S3 (credentialed, no untrusted code)
