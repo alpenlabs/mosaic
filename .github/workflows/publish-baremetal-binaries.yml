@@ -61,7 +61,10 @@ env:
 jobs:
   build:
     name: Build binaries (untrusted ref, no credentials)
-    runs-on: ubuntu-latest
+    # Pinned (not -latest): binaries are dynamically linked; a floating runner
+    # advancing would silently raise the glibc/libstdc++ floor above what
+    # operators' Ubuntu 24.04 hosts ship (docs pin the target OS to 24.04).
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read # deliberately no id-token here
@@ -93,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           deb="foundationdb-clients_7.3.69-1_amd64.deb"
-          curl -fsSLO --proto "=https" --tlsv1.2 \
+          curl -fsSLO --proto "=https" --proto-redir "=https" --tlsv1.2 \
             "https://github.com/apple/foundationdb/releases/download/7.3.69/${deb}"
           echo "ea59d1708519798c7bc4f514cd29af1ac8e41dccbec4371f22d86b713ea81cbf  ${deb}" | sha256sum -c -
           sudo dpkg -i "${deb}"
