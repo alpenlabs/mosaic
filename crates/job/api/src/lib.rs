@@ -33,9 +33,12 @@
 //! for retry on the next pass. No action is ever silently dropped.
 
 mod handle;
+mod hint;
 mod submission;
 
 use std::{future::Future, pin::Pin, sync::Arc};
+
+pub use hint::{HintKey, HintKind};
 
 /// Return type for [`SessionFactory::create_session`].
 ///
@@ -85,6 +88,13 @@ pub enum CircuitError {
     ChunkFailed(String),
     /// Transient network or I/O failure during session setup — retryable.
     TransientFailure(String),
+    /// The state machine has already recorded this action's work as done
+    /// (e.g. a duplicate transfer job for a table the evaluator has
+    /// receipted, or the SM has moved past the step entirely). The job is
+    /// an idempotent success: drop it without retry. Distinct from
+    /// [`StorageUnavailable`](Self::StorageUnavailable), which means the
+    /// data is not written *yet* and retrying will eventually succeed.
+    AlreadyComplete,
 }
 
 /// A block of circuit gate data shared across concurrent sessions via [`Arc`].

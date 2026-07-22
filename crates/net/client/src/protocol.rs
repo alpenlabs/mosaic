@@ -30,6 +30,10 @@ pub enum StreamPriority {
     Normal = 0,
     /// Acknowledgments - higher than normal to avoid blocking.
     Ack = 1,
+    /// Scheduler hints - highest priority, sent ahead of protocol / bulk /
+    /// ack traffic so a peer's scheduler can react before the actual work
+    /// arrives. Fire-and-forget; no ack expected.
+    SchedulerHint = 2,
 }
 
 impl StreamPriority {

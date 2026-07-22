@@ -83,11 +83,13 @@ impl MosaicConfig {
                 threads: self.job_scheduler.light.threads,
                 concurrency_per_worker: self.job_scheduler.light.concurrency_per_worker,
                 priority_queue: false,
+                max_boost_slots: Some(64),
             },
             heavy: PoolConfig {
                 threads: self.job_scheduler.heavy.threads,
                 concurrency_per_worker: self.job_scheduler.heavy.concurrency_per_worker,
                 priority_queue: true,
+                max_boost_slots: None,
             },
             garbling: GarblingConfig {
                 worker_threads: self.job_scheduler.garbling.worker_threads,

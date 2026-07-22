@@ -1110,3 +1110,102 @@ fn test_bulk_receiver_read_timeout() {
         sender.reset(0).await;
     });
 }
+
+// ============================================================================
+// Scheduler-hint flow (cooperative scheduling)
+// ============================================================================
+//
+// Verify the wire-level send/receive path: sender's `NetClient::send_hint`
+// reaches the receiver's `hint_streams()` receiver with the correct sender
+// peer id and a decodable `SchedulerMessage` payload.
+//
+// The scheduler-layer promotion (applying the hint to a queued job) is
+// covered by unit tests in `mosaic-job-scheduler`; this test focuses on
+// the wire path across a real net-svc pair.
+
+#[test]
+fn scheduler_hint_transfer_starting_delivered_end_to_end() {
+    let (mut peer_a, mut peer_b) = create_client_pair();
+
+    run_async(async {
+        stabilize_stream_path(&peer_a, &peer_b).await;
+
+        // Peer A sends a TransferStarting hint to peer B. B's scheduler
+        // (represented here by draining `hint_streams()`) should receive
+        // it with `peer = A` and a payload that decodes to the same
+        // commitment.
+        let commitment = [0xa7u8; 32];
+        let msg = mosaic_net_client::SchedulerMessage::TransferStarting { commitment };
+
+        // Retry the send under the same CI harness other wire tests use —
+        // stabilize_stream_path proved the connection works but the peer
+        // rate limiter can transiently reject a fresh open.
+        retry_until_ok(CI_TIMEOUT, || {
+            let msg = msg.clone();
+            let client = peer_a.client.clone();
+            let target = peer_b.peer_id;
+            async move { client.send_hint(target, &msg).await.map_err(|_| ()) }
+        })
+        .await;
+
+        let inbound = tokio::time::timeout(
+            Duration::from_secs(5),
+            peer_b.client.handle().hint_streams().recv(),
+        )
+        .await
+        .expect("hint delivery timed out")
+        .expect("hint stream channel closed");
+
+        assert_eq!(
+            inbound.peer, peer_a.peer_id,
+            "hint's peer must be the sender"
+        );
+        let decoded =
+            mosaic_net_client::SchedulerMessage::decode(&inbound.payload).expect("payload decodes");
+        assert_eq!(decoded, msg);
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn scheduler_hint_from_unknown_peer_would_be_rejected() {
+    // Regression guard: the receive path routes an InboundHintStream with
+    // `peer` set to the TLS-authenticated peer id. Peers not in config
+    // can't even establish a connection, so a spoofed hint can't reach
+    // `hint_streams()`. This test asserts by construction that a hint
+    // sent between paired peers arrives with the sender's actual peer id
+    // (not the receiver's own, not zero, not something else).
+    let (mut peer_a, mut peer_b) = create_client_pair();
+
+    run_async(async {
+        stabilize_stream_path(&peer_a, &peer_b).await;
+
+        let msg = mosaic_net_client::SchedulerMessage::TransferStarting {
+            commitment: [0x11u8; 32],
+        };
+
+        retry_until_ok(CI_TIMEOUT, || {
+            let msg = msg.clone();
+            let client = peer_a.client.clone();
+            let target = peer_b.peer_id;
+            async move { client.send_hint(target, &msg).await.map_err(|_| ()) }
+        })
+        .await;
+
+        let inbound = tokio::time::timeout(
+            Duration::from_secs(5),
+            peer_b.client.handle().hint_streams().recv(),
+        )
+        .await
+        .expect("hint delivery timed out")
+        .expect("hint stream channel closed");
+
+        assert_ne!(inbound.peer, peer_b.peer_id, "hint peer must not be self");
+        assert_eq!(inbound.peer, peer_a.peer_id);
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}

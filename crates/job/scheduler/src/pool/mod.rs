@@ -11,10 +11,10 @@ pub(crate) mod worker;
 
 use std::sync::Arc;
 
-use mosaic_job_api::{ExecuteEvaluatorJob, ExecuteGarblerJob, JobCompletion};
+use mosaic_job_api::{ExecuteEvaluatorJob, ExecuteGarblerJob, HintKey, JobCompletion};
 
 use self::{
-    queue::JobQueue,
+    queue::{BoostConfig, JobQueue},
     worker::{Worker, WorkerJob},
 };
 use crate::{SchedulerFault, priority::Priority};
@@ -30,6 +30,9 @@ pub(crate) struct PoolJob {
     pub job: WorkerJob,
     /// Number of times this job has been retried due to transient failures.
     pub attempts: u32,
+    /// Hint key registered at submission time, if any. Preserved across
+    /// retries so a re-queued job stays boostable via the same key.
+    pub hint_key: Option<HintKey>,
 }
 
 impl std::fmt::Debug for PoolJob {
@@ -49,6 +52,12 @@ pub struct PoolConfig {
     pub concurrency_per_worker: usize,
     /// Whether to use priority ordering when dequeuing.
     pub priority_queue: bool,
+    /// Optional maximum number of jobs that can be simultaneously boosted
+    /// via `SchedulerHint` messages. Only meaningful when `priority_queue`
+    /// is false (FIFO mode). `None` disables the boost mechanism. When
+    /// the boost queue is full, additional hints are dropped and the
+    /// corresponding jobs run in normal FIFO order.
+    pub max_boost_slots: Option<usize>,
 }
 
 impl Default for PoolConfig {
@@ -57,6 +66,7 @@ impl Default for PoolConfig {
             threads: 1,
             concurrency_per_worker: 8,
             priority_queue: false,
+            max_boost_slots: None,
         }
     }
 }
@@ -93,7 +103,10 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
         completion_tx: kanal::AsyncSender<JobCompletion>,
         fault_tx: kanal::AsyncSender<SchedulerFault>,
     ) -> Self {
-        let queue = Arc::new(JobQueue::new(config.priority_queue));
+        let boost = config
+            .max_boost_slots
+            .map(|max_slots| BoostConfig { max_slots });
+        let queue = Arc::new(JobQueue::new(config.priority_queue, boost));
 
         let workers: Vec<Worker<D>> = (0..config.threads)
             .map(|id| {
@@ -113,14 +126,32 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
 
     /// Submit a job to the pool.
     ///
-    /// The job is placed in the shared queue. The next idle worker will pull
-    /// it automatically.
-    pub(crate) fn submit(&self, priority: Priority, job: WorkerJob) {
-        self.queue.push(PoolJob {
-            priority,
-            job,
-            attempts: 0,
-        });
+    /// `hint_key`, if present, registers the job in the queue's hint index
+    /// so a subsequent [`apply_hint`](Self::apply_hint) with the same key
+    /// can promote the job to the boost list. Ignored on priority-mode
+    /// pools.
+    ///
+    /// The job is placed in the shared queue. The next idle worker will
+    /// pull it automatically.
+    pub(crate) fn submit(&self, priority: Priority, job: WorkerJob, hint_key: Option<HintKey>) {
+        self.queue.push(
+            PoolJob {
+                priority,
+                job,
+                attempts: 0,
+                hint_key: hint_key.clone(),
+            },
+            hint_key,
+        );
+    }
+
+    /// Try to promote a queued job matching `key` to the boost list tail.
+    ///
+    /// Returns `true` if a match was found and the job was promoted, `false`
+    /// otherwise (no match, priority mode, or boost queue at cap).
+    #[allow(dead_code)] // Wired up by the hint-receiver plumbing.
+    pub(crate) fn apply_hint(&self, key: &HintKey) -> bool {
+        self.queue.apply_hint(key)
     }
 
     /// Number of jobs waiting in the queue (not yet pulled by a worker).

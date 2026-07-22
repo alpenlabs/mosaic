@@ -12,7 +12,9 @@ use ckt_gobble::{
 use mosaic_cac_types::{
     Adaptor, ChallengeIndices, CircuitInputShares, DepositAdaptors, GarblingTableCommitment,
     TableTransferReceiptMsg, TableTransferRequestMsg, WideLabelWirePolynomialCommitments,
-    state_machine::evaluator::{ActionId, ActionResult, ChunkIndex, StateRead as _, Step},
+    state_machine::evaluator::{
+        ActionId, ActionResult, ChunkIndex, StateRead as _, Step, StepPhase,
+    },
 };
 use mosaic_common::constants::{
     N_CIRCUITS, N_DEPOSIT_INPUT_WIRES, N_INPUT_WIRES, N_OPEN_CIRCUITS, N_SETUP_INPUT_WIRES,
@@ -36,6 +38,16 @@ use crate::{
 };
 
 const BULK_OPEN_WARN_AFTER: Duration = Duration::from_secs(5);
+/// How long the evaluator waits for the sender's bulk stream to appear
+/// after registering the expectation and sending the `TableTransferRequest`.
+///
+/// Sized to cover the sender-side queue latency: the sender's
+/// `TransferGarblingTable` action may wait in its scheduler for up to
+/// tens of seconds under load before `begin_table_transfer` runs. The
+/// `TransferStarting` scheduler hint (see `garbler::begin_table_transfer`)
+/// only fires once the sender's action is already executing, so the hint
+/// tightens the sender-ready-to-receiver-ready gap but does NOT cover the
+/// upstream queue wait — the timeout still has to.
 const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const BULK_READ_WARN_AFTER: Duration = Duration::from_secs(5);
 const BULK_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -825,6 +837,101 @@ pub(crate) async fn handle_generate_withdrawal_adaptors_chunk<
 // ============================================================================
 // Circuit session setup (called by MosaicExecutor trait impls)
 // ============================================================================
+/// Classify an evaluator table-verification job against the evaluator
+/// root state.
+///
+/// Verification jobs must be idempotent: after a restart, restore may
+/// re-emit verification actions whose completions were already recorded,
+/// and duplicate jobs can also be queued while an earlier one is in
+/// flight. Classifying here skips the (expensive) re-garbling pass.
+///
+/// - [`CircuitError::AlreadyComplete`] — the SM has already recorded this circuit as verified, or
+///   has moved past the verification step entirely. The coordinator drops the job.
+/// - [`CircuitError::StorageUnavailable`] — the SM hasn't reached the verification step yet; the
+///   STF will write the state shortly. Retry.
+/// - [`CircuitError::SetupFailed`] — the index is not in the opened challenge indices (programming
+///   error; the STF only emits verification actions for opened circuits).
+pub(crate) fn resolve_pending_evaluator_commitment(
+    step: &Step,
+    index: Index,
+) -> Result<(), CircuitError> {
+    let (opened_indices, verified) = match step {
+        Step::VerifyingTableCommitments {
+            opened_indices,
+            verified,
+            ..
+        } => (opened_indices, verified),
+        step if step.phase() > StepPhase::VerifyingTableCommitments => {
+            return Err(CircuitError::AlreadyComplete);
+        }
+        // Steps before the verification phase. In practice unreachable —
+        // the STF only emits verification actions while in the verification
+        // step and the SM never moves backward — but kept as defense: if a
+        // job did arrive early, retrying until the SM advances is correct.
+        _ => return Err(CircuitError::StorageUnavailable),
+    };
+
+    // Same lookup as the STF's completion handler (opened_indices is
+    // sorted — it comes from the deterministic challenge selection).
+    let Ok(pos) = opened_indices.binary_search(&index) else {
+        return Err(CircuitError::SetupFailed(
+            "index not in opened challenge indices".into(),
+        ));
+    };
+
+    if verified[pos] {
+        return Err(CircuitError::AlreadyComplete);
+    }
+
+    Ok(())
+}
+
+/// Classify an `EvaluateGarblingTable` job against the evaluator root
+/// state.
+///
+/// Evaluation jobs must be idempotent: after a restart, restore may
+/// re-emit evaluation actions whose completions were already recorded,
+/// and duplicate jobs can also be queued while an earlier one is in
+/// flight.
+///
+/// - [`CircuitError::AlreadyComplete`] — the circuit has already been evaluated, or the SM has
+///   moved past the evaluation step entirely. The coordinator drops the job.
+/// - [`CircuitError::StorageUnavailable`] — the SM hasn't reached the evaluation step yet; the STF
+///   will write the state shortly. Retry.
+/// - [`CircuitError::SetupFailed`] — the index is not in the evaluation indices (programming
+///   error).
+pub(crate) fn resolve_pending_evaluator_evaluation(
+    step: &Step,
+    index: Index,
+) -> Result<(), CircuitError> {
+    let (eval_indices, evaluated) = match step {
+        Step::EvaluatingTables {
+            eval_indices,
+            evaluated,
+            ..
+        } => (eval_indices, evaluated),
+        step if step.phase() > StepPhase::EvaluatingTables => {
+            return Err(CircuitError::AlreadyComplete);
+        }
+        // Steps before the evaluation phase (including SetupComplete,
+        // which precedes it). In practice unreachable — the STF only
+        // emits evaluation actions while in the evaluation step and the
+        // SM never moves backward — but kept as defense: if a job did
+        // arrive early, retrying until the SM advances is correct.
+        _ => return Err(CircuitError::StorageUnavailable),
+    };
+
+    let pos = eval_indices
+        .iter()
+        .position(|&idx| idx == index)
+        .ok_or_else(|| CircuitError::SetupFailed("index not in evaluation indices".into()))?;
+
+    if evaluated[pos] {
+        return Err(CircuitError::AlreadyComplete);
+    }
+
+    Ok(())
+}
 
 /// Set up an [`EvaluationSession`] for E8 (`EvaluateGarblingTable`).
 ///
@@ -851,15 +958,22 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .await
         .map_err(|_| CircuitError::StorageUnavailable)?;
 
-    // ── Resolve deposit_id from root state ──────────────────────────────
+    // ── Classify against the SM step (idempotency guard) ────────────────
     let root_state = eval_state
         .get_root_state()
         .await
         .ok()
         .flatten()
         .ok_or(CircuitError::StorageUnavailable)?;
+
+    resolve_pending_evaluator_evaluation(&root_state.step, index)?;
+
+    // ── Resolve deposit_id from root state ──────────────────────────────
     let deposit_id = match &root_state.step {
         Step::EvaluatingTables { deposit_id, .. } => *deposit_id,
+        // Unreachable: the resolver above only accepts EvaluatingTables on
+        // this same root-state snapshot. Return rather than panic so a
+        // future loosening of the resolver can't crash the operator.
         _ => return Err(CircuitError::StorageUnavailable),
     };
 
@@ -1134,9 +1248,239 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
 mod tests {
     use std::collections::VecDeque;
 
+    use mosaic_common::constants::N_EVAL_CIRCUITS;
     use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
 
     use super::*;
+
+    // Tests for resolve_pending_evaluator_commitment
+
+    /// Circuit indices are 1-based; helper for readable tests.
+    fn index(i: usize) -> Index {
+        Index::new(i).expect("test index in range")
+    }
+
+    /// Verification step with opened indices 1..=N_OPEN_CIRCUITS (sorted,
+    /// as the deterministic challenge selection produces them).
+    fn commitment_verification_step(verified_mask: &[bool]) -> Step {
+        assert_eq!(verified_mask.len(), N_OPEN_CIRCUITS);
+        Step::VerifyingTableCommitments {
+            opened_indices: mosaic_cac_types::ChallengeIndices::new(|i| index(i + 1)),
+            opened_seeds: mosaic_cac_types::OpenedGarblingSeeds::new(|_| {
+                mosaic_cac_types::GarblingSeed::from([0u8; 32])
+            }),
+            opened_commitments: mosaic_cac_types::OpenedGarblingTableCommitments::new(|_| {
+                [0u8; 32].into()
+            }),
+            verified: HeapArray::new(|i| verified_mask[i]),
+        }
+    }
+
+    #[test]
+    fn resolve_evaluator_commitment_proceeds_for_unverified_circuit() {
+        let step = commitment_verification_step(&[false; N_OPEN_CIRCUITS]);
+        assert!(
+            resolve_pending_evaluator_commitment(&step, index(N_OPEN_CIRCUITS)).is_ok(),
+            "should proceed for opened index during verification step"
+        );
+    }
+
+    #[test]
+    fn resolve_evaluator_commitment_already_complete_for_verified_circuit() {
+        // The STF already recorded this circuit as verified: a duplicate
+        // job resolves AlreadyComplete while others still proceed.
+        let mut mask = [false; N_OPEN_CIRCUITS];
+        mask[N_OPEN_CIRCUITS - 1] = true;
+        let step = commitment_verification_step(&mask);
+        assert!(matches!(
+            resolve_pending_evaluator_commitment(&step, index(N_OPEN_CIRCUITS)),
+            Err(CircuitError::AlreadyComplete)
+        ));
+        assert!(resolve_pending_evaluator_commitment(&step, index(1)).is_ok());
+    }
+
+    #[test]
+    fn resolve_evaluator_commitment_already_complete_after_step_advances() {
+        // SM moved past the verification phase: any straggler job should
+        // resolve AlreadyComplete instead of StorageUnavailable.
+        assert!(matches!(
+            resolve_pending_evaluator_commitment(&Step::SetupComplete, index(1)),
+            Err(CircuitError::AlreadyComplete)
+        ));
+        assert!(matches!(
+            resolve_pending_evaluator_commitment(
+                &Step::ReceivingGarblingTables {
+                    eval_indices: std::array::from_fn(|i| index(i + 1)),
+                    eval_commitments: mosaic_cac_types::EvalGarblingTableCommitments::new(|_| {
+                        [0u8; 32].into()
+                    }),
+                    received: HeapArray::new(|_| false),
+                    receipt_acked: HeapArray::new(|_| false),
+                },
+                index(1)
+            ),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_evaluator_commitment_already_complete_for_aborted_setup() {
+        // Aborted phases after the verification step in the variant order:
+        // stale jobs for an aborted setup must drop, not retry forever.
+        assert!(matches!(
+            resolve_pending_evaluator_commitment(
+                &Step::Aborted {
+                    reason: "test".into(),
+                },
+                index(1)
+            ),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_evaluator_commitment_handles_non_contiguous_opened_indices() {
+        // Opened indices in production are a sorted-but-non-contiguous
+        // subset of 1..=N_CIRCUITS. Exercise the binary_search lookup with
+        // a gap: {1, 3, 4, ..., N_OPEN_CIRCUITS + 1} — index 2 is skipped.
+        // (Bounded by N_OPEN_CIRCUITS + 1 <= N_CIRCUITS in both circuit
+        // configurations.)
+        let step = Step::VerifyingTableCommitments {
+            opened_indices: mosaic_cac_types::ChallengeIndices::new(|i| {
+                if i == 0 { index(1) } else { index(i + 2) }
+            }),
+            opened_seeds: mosaic_cac_types::OpenedGarblingSeeds::new(|_| {
+                mosaic_cac_types::GarblingSeed::from([0u8; 32])
+            }),
+            opened_commitments: mosaic_cac_types::OpenedGarblingTableCommitments::new(|_| {
+                [0u8; 32].into()
+            }),
+            verified: HeapArray::new(|_| false),
+        };
+        // In the set (index 3): proceeds.
+        assert!(resolve_pending_evaluator_commitment(&step, index(3)).is_ok());
+        // In the gap (index 2): SetupFailed.
+        assert!(matches!(
+            resolve_pending_evaluator_commitment(&step, index(2)),
+            Err(CircuitError::SetupFailed(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_evaluator_commitment_storage_unavailable_before_verification_step() {
+        // SM not yet at the verification step: state genuinely missing,
+        // retry is correct.
+        assert!(matches!(
+            resolve_pending_evaluator_commitment(
+                &Step::WaitingForCommit {
+                    header: false,
+                    chunks: HeapArray::new(|_| false),
+                },
+                index(1)
+            ),
+            Err(CircuitError::StorageUnavailable)
+        ));
+    }
+
+    #[test]
+    fn resolve_evaluator_commitment_setup_failed_for_index_not_in_challenges() {
+        // Opened indices are 1..=N_OPEN_CIRCUITS; the next index up is a
+        // valid Index but not an opened circuit.
+        let step = commitment_verification_step(&[false; N_OPEN_CIRCUITS]);
+        assert!(matches!(
+            resolve_pending_evaluator_commitment(&step, index(N_OPEN_CIRCUITS + 1)),
+            Err(CircuitError::SetupFailed(_))
+        ));
+    }
+
+    // Tests for resolve_pending_evaluator_evaluation
+
+    /// Evaluation step with eval indices 1..=N_EVAL_CIRCUITS.
+    fn evaluation_step(evaluated_mask: &[bool]) -> Step {
+        assert_eq!(evaluated_mask.len(), N_EVAL_CIRCUITS);
+        Step::EvaluatingTables {
+            deposit_id: mosaic_cac_types::DepositId::from([0u8; 32]),
+            eval_indices: std::array::from_fn(|i| index(i + 1)),
+            eval_commitments: mosaic_cac_types::EvalGarblingTableCommitments::new(|i| {
+                [i as u8; 32].into()
+            }),
+            evaluated: HeapArray::new(|i| evaluated_mask[i]),
+        }
+    }
+
+    #[test]
+    fn resolve_evaluator_evaluation_proceeds_for_unevaluated_circuit() {
+        let step = evaluation_step(&[false; N_EVAL_CIRCUITS]);
+        assert!(
+            resolve_pending_evaluator_evaluation(&step, index(N_EVAL_CIRCUITS)).is_ok(),
+            "should proceed for circuit that hasn't been evaluated yet"
+        );
+    }
+
+    #[test]
+    fn resolve_evaluator_evaluation_already_complete_for_evaluated_circuit() {
+        // Circuit was already evaluated: should resolve AlreadyComplete,
+        // while other circuits still proceed.
+        let mut mask = [false; N_EVAL_CIRCUITS];
+        mask[N_EVAL_CIRCUITS - 1] = true;
+        let step = evaluation_step(&mask);
+        assert!(matches!(
+            resolve_pending_evaluator_evaluation(&step, index(N_EVAL_CIRCUITS)),
+            Err(CircuitError::AlreadyComplete)
+        ));
+        assert!(resolve_pending_evaluator_evaluation(&step, index(1)).is_ok());
+    }
+
+    #[test]
+    fn resolve_evaluator_evaluation_already_complete_after_step_advances() {
+        // SM moved past the evaluation phase: any straggler evaluation job
+        // should resolve AlreadyComplete instead of StorageUnavailable.
+        assert!(matches!(
+            resolve_pending_evaluator_evaluation(
+                &Step::SetupConsumed {
+                    deposit_id: mosaic_cac_types::DepositId::from([0u8; 32]),
+                    success: true,
+                },
+                index(1)
+            ),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_evaluator_evaluation_already_complete_for_aborted_setup() {
+        assert!(matches!(
+            resolve_pending_evaluator_evaluation(
+                &Step::Aborted {
+                    reason: "test".into(),
+                },
+                index(1)
+            ),
+            Err(CircuitError::AlreadyComplete)
+        ));
+    }
+
+    #[test]
+    fn resolve_evaluator_evaluation_storage_unavailable_before_evaluation_step() {
+        // SetupComplete precedes EvaluatingTables (evaluation only starts
+        // when a deposit dispute arrives): state genuinely missing, retry
+        // is correct.
+        assert!(matches!(
+            resolve_pending_evaluator_evaluation(&Step::SetupComplete, index(1)),
+            Err(CircuitError::StorageUnavailable)
+        ));
+    }
+
+    #[test]
+    fn resolve_evaluator_evaluation_setup_failed_for_index_not_in_eval_indices() {
+        // Eval indices are 1..=N_EVAL_CIRCUITS; the next index up is a
+        // valid Index but not an eval circuit.
+        let step = evaluation_step(&[false; N_EVAL_CIRCUITS]);
+        assert!(matches!(
+            resolve_pending_evaluator_evaluation(&step, index(N_EVAL_CIRCUITS + 1)),
+            Err(CircuitError::SetupFailed(_))
+        ));
+    }
 
     /// Scripted `PayloadStream` for tests. Each `read_with_timeout` call pops
     /// from the front of the queue; an empty queue returns `Closed` (FIN).

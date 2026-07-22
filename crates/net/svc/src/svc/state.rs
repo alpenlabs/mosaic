@@ -14,7 +14,7 @@ use quinn::Endpoint;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    api::{InboundProtocolStream, OpenStreamError, Stream},
+    api::{InboundHintStream, InboundProtocolStream, OpenStreamError, Stream},
     config::NetServiceConfig,
     tls::PeerId,
 };
@@ -170,6 +170,9 @@ pub struct ServiceState {
 
     /// Channel to send incoming protocol requests to handles.
     pub protocol_stream_tx: AsyncSender<InboundProtocolStream>,
+
+    /// Channel to send incoming scheduler-hint payloads to handles.
+    pub hint_stream_tx: AsyncSender<InboundHintStream>,
 
     /// Peers that need reconnection with their next attempt time.
     pub pending_reconnects: Vec<(PeerId, tokio::time::Instant)>,

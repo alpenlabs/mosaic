@@ -54,6 +54,7 @@
 
 pub mod bulk;
 pub mod error;
+pub mod hint;
 pub mod protocol;
 
 use std::{
@@ -64,14 +65,17 @@ use std::{
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 pub use bulk::{BulkExpectation, BulkReceiver, BulkSender};
 pub use error::{
-    AckError, BulkExpectError, BulkOpenError, BulkReadError, BulkReceiveError, RecvError, SendError,
+    AckError, BulkExpectError, BulkOpenError, BulkReadError, BulkReceiveError, RecvError,
+    SendError, SendHintError,
 };
 use futures_util::{
     FutureExt,
     future::{Either, select},
     pin_mut,
 };
+pub use hint::{SchedulerMessage, SchedulerMessageError};
 use mosaic_cac_types::Msg;
+pub use mosaic_net_svc::InboundHintStream;
 use mosaic_net_svc::{FrameLimits, NetServiceHandle};
 pub use protocol::{Ack, InboundRequest, PeerId, StreamPriority};
 
@@ -133,6 +137,32 @@ impl NetClient {
     pub fn handle(&self) -> &NetServiceHandle {
         &self.handle
     }
+
+    /// Send a scheduler-to-scheduler hint to a peer.
+    ///
+    /// Opens a high-priority `SchedulerHint` stream, writes the encoded
+    /// message, and drops the stream (FIN). Fire-and-forget — no ack is
+    /// awaited, so a failed send doesn't retry. Errors are logged and
+    /// returned so callers can decide whether to record the failure.
+    pub async fn send_hint(
+        &self,
+        peer: PeerId,
+        msg: &SchedulerMessage,
+    ) -> Result<(), SendHintError> {
+        let bytes = msg
+            .encode()
+            .map_err(|e| SendHintError::Encode(e.to_string()))?;
+        let mut stream = self
+            .handle
+            .open_scheduler_hint_stream(peer, StreamPriority::SchedulerHint.as_i32())
+            .await
+            .map_err(SendHintError::Open)?;
+        // Write; the sender drops the stream on function return which sends FIN.
+        stream.write(bytes).await.map_err(SendHintError::Write)?;
+        Ok(())
+    }
+
+    // For inbound hint payloads, use `client.handle().hint_streams()`.
 
     /// Open a bulk-transfer sender stream to a peer.
     pub async fn open_bulk_sender(

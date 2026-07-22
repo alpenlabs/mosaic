@@ -738,10 +738,13 @@ pub fn spawn_stream_header_reader(
                 .map_err(|_| "header read timed out")?
                 .map_err(|e| e.to_string())?;
 
-            // Determine remaining bytes
+            // Determine remaining bytes. Keep this table in sync with
+            // `mosaic_net_wire::StreamHeader::decode`; a mismatch will drop
+            // otherwise-valid streams at the header stage.
             let remaining = match buf[0] {
                 0x00 => 0,  // Protocol
                 0x01 => 32, // BulkTransfer
+                0x02 => 0,  // SchedulerHint
                 tag => return Err(format!("unknown stream type: 0x{:02x}", tag)),
             };
 
@@ -941,6 +944,62 @@ pub fn spawn_protocol_stream_router(
     });
 }
 
+/// Spawn a task to read one payload from a scheduler-hint stream and push
+/// it to the hint stream channel. Best-effort — a failed read is silently
+/// dropped (hints are advisory).
+pub fn spawn_hint_stream_router(
+    peer: PeerId,
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+    hint_stream_tx: AsyncSender<crate::api::InboundHintStream>,
+) {
+    // Hint payloads are tiny (`SchedulerMessage::TransferStarting` is 33
+    // bytes today) but the enum is meant to grow additively. 256 bytes is
+    // comfortable headroom for foreseeable variants and drastically caps a
+    // buggy peer's ability to drive transient memory pressure through the
+    // 256-entry hint channel with valid-but-oversized frames.
+    const HINT_FRAME_MAX_SIZE: u32 = 256;
+    let hint_limits = mosaic_net_wire::FrameLimits::new(HINT_FRAME_MAX_SIZE, HINT_FRAME_MAX_SIZE);
+    tokio::spawn(async move {
+        let mut recv = recv;
+        match read_first_framed_payload(&mut recv, hint_limits).await {
+            Ok(payload) => {
+                let _ = recv.stop(0u32.into());
+                let mut send = send;
+                // The sender's write is fire-and-forget; the reset just
+                // frees the QUIC bidi slot on both ends promptly (nothing
+                // watches for the reset code).
+                let _ = send.reset(0u32.into());
+                let inbound = crate::api::InboundHintStream { peer, payload };
+                // try_send: if the scheduler is slow to drain, drop the
+                // hint rather than blocking this router task. Hints are
+                // advisory — losing one just means FIFO scheduling for
+                // that job. Blocking here would let a hint flood pile up
+                // spawned router tasks and QUIC bidi slots.
+                match hint_stream_tx.try_send(inbound) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::debug!(peer = %hex::encode(peer), "hint stream channel full; dropping hint");
+                    }
+                    Err(_) => {
+                        tracing::debug!(peer = %hex::encode(peer), "hint stream channel closed");
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    peer = %hex::encode(peer),
+                    error = %error,
+                    "failed to read scheduler-hint payload"
+                );
+                let _ = recv.stop(0u32.into());
+                let mut send = send;
+                let _ = send.reset(0u32.into());
+            }
+        }
+    });
+}
+
 /// Spawn a task to route a bulk transfer stream to its expectation.
 ///
 /// This creates a Stream handle and sends it to the registered expectation channel.
@@ -958,9 +1017,22 @@ pub fn spawn_bulk_stream_router(
     });
 }
 
+/// Read the first framed payload from a stream using the default frame
+/// limits (4 MiB). Used by protocol streams.
 async fn read_first_protocol_payload(recv: &mut quinn::RecvStream) -> Result<Vec<u8>, String> {
-    let limits = mosaic_net_wire::FrameLimits::default();
-    let mut buf = Vec::with_capacity(4 * 1024);
+    read_first_framed_payload(recv, mosaic_net_wire::FrameLimits::default()).await
+}
+
+/// Read the first framed payload with caller-specified limits.
+///
+/// Hint streams pass a small cap (256 bytes) so a buggy peer can't drive
+/// hundreds of MiB of transient buffer allocation through the 256-entry
+/// hint channel by opening streams with valid-but-oversized frames.
+async fn read_first_framed_payload(
+    recv: &mut quinn::RecvStream,
+    limits: mosaic_net_wire::FrameLimits,
+) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::with_capacity((limits.max_recv_size as usize).min(4 * 1024));
     let mut read_buf = [0u8; 64 * 1024];
     let deadline = Instant::now() + PROTOCOL_FIRST_PAYLOAD_TIMEOUT;
 

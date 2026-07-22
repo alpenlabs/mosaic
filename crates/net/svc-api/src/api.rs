@@ -388,6 +388,26 @@ impl std::fmt::Debug for InboundProtocolStream {
     }
 }
 
+/// An inbound scheduler-hint stream payload.
+///
+/// Delivered via `NetServiceHandle::hint_streams`. Best-effort — a lost
+/// stream is not retried. Payload is the encoded `SchedulerMessage`.
+pub struct InboundHintStream {
+    /// The peer that sent the hint.
+    pub peer: PeerId,
+    /// The raw encoded scheduler-message payload.
+    pub payload: PayloadBuf,
+}
+
+impl std::fmt::Debug for InboundHintStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InboundHintStream")
+            .field("peer", &self.peer)
+            .field("payload_len", &self.payload.len())
+            .finish()
+    }
+}
+
 /// Handle to the network service.
 ///
 /// This is cheaply cloneable and can be sent to any thread. All methods use
@@ -400,6 +420,8 @@ pub struct NetServiceHandle {
     command_tx: AsyncSender<NetCommand>,
     /// Incoming protocol requests (shared receiver).
     protocol_stream_rx: AsyncReceiver<InboundProtocolStream>,
+    /// Incoming scheduler-hint payloads (shared receiver).
+    hint_stream_rx: AsyncReceiver<InboundHintStream>,
     /// Monotonic request ID generator for explicit stream-open cancellation.
     next_open_request_id: Arc<AtomicU64>,
 }
@@ -413,11 +435,13 @@ impl NetServiceHandle {
         config: Arc<NetServiceConfig>,
         command_tx: AsyncSender<NetCommand>,
         protocol_stream_rx: AsyncReceiver<InboundProtocolStream>,
+        hint_stream_rx: AsyncReceiver<InboundHintStream>,
     ) -> Self {
         Self {
             config,
             command_tx,
             protocol_stream_rx,
+            hint_stream_rx,
             next_open_request_id: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -447,6 +471,14 @@ impl NetServiceHandle {
     /// (or resetting/closing the stream), not for reading more request frames.
     pub fn protocol_streams(&self) -> &AsyncReceiver<InboundProtocolStream> {
         &self.protocol_stream_rx
+    }
+
+    /// Get the receiver for incoming scheduler-hint payloads.
+    ///
+    /// The job scheduler should own this and drain it to translate each
+    /// `SchedulerMessage` into a `HintKey` for queue promotion.
+    pub fn hint_streams(&self) -> &AsyncReceiver<InboundHintStream> {
+        &self.hint_stream_rx
     }
 
     /// Open a protocol stream to a peer.
@@ -536,6 +568,48 @@ impl NetServiceHandle {
                 request_id,
                 peer,
                 identifier,
+                priority,
+                cancel_token,
+                respond_to: resp_tx,
+            })
+            .await
+            .map_err(|_| {
+                cancel_guard.disarm();
+                OpenStreamError::ServiceDown
+            })?;
+
+        let result = resp_rx
+            .recv()
+            .await
+            .map_err(|_| OpenStreamError::ServiceDown)?;
+        cancel_guard.disarm();
+        result
+    }
+
+    /// Open a scheduler-hint stream to a peer.
+    ///
+    /// Scheduler-hint streams use `StreamType::SchedulerHint` and are
+    /// dispatched by the peer's net-svc to its `hint_streams()` receiver.
+    /// The caller writes the encoded `SchedulerMessage` payload and drops
+    /// the stream (FIN). Fire-and-forget; no ack is expected.
+    pub async fn open_scheduler_hint_stream(
+        &self,
+        peer: PeerId,
+        priority: i32,
+    ) -> Result<Stream, OpenStreamError> {
+        if !self.config.has_peer(&peer) {
+            return Err(OpenStreamError::PeerNotFound);
+        }
+
+        let request_id = self.allocate_open_request_id();
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let mut cancel_guard =
+            OpenCancelOnDrop::new(request_id, self.command_tx.clone(), cancel_token.clone());
+        let (resp_tx, resp_rx) = kanal::bounded_async(1);
+        self.command_tx
+            .send(NetCommand::OpenSchedulerHintStream {
+                request_id,
+                peer,
                 priority,
                 cancel_token,
                 respond_to: resp_tx,
@@ -744,6 +818,19 @@ pub enum NetCommand {
     CancelOpen {
         /// Request ID assigned when the open request was submitted.
         request_id: u64,
+    },
+    /// Open a scheduler-hint stream to a peer. High-priority, fire-and-forget.
+    OpenSchedulerHintStream {
+        /// Unique request ID for explicit cancellation.
+        request_id: u64,
+        /// Target peer.
+        peer: PeerId,
+        /// Stream priority — typically [`SchedulerHint`](crate::api) at 2.
+        priority: i32,
+        /// Shared cancel token set on caller drop.
+        cancel_token: Arc<AtomicBool>,
+        /// Channel to send the result back on.
+        respond_to: AsyncSender<Result<Stream, OpenStreamError>>,
     },
 }
 
