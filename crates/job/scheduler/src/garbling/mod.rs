@@ -55,7 +55,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
@@ -567,6 +567,16 @@ async fn run_pass(
 ) {
     let n_workers = workers.len();
 
+    // Passes are class-homogeneous (see collect_batch); the lead session
+    // names the class on the pass progress line, since barrier_wait means
+    // "slow peer/store" in an I/O pass but "slow CPU" in a compute pass.
+    let class_label = match sessions.first().map(|s| session_class(&s.job.action)) {
+        Some(SessionClass::Compute) => "compute",
+        Some(SessionClass::Io) => "io",
+        None => "none",
+    };
+    let session_count = sessions.len();
+
     // ── Distribute sessions round-robin (spread-first) ──────────────
     // With 7 sessions across 4 workers: [2, 2, 2, 1] sessions each.
     let mut assignments: Vec<Vec<ActiveSession>> = (0..n_workers).map(|_| Vec::new()).collect();
@@ -636,6 +646,15 @@ async fn run_pass(
         .max_chunk_stall_duration()
         .saturating_add(Duration::from_secs(5));
 
+    // ── Pass-level time attribution ──────────────────────────────────
+    // The read is pipelined against the barrier below, so the pass advances
+    // at max(read, barrier) per chunk and the two raw busy totals overlap —
+    // they cannot be read as shares of wall-clock. The meter therefore also
+    // tracks each side's per-chunk *excess* over the other, which is
+    // additive and names the resource that actually set the pace (see
+    // [`PassMeter`]).
+    let mut meter = PassMeter::new(class_label, session_count);
+
     // ── Read blocks and broadcast to workers (pipelined) ─────────────
     //
     // The read+convert of chunk N+1 overlaps the barrier wait for chunk N:
@@ -643,9 +662,13 @@ async fn run_pass(
     // wait to have the next broadcast ready the moment the barrier clears.
     // Without the overlap, disk latency and worker latency were paid in
     // series on every chunk of the pass.
+    let read_started = Instant::now();
     let mut next_chunk = read_next_chunk(&mut reader, total_gates, &mut block_idx).await;
+    meter.on_initial_read(read_started.elapsed());
 
     while let Some(shared) = next_chunk.take() {
+        meter.on_chunk(&shared);
+
         // Broadcast chunk to all active workers.
         for &wid in &active_worker_ids {
             if !workers[wid]
@@ -657,25 +680,39 @@ async fn run_pass(
         }
 
         // ── Prefetch next chunk while the barrier waits ──────────────
-        let (prefetched, still_active) = futures::future::join(
-            read_next_chunk(&mut reader, total_gates, &mut block_idx),
-            collect_chunk_reports(
+        let read = async {
+            let started = Instant::now();
+            let chunk = read_next_chunk(&mut reader, total_gates, &mut block_idx).await;
+            (chunk, started.elapsed())
+        };
+        let barrier = async {
+            let started = Instant::now();
+            let still_active = collect_chunk_reports(
                 &active_worker_ids,
                 &mut active_jobs_by_worker,
                 workers,
                 report_timeout,
                 pending_retry,
-            ),
-        )
-        .await;
+                &mut meter.worker_wait,
+            )
+            .await;
+            (still_active, started.elapsed())
+        };
+        let ((prefetched, read_elapsed), (still_active, barrier_elapsed)) =
+            futures::future::join(read, barrier).await;
         next_chunk = prefetched;
         active_worker_ids = still_active;
+        meter.on_joined(read_elapsed, barrier_elapsed);
+        meter.maybe_log();
 
         if active_worker_ids.is_empty() {
             tracing::warn!("all workers idle — ending pass early");
+            meter.summary();
             return;
         }
     }
+
+    meter.summary();
 
     // ── Finalize surviving sessions ──────────────────────────────────
     collect_finish_reports_with_timeout(
@@ -690,6 +727,127 @@ async fn run_pass(
     .await;
 }
 
+/// Minimum interval between pass-level progress lines.
+const PASS_PROGRESS_PERIOD: Duration = Duration::from_secs(30);
+
+/// Pass-level wall-clock attribution across the pipelined read/barrier loop,
+/// logged as `circuit.pass` on the `mosaic_progress` target.
+///
+/// `disk_read` and `barrier_wait` are each side's raw busy time; under
+/// pipelining they overlap and can sum past 100% of elapsed. `read_gated` /
+/// `barrier_gated` are the per-chunk excess of one side over the other —
+/// additive shares of wall-clock, so whichever dominates names the resource
+/// that set this pass's pace ("our circuit volume is too slow" vs "a session
+/// — and so a peer, or that peer's object store — gates every table").
+/// `straggler` names the worker that most often kept the barrier waiting.
+struct PassMeter {
+    /// Session class this pass serves (passes are class-homogeneous).
+    class: &'static str,
+    sessions: usize,
+    started: Instant,
+    last_log: Instant,
+    bytes_read: u64,
+    disk_read: Duration,
+    barrier_wait: Duration,
+    read_gated: Duration,
+    barrier_gated: Duration,
+    /// Cumulative in-order report wait per worker (see
+    /// [`collect_chunk_reports`]).
+    worker_wait: HashMap<usize, Duration>,
+}
+
+impl PassMeter {
+    fn new(class: &'static str, sessions: usize) -> Self {
+        let now = Instant::now();
+        Self {
+            class,
+            sessions,
+            started: now,
+            last_log: now,
+            bytes_read: 0,
+            disk_read: Duration::ZERO,
+            barrier_wait: Duration::ZERO,
+            read_gated: Duration::ZERO,
+            barrier_gated: Duration::ZERO,
+            worker_wait: HashMap::new(),
+        }
+    }
+
+    /// The first read has no barrier to hide behind — it gates the pass in
+    /// full.
+    fn on_initial_read(&mut self, read: Duration) {
+        self.disk_read += read;
+        self.read_gated += read;
+    }
+
+    fn on_chunk(&mut self, chunk: &OwnedChunk) {
+        self.bytes_read = self.bytes_read.saturating_add(
+            chunk
+                .blocks
+                .iter()
+                .map(|b| (b.gate_data.len() + b.gate_types.len()) as u64)
+                .sum::<u64>(),
+        );
+    }
+
+    /// Record one pipelined read/barrier pair. Both sides poll on one
+    /// thread, so CPU spent by one (convert) can inflate the other's
+    /// elapsed — noise next to the I/O both sides spend their time in.
+    fn on_joined(&mut self, read: Duration, barrier: Duration) {
+        self.disk_read += read;
+        self.barrier_wait += barrier;
+        self.read_gated += read.saturating_sub(barrier);
+        self.barrier_gated += barrier.saturating_sub(read);
+    }
+
+    fn maybe_log(&mut self) {
+        if self.last_log.elapsed() < PASS_PROGRESS_PERIOD {
+            return;
+        }
+        self.emit("progress");
+        self.last_log = Instant::now();
+    }
+
+    fn summary(&self) {
+        self.emit("summary");
+    }
+
+    fn emit(&self, event: &str) {
+        let secs = self.started.elapsed().as_secs_f64().max(1e-3);
+        let pct = |d: Duration| d.as_secs_f64() * 100.0 / secs;
+
+        let straggler = self
+            .worker_wait
+            .iter()
+            .max_by_key(|(_, d)| **d)
+            .map(|(wid, d)| format!(" straggler=worker{}({:.0}s)", wid, d.as_secs_f64()))
+            .unwrap_or_default();
+
+        tracing::info!(
+            target: "mosaic_progress",
+            phase = "circuit.pass",
+            "circuit.pass {} class={} sessions={} read={:.1}GiB avg={:.1}MB/s elapsed={:.0}s \
+             read_gated={:.0}s({:.0}%) barrier_gated={:.0}s({:.0}%) \
+             disk_read={:.0}s({:.0}%) barrier_wait={:.0}s({:.0}%){}",
+            event,
+            self.class,
+            self.sessions,
+            self.bytes_read as f64 / (1024.0 * 1024.0 * 1024.0),
+            self.bytes_read as f64 / secs / 1.0e6,
+            secs,
+            self.read_gated.as_secs_f64(),
+            pct(self.read_gated),
+            self.barrier_gated.as_secs_f64(),
+            pct(self.barrier_gated),
+            self.disk_read.as_secs_f64(),
+            pct(self.disk_read),
+            self.barrier_wait.as_secs_f64(),
+            pct(self.barrier_wait),
+            straggler,
+        );
+    }
+}
+
 /// Collect chunk-phase reports from all active workers.
 ///
 /// Returns the set of workers that still have active sessions after processing
@@ -700,11 +858,19 @@ async fn collect_chunk_reports(
     workers: &mut [WorkerHandle],
     report_timeout: Duration,
     pending_retry: &mut Vec<PendingCircuitJob>,
+    worker_wait: &mut HashMap<usize, Duration>,
 ) -> Vec<usize> {
     let mut still_active: Vec<usize> = Vec::with_capacity(active_worker_ids.len());
 
     for &wid in active_worker_ids {
-        match workers[wid].recv_report(report_timeout).await {
+        // Reports are awaited in order, so this is not a clean per-worker
+        // service time — a worker that finished while we waited on an earlier
+        // one records ~0. Accumulated across the pass it still identifies the
+        // worker that repeatedly makes the barrier wait, i.e. the straggler.
+        let wait_started = Instant::now();
+        let report = workers[wid].recv_report(report_timeout).await;
+        *worker_wait.entry(wid).or_default() += wait_started.elapsed();
+        match report {
             Some(WorkerReport::ChunkDone(report)) => {
                 pending_retry.extend(report.evicted_jobs);
                 if report.remaining_jobs.is_empty() {
@@ -1564,6 +1730,7 @@ mod tests {
                 &mut workers,
                 Duration::from_millis(1),
                 &mut pending_retry,
+                &mut HashMap::new(),
             )
             .await;
 

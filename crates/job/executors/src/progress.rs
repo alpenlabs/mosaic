@@ -28,6 +28,60 @@ pub enum ProgressUnit {
     Blocks,
 }
 
+/// Cumulative time a phase spent in each of its sub-stages.
+///
+/// A phase's throughput alone cannot say *why* it is slow: a table transfer
+/// that reports 2 MB/s may be starved by local CPU, by a peer that is not
+/// draining its stream, or by an object store that is not keeping up. Call
+/// sites accumulate the time spent blocked in each stage and pass this
+/// alongside the byte count; the emitted line then attributes the elapsed
+/// wall-clock to the stage responsible.
+///
+/// Fields are cumulative for the phase and only the non-zero ones are printed.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StageBreakdown {
+    /// Local CPU work — garbling gates, hashing.
+    pub compute: Duration,
+    /// Blocked writing to a peer (their receive window is full — backpressure).
+    pub net_blocked: Duration,
+    /// Blocked reading from a peer (waiting for it to send, plus the
+    /// transfer time of the data itself).
+    pub net_wait: Duration,
+    /// Blocked writing to durable storage (object-store upload not keeping up).
+    pub store_blocked: Duration,
+    /// Producer parked because the transfer outbox is full — the peer has
+    /// fallen a full outbox behind (sustained backpressure).
+    pub outbox_full: Duration,
+    /// Wire drain waiting on the local producer for the next buffer —
+    /// compute, not the peer, is the constraint.
+    pub feed_wait: Duration,
+}
+
+impl StageBreakdown {
+    /// Render the non-zero stages as ` name=<dur>(<pct of elapsed>%)` pairs.
+    ///
+    /// The percentage is the actionable part: it names which stage owns the
+    /// wall-clock without the reader having to do arithmetic.
+    fn fmt_nonzero(&self, elapsed: Duration) -> String {
+        let total = elapsed.as_secs_f64().max(1e-3);
+        [
+            ("compute", self.compute),
+            ("net_blocked", self.net_blocked),
+            ("net_wait", self.net_wait),
+            ("store_blocked", self.store_blocked),
+            ("outbox_full", self.outbox_full),
+            ("feed_wait", self.feed_wait),
+        ]
+        .iter()
+        .filter(|(_, d)| !d.is_zero())
+        .map(|(name, d)| {
+            let pct = d.as_secs_f64() * 100.0 / total;
+            format!(" {}={}({:.0}%)", name, fmt_duration(*d), pct)
+        })
+        .collect()
+    }
+}
+
 /// Tracks progress through a long-running phase and emits periodic INFO
 /// heartbeat logs.
 ///
@@ -77,22 +131,35 @@ impl HeartbeatTracker {
     /// If [`HEARTBEAT_PERIOD`] has elapsed since the last log (or since
     /// construction), emit an INFO heartbeat. Cheap on the not-yet-time path.
     pub fn maybe_log(&mut self, current: u64) {
-        let now = Instant::now();
-        if now.duration_since(self.last_log_at) < self.period {
-            return;
-        }
-        self.emit(current, now, /* final = */ false);
-        self.last_log_at = now;
-        self.last_log_progress = current;
+        self.maybe_log_staged(current, &StageBreakdown::default());
     }
 
     /// Emit a final summary line. Always logs regardless of last_log_at.
     pub fn done(&mut self, current: u64) {
-        let now = Instant::now();
-        self.emit(current, now, /* final = */ true);
+        self.done_staged(current, &StageBreakdown::default());
     }
 
-    fn emit(&mut self, current: u64, now: Instant, is_final: bool) {
+    /// As [`maybe_log`](Self::maybe_log), but also attributes elapsed wall-clock
+    /// to the sub-stages in `stages`. Use where a phase can be starved by more
+    /// than one resource and the throughput number alone is ambiguous.
+    /// A default (all-zero) breakdown renders nothing.
+    pub fn maybe_log_staged(&mut self, current: u64, stages: &StageBreakdown) {
+        let now = Instant::now();
+        if now.duration_since(self.last_log_at) < self.period {
+            return;
+        }
+        self.emit(current, now, /* final = */ false, stages);
+        self.last_log_at = now;
+        self.last_log_progress = current;
+    }
+
+    /// As [`done`](Self::done), with a final stage-time attribution.
+    pub fn done_staged(&mut self, current: u64, stages: &StageBreakdown) {
+        let now = Instant::now();
+        self.emit(current, now, /* final = */ true, stages);
+    }
+
+    fn emit(&mut self, current: u64, now: Instant, is_final: bool, stages: &StageBreakdown) {
         let elapsed = now.duration_since(self.started_at);
         let interval = now.duration_since(self.last_log_at);
         let delta = current.saturating_sub(self.last_log_progress);
@@ -106,6 +173,7 @@ impl HeartbeatTracker {
             .map(|t| (current as f64) * 100.0 / (t as f64));
 
         let event_label = if is_final { "summary" } else { "progress" };
+        let stage_str = stages.fmt_nonzero(elapsed);
 
         match self.unit {
             ProgressUnit::Bytes => {
@@ -125,7 +193,7 @@ impl HeartbeatTracker {
                     target: "mosaic_progress",
                     phase = self.label,
                     id = %self.short_id,
-                    "{} {} id={} done={}{} inst={}/s avg={}/s elapsed={}{}",
+                    "{} {} id={} done={}{} inst={}/s avg={}/s elapsed={}{}{}",
                     self.label,
                     event_label,
                     self.short_id,
@@ -135,6 +203,7 @@ impl HeartbeatTracker {
                     fmt_rate(avg_rate),
                     fmt_duration(elapsed),
                     eta_str,
+                    stage_str,
                 );
             }
             ProgressUnit::Blocks => {
@@ -146,12 +215,13 @@ impl HeartbeatTracker {
                     target: "mosaic_progress",
                     phase = self.label,
                     id = %self.short_id,
-                    "{} {} id={}{} elapsed={}",
+                    "{} {} id={}{} elapsed={}{}",
                     self.label,
                     event_label,
                     self.short_id,
                     pct_str,
                     fmt_duration(elapsed),
+                    stage_str,
                 );
             }
         }

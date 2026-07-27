@@ -16,7 +16,12 @@
 //! different session types per role into a single `type Session` for the
 //! `ExecuteGarblerJob` / `ExecuteEvaluatorJob` traits.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ark_ff::PrimeField;
 use blake3::Hasher;
@@ -52,12 +57,12 @@ use mosaic_vs3::{Index, Scalar, Share};
 
 use crate::{
     garbling::{GarblingSession, GarblingSetup, compute_commitment, hash_garbling_params},
-    progress::{HEARTBEAT_PERIOD, HeartbeatTracker, ProgressUnit},
+    progress::{HEARTBEAT_PERIOD, HeartbeatTracker, ProgressUnit, StageBreakdown},
 };
 
 /// Short-id helper used to label progress logs. Renders the first 4 bytes
 /// of a digest as `0x........`. Truncates gracefully if shorter.
-fn short_id(digest: &[u8]) -> String {
+pub(crate) fn short_id(digest: &[u8]) -> String {
     let mut s = String::from("0x");
     for b in digest.iter().take(4) {
         s.push_str(&format!("{b:02x}"));
@@ -381,6 +386,13 @@ pub struct TransferSession {
     bytes_sent: u64,
     /// Outbox depth in garbled chunks, applied when the drain spawns.
     outbox_depth: usize,
+    /// Expected total ciphertext bytes (AND gates × 16); also the total for
+    /// the drain's `table.wire` meter.
+    total_bytes: u64,
+    /// Producer-side stage attribution: `compute` (garbling) vs
+    /// `outbox_full` (parked because the peer is a full outbox behind).
+    /// The wire itself is timed by the drain's [`WireMeter`].
+    stages: StageBreakdown,
 }
 
 /// Bounded outbox between garbling and the wire, plus the drain task's
@@ -435,6 +447,53 @@ const TRANSFER_CHUNK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Under the coordinator's per-worker finish window; on expiry the table
 /// retries (idempotent — a receipted table drops as `AlreadyComplete`).
 const DRAIN_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Wire-side stage meter owned by the outbox drain, logged as `table.wire`.
+///
+/// The outbox decouples garbling from the wire: the producer's
+/// `table.upload` line reports enqueue pace, and its `outbox_full` stage
+/// only accrues once the peer is a full outbox behind. This meter reports
+/// the wire truth from the drain itself — `net_blocked` is time inside the
+/// stream write (the peer's pace), `feed_wait` is time waiting on the
+/// garbler for the next buffer. Whichever dominates names the side that
+/// set this transfer's pace.
+struct WireMeter {
+    heartbeat: HeartbeatTracker,
+    stages: StageBreakdown,
+    bytes: u64,
+}
+
+impl WireMeter {
+    fn new(id: String, total_bytes: u64) -> Self {
+        Self {
+            heartbeat: HeartbeatTracker::new(
+                "table.wire",
+                id,
+                Some(total_bytes),
+                ProgressUnit::Bytes,
+                HEARTBEAT_PERIOD,
+            ),
+            stages: StageBreakdown::default(),
+            bytes: 0,
+        }
+    }
+
+    fn on_recv(&mut self, waited: Duration) {
+        self.stages.feed_wait += waited;
+    }
+
+    fn on_write(&mut self, wrote: Duration, len: usize) {
+        self.stages.net_blocked += wrote;
+        self.bytes = self.bytes.saturating_add(len as u64);
+        self.heartbeat.maybe_log_staged(self.bytes, &self.stages);
+    }
+
+    /// Emit the final attribution line. Called on every drain exit —
+    /// clean flush, write failure, and cancellation alike.
+    fn finish(mut self) {
+        self.heartbeat.done_staged(self.bytes, &self.stages);
+    }
+}
 
 /// Stream surface used by the outbox drain.
 ///
@@ -494,9 +553,11 @@ async fn drain_transfer_outbox<S: OutboxStream>(
     recycle_tx: mpsc_light::Sender<Vec<u8>>,
     abort_rx: oneshot::Receiver<()>,
     write_timeout: Duration,
+    mut meter: WireMeter,
 ) -> Result<(), String> {
     pin_mut!(abort_rx);
     let result = loop {
+        let recv_started = Instant::now();
         let recv = ct_rx.recv();
         pin_mut!(recv);
         let buf = match select(abort_rx.as_mut(), recv).await {
@@ -504,16 +565,21 @@ async fn drain_transfer_outbox<S: OutboxStream>(
             Either::Right((Some(buf), _)) => buf,
             Either::Right((None, _)) => break Ok(()),
         };
+        meter.on_recv(recv_started.elapsed());
 
+        let len = buf.len();
+        let write_started = Instant::now();
         match write_outbox_chunk(&mut stream, buf, write_timeout, abort_rx.as_mut()).await {
             // Hand the spent buffer back for reuse; if the recycle lane is
             // full or its receiver is gone, just drop it.
             Ok(spent) => {
+                meter.on_write(write_started.elapsed(), len);
                 let _ = recycle_tx.try_send(spent);
             }
             Err(error) => break Err(error),
         }
     };
+    meter.finish();
 
     match result {
         Ok(()) => {
@@ -576,6 +642,8 @@ impl TransferSession {
             heartbeat,
             bytes_sent: 0,
             outbox_depth,
+            total_bytes,
+            stages: StageBreakdown::default(),
         }
     }
 
@@ -597,6 +665,7 @@ impl TransferSession {
         let (recycle_tx, recycle_rx) = mpsc_light::bounded::<Vec<u8>>(self.outbox_depth);
         let (done_tx, done_rx) = oneshot::oneshot();
         let (abort_tx, abort_rx) = oneshot::oneshot();
+        let meter = WireMeter::new(short_id(self.commitment.as_ref()), self.total_bytes);
 
         let drain = async move {
             let result = drain_transfer_outbox(
@@ -605,6 +674,7 @@ impl TransferSession {
                 recycle_tx,
                 abort_rx,
                 TRANSFER_CHUNK_WRITE_TIMEOUT,
+                meter,
             )
             .await;
             let _ = done_tx.send(result);
@@ -646,7 +716,9 @@ impl CircuitSession for TransferSession {
             // full outbox behind.
             for block in &chunk.blocks {
                 self.ct_buffer.clear();
+                let garble_start = Instant::now();
                 process_owned_block_garble(&mut self.session.instance, block, &mut self.ct_buffer);
+                self.stages.compute += garble_start.elapsed();
                 if !self.ct_buffer.is_empty() {
                     if self.outbox.is_none() {
                         self.spawn_drain();
@@ -655,11 +727,18 @@ impl CircuitSession for TransferSession {
 
                     let n = self.ct_buffer.len() as u64;
                     let out = std::mem::take(&mut self.ct_buffer);
+                    // `send` returns immediately while the outbox has room and
+                    // parks only once the peer has fallen a full outbox behind,
+                    // so time here is *sustained* peer-induced backpressure.
+                    // The wire itself is timed by the drain's `table.wire`
+                    // meter, which sees every write.
+                    let send_start = Instant::now();
                     outbox.ct_tx.send(out).await.map_err(|_| {
                         CircuitError::ChunkFailed(
                             "transfer drain closed — peer write failed".to_string(),
                         )
                     })?;
+                    self.stages.outbox_full += send_start.elapsed();
                     self.bytes_sent = self.bytes_sent.saturating_add(n);
 
                     // Reuse a spent buffer when the drain has returned one.
@@ -668,12 +747,16 @@ impl CircuitSession for TransferSession {
                     }
                 }
             }
-            self.heartbeat.maybe_log(self.bytes_sent);
+            self.heartbeat
+                .maybe_log_staged(self.bytes_sent, &self.stages);
             Ok(())
         })
     }
 
     fn abort(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        // Eviction is a normal path under the strike budget — emit the final
+        // attribution line for the work that did happen before teardown.
+        self.heartbeat.done_staged(self.bytes_sent, &self.stages);
         Box::pin(async move {
             let Some(outbox) = self.outbox.take() else {
                 // No drain was spawned. Dropping the session below closes
@@ -709,11 +792,10 @@ impl CircuitSession for TransferSession {
     }
 
     fn finish(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
-        // NB: the summary log fires here, before the returned future runs and
-        // the stream is FIN'd on drop. For multi-minute uploads the gap is
-        // negligible, but the log marks "session work done" rather than
-        // "bytes-on-wire FIN".
-        self.heartbeat.done(self.bytes_sent);
+        // NB: this summary marks "garbling done, all ciphertext enqueued".
+        // The outbox tail may still be in flight; the drain's `table.wire`
+        // summary marks bytes-on-wire FIN.
+        self.heartbeat.done_staged(self.bytes_sent, &self.stages);
         Box::pin(async move {
             // Finalize the garbling session to properly release the ~1 GB
             // working space. We discard the output — the commitment was
@@ -1107,6 +1189,7 @@ mod tests {
                 recycle_tx,
                 abort_rx,
                 Duration::from_secs(1),
+                WireMeter::new("0xtest".to_string(), 0),
             ))
         })
         .join()
@@ -1143,6 +1226,7 @@ mod tests {
                 recycle_tx,
                 abort_rx,
                 Duration::from_millis(10),
+                WireMeter::new("0xtest".to_string(), 0),
             ))
         })
         .join()
@@ -1181,6 +1265,7 @@ mod tests {
                 recycle_tx,
                 abort_rx,
                 Duration::from_secs(60),
+                WireMeter::new("0xtest".to_string(), 0),
             ))
         });
 

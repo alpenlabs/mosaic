@@ -33,8 +33,9 @@ use tracing::{debug, error, warn};
 
 use super::MosaicExecutor;
 use crate::{
-    circuit_sessions::{CiphertextReaderAdapter, EvaluationSession},
+    circuit_sessions::{CiphertextReaderAdapter, EvaluationSession, short_id},
     garbling::{compute_commitment, hash_garbling_params},
+    progress::{HEARTBEAT_PERIOD, HeartbeatTracker, ProgressUnit, StageBreakdown},
 };
 
 const BULK_OPEN_WARN_AFTER: Duration = Duration::from_secs(5);
@@ -303,6 +304,53 @@ enum DrainOutcome {
     ReadTimedOut,
 }
 
+/// Receive-side stage meter owned by [`drain_table_payload`].
+///
+/// This leg was previously unmetered, which made a slow object store
+/// indistinguishable from a slow peer: the writer feeds a bounded channel, so
+/// when the upload falls behind `write_ciphertext` blocks, the drain loop
+/// stops reading, and the backpressure surfaces on the *garbler's* rate
+/// instead of here. Splitting `net_wait` (peer has not sent) from
+/// `store_blocked` (our upload is behind) names the side that is actually
+/// responsible. The meter lives inside the drain helper so every exit path —
+/// timeout, oversize, write failure — emits its final attribution line,
+/// which is precisely when the split matters most.
+struct ReceiveMeter {
+    heartbeat: HeartbeatTracker,
+    stages: StageBreakdown,
+    bytes: u64,
+}
+
+impl ReceiveMeter {
+    fn new(peer_id: &PeerId) -> Self {
+        Self {
+            heartbeat: HeartbeatTracker::new(
+                "table.receive",
+                short_id(peer_id.as_ref()),
+                None,
+                ProgressUnit::Bytes,
+                HEARTBEAT_PERIOD,
+            ),
+            stages: StageBreakdown::default(),
+            bytes: 0,
+        }
+    }
+
+    fn on_read(&mut self, waited: Duration, len: usize) {
+        self.stages.net_wait += waited;
+        self.bytes = self.bytes.saturating_add(len as u64);
+        self.heartbeat.maybe_log_staged(self.bytes, &self.stages);
+    }
+
+    fn on_store(&mut self, blocked: Duration) {
+        self.stages.store_blocked += blocked;
+    }
+
+    fn finish(mut self) {
+        self.heartbeat.done_staged(self.bytes, &self.stages);
+    }
+}
+
 /// Consume a bulk stream carrying translation bytes followed by ciphertext
 /// bytes, hashing each domain and forwarding the ciphertext to `writer`.
 ///
@@ -324,6 +372,39 @@ async fn drain_table_payload<S, W>(
     read_warn_after: Duration,
     peer_id: &PeerId,
     index: Index,
+) -> DrainOutcome
+where
+    S: PayloadStream,
+    W: mosaic_storage_api::table_store::TableWriter,
+{
+    let mut meter = ReceiveMeter::new(peer_id);
+    let outcome = drain_table_payload_inner(
+        stream,
+        writer,
+        translation_size,
+        expected_ciphertext_bytes,
+        read_timeout,
+        read_warn_after,
+        peer_id,
+        index,
+        &mut meter,
+    )
+    .await;
+    meter.finish();
+    outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drain_table_payload_inner<S, W>(
+    stream: &mut S,
+    writer: &mut W,
+    translation_size: usize,
+    expected_ciphertext_bytes: usize,
+    read_timeout: Duration,
+    read_warn_after: Duration,
+    peer_id: &PeerId,
+    index: Index,
+    meter: &mut ReceiveMeter,
 ) -> DrainOutcome
 where
     S: PayloadStream,
@@ -354,6 +435,8 @@ where
             Err(BulkReadError::Closed(_)) => break,
         };
 
+        meter.on_read(read_started.elapsed(), chunk.len());
+
         if chunk.is_empty() {
             break;
         }
@@ -378,7 +461,10 @@ where
                 }
                 ciphertext_bytes_received = next_ciphertext_bytes;
                 ct_hasher.update(ct_part);
-                if writer.write_ciphertext(ct_part).await.is_err() {
+                let write_started = Instant::now();
+                let write_res = writer.write_ciphertext(ct_part).await;
+                meter.on_store(write_started.elapsed());
+                if write_res.is_err() {
                     return DrainOutcome::WriteFailed {
                         during_translation_overflow: true,
                     };
@@ -398,7 +484,10 @@ where
             }
             ciphertext_bytes_received = next_ciphertext_bytes;
             ct_hasher.update(&chunk);
-            if writer.write_ciphertext(&chunk).await.is_err() {
+            let write_started = Instant::now();
+            let write_res = writer.write_ciphertext(&chunk).await;
+            meter.on_store(write_started.elapsed());
+            if write_res.is_err() {
                 return DrainOutcome::WriteFailed {
                     during_translation_overflow: false,
                 };
