@@ -2581,6 +2581,7 @@ version = "0.1.0"
 dependencies = [
  "ckt-fmtv5-types",
  "fasm",
+ "futures",
  "hex",
  "kanal",
  "monoio",
