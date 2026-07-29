@@ -116,6 +116,31 @@ impl Default for GarblingConfig {
     }
 }
 
+impl GarblingConfig {
+    /// Upper bound on how many sessions a single worker can be assigned.
+    fn max_sessions_per_worker(&self) -> usize {
+        self.max_concurrent.div_ceil(self.worker_threads.max(1))
+    }
+
+    /// The per-session chunk timeout workers actually enforce.
+    ///
+    /// A worker drives its sessions concurrently, so co-resident sessions
+    /// contend for the same uplink: a chunk that had the link to itself
+    /// takes proportionally longer in wall-clock once its siblings are
+    /// pushing too. Scaling the configured budget by the number of
+    /// co-resident sessions keeps each session's effective allowance
+    /// independent of how sessions happen to be packed onto workers.
+    ///
+    /// Erring long is the right side to err on: a spurious eviction throws
+    /// away a partially-sent ~43 GB table and re-garbles it from scratch,
+    /// whereas a late eviction only delays the retry of a transfer that was
+    /// already doomed.
+    fn session_chunk_timeout(&self) -> Duration {
+        let sessions = u32::try_from(self.max_sessions_per_worker()).unwrap_or(u32::MAX);
+        self.chunk_timeout.saturating_mul(sessions)
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Active session (lives during a pass)
 // ════════════════════════════════════════════════════════════════════════════
@@ -391,7 +416,7 @@ async fn coordinator_loop(
         // Spawn persistent worker threads.
         let n_workers = config.worker_threads.max(1);
         let mut workers: Vec<WorkerHandle> = (0..n_workers)
-            .map(|id| WorkerHandle::spawn(id, config.chunk_timeout, fault_tx.clone()))
+            .map(|id| WorkerHandle::spawn(id, config.session_chunk_timeout(), fault_tx.clone()))
             .collect();
 
         tracing::info!(
@@ -633,14 +658,12 @@ async fn run_pass(
     let total_gates = reader.header().total_gates();
     let mut block_idx: usize = 0;
 
-    // Generous timeout for waiting on worker reports: chunk_timeout per
-    // session (max 2 per worker by default) plus margin for overhead.
-    // All arithmetic is saturating to prevent panics with extreme configs.
-    let max_sessions_per_worker = config.max_concurrent.div_ceil(config.worker_threads.max(1));
-    let sessions_u32 = u32::try_from(max_sessions_per_worker).unwrap_or(u32::MAX);
+    // Timeout for waiting on worker reports. A worker's sessions are driven
+    // concurrently, so one session-timeout covers the chunk for all of them,
+    // plus a margin: sessions that never await (commitment and evaluation do
+    // no network I/O) still complete one after another inside the join.
     let report_timeout = config
-        .chunk_timeout
-        .saturating_mul(sessions_u32)
+        .session_chunk_timeout()
         .saturating_add(Duration::from_secs(5));
 
     // ── Read blocks and broadcast to workers ─────────────────────────
@@ -841,11 +864,79 @@ async fn collect_finish_reports_with_timeout(
 // Worker thread
 // ════════════════════════════════════════════════════════════════════════════
 
+/// Drive `process_chunk` on every session concurrently, returning the
+/// ascending indices of sessions that errored or timed out.
+///
+/// The sessions are polled as one interleaved set rather than one after
+/// another. This is load-bearing for transfer sessions: their
+/// `process_chunk` awaits a network write that blocks on the peer's
+/// receive window, and garbling outruns the wire by roughly an order of
+/// magnitude, so in steady state essentially every write blocks. Driven
+/// sequentially, N sessions on one worker serve their peers in strict
+/// alternation and each peer gets ~1/N of the worker's throughput even
+/// though the peers are entirely independent. Driven concurrently, all N
+/// peers drain at once for the duration of the chunk.
+///
+/// This removes the serialization *within* a chunk only. The coordinator
+/// still barriers across workers between chunks (see [`run_pass`]), so a
+/// slow peer continues to gate the pass at chunk granularity.
+///
+/// `chunk_timeout` applies to each session independently: a session whose
+/// peer has stalled is evicted without holding up its siblings.
+async fn process_chunk_on_sessions(
+    worker_id: usize,
+    sessions: &mut [ActiveSession],
+    chunk: &Arc<OwnedChunk>,
+    chunk_timeout: Duration,
+) -> Vec<usize> {
+    let results =
+        futures::future::join_all(sessions.iter_mut().enumerate().map(|(index, active)| {
+            let peer_id = active.peer_id;
+            let session = &mut active.session;
+            async move {
+                let result =
+                    monoio::time::timeout(chunk_timeout, session.process_chunk(chunk)).await;
+                (index, peer_id, result)
+            }
+        }))
+        .await;
+
+    let mut evicted_indices = Vec::new();
+    for (index, peer_id, result) in results {
+        match result {
+            Ok(Ok(())) => { /* session keeping up */ }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    worker = worker_id,
+                    ?e,
+                    peer = ?peer_id,
+                    "session error — evicting for retry"
+                );
+                evicted_indices.push(index);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    worker = worker_id,
+                    peer = ?peer_id,
+                    "session timed out on chunk — evicting for retry"
+                );
+                evicted_indices.push(index);
+            }
+        }
+    }
+    // The caller removes by index in reverse, which is only index-stable if
+    // these ascend. `join_all` yields results in input order so they already
+    // do; sorting keeps that invariant local rather than resting on the
+    // ordering guarantees of a dependency.
+    evicted_indices.sort_unstable();
+    evicted_indices
+}
+
 /// Main loop for a garbling worker thread.
 ///
 /// Receives sessions and chunk commands from the coordinator's main thread.
-/// Processes sessions sequentially per chunk (parallel across workers).
-/// Reports completed results back to the coordinator.
+/// Processes its own sessions concurrently per chunk, in parallel with the
+/// other workers. Reports completed results back to the coordinator.
 async fn worker_loop(
     id: usize,
     chunk_timeout: Duration,
@@ -877,36 +968,8 @@ async fn worker_loop(
                 }
 
                 WorkerCommand::ProcessChunk(chunk) => {
-                    let mut evicted_indices: Vec<usize> = Vec::new();
-
-                    for (i, active) in sessions.iter_mut().enumerate() {
-                        let result = monoio::time::timeout(
-                            chunk_timeout,
-                            active.session.process_chunk(&chunk),
-                        )
-                        .await;
-
-                        match result {
-                            Ok(Ok(())) => { /* session keeping up */ }
-                            Ok(Err(e)) => {
-                                tracing::warn!(
-                                    worker = id,
-                                    ?e,
-                                    peer = ?active.peer_id,
-                                    "session error — evicting for retry"
-                                );
-                                evicted_indices.push(i);
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    worker = id,
-                                    peer = ?active.peer_id,
-                                    "session timed out on chunk — evicting for retry"
-                                );
-                                evicted_indices.push(i);
-                            }
-                        }
-                    }
+                    let evicted_indices =
+                        process_chunk_on_sessions(id, &mut sessions, &chunk, chunk_timeout).await;
 
                     // Remove evicted sessions (reverse order for stable indices)
                     // and collect their jobs for retry.
@@ -1048,7 +1111,17 @@ fn convert_block(block: &Block, num_gates: usize) -> OwnedBlock {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+    use std::{
+        collections::HashMap,
+        future::Future,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::Poll,
+        time::Duration,
+    };
 
     use mosaic_cac_types::{
         GarblingSeed, Seed,
@@ -1338,6 +1411,205 @@ mod tests {
                     peer_id: fault_peer,
                 } if fault_peer == peer_id
             ));
+        });
+    }
+
+    // ── Concurrent session processing within one worker ──────────────
+
+    /// Yields exactly once: `Pending` on the first poll (waking itself),
+    /// `Ready` on the second. `Send`, and deterministic — no timers.
+    struct YieldOnce(bool);
+
+    impl Future for YieldOnce {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    /// Session that records the peak number of sessions simultaneously
+    /// inside `process_chunk`.
+    struct ConcurrencyProbe {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl CircuitSession for ConcurrencyProbe {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            let active = Arc::clone(&self.active);
+            let peak = Arc::clone(&self.peak);
+            Box::pin(async move {
+                let in_flight = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(in_flight, Ordering::SeqCst);
+                // `join_all` polls every one of its futures before it
+                // yields, so all N siblings reach this await — and so all N
+                // have incremented `active` — before any of them resumes.
+                // Driven concurrently `peak` reaches N; driven one at a
+                // time it never exceeds 1. No timing dependence.
+                //
+                // That polling behaviour is an implementation detail of
+                // `join_all` rather than a documented guarantee, but the
+                // dependency is safe: were it to change, this test would
+                // fail loudly rather than silently stop checking anything.
+                YieldOnce(false).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async {
+                HandlerOutcome::Done(ActionCompletion::Garbler {
+                    id: ActionId::SendCommitMsgHeader,
+                    result: ActionResult::CommitMsgHeaderAcked,
+                })
+            })
+        }
+    }
+
+    /// Session that never completes — models a peer whose receive window
+    /// has stalled indefinitely. Only `chunk_timeout` frees it.
+    struct StalledSession;
+
+    impl CircuitSession for StalledSession {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async {
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async { HandlerOutcome::Retry })
+        }
+    }
+
+    /// Session whose chunk processing always errors.
+    struct FailingSession;
+
+    impl CircuitSession for FailingSession {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async { Err(CircuitError::ChunkFailed("test failure".into())) })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async { HandlerOutcome::Retry })
+        }
+    }
+
+    fn active_session(byte: u8, session: Box<dyn CircuitSession>) -> ActiveSession {
+        ActiveSession {
+            peer_id: PeerId::from([byte; 32]),
+            job: sample_job(byte),
+            session,
+        }
+    }
+
+    fn empty_chunk() -> Arc<OwnedChunk> {
+        Arc::new(OwnedChunk { blocks: Vec::new() })
+    }
+
+    fn probe(active: &Arc<AtomicUsize>, peak: &Arc<AtomicUsize>) -> Box<dyn CircuitSession> {
+        Box::new(ConcurrencyProbe {
+            active: Arc::clone(active),
+            peak: Arc::clone(peak),
+        })
+    }
+
+    #[test]
+    fn worker_drives_its_sessions_concurrently() {
+        run_monoio(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let mut sessions: Vec<ActiveSession> = (0u8..4)
+                .map(|i| active_session(i, probe(&active, &peak)))
+                .collect();
+
+            let evicted =
+                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), Duration::from_secs(5))
+                    .await;
+
+            assert!(evicted.is_empty(), "no session should be evicted");
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                4,
+                "sessions did not overlap — they are still being driven one at a time"
+            );
+            assert_eq!(active.load(Ordering::SeqCst), 0, "all sessions finished");
+        });
+    }
+
+    #[test]
+    fn stalled_sessions_are_evicted_without_blocking_siblings() {
+        const CHUNK_TIMEOUT: Duration = Duration::from_millis(300);
+
+        run_monoio(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let mut sessions = vec![
+                active_session(0, probe(&active, &peak)),
+                active_session(1, Box::new(StalledSession)),
+                active_session(2, probe(&active, &peak)),
+                active_session(3, Box::new(StalledSession)),
+            ];
+
+            let started = std::time::Instant::now();
+            let evicted =
+                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), CHUNK_TIMEOUT).await;
+            let elapsed = started.elapsed();
+
+            assert_eq!(evicted, vec![1, 3], "only the stalled sessions are evicted");
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                2,
+                "healthy sessions should have run alongside the stalled ones"
+            );
+            // Per-session timeouts run concurrently: two stalled sessions
+            // cost one timeout (~1x), not two (~2x). Threshold sits midway
+            // between so neither scheduling slop nor a loaded machine can
+            // flip it. `peak` above is the deterministic check; this one
+            // guards the timeouts specifically.
+            assert!(
+                elapsed < CHUNK_TIMEOUT * 3 / 2,
+                "chunk took {elapsed:?} for two stalled sessions at a \
+                 {CHUNK_TIMEOUT:?} timeout — timeouts are running one after another"
+            );
+        });
+    }
+
+    #[test]
+    fn evicted_indices_are_ascending() {
+        run_monoio(async {
+            let mut sessions = vec![
+                active_session(0, Box::new(NoopSession)),
+                active_session(1, Box::new(FailingSession)),
+                active_session(2, Box::new(NoopSession)),
+                active_session(3, Box::new(FailingSession)),
+            ];
+
+            let evicted =
+                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), Duration::from_secs(5))
+                    .await;
+
+            // The caller removes evicted sessions by index in reverse, which
+            // is only index-stable if these are sorted ascending.
+            assert_eq!(evicted, vec![1, 3]);
         });
     }
 }
