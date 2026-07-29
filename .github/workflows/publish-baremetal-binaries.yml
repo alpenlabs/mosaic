@@ -155,11 +155,8 @@ jobs:
 
   build-macos:
     name: Build macos-arm64 mosaic-peer-id (untrusted ref, no credentials)
-    # Pinned (not -latest) for the same runner-drift reason as the linux job.
-    # Apple Silicon runner; produces an arm64 binary for operator workstations.
-    # Only mosaic-peer-id is built here — it has no FoundationDB linkage, so no
-    # FDB client install is needed on this runner (see header: a macOS mosaic
-    # build is deliberately out of scope).
+    # Apple Silicon runner, pinned for the same runner-drift reason as the linux
+    # job. mosaic-peer-id has no FoundationDB linkage, so no FDB install here.
     runs-on: macos-15
     timeout-minutes: 90
     permissions:
@@ -216,7 +213,9 @@ jobs:
     # Only the reviewed main copy of this workflow may publish. workflow_dispatch
     # can run a feature branch's YAML, so gate the OIDC-enabled job on the run ref
     # (belt-and-suspenders with the environment's main-only deployment policy).
-    if: ${{ github.ref == 'refs/heads/main' }}
+    # Only the linux build is required — a macOS runner flake degrades the run to
+    # linux-only, and a re-dispatch adds the platform (write-once is per-platform).
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: baremetal-binaries
@@ -230,8 +229,11 @@ jobs:
     env:
       COMMIT: ${{ needs.build.outputs.commit }}
       COMMIT_MACOS: ${{ needs.build-macos.outputs.commit }}
+      # "true" only when the macOS build succeeded; drives the macos steps below.
+      HAVE_MACOS: ${{ needs.build-macos.result == 'success' }}
     steps:
       - name: Assert both platforms built the same commit
+        if: ${{ needs.build-macos.result == 'success' }}
         # A branch/tag ref could in principle advance between the two jobs'
         # checkouts; refuse to publish mixed-commit artifacts under one prefix.
         run: |
@@ -248,6 +250,7 @@ jobs:
           path: bin/linux-amd64
 
       - name: Download built binaries (macos-arm64)
+        if: ${{ needs.build-macos.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: mosaic-binaries-macos-arm64-${{ needs.build-macos.outputs.commit }}
@@ -262,11 +265,13 @@ jobs:
           set -euo pipefail
           # exactly the declared binaries per platform, nothing else
           test -f bin/linux-amd64/mosaic && test -f bin/linux-amd64/mosaic-peer-id
-          test -f bin/macos-arm64/mosaic-peer-id
           for b in mosaic mosaic-peer-id; do
             ( cd bin/linux-amd64 && sha256sum "${b}" > "${b}.sha256" )
           done
-          ( cd bin/macos-arm64 && sha256sum mosaic-peer-id > mosaic-peer-id.sha256 )
+          if [ "${HAVE_MACOS}" = "true" ]; then
+            test -f bin/macos-arm64/mosaic-peer-id
+            ( cd bin/macos-arm64 && sha256sum mosaic-peer-id > mosaic-peer-id.sha256 )
+          fi
           echo "Checksummed:"; ls -laR bin
 
       - name: Configure AWS credentials (OIDC)
@@ -317,7 +322,11 @@ jobs:
             published_any=1
           }
           publish_platform linux-amd64 mosaic mosaic-peer-id
-          publish_platform macos-arm64 mosaic-peer-id
+          if [ "${HAVE_MACOS}" = "true" ]; then
+            publish_platform macos-arm64 mosaic-peer-id
+          else
+            echo "::warning::macOS build did not succeed — publishing linux-amd64 only; re-dispatch to add macos-arm64"
+          fi
           if [ "${published_any}" = "0" ]; then
             echo "::error::all platform prefixes for ${COMMIT} are already published — nothing to do"
             exit 1
@@ -333,6 +342,10 @@ jobs:
             echo "- ref built: \`${BUILT_REF}\` → commit \`${COMMIT}\`"
             echo "- location: \`s3://${S3_BUCKET}/${S3_PREFIX_ROOT}/${COMMIT}/\`"
             echo "- linux-amd64: \`mosaic\`, \`mosaic-peer-id\` (+ \`.sha256\` each)"
-            echo "- macos-arm64: \`mosaic-peer-id\` (+ \`.sha256\`)"
+            if [ "${HAVE_MACOS}" = "true" ]; then
+              echo "- macos-arm64: \`mosaic-peer-id\` (+ \`.sha256\`)"
+            else
+              echo "- macos-arm64: NOT published (mac build did not succeed) — re-dispatch to add it"
+            fi
             echo "- platforms already complete were skipped (see upload step log)"
           } >> "$GITHUB_STEP_SUMMARY"
