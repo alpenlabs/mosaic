@@ -98,7 +98,14 @@ pub struct GarblingConfig {
     /// Path to the v5c circuit file.
     pub circuit_path: PathBuf,
     /// Maximum time to wait for more jobs before starting a pass with fewer
-    /// than `max_concurrent` sessions.
+    /// than `max_concurrent` sessions. A full batch never waits this out.
+    ///
+    /// Sized against the cost of a fragmented pass, not against latency: a
+    /// pass reads the full circuit file regardless of how many sessions it
+    /// serves, and nothing can join once it starts. Transfer actions arrive
+    /// as a trickle (one per inbound table request), so a short window
+    /// degenerates into one-session passes. Waiting 20s to coalesce is
+    /// noise next to a minutes-long pass.
     pub batch_timeout: Duration,
     /// Per-session, per-chunk timeout. Each expiry without progress on the
     /// current chunk counts one strike against the session (see
@@ -118,7 +125,7 @@ impl Default for GarblingConfig {
             worker_threads: 4,
             max_concurrent: 8,
             circuit_path: PathBuf::new(),
-            batch_timeout: Duration::from_millis(500),
+            batch_timeout: Duration::from_secs(20),
             chunk_timeout: Duration::from_secs(30),
             chunk_stall_strikes: 3,
         }
