@@ -395,11 +395,19 @@ pub struct TransferSession {
 /// worker's strike budget takes over — sustained slowness still evicts,
 /// transient slowness no longer couples sessions.
 ///
-/// Teardown relies on `mpsc_light`'s close semantics in both directions:
-/// producer drop (finish or eviction) surfaces to the drain as
-/// `recv() == None` (flush + FIN), drain death surfaces to the producer
-/// as a send error (`ChunkFailed` → normal eviction path).
+/// Teardown uses channel signals in both directions. Clean finish closes
+/// `ct_tx` while retaining `abort_tx`, so the drain flushes the tail and
+/// sends FIN. Eviction or finish timeout drops or sends `abort_tx`, so the
+/// drain cancels its current write and resets the stream. Drain death closes
+/// `ct_tx`'s receiver, which surfaces to the producer as a send error
+/// (`ChunkFailed` → normal eviction path).
 struct TransferOutbox {
+    /// Cancels the drain and resets its stream. Clean finish retains this
+    /// sender until `done_rx` resolves; eviction drops it to cancel.
+    ///
+    /// Declared first so implicit field drop signals cancellation before
+    /// closing the ciphertext lane.
+    abort_tx: oneshot::Sender<()>,
     /// Garbled ciphertext buffers awaiting the wire.
     ct_tx: mpsc_light::Sender<Vec<u8>>,
     /// Spent buffers coming back from the drain for reuse (keeps the
@@ -458,14 +466,22 @@ async fn write_outbox_chunk<S: OutboxStream>(
     stream: &mut S,
     payload: Vec<u8>,
     timeout: Duration,
+    abort_rx: Pin<&mut oneshot::Receiver<()>>,
 ) -> Result<Vec<u8>, String> {
-    let write = stream.write(payload);
-    let delay = futures_timer::Delay::new(timeout)
-        .map(move |_| Err(format!("stream write timed out after {timeout:?}")));
-    pin_mut!(write);
-    pin_mut!(delay);
-    match select(write, delay).await {
-        Either::Left((result, _)) | Either::Right((result, _)) => result,
+    let write_or_timeout = async {
+        let write = stream.write(payload);
+        let delay = futures_timer::Delay::new(timeout)
+            .map(move |_| Err(format!("stream write timed out after {timeout:?}")));
+        pin_mut!(write);
+        pin_mut!(delay);
+        match select(write, delay).await {
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
+        }
+    };
+    pin_mut!(write_or_timeout);
+    match select(abort_rx, write_or_timeout).await {
+        Either::Left(_) => Err("transfer drain cancelled".to_string()),
+        Either::Right((result, _)) => result,
     }
 }
 
@@ -473,30 +489,44 @@ async fn drain_transfer_outbox<S: OutboxStream>(
     mut stream: S,
     mut ct_rx: mpsc_light::Receiver<Vec<u8>>,
     recycle_tx: mpsc_light::Sender<Vec<u8>>,
+    abort_rx: oneshot::Receiver<()>,
     write_timeout: Duration,
 ) -> Result<(), String> {
-    while let Some(buf) = ct_rx.recv().await {
-        match write_outbox_chunk(&mut stream, buf, write_timeout).await {
+    pin_mut!(abort_rx);
+    let result = loop {
+        let recv = ct_rx.recv();
+        pin_mut!(recv);
+        let buf = match select(abort_rx.as_mut(), recv).await {
+            Either::Left(_) => break Err("transfer drain cancelled".to_string()),
+            Either::Right((Some(buf), _)) => buf,
+            Either::Right((None, _)) => break Ok(()),
+        };
+
+        match write_outbox_chunk(&mut stream, buf, write_timeout, abort_rx.as_mut()).await {
             // Hand the spent buffer back for reuse; if the recycle lane is
             // full or its receiver is gone, just drop it.
             Ok(spent) => {
                 let _ = recycle_tx.try_send(spent);
             }
-            Err(error) => {
-                // A plain drop sends FIN, which makes a truncated table look
-                // like a clean short transfer. Reset explicitly so the peer
-                // observes failure and so a timed-out write cannot survive
-                // into a retried transfer indefinitely.
-                stream.reset(0).await;
-                return Err(error);
-            }
+            Err(error) => break Err(error),
+        }
+    };
+
+    match result {
+        Ok(()) => {
+            // Clean finish closed the producer and the queue is drained.
+            // Dropping sends FIN after the final successful write.
+            drop(stream);
+            Ok(())
+        }
+        Err(error) => {
+            // A plain drop sends FIN, which makes a truncated table look
+            // like a clean short transfer. Reset explicitly so the peer
+            // observes failure and no drain survives into a retry.
+            stream.reset(0).await;
+            Err(error)
         }
     }
-
-    // Producer gone (finish or eviction) and queue drained. Dropping sends
-    // FIN after the final successful write.
-    drop(stream);
-    Ok(())
 }
 
 impl std::fmt::Debug for TransferSession {
@@ -559,11 +589,17 @@ impl TransferSession {
         let (ct_tx, ct_rx) = mpsc_light::bounded::<Vec<u8>>(TRANSFER_OUTBOX_DEPTH);
         let (recycle_tx, recycle_rx) = mpsc_light::bounded::<Vec<u8>>(TRANSFER_OUTBOX_DEPTH);
         let (done_tx, done_rx) = oneshot::oneshot();
+        let (abort_tx, abort_rx) = oneshot::oneshot();
 
         let drain = async move {
-            let result =
-                drain_transfer_outbox(stream, ct_rx, recycle_tx, TRANSFER_CHUNK_WRITE_TIMEOUT)
-                    .await;
+            let result = drain_transfer_outbox(
+                stream,
+                ct_rx,
+                recycle_tx,
+                abort_rx,
+                TRANSFER_CHUNK_WRITE_TIMEOUT,
+            )
+            .await;
             let _ = done_tx.send(result);
             // Dropping ct_rx flips the channel closed: a producer still
             // garbling gets a send error and evicts through the normal
@@ -581,6 +617,7 @@ impl TransferSession {
         }
 
         self.outbox = Some(TransferOutbox {
+            abort_tx,
             ct_tx,
             recycle_rx,
             done_rx,
@@ -648,14 +685,19 @@ impl CircuitSession for TransferSession {
 
             match self.outbox.take() {
                 Some(outbox) => {
-                    // Close the outbox: with all senders gone the drain's
+                    let TransferOutbox {
+                        ct_tx,
+                        recycle_rx,
+                        done_rx,
+                        abort_tx,
+                    } = outbox;
+                    // Close the ciphertext lane while retaining abort_tx:
                     // recv() drains the tail then returns None, and the
-                    // drain FINs the stream. Only then is the table
-                    // complete on the wire — Done must not race the tail.
-                    drop(outbox.ct_tx);
-                    drop(outbox.recycle_rx);
+                    // drain FINs the stream. Only then is the table complete
+                    // on the wire — Done must not race the tail.
+                    drop(ct_tx);
+                    drop(recycle_rx);
 
-                    let done_rx = outbox.done_rx;
                     let delay = futures_timer::Delay::new(DRAIN_FINISH_TIMEOUT);
                     pin_mut!(done_rx);
                     pin_mut!(delay);
@@ -671,12 +713,31 @@ impl CircuitSession for TransferSession {
                             );
                             HandlerOutcome::Retry
                         }
-                        Either::Right(_) => {
+                        Either::Right((_, done_rx)) => {
                             tracing::warn!(
                                 timeout = ?DRAIN_FINISH_TIMEOUT,
-                                "transfer drain flush timed out — retrying table"
+                                "transfer drain flush timed out — cancelling"
                             );
-                            HandlerOutcome::Retry
+                            let _ = abort_tx.send(());
+                            // Do not start a retry until the old drain has
+                            // reset the stream and terminated.
+                            match done_rx.await {
+                                Ok(Ok(())) => HandlerOutcome::Done(done),
+                                Ok(Err(e)) => {
+                                    tracing::warn!(
+                                        %e,
+                                        "transfer drain cancelled — retrying table"
+                                    );
+                                    HandlerOutcome::Retry
+                                }
+                                Err(_) => {
+                                    tracing::warn!(
+                                        "cancelled transfer drain dropped without result — \
+                                         retrying table"
+                                    );
+                                    HandlerOutcome::Retry
+                                }
+                            }
                         }
                     }
                 }
@@ -967,6 +1028,7 @@ mod tests {
         let reset = Arc::new(AtomicBool::new(false));
         let (ct_tx, ct_rx) = mpsc_light::bounded(2);
         let (recycle_tx, mut recycle_rx) = mpsc_light::bounded(2);
+        let (_abort_tx, abort_rx) = oneshot::oneshot();
         ct_tx.try_send(vec![1, 2]).expect("enqueue first buffer");
         ct_tx.try_send(vec![3]).expect("enqueue second buffer");
         drop(ct_tx);
@@ -981,6 +1043,7 @@ mod tests {
                 stream,
                 ct_rx,
                 recycle_tx,
+                abort_rx,
                 Duration::from_secs(1),
             ))
         })
@@ -1003,6 +1066,7 @@ mod tests {
         let reset = Arc::new(AtomicBool::new(false));
         let (ct_tx, ct_rx) = mpsc_light::bounded(1);
         let (recycle_tx, _recycle_rx) = mpsc_light::bounded(1);
+        let (_abort_tx, abort_rx) = oneshot::oneshot();
         ct_tx.try_send(vec![1]).expect("enqueue buffer");
 
         let stream = ProbeStream {
@@ -1015,6 +1079,7 @@ mod tests {
                 stream,
                 ct_rx,
                 recycle_tx,
+                abort_rx,
                 Duration::from_millis(10),
             ))
         })
@@ -1030,6 +1095,44 @@ mod tests {
         assert!(
             futures::executor::block_on(ct_tx.send(vec![2])).is_err(),
             "producer must observe the dead drain"
+        );
+    }
+
+    #[test]
+    fn outbox_drain_cancellation_resets_and_terminates() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let reset = Arc::new(AtomicBool::new(false));
+        let (ct_tx, ct_rx) = mpsc_light::bounded(1);
+        let (recycle_tx, _recycle_rx) = mpsc_light::bounded(1);
+        let (abort_tx, abort_rx) = oneshot::oneshot();
+        ct_tx.try_send(vec![1]).expect("enqueue buffer");
+
+        let stream = ProbeStream {
+            writes,
+            reset: Arc::clone(&reset),
+            stall: true,
+        };
+        let drain = std::thread::spawn(move || {
+            futures::executor::block_on(drain_transfer_outbox(
+                stream,
+                ct_rx,
+                recycle_tx,
+                abort_rx,
+                Duration::from_secs(60),
+            ))
+        });
+
+        abort_tx.send(()).expect("cancel drain");
+        let result = drain.join().expect("drain thread");
+
+        assert_eq!(
+            result.expect_err("cancelled drain must fail"),
+            "transfer drain cancelled"
+        );
+        assert!(reset.load(Ordering::SeqCst));
+        assert!(
+            futures::executor::block_on(ct_tx.send(vec![2])).is_err(),
+            "producer must observe the cancelled drain"
         );
     }
 }
