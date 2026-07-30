@@ -97,6 +97,7 @@ impl MosaicConfig {
                 circuit_path: self.circuit.path.clone(),
                 batch_timeout: Duration::from_millis(self.job_scheduler.garbling.batch_timeout_ms),
                 chunk_timeout: Duration::from_secs(self.job_scheduler.garbling.chunk_timeout_secs),
+                chunk_stall_strikes: self.job_scheduler.garbling.chunk_stall_strikes,
             },
             submission_queue_size: self.job_scheduler.submission_queue_size,
             completion_queue_size: self.job_scheduler.completion_queue_size,
@@ -136,6 +137,10 @@ impl MosaicConfig {
 
         if self.job_scheduler.garbling.worker_threads == 0 {
             bail!("job_scheduler.garbling.worker_threads must be greater than zero");
+        }
+
+        if self.job_scheduler.garbling.chunk_stall_strikes == 0 {
+            bail!("job_scheduler.garbling.chunk_stall_strikes must be greater than zero");
         }
 
         if self.job_scheduler.light.threads == 0 || self.job_scheduler.heavy.threads == 0 {
@@ -407,6 +412,8 @@ pub(crate) struct GarblingSection {
     pub(crate) batch_timeout_ms: u64,
     #[serde(default = "default_chunk_timeout_secs")]
     pub(crate) chunk_timeout_secs: u64,
+    #[serde(default = "default_chunk_stall_strikes")]
+    pub(crate) chunk_stall_strikes: u32,
 }
 
 impl Default for GarblingSection {
@@ -416,6 +423,7 @@ impl Default for GarblingSection {
             max_concurrent: default_garbling_max_concurrent(),
             batch_timeout_ms: default_batch_timeout_ms(),
             chunk_timeout_secs: default_chunk_timeout_secs(),
+            chunk_stall_strikes: default_chunk_stall_strikes(),
         }
     }
 }
@@ -593,6 +601,10 @@ const fn default_batch_timeout_ms() -> u64 {
 
 const fn default_chunk_timeout_secs() -> u64 {
     DEFAULT_CHUNK_TIMEOUT_SECS
+}
+
+const fn default_chunk_stall_strikes() -> u32 {
+    3
 }
 
 const fn default_submission_queue_size() -> usize {

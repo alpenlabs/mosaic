@@ -98,10 +98,16 @@ pub struct GarblingConfig {
     /// Maximum time to wait for more jobs before starting a pass with fewer
     /// than `max_concurrent` sessions.
     pub batch_timeout: Duration,
-    /// Per-session, per-chunk timeout. If a session doesn't finish processing
-    /// a chunk within this duration, it is evicted from the pass and its
-    /// action is placed on the retry list for the next pass.
+    /// Per-session, per-chunk timeout. Each expiry without progress on the
+    /// current chunk counts one strike against the session (see
+    /// [`chunk_stall_strikes`](Self::chunk_stall_strikes)).
     pub chunk_timeout: Duration,
+    /// Number of consecutive `chunk_timeout` expiries a session may accrue
+    /// on a single chunk before it is evicted from the pass and its action
+    /// placed on the retry list. Strikes extend the budget without
+    /// cancelling the in-flight chunk; a value of 1 reproduces the old
+    /// evict-on-first-timeout behaviour. Default: 3.
+    pub chunk_stall_strikes: u32,
 }
 
 impl Default for GarblingConfig {
@@ -112,6 +118,7 @@ impl Default for GarblingConfig {
             circuit_path: PathBuf::new(),
             batch_timeout: Duration::from_millis(500),
             chunk_timeout: Duration::from_secs(30),
+            chunk_stall_strikes: 3,
         }
     }
 }
@@ -213,6 +220,7 @@ impl WorkerHandle {
     fn spawn(
         id: usize,
         chunk_timeout: Duration,
+        stall_strikes: u32,
         fault_tx: kanal::AsyncSender<SchedulerFault>,
     ) -> Self {
         // Bounded channels: main sends at most 1 command before waiting for
@@ -229,7 +237,7 @@ impl WorkerHandle {
                         .enable_timer()
                         .build()
                         .expect("failed to build monoio runtime for garbling worker")
-                        .block_on(worker_loop(id, chunk_timeout, command_rx, report_tx));
+                        .block_on(worker_loop(id, chunk_timeout, stall_strikes, command_rx, report_tx));
                 }));
 
                 if let Err(payload) = run_result {
@@ -416,7 +424,14 @@ async fn coordinator_loop(
         // Spawn persistent worker threads.
         let n_workers = config.worker_threads.max(1);
         let mut workers: Vec<WorkerHandle> = (0..n_workers)
-            .map(|id| WorkerHandle::spawn(id, config.session_chunk_timeout(), fault_tx.clone()))
+            .map(|id| {
+                WorkerHandle::spawn(
+                    id,
+                    config.session_chunk_timeout(),
+                    config.chunk_stall_strikes.max(1),
+                    fault_tx.clone(),
+                )
+            })
             .collect();
 
         tracing::info!(
@@ -664,6 +679,7 @@ async fn run_pass(
     // no network I/O) still complete one after another inside the join.
     let report_timeout = config
         .session_chunk_timeout()
+        .saturating_mul(config.chunk_stall_strikes.max(1))
         .saturating_add(Duration::from_secs(5));
 
     // ── Read blocks and broadcast to workers ─────────────────────────
@@ -881,21 +897,58 @@ async fn collect_finish_reports_with_timeout(
 /// still barriers across workers between chunks (see [`run_pass`]), so a
 /// slow peer continues to gate the pass at chunk granularity.
 ///
-/// `chunk_timeout` applies to each session independently: a session whose
-/// peer has stalled is evicted without holding up its siblings.
+/// # Eviction: strike budget, never mid-chunk cancellation between strikes
+///
+/// A pass covers tens of thousands of chunks, so eviction policy is
+/// survival math: killing a session on its *first* slow chunk makes table
+/// completion probability `(1 - p)^n_chunks` — brutal even for tiny per-
+/// chunk stall probabilities, and an evicted transfer restarts from block
+/// zero (no resumption yet). Instead a session gets `stall_strikes`
+/// consecutive `chunk_timeout` intervals: each expiry logs a strike and
+/// **keeps polling the same future**; only the final strike drops it.
+///
+/// Cancelling and re-running `process_chunk` between strikes would be
+/// unsound for transfer sessions — the future is dropped at an await point
+/// mid-write, and re-garbling the chunk onto the same stream would emit
+/// duplicate bytes. Eviction (dropping the whole session and its stream)
+/// is the only safe response to a cancelled chunk, which is why strikes
+/// extend the budget *without* cancelling.
 async fn process_chunk_on_sessions(
     worker_id: usize,
     sessions: &mut [ActiveSession],
     chunk: &Arc<OwnedChunk>,
     chunk_timeout: Duration,
+    stall_strikes: u32,
 ) -> Vec<usize> {
+    let stall_strikes = stall_strikes.max(1);
     let results =
         futures::future::join_all(sessions.iter_mut().enumerate().map(|(index, active)| {
             let peer_id = active.peer_id;
             let session = &mut active.session;
             async move {
-                let result =
-                    monoio::time::timeout(chunk_timeout, session.process_chunk(chunk)).await;
+                let mut fut = session.process_chunk(chunk);
+                let mut strikes = 0u32;
+                let result = loop {
+                    match monoio::time::timeout(chunk_timeout, &mut fut).await {
+                        Ok(res) => break Some(res),
+                        Err(_) => {
+                            strikes += 1;
+                            if strikes >= stall_strikes {
+                                // Final strike: drop the future (cancelling
+                                // the chunk) and evict the session.
+                                break None;
+                            }
+                            tracing::warn!(
+                                worker = worker_id,
+                                peer = ?peer_id,
+                                strikes,
+                                budget = stall_strikes,
+                                timeout_ms = chunk_timeout.as_millis(),
+                                "session slow on chunk — striking, still polling"
+                            );
+                        }
+                    }
+                };
                 (index, peer_id, result)
             }
         }))
@@ -904,8 +957,8 @@ async fn process_chunk_on_sessions(
     let mut evicted_indices = Vec::new();
     for (index, peer_id, result) in results {
         match result {
-            Ok(Ok(())) => { /* session keeping up */ }
-            Ok(Err(e)) => {
+            Some(Ok(())) => { /* session keeping up */ }
+            Some(Err(e)) => {
                 tracing::warn!(
                     worker = worker_id,
                     ?e,
@@ -914,11 +967,12 @@ async fn process_chunk_on_sessions(
                 );
                 evicted_indices.push(index);
             }
-            Err(_) => {
+            None => {
                 tracing::warn!(
                     worker = worker_id,
                     peer = ?peer_id,
-                    "session timed out on chunk — evicting for retry"
+                    strikes = stall_strikes,
+                    "session exhausted its stall budget on one chunk — evicting for retry"
                 );
                 evicted_indices.push(index);
             }
@@ -940,6 +994,7 @@ async fn process_chunk_on_sessions(
 async fn worker_loop(
     id: usize,
     chunk_timeout: Duration,
+    stall_strikes: u32,
     command_rx: kanal::AsyncReceiver<WorkerCommand>,
     report_tx: kanal::AsyncSender<WorkerReport>,
 ) {
@@ -968,8 +1023,14 @@ async fn worker_loop(
                 }
 
                 WorkerCommand::ProcessChunk(chunk) => {
-                    let evicted_indices =
-                        process_chunk_on_sessions(id, &mut sessions, &chunk, chunk_timeout).await;
+                    let evicted_indices = process_chunk_on_sessions(
+                        id,
+                        &mut sessions,
+                        &chunk,
+                        chunk_timeout,
+                        stall_strikes,
+                    )
+                    .await;
 
                     // Remove evicted sessions (reverse order for stable indices)
                     // and collect their jobs for retry.
@@ -1216,6 +1277,7 @@ mod tests {
                     circuit_path: PathBuf::new(),
                     batch_timeout: Duration::from_millis(1),
                     chunk_timeout: Duration::from_millis(1),
+                    chunk_stall_strikes: 1,
                 },
                 sessions,
                 &mut workers,
@@ -1541,9 +1603,14 @@ mod tests {
                 .map(|i| active_session(i, probe(&active, &peak)))
                 .collect();
 
-            let evicted =
-                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), Duration::from_secs(5))
-                    .await;
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_secs(5),
+                1,
+            )
+            .await;
 
             assert!(evicted.is_empty(), "no session should be evicted");
             assert_eq!(
@@ -1571,7 +1638,7 @@ mod tests {
 
             let started = std::time::Instant::now();
             let evicted =
-                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), CHUNK_TIMEOUT).await;
+                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), CHUNK_TIMEOUT, 1).await;
             let elapsed = started.elapsed();
 
             assert_eq!(evicted, vec![1, 3], "only the stalled sessions are evicted");
@@ -1593,6 +1660,100 @@ mod tests {
         });
     }
 
+    /// Session whose chunk future completes when signalled externally,
+    /// recording how many times `process_chunk` was entered.
+    struct SlowThenOkSession {
+        entered: Arc<AtomicUsize>,
+        ready_rx: kanal::AsyncReceiver<()>,
+    }
+
+    impl CircuitSession for SlowThenOkSession {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            let rx = self.ready_rx.clone();
+            Box::pin(async move {
+                let _ = rx.recv().await;
+                Ok(())
+            })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async { HandlerOutcome::Retry })
+        }
+    }
+
+    #[test]
+    fn slow_session_survives_stall_strikes_without_restart() {
+        run_monoio(async {
+            let entered = Arc::new(AtomicUsize::new(0));
+            let (ready_tx, ready_rx) = kanal::bounded_async(1);
+            let mut sessions = vec![ActiveSession {
+                peer_id: PeerId::from([1u8; 32]),
+                job: sample_job(1),
+                session: Box::new(SlowThenOkSession {
+                    entered: Arc::clone(&entered),
+                    ready_rx,
+                }),
+            }];
+
+            // Complete the chunk from a thread after ~2.5 strike intervals.
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                let _ = ready_tx.to_sync().send(());
+            });
+
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_millis(100),
+                5,
+            )
+            .await;
+
+            assert!(
+                evicted.is_empty(),
+                "session accrued strikes below the budget and must survive"
+            );
+            // The load-bearing assertion: strikes must keep polling the SAME
+            // future. Re-entering process_chunk between strikes would mean
+            // the chunk was cancelled and restarted — unsound for transfer
+            // sessions mid-stream.
+            assert_eq!(
+                entered.load(Ordering::SeqCst),
+                1,
+                "process_chunk was re-entered — chunk cancelled between strikes"
+            );
+        });
+    }
+
+    #[test]
+    fn session_evicted_only_after_strike_budget() {
+        run_monoio(async {
+            let mut sessions = vec![active_session(0, Box::new(StalledSession))];
+            let started = std::time::Instant::now();
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_millis(100),
+                3,
+            )
+            .await;
+            let elapsed = started.elapsed();
+
+            assert_eq!(evicted, vec![0]);
+            // 3 strikes at 100ms each: eviction cannot land before 300ms.
+            assert!(
+                elapsed >= Duration::from_millis(300),
+                "evicted after {elapsed:?} — struck out before the budget elapsed"
+            );
+        });
+    }
+
     #[test]
     fn evicted_indices_are_ascending() {
         run_monoio(async {
@@ -1603,9 +1764,14 @@ mod tests {
                 active_session(3, Box::new(FailingSession)),
             ];
 
-            let evicted =
-                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), Duration::from_secs(5))
-                    .await;
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_secs(5),
+                1,
+            )
+            .await;
 
             // The caller removes evicted sessions by index in reverse, which
             // is only index-stable if these are sorted ascending.
