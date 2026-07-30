@@ -874,6 +874,14 @@ async fn collect_batch(
 
     let deadline = monoio::time::Instant::now() + batch_timeout;
     loop {
+        // A full backlog is not necessarily the next batch: a more urgent
+        // job may already be waiting in the submission channel. Move all
+        // currently available arrivals into the backlog before priority and
+        // class selection so they can influence the pass that starts now.
+        while let Ok(Some(job)) = submit_rx.try_recv() {
+            backlog.push_back(job);
+        }
+
         // Priority sorting below determines which class leads the pass.
         // Only that class can fill this batch: counting other-class jobs
         // would end the window early and re-fragment passes.
@@ -1908,6 +1916,26 @@ mod tests {
                 started.elapsed() < Duration::from_secs(5),
                 "full batch waited out the window"
             );
+        });
+    }
+
+    #[test]
+    fn collect_batch_inspects_queued_priority_before_full_batch_start() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::from([sample_compute_job(1), sample_compute_job(2)]);
+
+            tx.send(sample_job_with_priority(3, Priority::Critical))
+                .await
+                .expect("send Critical job");
+            drop(tx);
+
+            let batch = collect_batch(&mut backlog, &rx, 2, Duration::from_secs(60))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [3]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [1, 2]);
         });
     }
 
