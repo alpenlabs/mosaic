@@ -483,66 +483,7 @@ async fn coordinator_loop(
             let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
 
             // ── 2. Create sessions from collected jobs ───────────────────
-            let mut sessions: Vec<ActiveSession> = Vec::with_capacity(jobs.len());
-
-            for job in jobs {
-                match factory.create_session(&job).await {
-                    Ok(session) => {
-                        sessions.push(ActiveSession {
-                            peer_id: job.peer_id,
-                            job: PendingCircuitJob {
-                                peer_id: job.peer_id,
-                                action: job.action.clone(),
-                                priority: job.priority,
-                            },
-                            session,
-                        });
-                    }
-                    Err(CircuitError::AlreadyComplete) => {
-                        // The state machine no longer needs this work —
-                        // either it already recorded it as done (e.g. a
-                        // duplicate transfer job for a table the evaluator
-                        // receipted) or it has moved past the step (incl.
-                        // aborted setups). Idempotent success — drop the
-                        // job. No completion is sent: the SM treats these
-                        // completions as informational and has moved on.
-                        tracing::info!(
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            "action no longer required per state machine — dropping job"
-                        );
-                    }
-                    Err(CircuitError::StorageUnavailable) => {
-                        // Transient — data not yet written by STF. Keep for retry.
-                        tracing::debug!(
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            "session storage unavailable — will retry next pass"
-                        );
-                        pending_retry.push(job);
-                    }
-                    Err(CircuitError::TransientFailure(reason)) => {
-                        // Transient — e.g. peer not ready for bulk stream. Keep for retry.
-                        tracing::debug!(
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            reason,
-                            "transient setup failure — will retry next pass"
-                        );
-                        pending_retry.push(job);
-                    }
-                    Err(e) => {
-                        // Permanent failure (SetupFailed, ChunkFailed during setup).
-                        // This is a programming error — the action cannot be retried.
-                        tracing::error!(
-                            ?e,
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            "permanent session creation failure — action dropped"
-                        );
-                    }
-                }
-            }
+            let sessions = create_sessions(factory.as_ref(), jobs, &mut pending_retry).await;
 
             if sessions.is_empty() {
                 if !pending_retry.is_empty() {
@@ -995,6 +936,91 @@ fn requeue_bounced(
     backlog.extend(bounced.drain(..));
 }
 
+/// Create live sessions for a batch, concurrently.
+///
+/// Session creation is far from free — for a transfer it is storage reads,
+/// the ~1 GB session allocation, a scheduler hint, a bulk-stream open and
+/// the translation writes, all against a remote peer. Run serially, a
+/// batch paid those latencies end to end while every worker sat idle
+/// (worst case minutes per pass); `join_all` overlaps them so the pass
+/// starts after the slowest creation, not the sum.
+///
+/// Failure handling per job is unchanged: `AlreadyComplete` drops the job
+/// (idempotent success), transient failures push it to `pending_retry`
+/// (re-entering the backlog at the back via `requeue_bounced`), permanent
+/// failures are logged and dropped.
+async fn create_sessions(
+    factory: &dyn SessionFactory,
+    jobs: Vec<PendingCircuitJob>,
+    pending_retry: &mut Vec<PendingCircuitJob>,
+) -> Vec<ActiveSession> {
+    let creations = futures::future::join_all(jobs.into_iter().map(|job| async move {
+        let result = factory.create_session(&job).await;
+        (job, result)
+    }))
+    .await;
+
+    let mut sessions: Vec<ActiveSession> = Vec::with_capacity(creations.len());
+    for (job, result) in creations {
+        match result {
+            Ok(session) => {
+                sessions.push(ActiveSession {
+                    peer_id: job.peer_id,
+                    job: PendingCircuitJob {
+                        peer_id: job.peer_id,
+                        action: job.action.clone(),
+                        priority: job.priority,
+                    },
+                    session,
+                });
+            }
+            Err(CircuitError::AlreadyComplete) => {
+                // The state machine no longer needs this work — either it
+                // already recorded it as done (e.g. a duplicate transfer
+                // job for a table the evaluator receipted) or it has moved
+                // past the step (incl. aborted setups). Idempotent success
+                // — drop the job. No completion is sent: the SM treats
+                // these completions as informational and has moved on.
+                tracing::info!(
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    "action no longer required per state machine — dropping job"
+                );
+            }
+            Err(CircuitError::StorageUnavailable) => {
+                // Transient — data not yet written by STF. Keep for retry.
+                tracing::debug!(
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    "session storage unavailable — will retry next pass"
+                );
+                pending_retry.push(job);
+            }
+            Err(CircuitError::TransientFailure(reason)) => {
+                // Transient — e.g. peer not ready for bulk stream. Keep for retry.
+                tracing::debug!(
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    reason,
+                    "transient setup failure — will retry next pass"
+                );
+                pending_retry.push(job);
+            }
+            Err(e) => {
+                // Permanent failure (SetupFailed, ChunkFailed during setup).
+                // This is a programming error — the action cannot be retried.
+                tracing::error!(
+                    ?e,
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    "permanent session creation failure — action dropped"
+                );
+            }
+        }
+    }
+    sessions
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Worker thread
 // ════════════════════════════════════════════════════════════════════════════
@@ -1105,6 +1131,50 @@ async fn process_chunk_on_sessions(
     evicted_indices
 }
 
+/// Finalize a worker's sessions concurrently, splitting the outcomes into
+/// completions and retry jobs (input order preserved).
+///
+/// `finish` can be slow — a transfer session drops its stream (FIN) and a
+/// garbling instance releases ~1 GB — and for transfer sessions the
+/// coordinator's finish timeout is the deadline. Serial finishes paid the
+/// sum of those latencies; `join_all` pays the max.
+async fn finish_sessions(
+    worker_id: usize,
+    sessions: Vec<ActiveSession>,
+) -> (Vec<JobCompletion>, Vec<PendingCircuitJob>) {
+    let outcomes = futures::future::join_all(sessions.into_iter().map(|active| {
+        let ActiveSession {
+            peer_id,
+            job,
+            session,
+        } = active;
+        async move { (peer_id, job, session.finish().await) }
+    }))
+    .await;
+
+    let mut completions: Vec<JobCompletion> = Vec::new();
+    let mut retry_jobs: Vec<PendingCircuitJob> = Vec::new();
+    for (peer_id, job, outcome) in outcomes {
+        match outcome {
+            HandlerOutcome::Done(completion) => {
+                completions.push(JobCompletion {
+                    peer_id,
+                    completion,
+                });
+            }
+            HandlerOutcome::Retry => {
+                tracing::debug!(
+                    worker = worker_id,
+                    ?peer_id,
+                    "session finished with Retry — requeueing"
+                );
+                retry_jobs.push(job);
+            }
+        }
+    }
+    (completions, retry_jobs)
+}
+
 /// Main loop for a garbling worker thread.
 ///
 /// Receives sessions and chunk commands from the coordinator's main thread.
@@ -1171,35 +1241,8 @@ async fn worker_loop(
                 }
 
                 WorkerCommand::FinishPass => {
-                    let mut completions: Vec<JobCompletion> = Vec::new();
-                    let mut retry_jobs: Vec<PendingCircuitJob> = Vec::new();
-
-                    for active in sessions.drain(..) {
-                        let ActiveSession {
-                            peer_id,
-                            job,
-                            session,
-                        } = active;
-
-                        let outcome = session.finish().await;
-
-                        match outcome {
-                            HandlerOutcome::Done(completion) => {
-                                completions.push(JobCompletion {
-                                    peer_id,
-                                    completion,
-                                });
-                            }
-                            HandlerOutcome::Retry => {
-                                tracing::debug!(
-                                    worker = id,
-                                    ?peer_id,
-                                    "session finished with Retry — requeueing"
-                                );
-                                retry_jobs.push(job);
-                            }
-                        }
-                    }
+                    let (completions, retry_jobs) =
+                        finish_sessions(id, std::mem::take(&mut sessions)).await;
 
                     let report = WorkerReport::FinishDone(FinishReport {
                         completions,
@@ -1308,7 +1351,8 @@ mod tests {
         state_machine::garbler::{ActionId, ActionResult},
     };
     use mosaic_job_api::{
-        ActionCompletion, CircuitAction, HandlerOutcome, PendingCircuitJob, Priority,
+        ActionCompletion, CircuitAction, CreateSessionFuture, HandlerOutcome, PendingCircuitJob,
+        Priority,
     };
 
     use super::*;
@@ -1946,6 +1990,130 @@ mod tests {
                 .await
                 .expect("batch");
             assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1]);
+        });
+    }
+
+    // ── Concurrent create/finish ─────────────────────────────────────
+
+    /// Factory whose create futures record overlap and classify by peer
+    /// byte: 0 → AlreadyComplete, 1 → StorageUnavailable, else Ok.
+    struct ProbeFactory {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl SessionFactory for ProbeFactory {
+        fn create_session<'a>(&'a self, job: &'a PendingCircuitJob) -> CreateSessionFuture<'a> {
+            let active = Arc::clone(&self.active);
+            let peak = Arc::clone(&self.peak);
+            let byte = job.peer_id.as_bytes()[0];
+            Box::pin(async move {
+                let in_flight = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(in_flight, Ordering::SeqCst);
+                YieldOnce(false).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                match byte {
+                    0 => Err(CircuitError::AlreadyComplete),
+                    1 => Err(CircuitError::StorageUnavailable),
+                    _ => Ok(Box::new(NoopSession) as Box<dyn CircuitSession>),
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn create_sessions_overlap_and_classify_failures() {
+        run_monoio(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let factory = ProbeFactory {
+                active: Arc::clone(&active),
+                peak: Arc::clone(&peak),
+            };
+            let jobs: Vec<PendingCircuitJob> = (0u8..4).map(sample_job).collect();
+            let mut pending_retry = Vec::new();
+
+            let sessions = create_sessions(&factory, jobs, &mut pending_retry).await;
+
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                4,
+                "session creations did not overlap"
+            );
+            assert_eq!(sessions.len(), 2, "peers 2 and 3 create successfully");
+            assert_eq!(
+                pending_retry.iter().map(job_peer).collect::<Vec<_>>(),
+                [1],
+                "only the StorageUnavailable job is retried; AlreadyComplete drops"
+            );
+        });
+    }
+
+    /// Session whose finish future records overlap; retries when asked.
+    struct FinishProbe {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        retry: bool,
+    }
+
+    impl CircuitSession for FinishProbe {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            let active = Arc::clone(&self.active);
+            let peak = Arc::clone(&self.peak);
+            let retry = self.retry;
+            Box::pin(async move {
+                let in_flight = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(in_flight, Ordering::SeqCst);
+                YieldOnce(false).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                if retry {
+                    HandlerOutcome::Retry
+                } else {
+                    HandlerOutcome::Done(ActionCompletion::Garbler {
+                        id: ActionId::SendCommitMsgHeader,
+                        result: ActionResult::CommitMsgHeaderAcked,
+                    })
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn finish_sessions_overlap_and_split_outcomes() {
+        run_monoio(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let probe = |retry| {
+                Box::new(FinishProbe {
+                    active: Arc::clone(&active),
+                    peak: Arc::clone(&peak),
+                    retry,
+                }) as Box<dyn CircuitSession>
+            };
+            let sessions = vec![
+                active_session(2, probe(false)),
+                active_session(3, probe(true)),
+                active_session(4, probe(false)),
+            ];
+
+            let (completions, retry_jobs) = finish_sessions(0, sessions).await;
+
+            assert_eq!(peak.load(Ordering::SeqCst), 3, "finishes did not overlap");
+            assert_eq!(
+                completions
+                    .iter()
+                    .map(|c| c.peer_id.as_bytes()[0])
+                    .collect::<Vec<_>>(),
+                [2, 4]
+            );
+            assert_eq!(retry_jobs.iter().map(job_peer).collect::<Vec<_>>(), [3]);
         });
     }
 
