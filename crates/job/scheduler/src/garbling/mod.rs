@@ -625,24 +625,16 @@ async fn run_pass(
         .saturating_mul(config.chunk_stall_strikes.max(1))
         .saturating_add(Duration::from_secs(5));
 
-    // ── Read blocks and broadcast to workers ─────────────────────────
-    while let Some(chunk_result) = reader.next_blocks_chunk().await.transpose() {
-        let reader_chunk = match chunk_result {
-            Ok(chunk) => chunk,
-            Err(e) => {
-                tracing::error!(
-                    %e,
-                    remaining_workers = active_worker_ids.len(),
-                    "circuit read error mid-pass — finishing early"
-                );
-                break;
-            }
-        };
+    // ── Read blocks and broadcast to workers (pipelined) ─────────────
+    //
+    // The read+convert of chunk N+1 overlaps the barrier wait for chunk N:
+    // while workers process a chunk, the coordinator uses the otherwise-idle
+    // wait to have the next broadcast ready the moment the barrier clears.
+    // Without the overlap, disk latency and worker latency were paid in
+    // series on every chunk of the pass.
+    let mut next_chunk = read_next_chunk(&mut reader, total_gates, &mut block_idx).await;
 
-        // Convert borrowed blocks to owned, wrap in Arc for sharing.
-        let owned = convert_chunk(&reader_chunk, total_gates, &mut block_idx);
-        let shared = Arc::new(owned);
-
+    while let Some(shared) = next_chunk.take() {
         // Broadcast chunk to all active workers.
         for &wid in &active_worker_ids {
             if !workers[wid]
@@ -653,15 +645,20 @@ async fn run_pass(
             }
         }
 
-        // ── Barrier: wait for all workers to report ──────────────────
-        active_worker_ids = collect_chunk_reports(
-            &active_worker_ids,
-            &mut active_jobs_by_worker,
-            workers,
-            report_timeout,
-            pending_retry,
+        // ── Prefetch next chunk while the barrier waits ──────────────
+        let (prefetched, still_active) = futures::future::join(
+            read_next_chunk(&mut reader, total_gates, &mut block_idx),
+            collect_chunk_reports(
+                &active_worker_ids,
+                &mut active_jobs_by_worker,
+                workers,
+                report_timeout,
+                pending_retry,
+            ),
         )
         .await;
+        next_chunk = prefetched;
+        active_worker_ids = still_active;
 
         if active_worker_ids.is_empty() {
             tracing::warn!("all workers idle — ending pass early");
@@ -1283,6 +1280,30 @@ async fn worker_loop(
 // ════════════════════════════════════════════════════════════════════════════
 // Block conversion
 // ════════════════════════════════════════════════════════════════════════════
+
+/// Read and convert the next circuit chunk, or `None` at end of circuit.
+///
+/// A read error is logged and mapped to `None`: the pass finishes early
+/// with whatever the sessions have processed, matching the pre-pipelining
+/// behaviour.
+async fn read_next_chunk(
+    reader: &mut ReaderV5c,
+    total_gates: u64,
+    block_idx: &mut usize,
+) -> Option<Arc<OwnedChunk>> {
+    match reader.next_blocks_chunk().await {
+        Ok(Some(reader_chunk)) => {
+            // Convert borrowed blocks to owned, wrap in Arc for sharing.
+            let owned = convert_chunk(&reader_chunk, total_gates, block_idx);
+            Some(Arc::new(owned))
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::error!(%e, "circuit read error mid-pass — finishing early");
+            None
+        }
+    }
+}
 
 /// Convert a borrowed chunk of blocks from the circuit reader into an owned
 /// [`OwnedChunk`] suitable for sharing across workers via [`Arc`].
