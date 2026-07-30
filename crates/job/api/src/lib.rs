@@ -34,6 +34,7 @@
 
 mod handle;
 mod hint;
+mod priority;
 mod submission;
 
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -54,6 +55,7 @@ use mosaic_cac_types::{
 };
 use mosaic_net_svc_api::PeerId;
 use mosaic_vs3::Index;
+pub use priority::Priority;
 pub use submission::{ActionCompletion, JobActions, JobBatch, JobCompletion};
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -209,6 +211,11 @@ pub struct PendingCircuitJob {
     pub peer_id: PeerId,
     /// The circuit action to execute.
     pub action: CircuitAction,
+    /// Scheduling urgency, derived from the SM action. The coordinator
+    /// orders its backlog by this before selecting a pass batch, so a
+    /// Critical withdrawal-dispute evaluation does not queue behind
+    /// setup work.
+    pub priority: Priority,
 }
 
 // ════════════════════════════════════════════════════════════════════════════

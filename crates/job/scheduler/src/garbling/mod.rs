@@ -493,6 +493,7 @@ async fn coordinator_loop(
                             job: PendingCircuitJob {
                                 peer_id: job.peer_id,
                                 action: job.action.clone(),
+                                priority: job.priority,
                             },
                             session,
                         });
@@ -917,6 +918,11 @@ async fn collect_batch(
         }
     }
 
+    // Most urgent first (`Critical = 0` sorts lowest). The sort is stable,
+    // so FIFO order — including retries-at-the-back — is preserved within
+    // each priority class.
+    backlog.make_contiguous().sort_by_key(|job| job.priority);
+
     let take = backlog.len().min(max_concurrent);
     Some(backlog.drain(..take).collect())
 }
@@ -1251,7 +1257,9 @@ mod tests {
         GarblingSeed, Seed,
         state_machine::garbler::{ActionId, ActionResult},
     };
-    use mosaic_job_api::{ActionCompletion, CircuitAction, HandlerOutcome, PendingCircuitJob};
+    use mosaic_job_api::{
+        ActionCompletion, CircuitAction, HandlerOutcome, PendingCircuitJob, Priority,
+    };
 
     use super::*;
 
@@ -1287,11 +1295,16 @@ mod tests {
     }
 
     fn sample_job(peer_byte: u8) -> PendingCircuitJob {
+        sample_job_with_priority(peer_byte, Priority::Normal)
+    }
+
+    fn sample_job_with_priority(peer_byte: u8, priority: Priority) -> PendingCircuitJob {
         PendingCircuitJob {
             peer_id: PeerId::from([peer_byte; 32]),
             action: CircuitAction::GarblerTransfer {
                 seed: GarblingSeed::from([peer_byte; 32]),
             },
+            priority,
         }
     }
 
@@ -1510,6 +1523,7 @@ mod tests {
                     action: CircuitAction::GarblerTransfer {
                         seed: GarblingSeed::from([5; 32]),
                     },
+                    priority: Priority::Normal,
                 }],
             )]);
             let mut pending_retry = Vec::new();
@@ -1775,6 +1789,31 @@ mod tests {
                     .await
                     .is_none()
             );
+        });
+    }
+
+    #[test]
+    fn collect_batch_selects_by_priority_then_fifo() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            // Arrival order: two Normals, a Critical, a High, a Normal.
+            let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::from(vec![
+                sample_job_with_priority(1, Priority::Normal),
+                sample_job_with_priority(2, Priority::Normal),
+                sample_job_with_priority(3, Priority::Critical),
+                sample_job_with_priority(4, Priority::High),
+                sample_job_with_priority(5, Priority::Normal),
+            ]);
+
+            let batch = collect_batch(&mut backlog, &rx, 3, Duration::from_millis(10))
+                .await
+                .expect("batch");
+
+            // Critical first, then High, then the oldest Normal — a
+            // withdrawal-dispute evaluation must not queue behind setup.
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [3, 4, 1]);
+            // Remaining Normals keep FIFO order.
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [2, 5]);
         });
     }
 
