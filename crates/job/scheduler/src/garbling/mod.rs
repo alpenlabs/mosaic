@@ -853,9 +853,9 @@ fn session_class(action: &CircuitAction) -> SessionClass {
 ///
 /// Blocks until at least one job is available, then keeps the batch window
 /// (`batch_timeout`) open for further arrivals, starting the pass early the
-/// moment `max_concurrent` jobs are on hand. Selection is the backlog
-/// front — plain FIFO, where position is set by when a job entered the
-/// backlog (fresh arrival or requeue).
+/// moment `max_concurrent` jobs of the eventual lead session class are on
+/// hand. Selection is the backlog front — plain FIFO, where position is set
+/// by when a job entered the backlog (fresh arrival or requeue).
 ///
 /// Returns `None` when the submission channel is closed and the backlog is
 /// empty: shutdown.
@@ -873,7 +873,25 @@ async fn collect_batch(
     }
 
     let deadline = monoio::time::Instant::now() + batch_timeout;
-    while backlog.len() < max_concurrent {
+    loop {
+        // Priority sorting below determines which class leads the pass.
+        // Only that class can fill this batch: counting other-class jobs
+        // would end the window early and re-fragment passes.
+        let lead_class = session_class(
+            &backlog
+                .iter()
+                .min_by_key(|job| job.priority)
+                .expect("backlog non-empty after blocking recv")
+                .action,
+        );
+        let lead_count = backlog
+            .iter()
+            .filter(|job| session_class(&job.action) == lead_class)
+            .count();
+        if lead_count >= max_concurrent {
+            break;
+        }
+
         let remaining = deadline.saturating_duration_since(monoio::time::Instant::now());
         if remaining.is_zero() {
             break;
@@ -1890,6 +1908,26 @@ mod tests {
                 started.elapsed() < Duration::from_secs(5),
                 "full batch waited out the window"
             );
+        });
+    }
+
+    #[test]
+    fn collect_batch_waits_for_a_full_lead_class_batch() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::from([sample_job(1)]);
+
+            // The compute arrival fills the total capacity but cannot join
+            // the I/O-led pass. Intake must continue to the second I/O job.
+            tx.send(sample_compute_job(2)).await.expect("send compute");
+            tx.send(sample_job(3)).await.expect("send I/O");
+
+            let batch = collect_batch(&mut backlog, &rx, 2, Duration::from_secs(60))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1, 3]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [2]);
         });
     }
 

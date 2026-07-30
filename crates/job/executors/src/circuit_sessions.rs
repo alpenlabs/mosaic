@@ -16,7 +16,7 @@
 //! different session types per role into a single `type Session` for the
 //! `ExecuteGarblerJob` / `ExecuteEvaluatorJob` traits.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use ark_ff::PrimeField;
 use blake3::Hasher;
@@ -30,6 +30,7 @@ use ckt_gobble::{
 };
 use cynosure::site_d::{mpsc_light, oneshot};
 use futures::{
+    FutureExt,
     future::{Either, select},
     pin_mut,
 };
@@ -414,10 +415,89 @@ struct TransferOutbox {
 /// session, noise next to its ~1 GB garbling instance.
 const TRANSFER_OUTBOX_DEPTH: usize = 8;
 
+/// Maximum time a single ciphertext write may wait for the peer to return
+/// its buffer. A stalled-but-live peer can otherwise hold the QUIC flow-control
+/// window closed indefinitely, leaking the drain thread and bulk stream.
+const TRANSFER_CHUNK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How long `finish` waits for the drain to flush the outbox tail and FIN.
 /// Under the coordinator's per-worker finish window; on expiry the table
 /// retries (idempotent — a receipted table drops as `AlreadyComplete`).
-const DRAIN_FINISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DRAIN_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Stream surface used by the outbox drain.
+///
+/// Keeping the drain generic makes its timeout and teardown paths testable
+/// without constructing a live net service.
+trait OutboxStream: Send + 'static {
+    fn write(
+        &mut self,
+        buf: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + '_>>;
+
+    fn reset(self, code: u32) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+}
+
+impl OutboxStream for BulkSender {
+    fn write(
+        &mut self,
+        buf: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + '_>> {
+        Box::pin(
+            BulkSender::write(self, buf)
+                .map(|result| result.map_err(|error| format!("stream write: {error:?}"))),
+        )
+    }
+
+    fn reset(self, code: u32) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(BulkSender::reset(self, code))
+    }
+}
+
+async fn write_outbox_chunk<S: OutboxStream>(
+    stream: &mut S,
+    payload: Vec<u8>,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let write = stream.write(payload);
+    let delay = futures_timer::Delay::new(timeout)
+        .map(move |_| Err(format!("stream write timed out after {timeout:?}")));
+    pin_mut!(write);
+    pin_mut!(delay);
+    match select(write, delay).await {
+        Either::Left((result, _)) | Either::Right((result, _)) => result,
+    }
+}
+
+async fn drain_transfer_outbox<S: OutboxStream>(
+    mut stream: S,
+    mut ct_rx: mpsc_light::Receiver<Vec<u8>>,
+    recycle_tx: mpsc_light::Sender<Vec<u8>>,
+    write_timeout: Duration,
+) -> Result<(), String> {
+    while let Some(buf) = ct_rx.recv().await {
+        match write_outbox_chunk(&mut stream, buf, write_timeout).await {
+            // Hand the spent buffer back for reuse; if the recycle lane is
+            // full or its receiver is gone, just drop it.
+            Ok(spent) => {
+                let _ = recycle_tx.try_send(spent);
+            }
+            Err(error) => {
+                // A plain drop sends FIN, which makes a truncated table look
+                // like a clean short transfer. Reset explicitly so the peer
+                // observes failure and so a timed-out write cannot survive
+                // into a retried transfer indefinitely.
+                stream.reset(0).await;
+                return Err(error);
+            }
+        }
+    }
+
+    // Producer gone (finish or eviction) and queue drained. Dropping sends
+    // FIN after the final successful write.
+    drop(stream);
+    Ok(())
+}
 
 impl std::fmt::Debug for TransferSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -472,32 +552,18 @@ impl TransferSession {
     /// most `max_concurrent` drains alive. Precedent: the circuit-header
     /// read in `expected_table_ciphertext_bytes` uses the same pattern.
     fn spawn_drain(&mut self) {
-        let mut stream = self
+        let stream = self
             .stream
             .take()
             .expect("spawn_drain called once, before any stream take");
-        let (ct_tx, mut ct_rx) = mpsc_light::bounded::<Vec<u8>>(TRANSFER_OUTBOX_DEPTH);
+        let (ct_tx, ct_rx) = mpsc_light::bounded::<Vec<u8>>(TRANSFER_OUTBOX_DEPTH);
         let (recycle_tx, recycle_rx) = mpsc_light::bounded::<Vec<u8>>(TRANSFER_OUTBOX_DEPTH);
         let (done_tx, done_rx) = oneshot::oneshot();
 
         let drain = async move {
-            let result = loop {
-                match ct_rx.recv().await {
-                    Some(buf) => match stream.write(buf).await {
-                        // Hand the spent buffer back for reuse; if the
-                        // recycle lane is full just drop it.
-                        Ok(spent) => {
-                            let _ = recycle_tx.try_send(spent);
-                        }
-                        Err(e) => break Err(format!("stream write: {e:?}")),
-                    },
-                    // Producer gone (finish or eviction) and queue drained.
-                    None => break Ok(()),
-                }
-            };
-            // Dropping the stream sends FIN after the final write; on a
-            // write error the receiver sees a short table and re-requests.
-            drop(stream);
+            let result =
+                drain_transfer_outbox(stream, ct_rx, recycle_tx, TRANSFER_CHUNK_WRITE_TIMEOUT)
+                    .await;
             let _ = done_tx.send(result);
             // Dropping ct_rx flips the channel closed: a producer still
             // garbling gets a send error and evicts through the normal
@@ -856,5 +922,114 @@ impl CircuitSession for EvaluatorCircuitSession {
             Self::Commitment(s) => s.finish(),
             Self::Evaluation(s) => s.finish(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::*;
+
+    struct ProbeStream {
+        writes: Arc<Mutex<Vec<Vec<u8>>>>,
+        reset: Arc<AtomicBool>,
+        stall: bool,
+    }
+
+    impl OutboxStream for ProbeStream {
+        fn write(
+            &mut self,
+            mut buf: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + '_>> {
+            if self.stall {
+                Box::pin(futures::future::pending())
+            } else {
+                self.writes.lock().expect("writes lock").push(buf.clone());
+                buf.clear();
+                Box::pin(async move { Ok(buf) })
+            }
+        }
+
+        fn reset(self, _code: u32) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(async move {
+                self.reset.store(true, Ordering::SeqCst);
+            })
+        }
+    }
+
+    #[test]
+    fn outbox_drain_flushes_and_recycles_buffers() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let reset = Arc::new(AtomicBool::new(false));
+        let (ct_tx, ct_rx) = mpsc_light::bounded(2);
+        let (recycle_tx, mut recycle_rx) = mpsc_light::bounded(2);
+        ct_tx.try_send(vec![1, 2]).expect("enqueue first buffer");
+        ct_tx.try_send(vec![3]).expect("enqueue second buffer");
+        drop(ct_tx);
+
+        let stream = ProbeStream {
+            writes: Arc::clone(&writes),
+            reset: Arc::clone(&reset),
+            stall: false,
+        };
+        let result = std::thread::spawn(move || {
+            futures::executor::block_on(drain_transfer_outbox(
+                stream,
+                ct_rx,
+                recycle_tx,
+                Duration::from_secs(1),
+            ))
+        })
+        .join()
+        .expect("drain thread");
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            *writes.lock().expect("writes lock"),
+            vec![vec![1, 2], vec![3]]
+        );
+        assert!(!reset.load(Ordering::SeqCst));
+        assert_eq!(recycle_rx.try_recv().expect("first recycled buffer"), []);
+        assert_eq!(recycle_rx.try_recv().expect("second recycled buffer"), []);
+    }
+
+    #[test]
+    fn outbox_drain_times_out_resets_and_closes_the_queue() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let reset = Arc::new(AtomicBool::new(false));
+        let (ct_tx, ct_rx) = mpsc_light::bounded(1);
+        let (recycle_tx, _recycle_rx) = mpsc_light::bounded(1);
+        ct_tx.try_send(vec![1]).expect("enqueue buffer");
+
+        let stream = ProbeStream {
+            writes,
+            reset: Arc::clone(&reset),
+            stall: true,
+        };
+        let result = std::thread::spawn(move || {
+            futures::executor::block_on(drain_transfer_outbox(
+                stream,
+                ct_rx,
+                recycle_tx,
+                Duration::from_millis(10),
+            ))
+        })
+        .join()
+        .expect("drain thread");
+
+        assert!(
+            result
+                .expect_err("stalled write must fail")
+                .contains("timed out")
+        );
+        assert!(reset.load(Ordering::SeqCst));
+        assert!(
+            futures::executor::block_on(ct_tx.send(vec![2])).is_err(),
+            "producer must observe the dead drain"
+        );
     }
 }
