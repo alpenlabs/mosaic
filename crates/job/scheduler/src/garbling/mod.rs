@@ -29,10 +29,12 @@
 //!
 //! # Pass Lifecycle
 //!
-//! 1. Collect [`PendingCircuitJob`]s from the submission channel and retry list.
+//! 1. Collect [`PendingCircuitJob`]s from the front of a FIFO backlog fed by the submission
+//!    channel. Jobs that bounce (transient failure, eviction, finish retry) re-enter the backlog at
+//!    the *back*, behind everything already waiting — retries never pre-empt fresh work.
 //! 2. Create live [`CircuitSession`]s via the [`SessionFactory`]. Jobs that fail with
-//!    [`CircuitError::StorageUnavailable`] stay on the retry list — **no action is ever silently
-//!    dropped**.
+//!    [`CircuitError::StorageUnavailable`] bounce back to the backlog — **no action is ever
+//!    silently dropped**.
 //! 3. Distribute sessions across worker threads (round-robin, spread-first).
 //! 4. Read the circuit file once via [`ReaderV5c`], converting blocks into [`Arc<OwnedChunk>`] and
 //!    broadcasting to all workers.
@@ -49,7 +51,7 @@
 //! [`Arc<OwnedChunk>`]: mosaic_job_api::OwnedChunk
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::Arc,
@@ -441,49 +443,37 @@ async fn coordinator_loop(
             "garbling coordinator started"
         );
 
-        // Jobs whose session creation failed with StorageUnavailable or that were
-        // evicted mid-pass. They are retried on the next pass.
-        let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
+        // FIFO backlog of jobs awaiting a pass slot. Fresh submissions are
+        // appended as they are drained from the channel; jobs that bounce
+        // (transient session-creation failure, mid-pass eviction, finish
+        // retry) are re-appended at requeue time — behind everything that
+        // was already waiting. Retries therefore go to the back of the
+        // queue rather than pre-empting fresh work, which previously let a
+        // full retry set starve new submissions indefinitely.
+        let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::new();
 
         loop {
             // ── 1. Collect a batch of jobs ───────────────────────────────
-            let mut jobs: Vec<PendingCircuitJob> = Vec::with_capacity(config.max_concurrent);
-
-            // Drain retry list first (bounded by max_concurrent).
-            let retry_take = pending_retry.len().min(config.max_concurrent);
-            jobs.extend(pending_retry.drain(..retry_take));
-
-            // If no retries, block until at least one new job arrives.
-            if jobs.is_empty() {
-                match submit_rx.recv().await {
-                    Ok(job) => jobs.push(job),
-                    Err(_) => break, // Channel closed — shut down.
-                }
-            }
-
-            // Try to collect more jobs up to max_concurrent, with a timeout.
-            let deadline = monoio::time::Instant::now() + config.batch_timeout;
-            while jobs.len() < config.max_concurrent {
-                let remaining = deadline.saturating_duration_since(monoio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                match monoio::time::timeout(remaining, submit_rx.recv()).await {
-                    Ok(Ok(job)) => jobs.push(job),
-                    Ok(Err(_)) => break, // Channel closed.
-                    Err(_) => break,     // Timeout — start pass with what we have.
-                }
-            }
-
-            if jobs.is_empty() {
-                continue;
-            }
+            let Some(jobs) = collect_batch(
+                &mut backlog,
+                &submit_rx,
+                config.max_concurrent,
+                config.batch_timeout,
+            )
+            .await
+            else {
+                break; // Channel closed and backlog empty — shut down.
+            };
 
             tracing::debug!(
                 jobs = jobs.len(),
-                retry_backlog = pending_retry.len(),
+                backlog = backlog.len(),
                 "garbling coordinator collected pass batch"
             );
+
+            // Jobs that bounce this cycle; re-enter the backlog at the
+            // back via requeue_bounced below.
+            let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
 
             // ── 2. Create sessions from collected jobs ───────────────────
             let mut sessions: Vec<ActiveSession> = Vec::with_capacity(jobs.len());
@@ -548,11 +538,13 @@ async fn coordinator_loop(
 
             if sessions.is_empty() {
                 if !pending_retry.is_empty() {
-                    // All jobs failed this round — sleep before retrying.
+                    // All jobs failed this round — requeue and sleep so
+                    // instant create-failures don't hot-loop.
                     tracing::debug!(
                         pending = pending_retry.len(),
                         "no sessions created — sleeping before retry"
                     );
+                    requeue_bounced(&mut backlog, &submit_rx, &mut pending_retry);
                     monoio::time::sleep(Duration::from_millis(500)).await;
                 }
                 continue;
@@ -573,6 +565,8 @@ async fn coordinator_loop(
                 sessions = session_count
             ))
             .await;
+
+            requeue_bounced(&mut backlog, &submit_rx, &mut pending_retry);
         }
 
         // ── Shutdown workers ─────────────────────────────────────────────
@@ -580,10 +574,10 @@ async fn coordinator_loop(
             worker.shutdown();
         }
 
-        if !pending_retry.is_empty() {
+        if !backlog.is_empty() {
             tracing::warn!(
-                count = pending_retry.len(),
-                "garbling coordinator shutting down with pending retry jobs"
+                count = backlog.len(),
+                "garbling coordinator shutting down with jobs still in the backlog"
             );
         }
 
@@ -874,6 +868,68 @@ async fn collect_finish_reports_with_timeout(
             }
         }
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Batch intake
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Collect the next pass batch from the backlog and the submission channel.
+///
+/// Blocks until at least one job is available, then keeps the batch window
+/// (`batch_timeout`) open for further arrivals, starting the pass early the
+/// moment `max_concurrent` jobs are on hand. Selection is the backlog
+/// front — plain FIFO, where position is set by when a job entered the
+/// backlog (fresh arrival or requeue).
+///
+/// Returns `None` when the submission channel is closed and the backlog is
+/// empty: shutdown.
+async fn collect_batch(
+    backlog: &mut VecDeque<PendingCircuitJob>,
+    submit_rx: &kanal::AsyncReceiver<PendingCircuitJob>,
+    max_concurrent: usize,
+    batch_timeout: Duration,
+) -> Option<Vec<PendingCircuitJob>> {
+    if backlog.is_empty() {
+        match submit_rx.recv().await {
+            Ok(job) => backlog.push_back(job),
+            Err(_) => return None,
+        }
+    }
+
+    let deadline = monoio::time::Instant::now() + batch_timeout;
+    while backlog.len() < max_concurrent {
+        let remaining = deadline.saturating_duration_since(monoio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match monoio::time::timeout(remaining, submit_rx.recv()).await {
+            Ok(Ok(job)) => backlog.push_back(job),
+            Ok(Err(_)) => break, // Channel closed — run what we have.
+            Err(_) => break,     // Window elapsed — start the pass.
+        }
+    }
+
+    let take = backlog.len().min(max_concurrent);
+    Some(backlog.drain(..take).collect())
+}
+
+/// Re-enter bounced jobs (transient create failures, evictions, finish
+/// retries) at the back of the backlog.
+///
+/// The channel is drained first: anything submitted while the pass ran
+/// arrived *before* these jobs bounced, so it belongs ahead of them.
+/// Without the drain, requeues would slot in ahead of work that had been
+/// waiting in the channel for the whole pass.
+fn requeue_bounced(
+    backlog: &mut VecDeque<PendingCircuitJob>,
+    submit_rx: &kanal::AsyncReceiver<PendingCircuitJob>,
+    bounced: &mut Vec<PendingCircuitJob>,
+) {
+    while let Ok(Some(job)) = submit_rx.try_recv() {
+        backlog.push_back(job);
+    }
+    backlog.extend(bounced.drain(..));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1657,6 +1713,84 @@ mod tests {
                 "chunk took {elapsed:?} for two stalled sessions at a \
                  {CHUNK_TIMEOUT:?} timeout — timeouts are running one after another"
             );
+        });
+    }
+
+    // ── Batch intake ─────────────────────────────────────────────────
+
+    fn job_peer(job: &PendingCircuitJob) -> u8 {
+        job.peer_id.as_bytes()[0]
+    }
+
+    #[test]
+    fn collect_batch_caps_at_max_concurrent_and_leaves_rest() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog: VecDeque<PendingCircuitJob> = (0u8..5).map(sample_job).collect();
+
+            let batch = collect_batch(&mut backlog, &rx, 3, Duration::from_millis(10))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [0, 1, 2]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [3, 4]);
+        });
+    }
+
+    #[test]
+    fn collect_batch_full_backlog_skips_the_window() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog: VecDeque<PendingCircuitJob> = (0u8..4).map(sample_job).collect();
+
+            let started = std::time::Instant::now();
+            // A pathologically long window must not delay a full batch.
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_secs(60))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.len(), 4);
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "full batch waited out the window"
+            );
+        });
+    }
+
+    #[test]
+    fn collect_batch_returns_none_on_closed_channel_with_empty_backlog() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            drop(tx);
+            let mut backlog = VecDeque::new();
+            assert!(
+                collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                    .await
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn requeue_bounced_lands_behind_channel_arrivals() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::new();
+
+            // Fresh job 1 arrived (in the channel) while the pass ran;
+            // job 9 bounced out of that pass.
+            tx.send(sample_job(1)).await.expect("send");
+            let mut bounced = vec![sample_job(9)];
+            requeue_bounced(&mut backlog, &rx, &mut bounced);
+
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [1, 9]);
+            assert!(bounced.is_empty());
+
+            // And the next batch serves the fresh job first.
+            let batch = collect_batch(&mut backlog, &rx, 1, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1]);
         });
     }
 
