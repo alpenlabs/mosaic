@@ -49,6 +49,18 @@ pub struct StreamReset {
     pub done_tx: AsyncSender<()>,
 }
 
+/// High-priority request to stop receiving on a stream.
+///
+/// This complements [`StreamReset`]: local reset terminates both halves of a
+/// bidirectional stream even if the peer never closes its send direction.
+#[doc(hidden)]
+pub struct StreamStop {
+    /// Application error code sent to the peer.
+    pub code: u32,
+    /// Completion signal for the caller that requested the stop.
+    pub done_tx: AsyncSender<()>,
+}
+
 /// Reason a stream was closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamClosed {
@@ -116,6 +128,8 @@ pub struct Stream {
     request_tx: AsyncSender<StreamRequest>,
     /// High-priority reset requests that can preempt an active write.
     reset_tx: AsyncSender<StreamReset>,
+    /// High-priority stop request for the receive task, if this stream has one.
+    stop_tx: Option<AsyncSender<StreamStop>>,
     /// Buffers returned after writes complete.
     buf_return_rx: AsyncReceiver<PayloadBuf>,
 
@@ -137,6 +151,7 @@ impl Stream {
         payload_rx: AsyncReceiver<PayloadBuf>,
         request_tx: AsyncSender<StreamRequest>,
         reset_tx: AsyncSender<StreamReset>,
+        stop_tx: AsyncSender<StreamStop>,
         buf_return_rx: AsyncReceiver<PayloadBuf>,
         close_rx: AsyncReceiver<StreamClosed>,
     ) -> Self {
@@ -145,6 +160,7 @@ impl Stream {
             payload_rx,
             request_tx,
             reset_tx,
+            stop_tx: Some(stop_tx),
             buf_return_rx,
             close_rx,
             close_reason: None,
@@ -173,6 +189,7 @@ impl Stream {
             payload_rx,
             request_tx,
             reset_tx,
+            stop_tx: None,
             buf_return_rx,
             close_rx,
             close_reason: None,
@@ -326,17 +343,32 @@ impl Stream {
 
     /// Reset the stream with an error code.
     ///
-    /// This immediately resets the local send direction. The peer will see
-    /// the error code. Consumes the stream and waits until the network service
-    /// has cancelled any active transport write and applied the reset.
+    /// This immediately closes both stream directions. The peer will see the
+    /// error code. Consumes the stream and waits until the network service has
+    /// cancelled active transport I/O and applied the reset and stop.
     pub async fn reset(self, code: u32) {
-        let (done_tx, done_rx) = bounded_async(1);
-        if self
+        let (write_done_tx, write_done_rx) = bounded_async(1);
+        let wait_for_write = self
             .reset_tx
-            .send(StreamReset { code, done_tx })
+            .send(StreamReset {
+                code,
+                done_tx: write_done_tx,
+            })
             .await
-            .is_ok()
-        {
+            .is_ok();
+
+        let mut read_done_rx = None;
+        if let Some(stop_tx) = &self.stop_tx {
+            let (done_tx, done_rx) = bounded_async(1);
+            if stop_tx.send(StreamStop { code, done_tx }).await.is_ok() {
+                read_done_rx = Some(done_rx);
+            }
+        }
+
+        if wait_for_write {
+            let _ = write_done_rx.recv().await;
+        }
+        if let Some(done_rx) = read_done_rx {
             let _ = done_rx.recv().await;
         }
     }

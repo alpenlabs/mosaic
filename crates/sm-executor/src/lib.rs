@@ -1611,11 +1611,13 @@ mod tests {
         let (_close_tx, close_rx) = kanal::bounded_async::<StreamClosed>(1);
 
         let (reset_tx, _reset_rx) = kanal::bounded_async(1);
+        let (stop_tx, _stop_rx) = kanal::bounded_async(1);
         let mut stream = Stream::new(
             peer_id,
             payload_rx,
             request_tx,
             reset_tx,
+            stop_tx,
             buf_return_rx,
             close_rx,
         );

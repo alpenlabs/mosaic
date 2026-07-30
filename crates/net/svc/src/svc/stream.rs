@@ -10,7 +10,7 @@ use quinn::{RecvStream, SendStream};
 use tracing::Instrument;
 
 use crate::{
-    api::{PayloadBuf, Stream, StreamClosed, StreamRequest, StreamReset},
+    api::{PayloadBuf, Stream, StreamClosed, StreamRequest, StreamReset, StreamStop},
     tls::PeerId,
 };
 
@@ -61,6 +61,7 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
     let (payload_tx, payload_rx) = bounded_async(PAYLOAD_CHANNEL_SIZE);
     let (request_tx, request_rx) = bounded_async(REQUEST_CHANNEL_SIZE);
     let (reset_tx, reset_rx) = bounded_async(RESET_CHANNEL_SIZE);
+    let (stop_tx, stop_rx) = bounded_async(RESET_CHANNEL_SIZE);
     let (buf_return_tx, buf_return_rx) = bounded_async(BUF_RETURN_CHANNEL_SIZE);
     let (close_tx, close_rx) = bounded_async(1);
 
@@ -83,7 +84,7 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
         )),
     );
     tokio::spawn(
-        read_task(recv, payload_tx, close_tx, close_state)
+        read_task(recv, payload_tx, stop_rx, close_tx, close_state)
             .instrument(tracing::debug_span!("net_svc.stream_read", peer = %peer)),
     );
 
@@ -92,6 +93,7 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
         payload_rx,
         request_tx,
         reset_tx,
+        stop_tx,
         buf_return_rx,
         close_rx,
     )
@@ -132,6 +134,11 @@ enum WriteOrReset<T> {
     Reset(StreamReset),
 }
 
+enum ReadOrStop<T> {
+    Read(T),
+    Stop(StreamStop),
+}
+
 /// Wait for a transport write while allowing a reset to cancel it.
 ///
 /// Dropping the write future releases its mutable borrow of the QUIC send
@@ -152,6 +159,26 @@ where
             }
         }
         result = &mut write => WriteOrReset::Write(result),
+    }
+}
+
+/// Wait for receive-side work while allowing local reset to stop it.
+async fn read_or_stop<F, T>(read: F, stop_rx: &AsyncReceiver<StreamStop>) -> ReadOrStop<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(read);
+    tokio::select! {
+        biased;
+        stop = stop_rx.recv() => {
+            match stop {
+                Ok(stop) => ReadOrStop::Stop(stop),
+                // Graceful Stream drop must not discard data already read
+                // from the transport.
+                Err(_) => ReadOrStop::Read(read.await),
+            }
+        }
+        result = &mut read => ReadOrStop::Read(result),
     }
 }
 
@@ -192,6 +219,14 @@ fn apply_reset(
     // This is the final action before the write task returns. The active
     // write future has already been dropped, and the transport reset applied.
     let _ = reset.done_tx.try_send(());
+}
+
+/// Stop the QUIC receive stream and acknowledge read-task termination.
+fn apply_stop(recv: &mut RecvStream, stop: StreamStop) {
+    let _ = recv.stop(stop.code.into());
+    // This is the final action before the read task returns. Any active read
+    // or payload-channel send future has already been dropped.
+    let _ = stop.done_tx.try_send(());
 }
 
 /// Write task: handles StreamRequest -> QUIC stream.
@@ -313,6 +348,7 @@ async fn write_task(
 async fn read_task(
     mut recv: RecvStream,
     payload_tx: AsyncSender<PayloadBuf>,
+    stop_rx: AsyncReceiver<StreamStop>,
     close_tx: AsyncSender<StreamClosed>,
     close_state: Arc<CloseState>,
 ) {
@@ -326,10 +362,17 @@ async fn read_task(
         match mosaic_net_wire::decode_frame(&buf, &limits) {
             Ok((payload, consumed)) => {
                 // Send payload to caller
-                if payload_tx.send(payload).await.is_err() {
-                    // Receiver dropped - stop reading
-                    tracing::trace!("payload channel closed, stopping read task");
-                    break;
+                match read_or_stop(payload_tx.send(payload), &stop_rx).await {
+                    ReadOrStop::Read(Ok(())) => {}
+                    ReadOrStop::Read(Err(_)) => {
+                        // Receiver dropped - stop reading
+                        tracing::trace!("payload channel closed, stopping read task");
+                        break;
+                    }
+                    ReadOrStop::Stop(stop) => {
+                        apply_stop(&mut recv, stop);
+                        break;
+                    }
                 }
 
                 // Remove consumed bytes from buffer
@@ -356,11 +399,15 @@ async fn read_task(
         }
 
         // Read more data from QUIC stream
-        match recv.read(&mut read_buf).await {
-            Ok(Some(n)) => {
+        match read_or_stop(recv.read(&mut read_buf), &stop_rx).await {
+            ReadOrStop::Stop(stop) => {
+                apply_stop(&mut recv, stop);
+                break;
+            }
+            ReadOrStop::Read(Ok(Some(n))) => {
                 buf.extend_from_slice(&read_buf[..n]);
             }
-            Ok(None) => {
+            ReadOrStop::Read(Ok(None)) => {
                 // Stream finished (FIN received)
                 tracing::trace!("peer finished stream");
 
@@ -368,7 +415,13 @@ async fn read_task(
                 while !buf.is_empty() {
                     match mosaic_net_wire::decode_frame(&buf, &limits) {
                         Ok((payload, consumed)) => {
-                            let _ = payload_tx.send(payload).await;
+                            match read_or_stop(payload_tx.send(payload), &stop_rx).await {
+                                ReadOrStop::Read(_) => {}
+                                ReadOrStop::Stop(stop) => {
+                                    apply_stop(&mut recv, stop);
+                                    return;
+                                }
+                            }
                             buf.drain(..consumed);
                         }
                         Err(_) => break,
@@ -380,7 +433,7 @@ async fn read_task(
                 }
                 break;
             }
-            Err(e) => {
+            ReadOrStop::Read(Err(e)) => {
                 tracing::debug!(error = %e, "read error");
 
                 let close_reason = match e {
@@ -473,5 +526,31 @@ mod tests {
             .await
             .expect("reset waiter still alive");
         done_rx.recv().await.expect("reset acknowledgement");
+    }
+
+    #[tokio::test]
+    async fn stop_preempts_pending_transport_read() {
+        let (stop_tx, stop_rx) = bounded_async(1);
+        let (done_tx, done_rx) = bounded_async(1);
+
+        let wait_for_read = read_or_stop(pending::<()>(), &stop_rx);
+        let send_stop = async move {
+            stop_tx
+                .send(StreamStop { code: 11, done_tx })
+                .await
+                .expect("stop receiver open");
+        };
+
+        let (outcome, ()) = tokio::join!(wait_for_read, send_stop);
+        let ReadOrStop::Stop(stop) = outcome else {
+            panic!("pending read completed before stop");
+        };
+        assert_eq!(stop.code, 11);
+
+        stop.done_tx
+            .send(())
+            .await
+            .expect("stop waiter still alive");
+        done_rx.recv().await.expect("stop acknowledgement");
     }
 }
