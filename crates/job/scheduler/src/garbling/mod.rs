@@ -1198,6 +1198,28 @@ async fn finish_sessions(
     (completions, retry_jobs)
 }
 
+/// Abort evicted sessions concurrently and return their jobs only after all
+/// asynchronous teardown has completed.
+async fn abort_sessions(worker_id: usize, sessions: Vec<ActiveSession>) -> Vec<PendingCircuitJob> {
+    futures::future::join_all(sessions.into_iter().map(|active| {
+        let ActiveSession {
+            peer_id,
+            job,
+            session,
+        } = active;
+        async move {
+            session.abort().await;
+            tracing::debug!(
+                worker = worker_id,
+                ?peer_id,
+                "evicted session teardown complete"
+            );
+            job
+        }
+    }))
+    .await
+}
+
 /// Main loop for a garbling worker thread.
 ///
 /// Receives sessions and chunk commands from the coordinator's main thread.
@@ -1246,12 +1268,12 @@ async fn worker_loop(
 
                     // Remove evicted sessions (reverse order for stable indices)
                     // and collect their jobs for retry.
-                    let mut evicted_jobs: Vec<PendingCircuitJob> =
+                    let mut evicted_sessions: Vec<ActiveSession> =
                         Vec::with_capacity(evicted_indices.len());
                     for &idx in evicted_indices.iter().rev() {
-                        let evicted = sessions.remove(idx);
-                        evicted_jobs.push(evicted.job);
+                        evicted_sessions.push(sessions.remove(idx));
                     }
+                    let evicted_jobs = abort_sessions(id, evicted_sessions).await;
 
                     let report = WorkerReport::ChunkDone(ChunkReport {
                         evicted_jobs,
@@ -2201,6 +2223,63 @@ mod tests {
                 [2, 4]
             );
             assert_eq!(retry_jobs.iter().map(job_peer).collect::<Vec<_>>(), [3]);
+        });
+    }
+
+    struct AbortProbe {
+        started: Arc<AtomicUsize>,
+        release_rx: kanal::AsyncReceiver<()>,
+    }
+
+    impl CircuitSession for AbortProbe {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn abort(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(async move {
+                self.started.fetch_add(1, Ordering::SeqCst);
+                let _ = self.release_rx.recv().await;
+            })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async { HandlerOutcome::Retry })
+        }
+    }
+
+    #[test]
+    fn evicted_jobs_wait_for_session_teardown_before_retry() {
+        run_monoio(async {
+            let started = Arc::new(AtomicUsize::new(0));
+            let (release_tx, release_rx) = kanal::bounded_async(1);
+            let sessions = vec![active_session(
+                7,
+                Box::new(AbortProbe {
+                    started: Arc::clone(&started),
+                    release_rx,
+                }),
+            )];
+
+            let mut abort = Box::pin(abort_sessions(0, sessions));
+            assert!(
+                monoio::time::timeout(Duration::from_millis(10), abort.as_mut())
+                    .await
+                    .is_err(),
+                "evicted job returned before session teardown completed"
+            );
+            assert_eq!(
+                started.load(Ordering::SeqCst),
+                1,
+                "session abort was not started"
+            );
+
+            release_tx.send(()).await.expect("release abort");
+            let jobs = abort.await;
+            assert_eq!(jobs.iter().map(job_peer).collect::<Vec<_>>(), [7]);
         });
     }
 

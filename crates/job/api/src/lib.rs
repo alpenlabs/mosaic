@@ -148,6 +148,16 @@ pub trait CircuitSession: Send {
         chunk: &Arc<OwnedChunk>,
     ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>>;
 
+    /// Abort a session that was evicted before all chunks were processed.
+    ///
+    /// Implementations with asynchronous teardown must not return until
+    /// their external resources have terminated. The default implementation
+    /// drops the session immediately.
+    fn abort(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        drop(self);
+        Box::pin(async {})
+    }
+
     /// Finalize the session after all blocks have been processed.
     ///
     /// Extracts output labels, computes commitments, translates evaluation

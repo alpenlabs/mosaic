@@ -397,13 +397,13 @@ pub struct TransferSession {
 ///
 /// Teardown uses channel signals in both directions. Clean finish closes
 /// `ct_tx` while retaining `abort_tx`, so the drain flushes the tail and
-/// sends FIN. Eviction or finish timeout drops or sends `abort_tx`, so the
+/// sends FIN. Eviction or finish timeout sends `abort_tx`, so the
 /// drain cancels its current write and resets the stream. Drain death closes
 /// `ct_tx`'s receiver, which surfaces to the producer as a send error
 /// (`ChunkFailed` → normal eviction path).
 struct TransferOutbox {
     /// Cancels the drain and resets its stream. Clean finish retains this
-    /// sender until `done_rx` resolves; eviction drops it to cancel.
+    /// sender until `done_rx` resolves; eviction sends it to cancel.
     ///
     /// Declared first so implicit field drop signals cancellation before
     /// closing the ciphertext lane.
@@ -663,6 +663,41 @@ impl CircuitSession for TransferSession {
             }
             self.heartbeat.maybe_log(self.bytes_sent);
             Ok(())
+        })
+    }
+
+    fn abort(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let Some(outbox) = self.outbox.take() else {
+                // No drain was spawned. Dropping the session below closes
+                // the stream before the worker requeues its job.
+                return;
+            };
+            let TransferOutbox {
+                abort_tx,
+                ct_tx,
+                recycle_rx,
+                done_rx,
+            } = outbox;
+
+            let _ = abort_tx.send(());
+            drop(ct_tx);
+            drop(recycle_rx);
+
+            // Preserve the coordinator's max-concurrent bound: the worker
+            // must not report this job for retry until the old drain has
+            // reset its stream and terminated.
+            match done_rx.await {
+                Ok(Ok(())) => {
+                    tracing::debug!("evicted transfer drain finished before cancellation");
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!(%e, "evicted transfer drain terminated");
+                }
+                Err(_) => {
+                    tracing::warn!("evicted transfer drain dropped without result");
+                }
+            }
         })
     }
 
