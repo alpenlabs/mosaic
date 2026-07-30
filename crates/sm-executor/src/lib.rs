@@ -1610,7 +1610,15 @@ mod tests {
         let (_buf_return_tx, buf_return_rx) = kanal::bounded_async::<Vec<u8>>(1);
         let (_close_tx, close_rx) = kanal::bounded_async::<StreamClosed>(1);
 
-        let mut stream = Stream::new(peer_id, payload_rx, request_tx, buf_return_rx, close_rx);
+        let (reset_tx, _reset_rx) = kanal::bounded_async(1);
+        let mut stream = Stream::new(
+            peer_id,
+            payload_rx,
+            request_tx,
+            reset_tx,
+            buf_return_rx,
+            close_rx,
+        );
         let payload = stream
             .try_read()
             .expect("protocol payload available for test inbound stream");

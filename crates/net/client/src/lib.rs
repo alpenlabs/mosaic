@@ -264,12 +264,8 @@ impl NetClient {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => return Err(SendError::Write(err)),
             Err(TimeoutElapsed) => {
-                // Enqueue a reset and surface the failure. NB: `reset` only
-                // queues a `StreamRequest::Reset` to the per-stream write task;
-                // if that task is itself blocked inside QUIC `write_all`, the
-                // reset won't take effect until the write returns (or QUIC
-                // tears the connection down at idle-timeout). The caller is
-                // unblocked either way — that's the freeze-prevention point.
+                // Reset preempts any blocked QUIC write and waits for the
+                // per-stream write task to apply the transport reset.
                 stream.reset(0).await;
                 return Err(SendError::Write(mosaic_net_svc::StreamClosed::Disconnected));
             }

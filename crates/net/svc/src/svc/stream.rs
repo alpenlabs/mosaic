@@ -10,13 +10,14 @@ use quinn::{RecvStream, SendStream};
 use tracing::Instrument;
 
 use crate::{
-    api::{PayloadBuf, Stream, StreamClosed, StreamRequest},
+    api::{PayloadBuf, Stream, StreamClosed, StreamRequest, StreamReset},
     tls::PeerId,
 };
 
 /// Channel buffer sizes for stream communication.
 const PAYLOAD_CHANNEL_SIZE: usize = 16;
 const REQUEST_CHANNEL_SIZE: usize = 16;
+const RESET_CHANNEL_SIZE: usize = 1;
 const BUF_RETURN_CHANNEL_SIZE: usize = 16;
 const INITIAL_READ_BUFFER_CAPACITY: usize = 4 * 1024;
 
@@ -59,6 +60,7 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
     // Create channels
     let (payload_tx, payload_rx) = bounded_async(PAYLOAD_CHANNEL_SIZE);
     let (request_tx, request_rx) = bounded_async(REQUEST_CHANNEL_SIZE);
+    let (reset_tx, reset_rx) = bounded_async(RESET_CHANNEL_SIZE);
     let (buf_return_tx, buf_return_rx) = bounded_async(BUF_RETURN_CHANNEL_SIZE);
     let (close_tx, close_rx) = bounded_async(1);
 
@@ -70,6 +72,7 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
         write_task(
             send,
             request_rx,
+            reset_rx,
             buf_return_tx,
             close_tx.clone(),
             close_state.clone(),
@@ -84,7 +87,14 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
             .instrument(tracing::debug_span!("net_svc.stream_read", peer = %peer)),
     );
 
-    Stream::new(peer, payload_rx, request_tx, buf_return_rx, close_rx)
+    Stream::new(
+        peer,
+        payload_rx,
+        request_tx,
+        reset_tx,
+        buf_return_rx,
+        close_rx,
+    )
 }
 
 /// Create a write-only stream handle for a protocol response path.
@@ -93,30 +103,86 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
 /// send side remains relevant for acknowledgment/reset handling.
 pub fn create_write_only_stream(peer: PeerId, send: SendStream) -> Stream {
     let (request_tx, request_rx) = bounded_async(REQUEST_CHANNEL_SIZE);
+    let (reset_tx, reset_rx) = bounded_async(RESET_CHANNEL_SIZE);
     let (buf_return_tx, buf_return_rx) = bounded_async(BUF_RETURN_CHANNEL_SIZE);
     let (close_tx, close_rx) = bounded_async(1);
 
     let close_state = Arc::new(CloseState::new());
 
     tokio::spawn(
-        write_task(send, request_rx, buf_return_tx, close_tx, close_state).instrument(
-            tracing::debug_span!(
-                "net_svc.stream_write_only",
-                peer = %peer
-            ),
-        ),
+        write_task(
+            send,
+            request_rx,
+            reset_rx,
+            buf_return_tx,
+            close_tx,
+            close_state,
+        )
+        .instrument(tracing::debug_span!(
+            "net_svc.stream_write_only",
+            peer = %peer
+        )),
     );
 
-    Stream::new_write_only(peer, request_tx, buf_return_rx, close_rx)
+    Stream::new_write_only(peer, request_tx, reset_tx, buf_return_rx, close_rx)
+}
+
+enum WriteOrReset<T> {
+    Write(T),
+    Reset(StreamReset),
+}
+
+/// Wait for a transport write while allowing a reset to cancel it.
+///
+/// Dropping the write future releases its mutable borrow of the QUIC send
+/// stream, after which the caller can apply the reset immediately.
+async fn write_or_reset<F, T>(write: F, reset_rx: &AsyncReceiver<StreamReset>) -> WriteOrReset<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(write);
+    tokio::select! {
+        biased;
+        reset = reset_rx.recv() => {
+            match reset {
+                Ok(reset) => WriteOrReset::Reset(reset),
+                // Graceful Stream drop closes both channels. Do not cancel a
+                // write already accepted from the data-plane channel.
+                Err(_) => WriteOrReset::Write(write.await),
+            }
+        }
+        result = &mut write => WriteOrReset::Write(result),
+    }
+}
+
+/// Reset the QUIC send stream and acknowledge write-task termination.
+fn apply_reset(
+    send: &mut SendStream,
+    reset: StreamReset,
+    close_tx: &AsyncSender<StreamClosed>,
+    close_state: &CloseState,
+) {
+    tracing::debug!(code = reset.code, "resetting stream");
+    let _ = send.reset(reset.code.into());
+    // Intentional: local reset does not try to provide a "peer" close reason.
+    // The caller initiated this and the Stream handle is consumed.
+    if close_state.set_if_empty(StreamClosed::Disconnected) {
+        let _ = close_tx.try_send(StreamClosed::Disconnected);
+    }
+    // This is the final action before the write task returns. The active
+    // write future has already been dropped, and the transport reset applied.
+    let _ = reset.done_tx.try_send(());
 }
 
 /// Write task: handles StreamRequest -> QUIC stream.
 ///
 /// Processes write requests, encodes frames with length prefix, and writes to
-/// the QUIC stream. Returns buffers via buf_return_tx after writing.
+/// the QUIC stream. A separate reset channel can preempt a blocked write.
+/// Returns buffers via buf_return_tx after writing.
 async fn write_task(
     mut send: SendStream,
     request_rx: AsyncReceiver<StreamRequest>,
+    reset_rx: AsyncReceiver<StreamReset>,
     buf_return_tx: AsyncSender<PayloadBuf>,
     close_tx: AsyncSender<StreamClosed>,
     close_state: Arc<CloseState>,
@@ -125,7 +191,23 @@ async fn write_task(
     let mut frame_buf = Vec::with_capacity(4 + 64 * 1024);
 
     loop {
-        match request_rx.recv().await {
+        let request = tokio::select! {
+            biased;
+            reset = reset_rx.recv() => {
+                match reset {
+                    Ok(reset) => {
+                        apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
+                        break;
+                    }
+                    // The Stream was dropped normally. Drain any request
+                    // already accepted before finishing the send side.
+                    Err(_) => request_rx.recv().await,
+                }
+            }
+            request = request_rx.recv() => request,
+        };
+
+        match request {
             Ok(request) => {
                 match request {
                     StreamRequest::Write { buf } => {
@@ -145,17 +227,27 @@ async fn write_task(
                             break;
                         }
 
-                        // Write to QUIC stream
-                        if let Err(e) = send.write_all(&frame_buf).await {
-                            tracing::debug!(error = %e, "write error, closing stream");
-                            if close_state.set_if_empty(StreamClosed::Disconnected) {
-                                let _ = close_tx.send(StreamClosed::Disconnected).await;
+                        // Write to QUIC while reset remains independently
+                        // selectable. A reset drops write_all before touching
+                        // the send stream, so flow-control stalls are
+                        // cancelled rather than inherited by a retry.
+                        match write_or_reset(send.write_all(&frame_buf), &reset_rx).await {
+                            WriteOrReset::Write(Ok(())) => {}
+                            WriteOrReset::Write(Err(e)) => {
+                                tracing::debug!(error = %e, "write error, closing stream");
+                                if close_state.set_if_empty(StreamClosed::Disconnected) {
+                                    let _ = close_tx.send(StreamClosed::Disconnected).await;
+                                }
+                                // Return buffer
+                                let mut buf = buf;
+                                buf.clear();
+                                let _ = buf_return_tx.send(buf).await;
+                                break;
                             }
-                            // Return buffer
-                            let mut buf = buf;
-                            buf.clear();
-                            let _ = buf_return_tx.send(buf).await;
-                            break;
+                            WriteOrReset::Reset(reset) => {
+                                apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
+                                break;
+                            }
                         }
 
                         // Return buffer (cleared for reuse)
@@ -168,17 +260,6 @@ async fn write_task(
                         if let Err(e) = send.set_priority(priority) {
                             tracing::trace!(error = %e, "failed to set priority");
                         }
-                    }
-
-                    StreamRequest::Reset(code) => {
-                        tracing::debug!(code = code, "resetting stream");
-                        let _ = send.reset(code.into());
-                        // Intentional: local reset does not try to provide a "peer" close reason.
-                        // The caller initiated this and the Stream handle is consumed.
-                        if close_state.set_if_empty(StreamClosed::Disconnected) {
-                            let _ = close_tx.send(StreamClosed::Disconnected).await;
-                        }
-                        break;
                     }
                 }
             }
@@ -294,5 +375,39 @@ async fn read_task(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn reset_preempts_pending_transport_write() {
+        let (reset_tx, reset_rx) = bounded_async(1);
+        let (done_tx, done_rx) = bounded_async(1);
+
+        let wait_for_write = write_or_reset(pending::<()>(), &reset_rx);
+        let send_reset = async move {
+            reset_tx
+                .send(StreamReset { code: 7, done_tx })
+                .await
+                .expect("reset receiver open");
+        };
+
+        let (outcome, ()) = tokio::join!(wait_for_write, send_reset);
+        let WriteOrReset::Reset(reset) = outcome else {
+            panic!("pending write completed before reset");
+        };
+        assert_eq!(reset.code, 7);
+
+        reset
+            .done_tx
+            .send(())
+            .await
+            .expect("reset waiter still alive");
+        done_rx.recv().await.expect("reset acknowledgement");
     }
 }
