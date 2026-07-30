@@ -60,8 +60,8 @@ use std::{
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use mosaic_job_api::{
-    CircuitError, CircuitSession, HandlerOutcome, JobCompletion, OwnedBlock, OwnedChunk,
-    PendingCircuitJob, SessionFactory,
+    CircuitAction, CircuitError, CircuitSession, HandlerOutcome, JobCompletion, OwnedBlock,
+    OwnedChunk, PendingCircuitJob, SessionFactory,
 };
 use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
@@ -882,6 +882,35 @@ async fn collect_finish_reports_with_timeout(
 // Batch intake
 // ════════════════════════════════════════════════════════════════════════════
 
+/// I/O profile of a circuit action inside a pass.
+///
+/// The pass barrier makes every session in a batch advance at the pace of
+/// the slowest one, so mixing profiles is expensive: a commitment chunk is
+/// a few milliseconds of pure CPU, while a transfer chunk waits on the
+/// peer's receive window (and an evaluation chunk on table-store reads) —
+/// one to two orders of magnitude longer. A compute session trapped in an
+/// I/O pass runs at I/O pace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionClass {
+    /// `process_chunk` never awaits external I/O: garbling commitment
+    /// generation (G3) and verification re-garbling (E3).
+    Compute,
+    /// `process_chunk` blocks on external I/O: table transfer to a peer
+    /// (G8) and table evaluation reading stored ciphertext (E8).
+    Io,
+}
+
+fn session_class(action: &CircuitAction) -> SessionClass {
+    match action {
+        CircuitAction::GarblerCommitment { .. } | CircuitAction::EvaluatorCommitment { .. } => {
+            SessionClass::Compute
+        }
+        CircuitAction::GarblerTransfer { .. } | CircuitAction::EvaluatorEvaluation { .. } => {
+            SessionClass::Io
+        }
+    }
+}
+
 /// Collect the next pass batch from the backlog and the submission channel.
 ///
 /// Blocks until at least one job is available, then keeps the batch window
@@ -923,8 +952,29 @@ async fn collect_batch(
     // each priority class.
     backlog.make_contiguous().sort_by_key(|job| job.priority);
 
-    let take = backlog.len().min(max_concurrent);
-    Some(backlog.drain(..take).collect())
+    // One pass serves one session class. The lead job (most urgent, then
+    // oldest) picks the class; other-class jobs keep their backlog
+    // positions and lead a subsequent pass. This costs an extra circuit
+    // read per class but keeps compute passes at CPU pace instead of the
+    // pace of whichever peer is slowest — and it cannot starve: skipped
+    // jobs only ever move toward the front.
+    let lead_class = session_class(
+        &backlog
+            .front()
+            .expect("backlog non-empty after blocking recv")
+            .action,
+    );
+    let mut batch = Vec::with_capacity(max_concurrent);
+    let mut rest = VecDeque::with_capacity(backlog.len());
+    for job in backlog.drain(..) {
+        if batch.len() < max_concurrent && session_class(&job.action) == lead_class {
+            batch.push(job);
+        } else {
+            rest.push_back(job);
+        }
+    }
+    *backlog = rest;
+    Some(batch)
 }
 
 /// Re-enter bounced jobs (transient create failures, evictions, finish
@@ -1254,7 +1304,7 @@ mod tests {
     };
 
     use mosaic_cac_types::{
-        GarblingSeed, Seed,
+        GarblingSeed, Index, Seed,
         state_machine::garbler::{ActionId, ActionResult},
     };
     use mosaic_job_api::{
@@ -1789,6 +1839,65 @@ mod tests {
                     .await
                     .is_none()
             );
+        });
+    }
+
+    fn sample_compute_job(peer_byte: u8) -> PendingCircuitJob {
+        PendingCircuitJob {
+            peer_id: PeerId::from([peer_byte; 32]),
+            action: CircuitAction::GarblerCommitment {
+                index: Index::new(1).expect("valid index"),
+                seed: GarblingSeed::from([peer_byte; 32]),
+            },
+            priority: Priority::Normal,
+        }
+    }
+
+    #[test]
+    fn collect_batch_serves_one_class_per_pass() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            // Arrival order: transfer, commitment, commitment, transfer.
+            let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::from(vec![
+                sample_job(1),
+                sample_compute_job(2),
+                sample_compute_job(3),
+                sample_job(4),
+            ]);
+
+            // Lead is the transfer at the front — the batch takes only the
+            // I/O-class jobs; compute jobs keep their positions.
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1, 4]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [2, 3]);
+
+            // Next pass leads with the compute class.
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [2, 3]);
+            assert!(backlog.is_empty());
+        });
+    }
+
+    #[test]
+    fn collect_batch_priority_picks_the_lead_class() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            // A Critical transfer behind a Normal commitment: urgency wins
+            // the lead, so the pass is I/O-class.
+            let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::from(vec![
+                sample_compute_job(1),
+                sample_job_with_priority(2, Priority::Critical),
+            ]);
+
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [2]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [1]);
         });
     }
 
