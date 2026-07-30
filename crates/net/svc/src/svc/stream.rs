@@ -155,6 +155,26 @@ where
     }
 }
 
+/// Return a spent payload buffer without allowing a full reclaim channel to
+/// delay reset.
+///
+/// Pipelined callers can fill `buf_return_tx` before they start reclaiming
+/// buffers. Reset must remain selectable at this await point for the same
+/// reason it preempts `write_all`: the caller consumes its receive side while
+/// waiting for reset acknowledgement, so an ordinary blocking send would
+/// deadlock.
+async fn return_buffer_or_reset(
+    mut buf: PayloadBuf,
+    buf_return_tx: &AsyncSender<PayloadBuf>,
+    reset_rx: &AsyncReceiver<StreamReset>,
+) -> Option<StreamReset> {
+    buf.clear();
+    match write_or_reset(buf_return_tx.send(buf), reset_rx).await {
+        WriteOrReset::Write(_) => None,
+        WriteOrReset::Reset(reset) => Some(reset),
+    }
+}
+
 /// Reset the QUIC send stream and acknowledge write-task termination.
 fn apply_reset(
     send: &mut SendStream,
@@ -221,9 +241,11 @@ async fn write_task(
                             }
                             let _ = send.reset(0u32.into());
                             // Return buffer anyway
-                            let mut buf = buf;
-                            buf.clear();
-                            let _ = buf_return_tx.send(buf).await;
+                            if let Some(reset) =
+                                return_buffer_or_reset(buf, &buf_return_tx, &reset_rx).await
+                            {
+                                apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
+                            }
                             break;
                         }
 
@@ -239,9 +261,11 @@ async fn write_task(
                                     let _ = close_tx.send(StreamClosed::Disconnected).await;
                                 }
                                 // Return buffer
-                                let mut buf = buf;
-                                buf.clear();
-                                let _ = buf_return_tx.send(buf).await;
+                                if let Some(reset) =
+                                    return_buffer_or_reset(buf, &buf_return_tx, &reset_rx).await
+                                {
+                                    apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
+                                }
                                 break;
                             }
                             WriteOrReset::Reset(reset) => {
@@ -251,9 +275,12 @@ async fn write_task(
                         }
 
                         // Return buffer (cleared for reuse)
-                        let mut buf = buf;
-                        buf.clear();
-                        let _ = buf_return_tx.send(buf).await;
+                        if let Some(reset) =
+                            return_buffer_or_reset(buf, &buf_return_tx, &reset_rx).await
+                        {
+                            apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
+                            break;
+                        }
                     }
 
                     StreamRequest::SetPriority(priority) => {
@@ -402,6 +429,43 @@ mod tests {
             panic!("pending write completed before reset");
         };
         assert_eq!(reset.code, 7);
+
+        reset
+            .done_tx
+            .send(())
+            .await
+            .expect("reset waiter still alive");
+        done_rx.recv().await.expect("reset acknowledgement");
+    }
+
+    #[tokio::test]
+    async fn reset_preempts_blocked_buffer_return() {
+        let (buf_return_tx, buf_return_rx) = bounded_async(1);
+        buf_return_tx
+            .send(vec![1])
+            .await
+            .expect("fill buffer return channel");
+        let (reset_tx, reset_rx) = bounded_async(1);
+        let (done_tx, done_rx) = bounded_async(1);
+
+        let return_buffer = return_buffer_or_reset(vec![2], &buf_return_tx, &reset_rx);
+        let send_reset = async move {
+            reset_tx
+                .send(StreamReset { code: 9, done_tx })
+                .await
+                .expect("reset receiver open");
+        };
+
+        let (outcome, ()) = tokio::join!(return_buffer, send_reset);
+        let reset = outcome.expect("reset must preempt full buffer return channel");
+        assert_eq!(reset.code, 9);
+        assert_eq!(
+            buf_return_rx
+                .recv()
+                .await
+                .expect("original returned buffer"),
+            vec![1]
+        );
 
         reset
             .done_tx
