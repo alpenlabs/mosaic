@@ -6,9 +6,13 @@
 //! concurrency with the queue's built-in backpressure.
 //!
 //! When a handler signals a transient failure via [`ExecuteResult::Retry`], the
-//! worker sleeps briefly and requeues the job to the back of the queue. This
-//! ensures one unresponsive peer cannot monopolise worker slots — other peers'
-//! jobs get a chance to run between retries.
+//! worker releases the job's concurrency permit, sleeps out the backoff, and
+//! requeues the job to the back of the queue. Releasing the permit *before*
+//! the sleep is what ensures one unresponsive peer cannot monopolise worker
+//! slots. The sleep itself is kept because some handlers fail instantly
+//! (in-memory cache miss, storage row not yet written): requeueing with no
+//! delay would hot-loop pop → fail → requeue whenever the queue holds no
+//! other runnable work.
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -246,11 +250,12 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
             let fault_tx = fault_tx.clone();
             let permit_tx = permit_tx.clone();
 
-            // 3. Spawn local task. The permit is returned when the task completes, regardless of
-            //    whether it succeeded or was requeued for retry.
+            // 3. Spawn local task. The permit is released when execution finishes — on the retry
+            //    path that is *before* the backoff sleep, so a job waiting out its backoff holds no
+            //    slot.
             monoio::spawn(
                 async move {
-                    let _permit = PermitGuard::new(permit_tx);
+                    let permit = PermitGuard::new(permit_tx);
                     tracing::trace!("executing worker job");
                     let result = execute_job(dispatcher.as_ref(), &pool_job).await;
                     match result {
@@ -280,6 +285,10 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
                                 backoff_ms = backoff.as_millis(),
                                 "worker job requested retry"
                             );
+                            // Free the slot for the duration of the backoff;
+                            // the sleep paces instant failures, the early
+                            // release keeps it from costing capacity.
+                            drop(permit);
                             monoio::time::sleep(backoff).await;
                             let hint_key = job.hint_key.clone();
                             queue.requeue(job, hint_key);
@@ -666,6 +675,73 @@ mod tests {
             .build()
             .expect("build monoio runtime")
             .block_on(future);
+    }
+
+    #[test]
+    fn retrying_job_releases_slot_during_backoff() {
+        run_monoio(async {
+            let peer_id = PeerId::from_bytes([7; 32]);
+            let queue = Arc::new(JobQueue::new(false, None));
+            let dispatcher = Arc::new(TestDispatcher);
+            let (completion_tx, completion_rx) = kanal::bounded_async(4);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(4);
+
+            // Concurrency of 1: the retrying job and the completing job
+            // compete for the same slot.
+            let worker = monoio::spawn(worker_loop(
+                0,
+                dispatcher,
+                Arc::clone(&queue),
+                completion_tx,
+                fault_tx,
+                1,
+            ));
+
+            // Job A always requests Retry (TestDispatcher::generate_shares).
+            // attempts=6 puts its next backoff at 100ms * 2^6 = 6.4s, far
+            // beyond this test's assertion window — so job B below can only
+            // complete if the retry path released its permit before sleeping.
+            queue.push(
+                PoolJob {
+                    priority: Priority::Normal,
+                    job: WorkerJob::Garbler {
+                        peer_id,
+                        action: GarblerAction::GenerateShares(
+                            Seed::from([0u8; 32]),
+                            Index::new(1).expect("valid index"),
+                        ),
+                    },
+                    attempts: 6,
+                    hint_key: None,
+                },
+                None,
+            );
+            // Job B completes immediately — if it gets a slot.
+            queue.push(
+                PoolJob {
+                    priority: Priority::Normal,
+                    job: WorkerJob::Garbler {
+                        peer_id,
+                        action: GarblerAction::SendCommitMsgChunk(0),
+                    },
+                    attempts: 0,
+                    hint_key: None,
+                },
+                None,
+            );
+
+            let completion = monoio::time::timeout(Duration::from_secs(2), completion_rx.recv())
+                .await
+                .expect(
+                    "job B did not complete while job A slept out its backoff — \
+                     the retry path is holding its concurrency permit through the sleep",
+                )
+                .expect("completion channel open");
+            drop(completion);
+
+            queue.close();
+            let _ = monoio::time::timeout(Duration::from_secs(2), worker).await;
+        });
     }
 
     #[test]
