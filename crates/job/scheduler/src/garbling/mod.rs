@@ -568,8 +568,8 @@ async fn run_pass(
     let n_workers = workers.len();
 
     // Passes are class-homogeneous (see collect_batch); the lead session
-    // names the class on the pass progress line, since barrier_wait means
-    // "slow peer/store" in an I/O pass but "slow CPU" in a compute pass.
+    // names the class on the pass progress line, since a barrier-gated pass
+    // means "slow peer/store" for I/O but "slow CPU" for compute.
     let class_label = match sessions.first().map(|s| session_class(&s.job.action)) {
         Some(SessionClass::Compute) => "compute",
         Some(SessionClass::Io) => "io",
@@ -648,11 +648,10 @@ async fn run_pass(
 
     // ── Pass-level time attribution ──────────────────────────────────
     // The read is pipelined against the barrier below, so the pass advances
-    // at max(read, barrier) per chunk and the two raw busy totals overlap —
-    // they cannot be read as shares of wall-clock. The meter therefore also
-    // tracks each side's per-chunk *excess* over the other, which is
-    // additive and names the resource that actually set the pace (see
-    // [`PassMeter`]).
+    // at max(read, barrier) per chunk and the per-side busy totals overlap.
+    // The meter therefore also tracks each side's per-chunk *excess* over
+    // the other — the additive numbers that name what actually set the pace
+    // (see [`PassMeter`] for the busy-vs-gated reading).
     let mut meter = PassMeter::new(class_label, session_count);
 
     // ── Read blocks and broadcast to workers (pipelined) ─────────────
@@ -733,12 +732,15 @@ const PASS_PROGRESS_PERIOD: Duration = Duration::from_secs(30);
 /// Pass-level wall-clock attribution across the pipelined read/barrier loop,
 /// logged as `circuit.pass` on the `mosaic_progress` target.
 ///
-/// `disk_read` and `barrier_wait` are each side's raw busy time; under
-/// pipelining they overlap and can sum past 100% of elapsed. `read_gated` /
-/// `barrier_gated` are the per-chunk excess of one side over the other —
-/// additive shares of wall-clock, so whichever dominates names the resource
-/// that set this pass's pace ("our circuit volume is too slow" vs "a session
-/// — and so a peer, or that peer's object store — gates every table").
+/// The two pairs answer different questions. `read_gated` / `barrier_gated`
+/// are *attribution*: each side's per-chunk excess over the other, additive
+/// shares of wall-clock — whichever dominates names what paces the pass
+/// ("our circuit volume is too slow" vs "a session — and so a peer, or that
+/// peer's object store — gates every table"), and its value is the
+/// first-order win from fixing that side. `read_busy` / `barrier_busy` are
+/// *utilization*: each side's raw busy time, overlapped under pipelining
+/// (together they can approach 200% of elapsed) — they say how loaded each
+/// side already is, i.e. the floor you hit after fixing the current gate.
 /// `straggler` names the worker that most often kept the barrier waiting.
 struct PassMeter {
     /// Session class this pass serves (passes are class-homogeneous).
@@ -747,8 +749,8 @@ struct PassMeter {
     started: Instant,
     last_log: Instant,
     bytes_read: u64,
-    disk_read: Duration,
-    barrier_wait: Duration,
+    read_busy: Duration,
+    barrier_busy: Duration,
     read_gated: Duration,
     barrier_gated: Duration,
     /// Cumulative in-order report wait per worker (see
@@ -765,8 +767,8 @@ impl PassMeter {
             started: now,
             last_log: now,
             bytes_read: 0,
-            disk_read: Duration::ZERO,
-            barrier_wait: Duration::ZERO,
+            read_busy: Duration::ZERO,
+            barrier_busy: Duration::ZERO,
             read_gated: Duration::ZERO,
             barrier_gated: Duration::ZERO,
             worker_wait: HashMap::new(),
@@ -776,7 +778,7 @@ impl PassMeter {
     /// The first read has no barrier to hide behind — it gates the pass in
     /// full.
     fn on_initial_read(&mut self, read: Duration) {
-        self.disk_read += read;
+        self.read_busy += read;
         self.read_gated += read;
     }
 
@@ -794,8 +796,8 @@ impl PassMeter {
     /// thread, so CPU spent by one (convert) can inflate the other's
     /// elapsed — noise next to the I/O both sides spend their time in.
     fn on_joined(&mut self, read: Duration, barrier: Duration) {
-        self.disk_read += read;
-        self.barrier_wait += barrier;
+        self.read_busy += read;
+        self.barrier_busy += barrier;
         self.read_gated += read.saturating_sub(barrier);
         self.barrier_gated += barrier.saturating_sub(read);
     }
@@ -828,7 +830,7 @@ impl PassMeter {
             phase = "circuit.pass",
             "circuit.pass {} class={} sessions={} read={:.1}GiB avg={:.1}MB/s elapsed={:.0}s \
              read_gated={:.0}s({:.0}%) barrier_gated={:.0}s({:.0}%) \
-             disk_read={:.0}s({:.0}%) barrier_wait={:.0}s({:.0}%){}",
+             read_busy={:.0}s({:.0}%) barrier_busy={:.0}s({:.0}%){}",
             event,
             self.class,
             self.sessions,
@@ -839,10 +841,10 @@ impl PassMeter {
             pct(self.read_gated),
             self.barrier_gated.as_secs_f64(),
             pct(self.barrier_gated),
-            self.disk_read.as_secs_f64(),
-            pct(self.disk_read),
-            self.barrier_wait.as_secs_f64(),
-            pct(self.barrier_wait),
+            self.read_busy.as_secs_f64(),
+            pct(self.read_busy),
+            self.barrier_busy.as_secs_f64(),
+            pct(self.barrier_busy),
             straggler,
         );
     }
