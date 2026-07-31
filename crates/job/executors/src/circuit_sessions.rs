@@ -393,6 +393,13 @@ pub struct TransferSession {
     /// `outbox_full` (parked because the peer is a full outbox behind).
     /// The wire itself is timed by the drain's [`WireMeter`].
     stages: StageBreakdown,
+    /// Set while an outbox `send` is parked. The worker drops the chunk
+    /// future at that await when the stall-strike budget runs out, so the
+    /// code after the `send` never runs; holding the start time here lets
+    /// [`abort`](CircuitSession::abort) reconcile the parked interval into
+    /// `outbox_full` instead of losing it — without it, the evicted
+    /// transfer's summary would look CPU-bound or idle.
+    send_parked_since: Option<Instant>,
 }
 
 /// Bounded outbox between garbling and the wire, plus the drain task's
@@ -653,6 +660,7 @@ impl TransferSession {
             outbox_depth,
             total_bytes,
             stages: StageBreakdown::default(),
+            send_parked_since: None,
         }
     }
 
@@ -740,14 +748,19 @@ impl CircuitSession for TransferSession {
                     // parks only once the peer has fallen a full outbox behind,
                     // so time here is *sustained* peer-induced backpressure.
                     // The wire itself is timed by the drain's `table.wire`
-                    // meter, which sees every write.
-                    let send_start = Instant::now();
-                    outbox.ct_tx.send(out).await.map_err(|_| {
+                    // meter, which sees every write. The interval is recorded
+                    // before the error check (and reconciled by `abort` on
+                    // future drop) so an eviction keeps its parked time.
+                    self.send_parked_since = Some(Instant::now());
+                    let send_res = outbox.ct_tx.send(out).await;
+                    if let Some(parked) = self.send_parked_since.take() {
+                        self.stages.outbox_full += parked.elapsed();
+                    }
+                    send_res.map_err(|_| {
                         CircuitError::ChunkFailed(
                             "transfer drain closed — peer write failed".to_string(),
                         )
                     })?;
-                    self.stages.outbox_full += send_start.elapsed();
                     self.bytes_sent = self.bytes_sent.saturating_add(n);
 
                     // Reuse a spent buffer when the drain has returned one.
@@ -764,7 +777,12 @@ impl CircuitSession for TransferSession {
 
     fn abort(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         // Eviction is a normal path under the strike budget — emit the final
-        // attribution line for the work that did happen before teardown.
+        // attribution line for the work that did happen before teardown. A
+        // chunk future dropped mid-`send` never recorded its parked interval;
+        // reconcile it first so the stall shows up as outbox_full.
+        if let Some(parked) = self.send_parked_since.take() {
+            self.stages.outbox_full += parked.elapsed();
+        }
         self.heartbeat.done_staged(self.bytes_sent, &self.stages);
         Box::pin(async move {
             let Some(outbox) = self.outbox.take() else {
