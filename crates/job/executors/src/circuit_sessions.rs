@@ -982,6 +982,16 @@ impl CircuitSession for GarblerCircuitSession {
         }
     }
 
+    /// Forward to the variant. Without this arm the trait default runs, and
+    /// [`TransferSession::abort`] never executes: an evicted transfer then
+    /// requeues before its drain resets the stream.
+    fn abort(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        match *self {
+            Self::Commitment(s) => s.abort(),
+            Self::Transfer(s) => s.abort(),
+        }
+    }
+
     fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
         match *self {
             Self::Commitment(s) => s.finish(),
@@ -1017,6 +1027,16 @@ impl CircuitSession for EvaluatorCircuitSession {
         match self {
             Self::Commitment(s) => s.process_chunk(chunk),
             Self::Evaluation(s) => s.as_mut().process_chunk(chunk),
+        }
+    }
+
+    /// Forward to the variant. No evaluator session overrides `abort` today,
+    /// so each arm runs the trait default. The arm keeps the enum correct if
+    /// one later gains asynchronous teardown.
+    fn abort(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        match *self {
+            Self::Commitment(s) => s.abort(),
+            Self::Evaluation(s) => s.abort(),
         }
     }
 
