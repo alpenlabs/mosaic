@@ -379,27 +379,12 @@ pub struct TransferSession {
     output_wire_ids: Vec<u32>,
     /// Reusable buffer for ciphertext bytes per block.
     ct_buffer: Vec<u8>,
-    /// Heartbeat progress tracker for operator visibility.
-    heartbeat: HeartbeatTracker,
-    /// Cumulative ciphertext bytes garbled and enqueued to the outbox.
-    /// Wire progress trails this by at most the outbox depth.
-    bytes_sent: u64,
     /// Outbox depth in garbled chunks, applied when the drain spawns.
     outbox_depth: usize,
-    /// Expected total ciphertext bytes (AND gates × 16); also the total for
-    /// the drain's `table.wire` meter.
-    total_bytes: u64,
-    /// Producer-side stage attribution: `compute` (garbling) vs
-    /// `outbox_full` (parked because the peer is a full outbox behind).
-    /// The wire itself is timed by the drain's [`WireMeter`].
-    stages: StageBreakdown,
-    /// Set while an outbox `send` is parked. The worker drops the chunk
-    /// future at that await when the stall-strike budget runs out, so the
-    /// code after the `send` never runs; holding the start time here lets
-    /// [`abort`](CircuitSession::abort) reconcile the parked interval into
-    /// `outbox_full` instead of losing it — without it, the evicted
-    /// transfer's summary would look CPU-bound or idle.
-    send_parked_since: Option<Instant>,
+    /// Producer-side observability (`table.upload`). All logging state and
+    /// timing logic lives behind this meter; the fields above are the
+    /// operational state.
+    meter: UploadMeter,
 }
 
 /// Bounded outbox between garbling and the wire, plus the drain task's
@@ -505,6 +490,99 @@ impl WireMeter {
     /// clean flush, write failure, and cancellation alike.
     fn finish(mut self) {
         self.heartbeat.done_staged(self.bytes, &self.stages);
+    }
+}
+
+/// Producer-side stage meter for a transfer session, logged as
+/// `table.upload`.
+///
+/// Owns every observability field of [`TransferSession`] so the operational
+/// code only calls the named hooks below. `compute` is time garbling blocks;
+/// `outbox_full` is time parked in the outbox `send` — sustained
+/// peer-induced backpressure, since `send` only parks once the peer has
+/// fallen a full outbox behind. The wire itself is timed by the drain's
+/// [`WireMeter`].
+struct UploadMeter {
+    heartbeat: HeartbeatTracker,
+    stages: StageBreakdown,
+    /// Cumulative ciphertext bytes garbled and enqueued to the outbox.
+    /// Wire progress trails this by at most the outbox depth.
+    bytes_enqueued: u64,
+    /// Set while an outbox `send` is parked. The worker drops the chunk
+    /// future at that await when the stall-strike budget runs out, so
+    /// [`time_send`](Self::time_send) never resumes; [`summary`](Self::summary)
+    /// reconciles the interval into `outbox_full` instead of losing it —
+    /// without this, an evicted transfer would look CPU-bound or idle.
+    send_parked_since: Option<Instant>,
+    /// Expected total ciphertext bytes (AND gates × 16); also the total for
+    /// the drain's `table.wire` meter.
+    total_bytes: u64,
+}
+
+impl UploadMeter {
+    fn new(id: String, total_bytes: u64) -> Self {
+        Self {
+            heartbeat: HeartbeatTracker::new(
+                "table.upload",
+                id,
+                Some(total_bytes),
+                ProgressUnit::Bytes,
+                HEARTBEAT_PERIOD,
+            ),
+            stages: StageBreakdown::default(),
+            bytes_enqueued: 0,
+            send_parked_since: None,
+            total_bytes,
+        }
+    }
+
+    /// Time a synchronous garbling step into `compute`.
+    fn time_compute<T>(&mut self, f: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let out = f();
+        self.stages.compute += started.elapsed();
+        out
+    }
+
+    /// Drive an outbox `send`, timing the parked interval into `outbox_full`
+    /// and counting `n` bytes as enqueued on success. Cancellation-tolerant:
+    /// if the future is dropped mid-`send`, the interval is reconciled by
+    /// [`summary`](Self::summary).
+    async fn time_send<T, E>(
+        &mut self,
+        n: u64,
+        send: impl Future<Output = Result<T, E>>,
+    ) -> Result<T, E> {
+        self.send_parked_since = Some(Instant::now());
+        let res = send.await;
+        if let Some(parked) = self.send_parked_since.take() {
+            self.stages.outbox_full += parked.elapsed();
+        }
+        if res.is_ok() {
+            self.bytes_enqueued = self.bytes_enqueued.saturating_add(n);
+        }
+        res
+    }
+
+    /// Periodic heartbeat tick — call once per processed chunk.
+    fn on_chunk_done(&mut self) {
+        self.heartbeat
+            .maybe_log_staged(self.bytes_enqueued, &self.stages);
+    }
+
+    /// Emit the final attribution line, first reconciling any parked
+    /// interval left behind by a chunk future dropped mid-`send`.
+    fn summary(&mut self) {
+        if let Some(parked) = self.send_parked_since.take() {
+            self.stages.outbox_full += parked.elapsed();
+        }
+        self.heartbeat
+            .done_staged(self.bytes_enqueued, &self.stages);
+    }
+
+    /// Mint the drain-side wire meter for this transfer.
+    fn mint_wire_meter(&self, id: String) -> WireMeter {
+        WireMeter::new(id, self.total_bytes)
     }
 }
 
@@ -640,13 +718,7 @@ impl TransferSession {
     ) -> Self {
         // Each AND gate emits 16 ciphertext bytes on the wire.
         let total_bytes = total_and_gates.saturating_mul(16);
-        let heartbeat = HeartbeatTracker::new(
-            "table.upload",
-            short_id(commitment.as_ref()),
-            Some(total_bytes),
-            ProgressUnit::Bytes,
-            HEARTBEAT_PERIOD,
-        );
+        let meter = UploadMeter::new(short_id(commitment.as_ref()), total_bytes);
         Self {
             session,
             stream: Some(stream),
@@ -655,12 +727,8 @@ impl TransferSession {
             commitment,
             output_wire_ids,
             ct_buffer: Vec::new(),
-            heartbeat,
-            bytes_sent: 0,
             outbox_depth,
-            total_bytes,
-            stages: StageBreakdown::default(),
-            send_parked_since: None,
+            meter,
         }
     }
 
@@ -682,7 +750,9 @@ impl TransferSession {
         let (recycle_tx, recycle_rx) = mpsc_light::bounded::<Vec<u8>>(self.outbox_depth);
         let (done_tx, done_rx) = oneshot::oneshot();
         let (abort_tx, abort_rx) = oneshot::oneshot();
-        let meter = WireMeter::new(short_id(self.commitment.as_ref()), self.total_bytes);
+        let meter = self
+            .meter
+            .mint_wire_meter(short_id(self.commitment.as_ref()));
 
         let drain = async move {
             let result = drain_transfer_outbox(
@@ -733,9 +803,11 @@ impl CircuitSession for TransferSession {
             // full outbox behind.
             for block in &chunk.blocks {
                 self.ct_buffer.clear();
-                let garble_start = Instant::now();
-                process_owned_block_garble(&mut self.session.instance, block, &mut self.ct_buffer);
-                self.stages.compute += garble_start.elapsed();
+                let session = &mut self.session;
+                let ct_buffer = &mut self.ct_buffer;
+                self.meter.time_compute(|| {
+                    process_owned_block_garble(&mut session.instance, block, ct_buffer)
+                });
                 if !self.ct_buffer.is_empty() {
                     if self.outbox.is_none() {
                         self.spawn_drain();
@@ -744,24 +816,14 @@ impl CircuitSession for TransferSession {
 
                     let n = self.ct_buffer.len() as u64;
                     let out = std::mem::take(&mut self.ct_buffer);
-                    // `send` returns immediately while the outbox has room and
-                    // parks only once the peer has fallen a full outbox behind,
-                    // so time here is *sustained* peer-induced backpressure.
-                    // The wire itself is timed by the drain's `table.wire`
-                    // meter, which sees every write. The interval is recorded
-                    // before the error check (and reconciled by `abort` on
-                    // future drop) so an eviction keeps its parked time.
-                    self.send_parked_since = Some(Instant::now());
-                    let send_res = outbox.ct_tx.send(out).await;
-                    if let Some(parked) = self.send_parked_since.take() {
-                        self.stages.outbox_full += parked.elapsed();
-                    }
-                    send_res.map_err(|_| {
-                        CircuitError::ChunkFailed(
-                            "transfer drain closed — peer write failed".to_string(),
-                        )
-                    })?;
-                    self.bytes_sent = self.bytes_sent.saturating_add(n);
+                    self.meter
+                        .time_send(n, outbox.ct_tx.send(out))
+                        .await
+                        .map_err(|_| {
+                            CircuitError::ChunkFailed(
+                                "transfer drain closed — peer write failed".to_string(),
+                            )
+                        })?;
 
                     // Reuse a spent buffer when the drain has returned one.
                     if let Ok(spent) = outbox.recycle_rx.try_recv() {
@@ -769,21 +831,15 @@ impl CircuitSession for TransferSession {
                     }
                 }
             }
-            self.heartbeat
-                .maybe_log_staged(self.bytes_sent, &self.stages);
+            self.meter.on_chunk_done();
             Ok(())
         })
     }
 
     fn abort(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         // Eviction is a normal path under the strike budget — emit the final
-        // attribution line for the work that did happen before teardown. A
-        // chunk future dropped mid-`send` never recorded its parked interval;
-        // reconcile it first so the stall shows up as outbox_full.
-        if let Some(parked) = self.send_parked_since.take() {
-            self.stages.outbox_full += parked.elapsed();
-        }
-        self.heartbeat.done_staged(self.bytes_sent, &self.stages);
+        // attribution line for the work that did happen before teardown.
+        self.meter.summary();
         Box::pin(async move {
             let Some(outbox) = self.outbox.take() else {
                 // No drain was spawned. Dropping the session below closes
@@ -822,7 +878,7 @@ impl CircuitSession for TransferSession {
         // NB: this summary marks "garbling done, all ciphertext enqueued".
         // The outbox tail may still be in flight; the drain's `table.wire`
         // summary marks bytes-on-wire FIN.
-        self.heartbeat.done_staged(self.bytes_sent, &self.stages);
+        self.meter.summary();
         Box::pin(async move {
             // Finalize the garbling session to properly release the ~1 GB
             // working space. We discard the output — the commitment was
