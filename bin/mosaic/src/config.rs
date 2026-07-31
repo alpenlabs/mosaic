@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
+use mosaic_job_executors::evaluator::BULK_READ_TIMEOUT;
 use mosaic_job_scheduler::{GarblingConfig, JobSchedulerConfig, PoolConfig};
 use mosaic_net_client::NetClientConfig;
 use mosaic_net_svc::{NetServiceConfig, PeerConfig, PeerId};
@@ -145,6 +146,25 @@ impl MosaicConfig {
 
         if self.job_scheduler.garbling.transfer_outbox_depth == 0 {
             bail!("job_scheduler.garbling.transfer_outbox_depth must be greater than zero");
+        }
+
+        // A session that stalls for its full eviction budget on the garbler
+        // side must still leave the evaluator's bulk read timeout with room
+        // to spare — otherwise one slow peer's stall times out the bulk
+        // reads of every other concurrent transfer on the evaluator.
+        let max_chunk_stall = self
+            .build_job_scheduler_config()
+            .garbling
+            .max_chunk_stall_duration();
+        let margin = Duration::from_secs(30);
+        if max_chunk_stall.saturating_add(margin) >= BULK_READ_TIMEOUT {
+            bail!(
+                "job_scheduler.garbling chunk_timeout_secs x chunk_stall_strikes (scaled for \
+                 co-resident sessions per worker) = {max_chunk_stall:?}; this leaves less than \
+                 the required {margin:?} margin under the evaluator's bulk read timeout of \
+                 {BULK_READ_TIMEOUT:?}. Lower chunk_timeout_secs/chunk_stall_strikes, or raise \
+                 worker_threads relative to max_concurrent"
+            );
         }
 
         if self.job_scheduler.light.threads == 0 || self.job_scheduler.heavy.threads == 0 {

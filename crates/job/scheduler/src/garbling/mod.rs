@@ -155,6 +155,18 @@ impl GarblingConfig {
         let sessions = u32::try_from(self.max_sessions_per_worker()).unwrap_or(u32::MAX);
         self.chunk_timeout.saturating_mul(sessions)
     }
+
+    /// Worst-case time that one chunk can stall before the pass evicts its
+    /// session.
+    ///
+    /// This is the per-session chunk timeout, which is already scaled for
+    /// co-resident sessions, multiplied by the stall-strike budget. It sizes
+    /// the per-chunk report wait of the coordinator. The mosaic binary also
+    /// checks it against the bulk read timeout of the evaluator at startup.
+    pub fn max_chunk_stall_duration(&self) -> Duration {
+        self.session_chunk_timeout()
+            .saturating_mul(self.chunk_stall_strikes.max(1))
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -621,8 +633,7 @@ async fn run_pass(
     // plus a margin: sessions that never await (commitment and evaluation do
     // no network I/O) still complete one after another inside the join.
     let report_timeout = config
-        .session_chunk_timeout()
-        .saturating_mul(config.chunk_stall_strikes.max(1))
+        .max_chunk_stall_duration()
         .saturating_add(Duration::from_secs(5));
 
     // ── Read blocks and broadcast to workers (pipelined) ─────────────
