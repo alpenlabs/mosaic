@@ -143,6 +143,10 @@ impl MosaicConfig {
             bail!("job_scheduler.garbling.chunk_stall_strikes must be greater than zero");
         }
 
+        if self.job_scheduler.garbling.transfer_outbox_depth == 0 {
+            bail!("job_scheduler.garbling.transfer_outbox_depth must be greater than zero");
+        }
+
         if self.job_scheduler.light.threads == 0 || self.job_scheduler.heavy.threads == 0 {
             bail!("job scheduler thread counts must be greater than zero");
         }
@@ -414,6 +418,8 @@ pub(crate) struct GarblingSection {
     pub(crate) chunk_timeout_secs: u64,
     #[serde(default = "default_chunk_stall_strikes")]
     pub(crate) chunk_stall_strikes: u32,
+    #[serde(default = "default_transfer_outbox_depth")]
+    pub(crate) transfer_outbox_depth: usize,
 }
 
 impl Default for GarblingSection {
@@ -424,6 +430,7 @@ impl Default for GarblingSection {
             batch_timeout_ms: default_batch_timeout_ms(),
             chunk_timeout_secs: default_chunk_timeout_secs(),
             chunk_stall_strikes: default_chunk_stall_strikes(),
+            transfer_outbox_depth: default_transfer_outbox_depth(),
         }
     }
 }
@@ -605,6 +612,10 @@ const fn default_chunk_timeout_secs() -> u64 {
 
 const fn default_chunk_stall_strikes() -> u32 {
     3
+}
+
+const fn default_transfer_outbox_depth() -> usize {
+    8
 }
 
 const fn default_submission_queue_size() -> usize {

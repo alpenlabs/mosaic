@@ -379,6 +379,8 @@ pub struct TransferSession {
     /// Cumulative ciphertext bytes garbled and enqueued to the outbox.
     /// Wire progress trails this by at most the outbox depth.
     bytes_sent: u64,
+    /// Outbox depth in garbled chunks, applied when the drain spawns.
+    outbox_depth: usize,
 }
 
 /// Bounded outbox between garbling and the wire, plus the drain task's
@@ -418,10 +420,11 @@ struct TransferOutbox {
     done_rx: oneshot::Receiver<Result<(), String>>,
 }
 
-/// Outbox depth in garbled chunks (~350 KiB of ciphertext each at the
-/// production circuit's AND-gate density): ~2.8 MiB of slack per transfer
-/// session, noise next to its ~1 GB garbling instance.
-const TRANSFER_OUTBOX_DEPTH: usize = 8;
+/// Default outbox depth in garbled chunks (~350 KiB of ciphertext each at
+/// the production circuit's AND-gate density): ~2.8 MiB of slack per
+/// transfer session, noise next to its ~1 GB garbling instance.
+/// Configurable via [`crate::MosaicExecutor::with_transfer_outbox_depth`].
+pub(crate) const TRANSFER_OUTBOX_DEPTH: usize = 8;
 
 /// Maximum time a single ciphertext write may wait for the peer to return
 /// its buffer. A stalled-but-live peer can otherwise hold the QUIC flow-control
@@ -542,6 +545,8 @@ impl TransferSession {
     ///
     /// `session` is the garbling session (translation already sent by caller).
     /// `stream` is an open bulk transfer stream to the evaluator.
+    /// `outbox_depth` sets the capacity of the bounded outbox, in garbled
+    /// chunks.
     pub fn new(
         session: GarblingSession,
         stream: BulkSender,
@@ -549,6 +554,7 @@ impl TransferSession {
         commitment: GarblingTableCommitment,
         output_wire_ids: Vec<u32>,
         total_and_gates: u64,
+        outbox_depth: usize,
     ) -> Self {
         // Each AND gate emits 16 ciphertext bytes on the wire.
         let total_bytes = total_and_gates.saturating_mul(16);
@@ -569,6 +575,7 @@ impl TransferSession {
             ct_buffer: Vec::new(),
             heartbeat,
             bytes_sent: 0,
+            outbox_depth,
         }
     }
 
@@ -586,8 +593,8 @@ impl TransferSession {
             .stream
             .take()
             .expect("spawn_drain called once, before any stream take");
-        let (ct_tx, ct_rx) = mpsc_light::bounded::<Vec<u8>>(TRANSFER_OUTBOX_DEPTH);
-        let (recycle_tx, recycle_rx) = mpsc_light::bounded::<Vec<u8>>(TRANSFER_OUTBOX_DEPTH);
+        let (ct_tx, ct_rx) = mpsc_light::bounded::<Vec<u8>>(self.outbox_depth);
+        let (recycle_tx, recycle_rx) = mpsc_light::bounded::<Vec<u8>>(self.outbox_depth);
         let (done_tx, done_rx) = oneshot::oneshot();
         let (abort_tx, abort_rx) = oneshot::oneshot();
 

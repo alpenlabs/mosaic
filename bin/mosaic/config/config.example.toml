@@ -50,6 +50,8 @@ batch_timeout_ms = 20000
 chunk_timeout_secs = 30
 # Consecutive chunk_timeout expiries before a session is evicted from a pass.
 chunk_stall_strikes = 3
+# Bounded outbox depth (in garbled chunks) between garbling and the wire.
+transfer_outbox_depth = 8
 
 [sm_executor]
 command_queue_size = 256

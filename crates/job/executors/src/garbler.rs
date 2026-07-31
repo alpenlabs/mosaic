@@ -739,6 +739,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
         commitment,
         outputs,
         header.and_gates,
+        ctx.transfer_outbox_depth,
     ))
 }
 
