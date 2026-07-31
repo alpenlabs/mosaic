@@ -336,8 +336,15 @@ impl ReceiveMeter {
         }
     }
 
-    fn on_read(&mut self, waited: Duration, len: usize) {
+    /// A read wait with no delivered chunk — the timeout that kills the
+    /// transfer, or the tail wait for FIN. Counting it keeps `net_wait`
+    /// honest on exactly the paths where the attribution matters most.
+    fn on_read_wait(&mut self, waited: Duration) {
         self.stages.net_wait += waited;
+    }
+
+    fn on_read(&mut self, waited: Duration, len: usize) {
+        self.on_read_wait(waited);
         self.bytes = self.bytes.saturating_add(len as u64);
         self.heartbeat.maybe_log_staged(self.bytes, &self.stages);
     }
@@ -431,8 +438,14 @@ where
                 }
                 data
             }
-            Err(BulkReadError::TimedOut) => return DrainOutcome::ReadTimedOut,
-            Err(BulkReadError::Closed(_)) => break,
+            Err(BulkReadError::TimedOut) => {
+                meter.on_read_wait(read_started.elapsed());
+                return DrainOutcome::ReadTimedOut;
+            }
+            Err(BulkReadError::Closed(_)) => {
+                meter.on_read_wait(read_started.elapsed());
+                break;
+            }
         };
 
         meter.on_read(read_started.elapsed(), chunk.len());

@@ -488,6 +488,12 @@ impl WireMeter {
         self.heartbeat.maybe_log_staged(self.bytes, &self.stages);
     }
 
+    /// A write that stalled until timeout/cancel is the most peer-blocked
+    /// moment of the transfer — attribute it even though no bytes landed.
+    fn on_stalled_write(&mut self, wrote: Duration) {
+        self.stages.net_blocked += wrote;
+    }
+
     /// Emit the final attribution line. Called on every drain exit —
     /// clean flush, write failure, and cancellation alike.
     fn finish(mut self) {
@@ -576,7 +582,10 @@ async fn drain_transfer_outbox<S: OutboxStream>(
                 meter.on_write(write_started.elapsed(), len);
                 let _ = recycle_tx.try_send(spent);
             }
-            Err(error) => break Err(error),
+            Err(error) => {
+                meter.on_stalled_write(write_started.elapsed());
+                break Err(error);
+            }
         }
     };
     meter.finish();
