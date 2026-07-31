@@ -29,10 +29,12 @@
 //!
 //! # Pass Lifecycle
 //!
-//! 1. Collect [`PendingCircuitJob`]s from the submission channel and retry list.
+//! 1. Collect [`PendingCircuitJob`]s from the front of a FIFO backlog fed by the submission
+//!    channel. Jobs that bounce (transient failure, eviction, finish retry) re-enter the backlog at
+//!    the *back*, behind everything already waiting — retries never pre-empt fresh work.
 //! 2. Create live [`CircuitSession`]s via the [`SessionFactory`]. Jobs that fail with
-//!    [`CircuitError::StorageUnavailable`] stay on the retry list — **no action is ever silently
-//!    dropped**.
+//!    [`CircuitError::StorageUnavailable`] bounce back to the backlog — **no action is ever
+//!    silently dropped**.
 //! 3. Distribute sessions across worker threads (round-robin, spread-first).
 //! 4. Read the circuit file once via [`ReaderV5c`], converting blocks into [`Arc<OwnedChunk>`] and
 //!    broadcasting to all workers.
@@ -49,7 +51,7 @@
 //! [`Arc<OwnedChunk>`]: mosaic_job_api::OwnedChunk
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::Arc,
@@ -58,8 +60,8 @@ use std::{
 
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use mosaic_job_api::{
-    CircuitError, CircuitSession, HandlerOutcome, JobCompletion, OwnedBlock, OwnedChunk,
-    PendingCircuitJob, SessionFactory,
+    CircuitAction, CircuitError, CircuitSession, HandlerOutcome, JobCompletion, OwnedBlock,
+    OwnedChunk, PendingCircuitJob, SessionFactory,
 };
 use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
@@ -96,12 +98,25 @@ pub struct GarblingConfig {
     /// Path to the v5c circuit file.
     pub circuit_path: PathBuf,
     /// Maximum time to wait for more jobs before starting a pass with fewer
-    /// than `max_concurrent` sessions.
+    /// than `max_concurrent` sessions. A full batch never waits this out.
+    ///
+    /// Sized against the cost of a fragmented pass, not against latency: a
+    /// pass reads the full circuit file regardless of how many sessions it
+    /// serves, and nothing can join once it starts. Transfer actions arrive
+    /// as a trickle (one per inbound table request), so a short window
+    /// degenerates into one-session passes. Waiting 20s to coalesce is
+    /// noise next to a minutes-long pass.
     pub batch_timeout: Duration,
-    /// Per-session, per-chunk timeout. If a session doesn't finish processing
-    /// a chunk within this duration, it is evicted from the pass and its
-    /// action is placed on the retry list for the next pass.
+    /// Per-session, per-chunk timeout. Each expiry without progress on the
+    /// current chunk counts one strike against the session (see
+    /// [`chunk_stall_strikes`](Self::chunk_stall_strikes)).
     pub chunk_timeout: Duration,
+    /// Number of consecutive `chunk_timeout` expiries a session may accrue
+    /// on a single chunk before it is evicted from the pass and its action
+    /// placed on the retry list. Strikes extend the budget without
+    /// cancelling the in-flight chunk; a value of 1 reproduces the old
+    /// evict-on-first-timeout behaviour. Default: 3.
+    pub chunk_stall_strikes: u32,
 }
 
 impl Default for GarblingConfig {
@@ -110,8 +125,9 @@ impl Default for GarblingConfig {
             worker_threads: 4,
             max_concurrent: 8,
             circuit_path: PathBuf::new(),
-            batch_timeout: Duration::from_millis(500),
+            batch_timeout: Duration::from_secs(20),
             chunk_timeout: Duration::from_secs(30),
+            chunk_stall_strikes: 3,
         }
     }
 }
@@ -138,6 +154,18 @@ impl GarblingConfig {
     fn session_chunk_timeout(&self) -> Duration {
         let sessions = u32::try_from(self.max_sessions_per_worker()).unwrap_or(u32::MAX);
         self.chunk_timeout.saturating_mul(sessions)
+    }
+
+    /// Worst-case time that one chunk can stall before the pass evicts its
+    /// session.
+    ///
+    /// This is the per-session chunk timeout, which is already scaled for
+    /// co-resident sessions, multiplied by the stall-strike budget. It sizes
+    /// the per-chunk report wait of the coordinator. The mosaic binary also
+    /// checks it against the bulk read timeout of the evaluator at startup.
+    pub fn max_chunk_stall_duration(&self) -> Duration {
+        self.session_chunk_timeout()
+            .saturating_mul(self.chunk_stall_strikes.max(1))
     }
 }
 
@@ -213,6 +241,7 @@ impl WorkerHandle {
     fn spawn(
         id: usize,
         chunk_timeout: Duration,
+        stall_strikes: u32,
         fault_tx: kanal::AsyncSender<SchedulerFault>,
     ) -> Self {
         // Bounded channels: main sends at most 1 command before waiting for
@@ -229,7 +258,7 @@ impl WorkerHandle {
                         .enable_timer()
                         .build()
                         .expect("failed to build monoio runtime for garbling worker")
-                        .block_on(worker_loop(id, chunk_timeout, command_rx, report_tx));
+                        .block_on(worker_loop(id, chunk_timeout, stall_strikes, command_rx, report_tx));
                 }));
 
                 if let Err(payload) = run_result {
@@ -416,7 +445,14 @@ async fn coordinator_loop(
         // Spawn persistent worker threads.
         let n_workers = config.worker_threads.max(1);
         let mut workers: Vec<WorkerHandle> = (0..n_workers)
-            .map(|id| WorkerHandle::spawn(id, config.session_chunk_timeout(), fault_tx.clone()))
+            .map(|id| {
+                WorkerHandle::spawn(
+                    id,
+                    config.session_chunk_timeout(),
+                    config.chunk_stall_strikes.max(1),
+                    fault_tx.clone(),
+                )
+            })
             .collect();
 
         tracing::info!(
@@ -426,118 +462,50 @@ async fn coordinator_loop(
             "garbling coordinator started"
         );
 
-        // Jobs whose session creation failed with StorageUnavailable or that were
-        // evicted mid-pass. They are retried on the next pass.
-        let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
+        // FIFO backlog of jobs awaiting a pass slot. Fresh submissions are
+        // appended as they are drained from the channel; jobs that bounce
+        // (transient session-creation failure, mid-pass eviction, finish
+        // retry) are re-appended at requeue time — behind everything that
+        // was already waiting. Retries therefore go to the back of the
+        // queue rather than pre-empting fresh work, which previously let a
+        // full retry set starve new submissions indefinitely.
+        let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::new();
 
         loop {
             // ── 1. Collect a batch of jobs ───────────────────────────────
-            let mut jobs: Vec<PendingCircuitJob> = Vec::with_capacity(config.max_concurrent);
-
-            // Drain retry list first (bounded by max_concurrent).
-            let retry_take = pending_retry.len().min(config.max_concurrent);
-            jobs.extend(pending_retry.drain(..retry_take));
-
-            // If no retries, block until at least one new job arrives.
-            if jobs.is_empty() {
-                match submit_rx.recv().await {
-                    Ok(job) => jobs.push(job),
-                    Err(_) => break, // Channel closed — shut down.
-                }
-            }
-
-            // Try to collect more jobs up to max_concurrent, with a timeout.
-            let deadline = monoio::time::Instant::now() + config.batch_timeout;
-            while jobs.len() < config.max_concurrent {
-                let remaining = deadline.saturating_duration_since(monoio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                match monoio::time::timeout(remaining, submit_rx.recv()).await {
-                    Ok(Ok(job)) => jobs.push(job),
-                    Ok(Err(_)) => break, // Channel closed.
-                    Err(_) => break,     // Timeout — start pass with what we have.
-                }
-            }
-
-            if jobs.is_empty() {
-                continue;
-            }
+            let Some(jobs) = collect_batch(
+                &mut backlog,
+                &submit_rx,
+                config.max_concurrent,
+                config.batch_timeout,
+            )
+            .await
+            else {
+                break; // Channel closed and backlog empty — shut down.
+            };
 
             tracing::debug!(
                 jobs = jobs.len(),
-                retry_backlog = pending_retry.len(),
+                backlog = backlog.len(),
                 "garbling coordinator collected pass batch"
             );
 
-            // ── 2. Create sessions from collected jobs ───────────────────
-            let mut sessions: Vec<ActiveSession> = Vec::with_capacity(jobs.len());
+            // Jobs that bounce this cycle; re-enter the backlog at the
+            // back via requeue_bounced below.
+            let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
 
-            for job in jobs {
-                match factory.create_session(&job).await {
-                    Ok(session) => {
-                        sessions.push(ActiveSession {
-                            peer_id: job.peer_id,
-                            job: PendingCircuitJob {
-                                peer_id: job.peer_id,
-                                action: job.action.clone(),
-                            },
-                            session,
-                        });
-                    }
-                    Err(CircuitError::AlreadyComplete) => {
-                        // The state machine no longer needs this work —
-                        // either it already recorded it as done (e.g. a
-                        // duplicate transfer job for a table the evaluator
-                        // receipted) or it has moved past the step (incl.
-                        // aborted setups). Idempotent success — drop the
-                        // job. No completion is sent: the SM treats these
-                        // completions as informational and has moved on.
-                        tracing::info!(
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            "action no longer required per state machine — dropping job"
-                        );
-                    }
-                    Err(CircuitError::StorageUnavailable) => {
-                        // Transient — data not yet written by STF. Keep for retry.
-                        tracing::debug!(
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            "session storage unavailable — will retry next pass"
-                        );
-                        pending_retry.push(job);
-                    }
-                    Err(CircuitError::TransientFailure(reason)) => {
-                        // Transient — e.g. peer not ready for bulk stream. Keep for retry.
-                        tracing::debug!(
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            reason,
-                            "transient setup failure — will retry next pass"
-                        );
-                        pending_retry.push(job);
-                    }
-                    Err(e) => {
-                        // Permanent failure (SetupFailed, ChunkFailed during setup).
-                        // This is a programming error — the action cannot be retried.
-                        tracing::error!(
-                            ?e,
-                            peer = ?job.peer_id,
-                            action = ?job.action,
-                            "permanent session creation failure — action dropped"
-                        );
-                    }
-                }
-            }
+            // ── 2. Create sessions from collected jobs ───────────────────
+            let sessions = create_sessions(factory.as_ref(), jobs, &mut pending_retry).await;
 
             if sessions.is_empty() {
                 if !pending_retry.is_empty() {
-                    // All jobs failed this round — sleep before retrying.
+                    // All jobs failed this round — requeue and sleep so
+                    // instant create-failures don't hot-loop.
                     tracing::debug!(
                         pending = pending_retry.len(),
                         "no sessions created — sleeping before retry"
                     );
+                    requeue_bounced(&mut backlog, &submit_rx, &mut pending_retry);
                     monoio::time::sleep(Duration::from_millis(500)).await;
                 }
                 continue;
@@ -558,6 +526,8 @@ async fn coordinator_loop(
                 sessions = session_count
             ))
             .await;
+
+            requeue_bounced(&mut backlog, &submit_rx, &mut pending_retry);
         }
 
         // ── Shutdown workers ─────────────────────────────────────────────
@@ -565,10 +535,10 @@ async fn coordinator_loop(
             worker.shutdown();
         }
 
-        if !pending_retry.is_empty() {
+        if !backlog.is_empty() {
             tracing::warn!(
-                count = pending_retry.len(),
-                "garbling coordinator shutting down with pending retry jobs"
+                count = backlog.len(),
+                "garbling coordinator shutting down with jobs still in the backlog"
             );
         }
 
@@ -663,27 +633,19 @@ async fn run_pass(
     // plus a margin: sessions that never await (commitment and evaluation do
     // no network I/O) still complete one after another inside the join.
     let report_timeout = config
-        .session_chunk_timeout()
+        .max_chunk_stall_duration()
         .saturating_add(Duration::from_secs(5));
 
-    // ── Read blocks and broadcast to workers ─────────────────────────
-    while let Some(chunk_result) = reader.next_blocks_chunk().await.transpose() {
-        let reader_chunk = match chunk_result {
-            Ok(chunk) => chunk,
-            Err(e) => {
-                tracing::error!(
-                    %e,
-                    remaining_workers = active_worker_ids.len(),
-                    "circuit read error mid-pass — finishing early"
-                );
-                break;
-            }
-        };
+    // ── Read blocks and broadcast to workers (pipelined) ─────────────
+    //
+    // The read+convert of chunk N+1 overlaps the barrier wait for chunk N:
+    // while workers process a chunk, the coordinator uses the otherwise-idle
+    // wait to have the next broadcast ready the moment the barrier clears.
+    // Without the overlap, disk latency and worker latency were paid in
+    // series on every chunk of the pass.
+    let mut next_chunk = read_next_chunk(&mut reader, total_gates, &mut block_idx).await;
 
-        // Convert borrowed blocks to owned, wrap in Arc for sharing.
-        let owned = convert_chunk(&reader_chunk, total_gates, &mut block_idx);
-        let shared = Arc::new(owned);
-
+    while let Some(shared) = next_chunk.take() {
         // Broadcast chunk to all active workers.
         for &wid in &active_worker_ids {
             if !workers[wid]
@@ -694,15 +656,20 @@ async fn run_pass(
             }
         }
 
-        // ── Barrier: wait for all workers to report ──────────────────
-        active_worker_ids = collect_chunk_reports(
-            &active_worker_ids,
-            &mut active_jobs_by_worker,
-            workers,
-            report_timeout,
-            pending_retry,
+        // ── Prefetch next chunk while the barrier waits ──────────────
+        let (prefetched, still_active) = futures::future::join(
+            read_next_chunk(&mut reader, total_gates, &mut block_idx),
+            collect_chunk_reports(
+                &active_worker_ids,
+                &mut active_jobs_by_worker,
+                workers,
+                report_timeout,
+                pending_retry,
+            ),
         )
         .await;
+        next_chunk = prefetched;
+        active_worker_ids = still_active;
 
         if active_worker_ids.is_empty() {
             tracing::warn!("all workers idle — ending pass early");
@@ -861,6 +828,234 @@ async fn collect_finish_reports_with_timeout(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Batch intake
+// ════════════════════════════════════════════════════════════════════════════
+
+/// I/O profile of a circuit action inside a pass.
+///
+/// The pass barrier makes every session in a batch advance at the pace of
+/// the slowest one, so mixing profiles is expensive: a commitment chunk is
+/// a few milliseconds of pure CPU, while a transfer chunk waits on the
+/// peer's receive window (and an evaluation chunk on table-store reads) —
+/// one to two orders of magnitude longer. A compute session trapped in an
+/// I/O pass runs at I/O pace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionClass {
+    /// `process_chunk` never awaits external I/O: garbling commitment
+    /// generation (G3) and verification re-garbling (E3).
+    Compute,
+    /// `process_chunk` blocks on external I/O: table transfer to a peer
+    /// (G8) and table evaluation reading stored ciphertext (E8).
+    Io,
+}
+
+fn session_class(action: &CircuitAction) -> SessionClass {
+    match action {
+        CircuitAction::GarblerCommitment { .. } | CircuitAction::EvaluatorCommitment { .. } => {
+            SessionClass::Compute
+        }
+        CircuitAction::GarblerTransfer { .. } | CircuitAction::EvaluatorEvaluation { .. } => {
+            SessionClass::Io
+        }
+    }
+}
+
+/// Collect the next pass batch from the backlog and the submission channel.
+///
+/// Blocks until at least one job is available, then keeps the batch window
+/// (`batch_timeout`) open for further arrivals, starting the pass early the
+/// moment `max_concurrent` jobs of the eventual lead session class are on
+/// hand. Selection is the backlog front — plain FIFO, where position is set
+/// by when a job entered the backlog (fresh arrival or requeue).
+///
+/// Returns `None` when the submission channel is closed and the backlog is
+/// empty: shutdown.
+async fn collect_batch(
+    backlog: &mut VecDeque<PendingCircuitJob>,
+    submit_rx: &kanal::AsyncReceiver<PendingCircuitJob>,
+    max_concurrent: usize,
+    batch_timeout: Duration,
+) -> Option<Vec<PendingCircuitJob>> {
+    if backlog.is_empty() {
+        match submit_rx.recv().await {
+            Ok(job) => backlog.push_back(job),
+            Err(_) => return None,
+        }
+    }
+
+    let deadline = monoio::time::Instant::now() + batch_timeout;
+    loop {
+        // A full backlog is not necessarily the next batch: a more urgent
+        // job may already be waiting in the submission channel. Move all
+        // currently available arrivals into the backlog before priority and
+        // class selection so they can influence the pass that starts now.
+        while let Ok(Some(job)) = submit_rx.try_recv() {
+            backlog.push_back(job);
+        }
+
+        // Priority sorting below determines which class leads the pass.
+        // Only that class can fill this batch: counting other-class jobs
+        // would end the window early and re-fragment passes.
+        let lead_class = session_class(
+            &backlog
+                .iter()
+                .min_by_key(|job| job.priority)
+                .expect("backlog non-empty after blocking recv")
+                .action,
+        );
+        let lead_count = backlog
+            .iter()
+            .filter(|job| session_class(&job.action) == lead_class)
+            .count();
+        if lead_count >= max_concurrent {
+            break;
+        }
+
+        let remaining = deadline.saturating_duration_since(monoio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match monoio::time::timeout(remaining, submit_rx.recv()).await {
+            Ok(Ok(job)) => backlog.push_back(job),
+            Ok(Err(_)) => break, // Channel closed — run what we have.
+            Err(_) => break,     // Window elapsed — start the pass.
+        }
+    }
+
+    // Most urgent first (`Critical = 0` sorts lowest). The sort is stable,
+    // so FIFO order — including retries-at-the-back — is preserved within
+    // each priority class.
+    backlog.make_contiguous().sort_by_key(|job| job.priority);
+
+    // One pass serves one session class. The lead job (most urgent, then
+    // oldest) picks the class; other-class jobs keep their backlog
+    // positions and lead a subsequent pass. This costs an extra circuit
+    // read per class but keeps compute passes at CPU pace instead of the
+    // pace of whichever peer is slowest — and it cannot starve: skipped
+    // jobs only ever move toward the front.
+    let lead_class = session_class(
+        &backlog
+            .front()
+            .expect("backlog non-empty after blocking recv")
+            .action,
+    );
+    let mut batch = Vec::with_capacity(max_concurrent);
+    let mut rest = VecDeque::with_capacity(backlog.len());
+    for job in backlog.drain(..) {
+        if batch.len() < max_concurrent && session_class(&job.action) == lead_class {
+            batch.push(job);
+        } else {
+            rest.push_back(job);
+        }
+    }
+    *backlog = rest;
+    Some(batch)
+}
+
+/// Re-enter bounced jobs (transient create failures, evictions, finish
+/// retries) at the back of the backlog.
+///
+/// The channel is drained first: anything submitted while the pass ran
+/// arrived *before* these jobs bounced, so it belongs ahead of them.
+/// Without the drain, requeues would slot in ahead of work that had been
+/// waiting in the channel for the whole pass.
+fn requeue_bounced(
+    backlog: &mut VecDeque<PendingCircuitJob>,
+    submit_rx: &kanal::AsyncReceiver<PendingCircuitJob>,
+    bounced: &mut Vec<PendingCircuitJob>,
+) {
+    while let Ok(Some(job)) = submit_rx.try_recv() {
+        backlog.push_back(job);
+    }
+    backlog.extend(bounced.drain(..));
+}
+
+/// Create live sessions for a batch, concurrently.
+///
+/// Session creation is far from free — for a transfer it is storage reads,
+/// the ~1 GB session allocation, a scheduler hint, a bulk-stream open and
+/// the translation writes, all against a remote peer. Run serially, a
+/// batch paid those latencies end to end while every worker sat idle
+/// (worst case minutes per pass); `join_all` overlaps them so the pass
+/// starts after the slowest creation, not the sum.
+///
+/// Failure handling per job is unchanged: `AlreadyComplete` drops the job
+/// (idempotent success), transient failures push it to `pending_retry`
+/// (re-entering the backlog at the back via `requeue_bounced`), permanent
+/// failures are logged and dropped.
+async fn create_sessions(
+    factory: &dyn SessionFactory,
+    jobs: Vec<PendingCircuitJob>,
+    pending_retry: &mut Vec<PendingCircuitJob>,
+) -> Vec<ActiveSession> {
+    let creations = futures::future::join_all(jobs.into_iter().map(|job| async move {
+        let result = factory.create_session(&job).await;
+        (job, result)
+    }))
+    .await;
+
+    let mut sessions: Vec<ActiveSession> = Vec::with_capacity(creations.len());
+    for (job, result) in creations {
+        match result {
+            Ok(session) => {
+                sessions.push(ActiveSession {
+                    peer_id: job.peer_id,
+                    job: PendingCircuitJob {
+                        peer_id: job.peer_id,
+                        action: job.action.clone(),
+                        priority: job.priority,
+                    },
+                    session,
+                });
+            }
+            Err(CircuitError::AlreadyComplete) => {
+                // The state machine no longer needs this work — either it
+                // already recorded it as done (e.g. a duplicate transfer
+                // job for a table the evaluator receipted) or it has moved
+                // past the step (incl. aborted setups). Idempotent success
+                // — drop the job. No completion is sent: the SM treats
+                // these completions as informational and has moved on.
+                tracing::info!(
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    "action no longer required per state machine — dropping job"
+                );
+            }
+            Err(CircuitError::StorageUnavailable) => {
+                // Transient — data not yet written by STF. Keep for retry.
+                tracing::debug!(
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    "session storage unavailable — will retry next pass"
+                );
+                pending_retry.push(job);
+            }
+            Err(CircuitError::TransientFailure(reason)) => {
+                // Transient — e.g. peer not ready for bulk stream. Keep for retry.
+                tracing::debug!(
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    reason,
+                    "transient setup failure — will retry next pass"
+                );
+                pending_retry.push(job);
+            }
+            Err(e) => {
+                // Permanent failure (SetupFailed, ChunkFailed during setup).
+                // This is a programming error — the action cannot be retried.
+                tracing::error!(
+                    ?e,
+                    peer = ?job.peer_id,
+                    action = ?job.action,
+                    "permanent session creation failure — action dropped"
+                );
+            }
+        }
+    }
+    sessions
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Worker thread
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -881,21 +1076,58 @@ async fn collect_finish_reports_with_timeout(
 /// still barriers across workers between chunks (see [`run_pass`]), so a
 /// slow peer continues to gate the pass at chunk granularity.
 ///
-/// `chunk_timeout` applies to each session independently: a session whose
-/// peer has stalled is evicted without holding up its siblings.
+/// # Eviction: strike budget, never mid-chunk cancellation between strikes
+///
+/// A pass covers tens of thousands of chunks, so eviction policy is
+/// survival math: killing a session on its *first* slow chunk makes table
+/// completion probability `(1 - p)^n_chunks` — brutal even for tiny per-
+/// chunk stall probabilities, and an evicted transfer restarts from block
+/// zero (no resumption yet). Instead a session gets `stall_strikes`
+/// consecutive `chunk_timeout` intervals: each expiry logs a strike and
+/// **keeps polling the same future**; only the final strike drops it.
+///
+/// Cancelling and re-running `process_chunk` between strikes would be
+/// unsound for transfer sessions — the future is dropped at an await point
+/// mid-write, and re-garbling the chunk onto the same stream would emit
+/// duplicate bytes. Eviction (dropping the whole session and its stream)
+/// is the only safe response to a cancelled chunk, which is why strikes
+/// extend the budget *without* cancelling.
 async fn process_chunk_on_sessions(
     worker_id: usize,
     sessions: &mut [ActiveSession],
     chunk: &Arc<OwnedChunk>,
     chunk_timeout: Duration,
+    stall_strikes: u32,
 ) -> Vec<usize> {
+    let stall_strikes = stall_strikes.max(1);
     let results =
         futures::future::join_all(sessions.iter_mut().enumerate().map(|(index, active)| {
             let peer_id = active.peer_id;
             let session = &mut active.session;
             async move {
-                let result =
-                    monoio::time::timeout(chunk_timeout, session.process_chunk(chunk)).await;
+                let mut fut = session.process_chunk(chunk);
+                let mut strikes = 0u32;
+                let result = loop {
+                    match monoio::time::timeout(chunk_timeout, &mut fut).await {
+                        Ok(res) => break Some(res),
+                        Err(_) => {
+                            strikes += 1;
+                            if strikes >= stall_strikes {
+                                // Final strike: drop the future (cancelling
+                                // the chunk) and evict the session.
+                                break None;
+                            }
+                            tracing::warn!(
+                                worker = worker_id,
+                                peer = ?peer_id,
+                                strikes,
+                                budget = stall_strikes,
+                                timeout_ms = chunk_timeout.as_millis(),
+                                "session slow on chunk — striking, still polling"
+                            );
+                        }
+                    }
+                };
                 (index, peer_id, result)
             }
         }))
@@ -904,8 +1136,8 @@ async fn process_chunk_on_sessions(
     let mut evicted_indices = Vec::new();
     for (index, peer_id, result) in results {
         match result {
-            Ok(Ok(())) => { /* session keeping up */ }
-            Ok(Err(e)) => {
+            Some(Ok(())) => { /* session keeping up */ }
+            Some(Err(e)) => {
                 tracing::warn!(
                     worker = worker_id,
                     ?e,
@@ -914,11 +1146,12 @@ async fn process_chunk_on_sessions(
                 );
                 evicted_indices.push(index);
             }
-            Err(_) => {
+            None => {
                 tracing::warn!(
                     worker = worker_id,
                     peer = ?peer_id,
-                    "session timed out on chunk — evicting for retry"
+                    strikes = stall_strikes,
+                    "session exhausted its stall budget on one chunk — evicting for retry"
                 );
                 evicted_indices.push(index);
             }
@@ -932,6 +1165,72 @@ async fn process_chunk_on_sessions(
     evicted_indices
 }
 
+/// Finalize a worker's sessions concurrently, splitting the outcomes into
+/// completions and retry jobs (input order preserved).
+///
+/// `finish` can be slow — a transfer session drops its stream (FIN) and a
+/// garbling instance releases ~1 GB — and for transfer sessions the
+/// coordinator's finish timeout is the deadline. Serial finishes paid the
+/// sum of those latencies; `join_all` pays the max.
+async fn finish_sessions(
+    worker_id: usize,
+    sessions: Vec<ActiveSession>,
+) -> (Vec<JobCompletion>, Vec<PendingCircuitJob>) {
+    let outcomes = futures::future::join_all(sessions.into_iter().map(|active| {
+        let ActiveSession {
+            peer_id,
+            job,
+            session,
+        } = active;
+        async move { (peer_id, job, session.finish().await) }
+    }))
+    .await;
+
+    let mut completions: Vec<JobCompletion> = Vec::new();
+    let mut retry_jobs: Vec<PendingCircuitJob> = Vec::new();
+    for (peer_id, job, outcome) in outcomes {
+        match outcome {
+            HandlerOutcome::Done(completion) => {
+                completions.push(JobCompletion {
+                    peer_id,
+                    completion,
+                });
+            }
+            HandlerOutcome::Retry => {
+                tracing::debug!(
+                    worker = worker_id,
+                    ?peer_id,
+                    "session finished with Retry — requeueing"
+                );
+                retry_jobs.push(job);
+            }
+        }
+    }
+    (completions, retry_jobs)
+}
+
+/// Abort evicted sessions concurrently and return their jobs only after all
+/// asynchronous teardown has completed.
+async fn abort_sessions(worker_id: usize, sessions: Vec<ActiveSession>) -> Vec<PendingCircuitJob> {
+    futures::future::join_all(sessions.into_iter().map(|active| {
+        let ActiveSession {
+            peer_id,
+            job,
+            session,
+        } = active;
+        async move {
+            session.abort().await;
+            tracing::debug!(
+                worker = worker_id,
+                ?peer_id,
+                "evicted session teardown complete"
+            );
+            job
+        }
+    }))
+    .await
+}
+
 /// Main loop for a garbling worker thread.
 ///
 /// Receives sessions and chunk commands from the coordinator's main thread.
@@ -940,6 +1239,7 @@ async fn process_chunk_on_sessions(
 async fn worker_loop(
     id: usize,
     chunk_timeout: Duration,
+    stall_strikes: u32,
     command_rx: kanal::AsyncReceiver<WorkerCommand>,
     report_tx: kanal::AsyncSender<WorkerReport>,
 ) {
@@ -968,17 +1268,23 @@ async fn worker_loop(
                 }
 
                 WorkerCommand::ProcessChunk(chunk) => {
-                    let evicted_indices =
-                        process_chunk_on_sessions(id, &mut sessions, &chunk, chunk_timeout).await;
+                    let evicted_indices = process_chunk_on_sessions(
+                        id,
+                        &mut sessions,
+                        &chunk,
+                        chunk_timeout,
+                        stall_strikes,
+                    )
+                    .await;
 
                     // Remove evicted sessions (reverse order for stable indices)
                     // and collect their jobs for retry.
-                    let mut evicted_jobs: Vec<PendingCircuitJob> =
+                    let mut evicted_sessions: Vec<ActiveSession> =
                         Vec::with_capacity(evicted_indices.len());
                     for &idx in evicted_indices.iter().rev() {
-                        let evicted = sessions.remove(idx);
-                        evicted_jobs.push(evicted.job);
+                        evicted_sessions.push(sessions.remove(idx));
                     }
+                    let evicted_jobs = abort_sessions(id, evicted_sessions).await;
 
                     let report = WorkerReport::ChunkDone(ChunkReport {
                         evicted_jobs,
@@ -991,35 +1297,8 @@ async fn worker_loop(
                 }
 
                 WorkerCommand::FinishPass => {
-                    let mut completions: Vec<JobCompletion> = Vec::new();
-                    let mut retry_jobs: Vec<PendingCircuitJob> = Vec::new();
-
-                    for active in sessions.drain(..) {
-                        let ActiveSession {
-                            peer_id,
-                            job,
-                            session,
-                        } = active;
-
-                        let outcome = session.finish().await;
-
-                        match outcome {
-                            HandlerOutcome::Done(completion) => {
-                                completions.push(JobCompletion {
-                                    peer_id,
-                                    completion,
-                                });
-                            }
-                            HandlerOutcome::Retry => {
-                                tracing::debug!(
-                                    worker = id,
-                                    ?peer_id,
-                                    "session finished with Retry — requeueing"
-                                );
-                                retry_jobs.push(job);
-                            }
-                        }
-                    }
+                    let (completions, retry_jobs) =
+                        finish_sessions(id, std::mem::take(&mut sessions)).await;
 
                     let report = WorkerReport::FinishDone(FinishReport {
                         completions,
@@ -1060,6 +1339,30 @@ async fn worker_loop(
 // ════════════════════════════════════════════════════════════════════════════
 // Block conversion
 // ════════════════════════════════════════════════════════════════════════════
+
+/// Read and convert the next circuit chunk, or `None` at end of circuit.
+///
+/// A read error is logged and mapped to `None`: the pass finishes early
+/// with whatever the sessions have processed, matching the pre-pipelining
+/// behaviour.
+async fn read_next_chunk(
+    reader: &mut ReaderV5c,
+    total_gates: u64,
+    block_idx: &mut usize,
+) -> Option<Arc<OwnedChunk>> {
+    match reader.next_blocks_chunk().await {
+        Ok(Some(reader_chunk)) => {
+            // Convert borrowed blocks to owned, wrap in Arc for sharing.
+            let owned = convert_chunk(&reader_chunk, total_gates, block_idx);
+            Some(Arc::new(owned))
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::error!(%e, "circuit read error mid-pass — finishing early");
+            None
+        }
+    }
+}
 
 /// Convert a borrowed chunk of blocks from the circuit reader into an owned
 /// [`OwnedChunk`] suitable for sharing across workers via [`Arc`].
@@ -1124,10 +1427,13 @@ mod tests {
     };
 
     use mosaic_cac_types::{
-        GarblingSeed, Seed,
+        GarblingSeed, Index, Seed,
         state_machine::garbler::{ActionId, ActionResult},
     };
-    use mosaic_job_api::{ActionCompletion, CircuitAction, HandlerOutcome, PendingCircuitJob};
+    use mosaic_job_api::{
+        ActionCompletion, CircuitAction, CreateSessionFuture, HandlerOutcome, PendingCircuitJob,
+        Priority,
+    };
 
     use super::*;
 
@@ -1163,11 +1469,16 @@ mod tests {
     }
 
     fn sample_job(peer_byte: u8) -> PendingCircuitJob {
+        sample_job_with_priority(peer_byte, Priority::Normal)
+    }
+
+    fn sample_job_with_priority(peer_byte: u8, priority: Priority) -> PendingCircuitJob {
         PendingCircuitJob {
             peer_id: PeerId::from([peer_byte; 32]),
             action: CircuitAction::GarblerTransfer {
                 seed: GarblingSeed::from([peer_byte; 32]),
             },
+            priority,
         }
     }
 
@@ -1216,6 +1527,7 @@ mod tests {
                     circuit_path: PathBuf::new(),
                     batch_timeout: Duration::from_millis(1),
                     chunk_timeout: Duration::from_millis(1),
+                    chunk_stall_strikes: 1,
                 },
                 sessions,
                 &mut workers,
@@ -1385,6 +1697,7 @@ mod tests {
                     action: CircuitAction::GarblerTransfer {
                         seed: GarblingSeed::from([5; 32]),
                     },
+                    priority: Priority::Normal,
                 }],
             )]);
             let mut pending_retry = Vec::new();
@@ -1541,9 +1854,14 @@ mod tests {
                 .map(|i| active_session(i, probe(&active, &peak)))
                 .collect();
 
-            let evicted =
-                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), Duration::from_secs(5))
-                    .await;
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_secs(5),
+                1,
+            )
+            .await;
 
             assert!(evicted.is_empty(), "no session should be evicted");
             assert_eq!(
@@ -1571,7 +1889,7 @@ mod tests {
 
             let started = std::time::Instant::now();
             let evicted =
-                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), CHUNK_TIMEOUT).await;
+                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), CHUNK_TIMEOUT, 1).await;
             let elapsed = started.elapsed();
 
             assert_eq!(evicted, vec![1, 3], "only the stalled sessions are evicted");
@@ -1593,6 +1911,483 @@ mod tests {
         });
     }
 
+    // ── Batch intake ─────────────────────────────────────────────────
+
+    fn job_peer(job: &PendingCircuitJob) -> u8 {
+        job.peer_id.as_bytes()[0]
+    }
+
+    #[test]
+    fn collect_batch_caps_at_max_concurrent_and_leaves_rest() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog: VecDeque<PendingCircuitJob> = (0u8..5).map(sample_job).collect();
+
+            let batch = collect_batch(&mut backlog, &rx, 3, Duration::from_millis(10))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [0, 1, 2]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [3, 4]);
+        });
+    }
+
+    #[test]
+    fn collect_batch_full_backlog_skips_the_window() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog: VecDeque<PendingCircuitJob> = (0u8..4).map(sample_job).collect();
+
+            let started = std::time::Instant::now();
+            // A pathologically long window must not delay a full batch.
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_secs(60))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.len(), 4);
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "full batch waited out the window"
+            );
+        });
+    }
+
+    #[test]
+    fn collect_batch_inspects_queued_priority_before_full_batch_start() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::from([sample_compute_job(1), sample_compute_job(2)]);
+
+            tx.send(sample_job_with_priority(3, Priority::Critical))
+                .await
+                .expect("send Critical job");
+            drop(tx);
+
+            let batch = collect_batch(&mut backlog, &rx, 2, Duration::from_secs(60))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [3]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [1, 2]);
+        });
+    }
+
+    #[test]
+    fn collect_batch_waits_for_a_full_lead_class_batch() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::from([sample_job(1)]);
+
+            // The compute arrival fills the total capacity but cannot join
+            // the I/O-led pass. Intake must continue to the second I/O job.
+            tx.send(sample_compute_job(2)).await.expect("send compute");
+            tx.send(sample_job(3)).await.expect("send I/O");
+
+            let batch = collect_batch(&mut backlog, &rx, 2, Duration::from_secs(60))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1, 3]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [2]);
+        });
+    }
+
+    #[test]
+    fn collect_batch_returns_none_on_closed_channel_with_empty_backlog() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            drop(tx);
+            let mut backlog = VecDeque::new();
+            assert!(
+                collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                    .await
+                    .is_none()
+            );
+        });
+    }
+
+    fn sample_compute_job(peer_byte: u8) -> PendingCircuitJob {
+        PendingCircuitJob {
+            peer_id: PeerId::from([peer_byte; 32]),
+            action: CircuitAction::GarblerCommitment {
+                index: Index::new(1).expect("valid index"),
+                seed: GarblingSeed::from([peer_byte; 32]),
+            },
+            priority: Priority::Normal,
+        }
+    }
+
+    #[test]
+    fn collect_batch_serves_one_class_per_pass() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            // Arrival order: transfer, commitment, commitment, transfer.
+            let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::from(vec![
+                sample_job(1),
+                sample_compute_job(2),
+                sample_compute_job(3),
+                sample_job(4),
+            ]);
+
+            // Lead is the transfer at the front — the batch takes only the
+            // I/O-class jobs; compute jobs keep their positions.
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1, 4]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [2, 3]);
+
+            // Next pass leads with the compute class.
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [2, 3]);
+            assert!(backlog.is_empty());
+        });
+    }
+
+    #[test]
+    fn collect_batch_priority_picks_the_lead_class() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            // A Critical transfer behind a Normal commitment: urgency wins
+            // the lead, so the pass is I/O-class.
+            let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::from(vec![
+                sample_compute_job(1),
+                sample_job_with_priority(2, Priority::Critical),
+            ]);
+
+            let batch = collect_batch(&mut backlog, &rx, 4, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [2]);
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [1]);
+        });
+    }
+
+    #[test]
+    fn collect_batch_selects_by_priority_then_fifo() {
+        run_monoio(async {
+            let (_tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            // Arrival order: two Normals, a Critical, a High, a Normal.
+            let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::from(vec![
+                sample_job_with_priority(1, Priority::Normal),
+                sample_job_with_priority(2, Priority::Normal),
+                sample_job_with_priority(3, Priority::Critical),
+                sample_job_with_priority(4, Priority::High),
+                sample_job_with_priority(5, Priority::Normal),
+            ]);
+
+            let batch = collect_batch(&mut backlog, &rx, 3, Duration::from_millis(10))
+                .await
+                .expect("batch");
+
+            // Critical first, then High, then the oldest Normal — a
+            // withdrawal-dispute evaluation must not queue behind setup.
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [3, 4, 1]);
+            // Remaining Normals keep FIFO order.
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [2, 5]);
+        });
+    }
+
+    #[test]
+    fn requeue_bounced_lands_behind_channel_arrivals() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::new();
+
+            // Fresh job 1 arrived (in the channel) while the pass ran;
+            // job 9 bounced out of that pass.
+            tx.send(sample_job(1)).await.expect("send");
+            let mut bounced = vec![sample_job(9)];
+            requeue_bounced(&mut backlog, &rx, &mut bounced);
+
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [1, 9]);
+            assert!(bounced.is_empty());
+
+            // And the next batch serves the fresh job first.
+            let batch = collect_batch(&mut backlog, &rx, 1, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1]);
+        });
+    }
+
+    // ── Concurrent create/finish ─────────────────────────────────────
+
+    /// Factory whose create futures record overlap and classify by peer
+    /// byte: 0 → AlreadyComplete, 1 → StorageUnavailable, else Ok.
+    struct ProbeFactory {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl SessionFactory for ProbeFactory {
+        fn create_session<'a>(&'a self, job: &'a PendingCircuitJob) -> CreateSessionFuture<'a> {
+            let active = Arc::clone(&self.active);
+            let peak = Arc::clone(&self.peak);
+            let byte = job.peer_id.as_bytes()[0];
+            Box::pin(async move {
+                let in_flight = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(in_flight, Ordering::SeqCst);
+                YieldOnce(false).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                match byte {
+                    0 => Err(CircuitError::AlreadyComplete),
+                    1 => Err(CircuitError::StorageUnavailable),
+                    _ => Ok(Box::new(NoopSession) as Box<dyn CircuitSession>),
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn create_sessions_overlap_and_classify_failures() {
+        run_monoio(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let factory = ProbeFactory {
+                active: Arc::clone(&active),
+                peak: Arc::clone(&peak),
+            };
+            let jobs: Vec<PendingCircuitJob> = (0u8..4).map(sample_job).collect();
+            let mut pending_retry = Vec::new();
+
+            let sessions = create_sessions(&factory, jobs, &mut pending_retry).await;
+
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                4,
+                "session creations did not overlap"
+            );
+            assert_eq!(sessions.len(), 2, "peers 2 and 3 create successfully");
+            assert_eq!(
+                pending_retry.iter().map(job_peer).collect::<Vec<_>>(),
+                [1],
+                "only the StorageUnavailable job is retried; AlreadyComplete drops"
+            );
+        });
+    }
+
+    /// Session whose finish future records overlap; retries when asked.
+    struct FinishProbe {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        retry: bool,
+    }
+
+    impl CircuitSession for FinishProbe {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            let active = Arc::clone(&self.active);
+            let peak = Arc::clone(&self.peak);
+            let retry = self.retry;
+            Box::pin(async move {
+                let in_flight = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(in_flight, Ordering::SeqCst);
+                YieldOnce(false).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                if retry {
+                    HandlerOutcome::Retry
+                } else {
+                    HandlerOutcome::Done(ActionCompletion::Garbler {
+                        id: ActionId::SendCommitMsgHeader,
+                        result: ActionResult::CommitMsgHeaderAcked,
+                    })
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn finish_sessions_overlap_and_split_outcomes() {
+        run_monoio(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let probe = |retry| {
+                Box::new(FinishProbe {
+                    active: Arc::clone(&active),
+                    peak: Arc::clone(&peak),
+                    retry,
+                }) as Box<dyn CircuitSession>
+            };
+            let sessions = vec![
+                active_session(2, probe(false)),
+                active_session(3, probe(true)),
+                active_session(4, probe(false)),
+            ];
+
+            let (completions, retry_jobs) = finish_sessions(0, sessions).await;
+
+            assert_eq!(peak.load(Ordering::SeqCst), 3, "finishes did not overlap");
+            assert_eq!(
+                completions
+                    .iter()
+                    .map(|c| c.peer_id.as_bytes()[0])
+                    .collect::<Vec<_>>(),
+                [2, 4]
+            );
+            assert_eq!(retry_jobs.iter().map(job_peer).collect::<Vec<_>>(), [3]);
+        });
+    }
+
+    struct AbortProbe {
+        started: Arc<AtomicUsize>,
+        release_rx: kanal::AsyncReceiver<()>,
+    }
+
+    impl CircuitSession for AbortProbe {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn abort(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(async move {
+                self.started.fetch_add(1, Ordering::SeqCst);
+                let _ = self.release_rx.recv().await;
+            })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async { HandlerOutcome::Retry })
+        }
+    }
+
+    #[test]
+    fn evicted_jobs_wait_for_session_teardown_before_retry() {
+        run_monoio(async {
+            let started = Arc::new(AtomicUsize::new(0));
+            let (release_tx, release_rx) = kanal::bounded_async(1);
+            let sessions = vec![active_session(
+                7,
+                Box::new(AbortProbe {
+                    started: Arc::clone(&started),
+                    release_rx,
+                }),
+            )];
+
+            let mut abort = Box::pin(abort_sessions(0, sessions));
+            assert!(
+                monoio::time::timeout(Duration::from_millis(10), abort.as_mut())
+                    .await
+                    .is_err(),
+                "evicted job returned before session teardown completed"
+            );
+            assert_eq!(
+                started.load(Ordering::SeqCst),
+                1,
+                "session abort was not started"
+            );
+
+            release_tx.send(()).await.expect("release abort");
+            let jobs = abort.await;
+            assert_eq!(jobs.iter().map(job_peer).collect::<Vec<_>>(), [7]);
+        });
+    }
+
+    /// Session whose chunk future completes when signalled externally,
+    /// recording how many times `process_chunk` was entered.
+    struct SlowThenOkSession {
+        entered: Arc<AtomicUsize>,
+        ready_rx: kanal::AsyncReceiver<()>,
+    }
+
+    impl CircuitSession for SlowThenOkSession {
+        fn process_chunk(
+            &mut self,
+            _chunk: &Arc<OwnedChunk>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            let rx = self.ready_rx.clone();
+            Box::pin(async move {
+                let _ = rx.recv().await;
+                Ok(())
+            })
+        }
+
+        fn finish(self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
+            Box::pin(async { HandlerOutcome::Retry })
+        }
+    }
+
+    #[test]
+    fn slow_session_survives_stall_strikes_without_restart() {
+        run_monoio(async {
+            let entered = Arc::new(AtomicUsize::new(0));
+            let (ready_tx, ready_rx) = kanal::bounded_async(1);
+            let mut sessions = vec![ActiveSession {
+                peer_id: PeerId::from([1u8; 32]),
+                job: sample_job(1),
+                session: Box::new(SlowThenOkSession {
+                    entered: Arc::clone(&entered),
+                    ready_rx,
+                }),
+            }];
+
+            // Complete the chunk from a thread after ~2.5 strike intervals.
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                let _ = ready_tx.to_sync().send(());
+            });
+
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_millis(100),
+                5,
+            )
+            .await;
+
+            assert!(
+                evicted.is_empty(),
+                "session accrued strikes below the budget and must survive"
+            );
+            // The load-bearing assertion: strikes must keep polling the SAME
+            // future. Re-entering process_chunk between strikes would mean
+            // the chunk was cancelled and restarted — unsound for transfer
+            // sessions mid-stream.
+            assert_eq!(
+                entered.load(Ordering::SeqCst),
+                1,
+                "process_chunk was re-entered — chunk cancelled between strikes"
+            );
+        });
+    }
+
+    #[test]
+    fn session_evicted_only_after_strike_budget() {
+        run_monoio(async {
+            let mut sessions = vec![active_session(0, Box::new(StalledSession))];
+            let started = std::time::Instant::now();
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_millis(100),
+                3,
+            )
+            .await;
+            let elapsed = started.elapsed();
+
+            assert_eq!(evicted, vec![0]);
+            // 3 strikes at 100ms each: eviction cannot land before 300ms.
+            assert!(
+                elapsed >= Duration::from_millis(300),
+                "evicted after {elapsed:?} — struck out before the budget elapsed"
+            );
+        });
+    }
+
     #[test]
     fn evicted_indices_are_ascending() {
         run_monoio(async {
@@ -1603,9 +2398,14 @@ mod tests {
                 active_session(3, Box::new(FailingSession)),
             ];
 
-            let evicted =
-                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), Duration::from_secs(5))
-                    .await;
+            let evicted = process_chunk_on_sessions(
+                0,
+                &mut sessions,
+                &empty_chunk(),
+                Duration::from_secs(5),
+                1,
+            )
+            .await;
 
             // The caller removes evicted sessions by index in reverse, which
             // is only index-stable if these are sorted ascending.

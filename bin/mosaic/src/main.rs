@@ -221,7 +221,8 @@ where
         storage.clone(),
         table_store,
         config.circuit.path.clone(),
-    );
+    )
+    .with_transfer_outbox_depth(config.job_scheduler.garbling.transfer_outbox_depth);
     let hint_rx = net_client.handle().hint_streams().clone();
     let (job_scheduler, job_handle) = JobScheduler::new(
         config.build_job_scheduler_config(),

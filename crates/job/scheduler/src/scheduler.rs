@@ -493,6 +493,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             .submit(PendingCircuitJob {
                 peer_id,
                 action: circuit_action,
+                priority: action.priority(),
             })
             .await;
         tracing::debug!(peer = ?peer_id, action = ?action, "submitted garbler circuit action");
@@ -537,6 +538,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
             .submit(PendingCircuitJob {
                 peer_id,
                 action: circuit_action,
+                priority: action.priority(),
             })
             .await;
         tracing::debug!(peer = ?peer_id, action = ?action, "submitted evaluator circuit action");

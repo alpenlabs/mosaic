@@ -43,8 +43,15 @@ concurrency_per_worker = 8
 [job_scheduler.garbling]
 worker_threads = 4
 max_concurrent = 8
-batch_timeout_ms = 500
+# Batch-coalescing window. A pass reads the full circuit file however few
+# sessions it serves and nothing can join mid-pass, so waiting to fill a
+# batch is far cheaper than a fragmented pass. A full batch starts early.
+batch_timeout_ms = 20000
 chunk_timeout_secs = 30
+# Consecutive chunk_timeout expiries before a session is evicted from a pass.
+chunk_stall_strikes = 3
+# Bounded outbox depth (in garbled chunks) between garbling and the wire.
+transfer_outbox_depth = 8
 
 [sm_executor]
 command_queue_size = 256

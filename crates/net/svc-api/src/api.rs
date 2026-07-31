@@ -33,8 +33,32 @@ pub enum StreamRequest {
     Write { buf: PayloadBuf },
     /// Set the stream's send priority.
     SetPriority(i32),
-    /// Reset the stream with an error code.
-    Reset(u32),
+}
+
+/// High-priority request to reset a stream.
+///
+/// Reset uses a separate channel from [`StreamRequest`] so the network
+/// service can cancel an active transport write instead of queueing the reset
+/// behind it. `done_tx` acknowledges that the write task has applied the
+/// transport reset and is terminating.
+#[doc(hidden)]
+pub struct StreamReset {
+    /// Application error code sent to the peer.
+    pub code: u32,
+    /// Completion signal for the caller that requested the reset.
+    pub done_tx: AsyncSender<()>,
+}
+
+/// High-priority request to stop receiving on a stream.
+///
+/// This complements [`StreamReset`]: local reset terminates both halves of a
+/// bidirectional stream even if the peer never closes its send direction.
+#[doc(hidden)]
+pub struct StreamStop {
+    /// Application error code sent to the peer.
+    pub code: u32,
+    /// Completion signal for the caller that requested the stop.
+    pub done_tx: AsyncSender<()>,
 }
 
 /// Reason a stream was closed.
@@ -100,8 +124,12 @@ pub struct Stream {
     payload_rx: AsyncReceiver<PayloadBuf>,
 
     // -- Sending --
-    /// Requests to net-svc (write, priority, reset).
+    /// Ordered data-plane requests to net-svc (write and priority).
     request_tx: AsyncSender<StreamRequest>,
+    /// High-priority reset requests that can preempt an active write.
+    reset_tx: AsyncSender<StreamReset>,
+    /// High-priority stop request for the receive task, if this stream has one.
+    stop_tx: Option<AsyncSender<StreamStop>>,
     /// Buffers returned after writes complete.
     buf_return_rx: AsyncReceiver<PayloadBuf>,
 
@@ -122,6 +150,8 @@ impl Stream {
         peer: PeerId,
         payload_rx: AsyncReceiver<PayloadBuf>,
         request_tx: AsyncSender<StreamRequest>,
+        reset_tx: AsyncSender<StreamReset>,
+        stop_tx: AsyncSender<StreamStop>,
         buf_return_rx: AsyncReceiver<PayloadBuf>,
         close_rx: AsyncReceiver<StreamClosed>,
     ) -> Self {
@@ -129,6 +159,8 @@ impl Stream {
             peer,
             payload_rx,
             request_tx,
+            reset_tx,
+            stop_tx: Some(stop_tx),
             buf_return_rx,
             close_rx,
             close_reason: None,
@@ -145,6 +177,7 @@ impl Stream {
     pub fn new_write_only(
         peer: PeerId,
         request_tx: AsyncSender<StreamRequest>,
+        reset_tx: AsyncSender<StreamReset>,
         buf_return_rx: AsyncReceiver<PayloadBuf>,
         close_rx: AsyncReceiver<StreamClosed>,
     ) -> Self {
@@ -155,6 +188,8 @@ impl Stream {
             peer,
             payload_rx,
             request_tx,
+            reset_tx,
+            stop_tx: None,
             buf_return_rx,
             close_rx,
             close_reason: None,
@@ -308,10 +343,34 @@ impl Stream {
 
     /// Reset the stream with an error code.
     ///
-    /// This immediately closes the stream in both directions. The peer will
-    /// see the error code. Consumes the stream.
-    pub async fn reset(mut self, code: u32) {
-        let _ = self.send_request(StreamRequest::Reset(code)).await;
+    /// This immediately closes both stream directions. The peer will see the
+    /// error code. Consumes the stream and waits until the network service has
+    /// cancelled active transport I/O and applied the reset and stop.
+    pub async fn reset(self, code: u32) {
+        let (write_done_tx, write_done_rx) = bounded_async(1);
+        let wait_for_write = self
+            .reset_tx
+            .send(StreamReset {
+                code,
+                done_tx: write_done_tx,
+            })
+            .await
+            .is_ok();
+
+        let mut read_done_rx = None;
+        if let Some(stop_tx) = &self.stop_tx {
+            let (done_tx, done_rx) = bounded_async(1);
+            if stop_tx.send(StreamStop { code, done_tx }).await.is_ok() {
+                read_done_rx = Some(done_rx);
+            }
+        }
+
+        if wait_for_write {
+            let _ = write_done_rx.recv().await;
+        }
+        if let Some(done_rx) = read_done_rx {
+            let _ = done_rx.recv().await;
+        }
     }
 }
 

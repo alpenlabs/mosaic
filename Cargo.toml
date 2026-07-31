@@ -105,6 +105,7 @@ foundationdb = { git = "https://github.com/foundationdb-rs/foundationdb-rs.git",
   "embedded-fdb-include",
   "fdb-7_3",
 ] }
+cynosure = { version = "0.6.0", default-features = false, features = ["mpsc_light", "oneshot"] }
 futures = "0.3.31"
 hex = { version = "0.4.3", features = ["serde"] }
 jsonrpsee = { version = "0.26.0", features = ["macros"] }

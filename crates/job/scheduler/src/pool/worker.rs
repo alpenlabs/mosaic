@@ -6,9 +6,13 @@
 //! concurrency with the queue's built-in backpressure.
 //!
 //! When a handler signals a transient failure via [`ExecuteResult::Retry`], the
-//! worker sleeps briefly and requeues the job to the back of the queue. This
-//! ensures one unresponsive peer cannot monopolise worker slots — other peers'
-//! jobs get a chance to run between retries.
+//! worker releases the job's concurrency permit, sleeps out the backoff, and
+//! requeues the job to the back of the queue. Releasing the permit *before*
+//! the sleep is what ensures one unresponsive peer cannot monopolise worker
+//! slots. The sleep itself is kept because some handlers fail instantly
+//! (in-memory cache miss, storage row not yet written): requeueing with no
+//! delay would hot-loop pop → fail → requeue whenever the queue holds no
+//! other runnable work.
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -70,6 +74,27 @@ impl Drop for PermitGuard {
         if let Some(permit_tx) = self.permit_tx.take() {
             let _ = permit_tx.try_send(());
         }
+    }
+}
+
+/// Reports when a spawned worker task has fully finished.
+///
+/// This lifetime is intentionally longer than [`PermitGuard`] on the retry
+/// path: the execution slot is released before backoff, but the task still
+/// owns a job that graceful shutdown must not cancel before it is requeued.
+struct TaskGuard {
+    done_tx: kanal::AsyncSender<()>,
+}
+
+impl TaskGuard {
+    fn new(done_tx: kanal::AsyncSender<()>) -> Self {
+        Self { done_tx }
+    }
+}
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        let _ = self.done_tx.try_send(());
     }
 }
 
@@ -220,20 +245,48 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
         let _ = permit_tx.send(());
     }
     let permit_rx = permit_rx.to_async();
+    // Unlike permits, task-lifetime tokens remain held through retry
+    // backoff. If the closed queue is temporarily empty while a task still
+    // owns a retry job, the worker waits for that task to requeue it instead
+    // of dropping the runtime and cancelling the task.
+    let (task_done_tx, task_done_rx) = kanal::unbounded_async();
 
     async move {
         tracing::info!(concurrency, "worker started");
 
+        let mut active_tasks = 0usize;
         loop {
+            // Keep the count current during normal operation. Notifications
+            // are unbounded and one-to-one with spawned tasks.
+            while let Ok(Some(())) = task_done_rx.try_recv() {
+                active_tasks = active_tasks.saturating_sub(1);
+            }
+
             // 1. Wait for capacity — blocks if all permits are held by in-flight tasks.
             if permit_rx.recv().await.is_err() {
                 tracing::debug!("permit channel closed; worker exiting");
                 break;
             }
+            let permit = PermitGuard::new(permit_tx.clone());
 
             // 2. Pull next job — we only reach here when we have capacity.
             let Some(pool_job) = queue.pop().await else {
-                tracing::debug!("job queue closed and drained; worker exiting");
+                // Return the unused slot before waiting. A retry task may
+                // requeue after its backoff, in which case this loop must
+                // retain the runtime and process that job.
+                drop(permit);
+                while let Ok(Some(())) = task_done_rx.try_recv() {
+                    active_tasks = active_tasks.saturating_sub(1);
+                }
+                if active_tasks == 0 {
+                    tracing::debug!("job queue closed and drained; worker exiting");
+                    break;
+                }
+                if task_done_rx.recv().await.is_ok() {
+                    active_tasks = active_tasks.saturating_sub(1);
+                    continue;
+                }
+                tracing::error!("worker task completion channel closed unexpectedly");
                 break;
             };
 
@@ -244,13 +297,15 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
             let queue = Arc::clone(&queue);
             let completion_tx = completion_tx.clone();
             let fault_tx = fault_tx.clone();
-            let permit_tx = permit_tx.clone();
+            let task_done_tx = task_done_tx.clone();
 
-            // 3. Spawn local task. The permit is returned when the task completes, regardless of
-            //    whether it succeeded or was requeued for retry.
+            // 3. Spawn local task. The permit is released when execution finishes — on the retry
+            //    path that is *before* the backoff sleep, so a job waiting out its backoff holds no
+            //    slot. TaskGuard remains alive until any retry job is safely requeued.
+            active_tasks += 1;
             monoio::spawn(
                 async move {
-                    let _permit = PermitGuard::new(permit_tx);
+                    let _task = TaskGuard::new(task_done_tx);
                     tracing::trace!("executing worker job");
                     let result = execute_job(dispatcher.as_ref(), &pool_job).await;
                     match result {
@@ -280,6 +335,10 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
                                 backoff_ms = backoff.as_millis(),
                                 "worker job requested retry"
                             );
+                            // Free the slot for the duration of the backoff;
+                            // the sleep paces instant failures, the early
+                            // release keeps it from costing capacity.
+                            drop(permit);
                             monoio::time::sleep(backoff).await;
                             let hint_key = job.hint_key.clone();
                             queue.requeue(job, hint_key);
@@ -443,7 +502,14 @@ async fn dispatch_evaluator<D: ExecuteEvaluatorJob>(
 #[cfg(test)]
 #[allow(clippy::manual_async_fn)]
 mod tests {
-    use std::{future::Future, sync::Arc, time::Duration};
+    use std::{
+        future::Future,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
 
     use mosaic_cac_types::{
         AdaptorMsgChunk, ChallengeMsg, ChallengeResponseMsgHeader, CommitMsgHeader, DepositId,
@@ -478,8 +544,24 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
-    struct TestDispatcher;
+    #[derive(Clone)]
+    struct TestDispatcher {
+        retry_commit_chunk_once: Option<Arc<AtomicBool>>,
+    }
+
+    impl TestDispatcher {
+        fn always_retry_configured_actions() -> Self {
+            Self {
+                retry_commit_chunk_once: None,
+            }
+        }
+
+        fn retry_commit_chunk_once(flag: Arc<AtomicBool>) -> Self {
+            Self {
+                retry_commit_chunk_once: Some(flag),
+            }
+        }
+    }
 
     impl ExecuteGarblerJob for TestDispatcher {
         type Session = DummySession;
@@ -520,7 +602,11 @@ mod tests {
             _peer_id: &PeerId,
             wire_idx: u16,
         ) -> impl Future<Output = HandlerOutcome> + Send {
+            let retry_once = self.retry_commit_chunk_once.clone();
             async move {
+                if retry_once.is_some_and(|flag| flag.swap(false, Ordering::AcqRel)) {
+                    return HandlerOutcome::Retry;
+                }
                 HandlerOutcome::Done(ActionCompletion::Garbler {
                     id: garbler::ActionId::SendCommitMsgChunk(wire_idx),
                     result: garbler::ActionResult::CommitMsgChunkAcked,
@@ -669,11 +755,141 @@ mod tests {
     }
 
     #[test]
+    fn retrying_job_releases_slot_during_backoff() {
+        run_monoio(async {
+            let peer_id = PeerId::from_bytes([7; 32]);
+            let queue = Arc::new(JobQueue::new(false, None));
+            let dispatcher = Arc::new(TestDispatcher::always_retry_configured_actions());
+            let (completion_tx, completion_rx) = kanal::bounded_async(4);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(4);
+
+            // Concurrency of 1: the retrying job and the completing job
+            // compete for the same slot.
+            let worker = monoio::spawn(worker_loop(
+                0,
+                dispatcher,
+                Arc::clone(&queue),
+                completion_tx,
+                fault_tx,
+                1,
+            ));
+
+            // Job A always requests Retry (TestDispatcher::generate_shares).
+            // attempts=6 puts its next backoff at 100ms * 2^6 = 6.4s, far
+            // beyond this test's assertion window — so job B below can only
+            // complete if the retry path released its permit before sleeping.
+            queue.push(
+                PoolJob {
+                    priority: Priority::Normal,
+                    job: WorkerJob::Garbler {
+                        peer_id,
+                        action: GarblerAction::GenerateShares(
+                            Seed::from([0u8; 32]),
+                            Index::new(1).expect("valid index"),
+                        ),
+                    },
+                    attempts: 6,
+                    hint_key: None,
+                },
+                None,
+            );
+            // Job B completes immediately — if it gets a slot.
+            queue.push(
+                PoolJob {
+                    priority: Priority::Normal,
+                    job: WorkerJob::Garbler {
+                        peer_id,
+                        action: GarblerAction::SendCommitMsgChunk(0),
+                    },
+                    attempts: 0,
+                    hint_key: None,
+                },
+                None,
+            );
+
+            let completion = monoio::time::timeout(Duration::from_secs(2), completion_rx.recv())
+                .await
+                .expect(
+                    "job B did not complete while job A slept out its backoff — \
+                     the retry path is holding its concurrency permit through the sleep",
+                )
+                .expect("completion channel open");
+            drop(completion);
+
+            queue.close();
+            let _ = monoio::time::timeout(Duration::from_secs(2), worker).await;
+        });
+    }
+
+    #[test]
+    fn shutdown_waits_for_retry_backoff_job() {
+        run_monoio(async {
+            let peer_id = PeerId::from_bytes([8; 32]);
+            let queue = Arc::new(JobQueue::new(false, None));
+            let retry_once = Arc::new(AtomicBool::new(true));
+            let dispatcher = Arc::new(TestDispatcher::retry_commit_chunk_once(Arc::clone(
+                &retry_once,
+            )));
+            let (completion_tx, completion_rx) = kanal::bounded_async(1);
+            let (fault_tx, _fault_rx) = kanal::bounded_async(1);
+
+            let worker = monoio::spawn(worker_loop(
+                0,
+                dispatcher,
+                Arc::clone(&queue),
+                completion_tx,
+                fault_tx,
+                1,
+            ));
+
+            queue.push(
+                PoolJob {
+                    priority: Priority::Normal,
+                    job: WorkerJob::Garbler {
+                        peer_id,
+                        action: GarblerAction::SendCommitMsgChunk(7),
+                    },
+                    attempts: 0,
+                    hint_key: None,
+                },
+                None,
+            );
+
+            // Close while the first attempt is sleeping out its retry
+            // backoff. The worker must stay alive, accept the requeued job,
+            // complete its second attempt, and only then exit.
+            monoio::time::timeout(Duration::from_secs(1), async {
+                while retry_once.load(Ordering::Acquire) {
+                    monoio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("first attempt did not enter retry backoff");
+            queue.close();
+
+            let completion = monoio::time::timeout(Duration::from_secs(2), completion_rx.recv())
+                .await
+                .expect("retry job was lost during worker shutdown")
+                .expect("completion channel open");
+            assert!(matches!(
+                completion.completion,
+                ActionCompletion::Garbler {
+                    id: garbler::ActionId::SendCommitMsgChunk(7),
+                    ..
+                }
+            ));
+            monoio::time::timeout(Duration::from_secs(2), worker)
+                .await
+                .expect("worker did not exit after draining retry job");
+        });
+    }
+
+    #[test]
     fn closed_completion_channel_reports_scheduler_fault() {
         run_monoio(async {
             let peer_id = PeerId::from_bytes([9; 32]);
             let queue = Arc::new(JobQueue::new(false, None));
-            let dispatcher = Arc::new(TestDispatcher);
+            let dispatcher = Arc::new(TestDispatcher::always_retry_configured_actions());
             let (completion_tx, completion_rx) = kanal::bounded_async(1);
             let (fault_tx, fault_rx) = kanal::bounded_async(1);
             drop(completion_rx);

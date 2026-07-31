@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
+use mosaic_job_executors::evaluator::BULK_READ_TIMEOUT;
 use mosaic_job_scheduler::{GarblingConfig, JobSchedulerConfig, PoolConfig};
 use mosaic_net_client::NetClientConfig;
 use mosaic_net_svc::{NetServiceConfig, PeerConfig, PeerId};
@@ -97,6 +98,7 @@ impl MosaicConfig {
                 circuit_path: self.circuit.path.clone(),
                 batch_timeout: Duration::from_millis(self.job_scheduler.garbling.batch_timeout_ms),
                 chunk_timeout: Duration::from_secs(self.job_scheduler.garbling.chunk_timeout_secs),
+                chunk_stall_strikes: self.job_scheduler.garbling.chunk_stall_strikes,
             },
             submission_queue_size: self.job_scheduler.submission_queue_size,
             completion_queue_size: self.job_scheduler.completion_queue_size,
@@ -136,6 +138,33 @@ impl MosaicConfig {
 
         if self.job_scheduler.garbling.worker_threads == 0 {
             bail!("job_scheduler.garbling.worker_threads must be greater than zero");
+        }
+
+        if self.job_scheduler.garbling.chunk_stall_strikes == 0 {
+            bail!("job_scheduler.garbling.chunk_stall_strikes must be greater than zero");
+        }
+
+        if self.job_scheduler.garbling.transfer_outbox_depth == 0 {
+            bail!("job_scheduler.garbling.transfer_outbox_depth must be greater than zero");
+        }
+
+        // A session that stalls for its full eviction budget on the garbler
+        // side must still leave the evaluator's bulk read timeout with room
+        // to spare — otherwise one slow peer's stall times out the bulk
+        // reads of every other concurrent transfer on the evaluator.
+        let max_chunk_stall = self
+            .build_job_scheduler_config()
+            .garbling
+            .max_chunk_stall_duration();
+        let margin = Duration::from_secs(30);
+        if max_chunk_stall.saturating_add(margin) >= BULK_READ_TIMEOUT {
+            bail!(
+                "job_scheduler.garbling chunk_timeout_secs x chunk_stall_strikes (scaled for \
+                 co-resident sessions per worker) = {max_chunk_stall:?}; this leaves less than \
+                 the required {margin:?} margin under the evaluator's bulk read timeout of \
+                 {BULK_READ_TIMEOUT:?}. Lower chunk_timeout_secs/chunk_stall_strikes, or raise \
+                 worker_threads relative to max_concurrent"
+            );
         }
 
         if self.job_scheduler.light.threads == 0 || self.job_scheduler.heavy.threads == 0 {
@@ -407,6 +436,10 @@ pub(crate) struct GarblingSection {
     pub(crate) batch_timeout_ms: u64,
     #[serde(default = "default_chunk_timeout_secs")]
     pub(crate) chunk_timeout_secs: u64,
+    #[serde(default = "default_chunk_stall_strikes")]
+    pub(crate) chunk_stall_strikes: u32,
+    #[serde(default = "default_transfer_outbox_depth")]
+    pub(crate) transfer_outbox_depth: usize,
 }
 
 impl Default for GarblingSection {
@@ -416,6 +449,8 @@ impl Default for GarblingSection {
             max_concurrent: default_garbling_max_concurrent(),
             batch_timeout_ms: default_batch_timeout_ms(),
             chunk_timeout_secs: default_chunk_timeout_secs(),
+            chunk_stall_strikes: default_chunk_stall_strikes(),
+            transfer_outbox_depth: default_transfer_outbox_depth(),
         }
     }
 }
@@ -539,7 +574,7 @@ const DEFAULT_POOL_THREADS: usize = 1;
 const DEFAULT_POOL_CONCURRENCY: usize = 32;
 const DEFAULT_GARBLING_WORKER_THREADS: usize = 4;
 const DEFAULT_GARBLING_MAX_CONCURRENT: usize = 8;
-const DEFAULT_BATCH_TIMEOUT_MS: u64 = 500;
+const DEFAULT_BATCH_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_CHUNK_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_SUBMISSION_QUEUE_SIZE: usize = 256;
 const DEFAULT_COMPLETION_QUEUE_SIZE: usize = 256;
@@ -593,6 +628,14 @@ const fn default_batch_timeout_ms() -> u64 {
 
 const fn default_chunk_timeout_secs() -> u64 {
     DEFAULT_CHUNK_TIMEOUT_SECS
+}
+
+const fn default_chunk_stall_strikes() -> u32 {
+    3
+}
+
+const fn default_transfer_outbox_depth() -> usize {
+    8
 }
 
 const fn default_submission_queue_size() -> usize {

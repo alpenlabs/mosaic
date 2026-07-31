@@ -48,9 +48,16 @@ const BULK_OPEN_WARN_AFTER: Duration = Duration::from_secs(5);
 /// only fires once the sender's action is already executing, so the hint
 /// tightens the sender-ready-to-receiver-ready gap but does NOT cover the
 /// upstream queue wait — the timeout still has to.
-const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 const BULK_READ_WARN_AFTER: Duration = Duration::from_secs(5);
-const BULK_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the evaluator waits for one bulk read.
+///
+/// This constant is public because the mosaic binary checks it at startup
+/// against the chunk timeout and the stall-strike budget of the garbler (see
+/// `MosaicConfig::validate`). If a session stalls for longer than this on the
+/// garbler side, the bulk reads of every other concurrent transfer here also
+/// time out.
+pub const BULK_READ_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Build a successful evaluator completion from an action ID and result.
 fn completed(id: ActionId, result: ActionResult) -> HandlerOutcome {

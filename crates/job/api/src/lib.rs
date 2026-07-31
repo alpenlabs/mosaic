@@ -34,6 +34,7 @@
 
 mod handle;
 mod hint;
+mod priority;
 mod submission;
 
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -54,6 +55,7 @@ use mosaic_cac_types::{
 };
 use mosaic_net_svc_api::PeerId;
 use mosaic_vs3::Index;
+pub use priority::Priority;
 pub use submission::{ActionCompletion, JobActions, JobBatch, JobCompletion};
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -146,6 +148,16 @@ pub trait CircuitSession: Send {
         chunk: &Arc<OwnedChunk>,
     ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>>;
 
+    /// Abort a session that was evicted before all chunks were processed.
+    ///
+    /// Implementations with asynchronous teardown must not return until
+    /// their external resources have terminated. The default implementation
+    /// drops the session immediately.
+    fn abort(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        drop(self);
+        Box::pin(async {})
+    }
+
     /// Finalize the session after all blocks have been processed.
     ///
     /// Extracts output labels, computes commitments, translates evaluation
@@ -209,6 +221,11 @@ pub struct PendingCircuitJob {
     pub peer_id: PeerId,
     /// The circuit action to execute.
     pub action: CircuitAction,
+    /// Scheduling urgency, derived from the SM action. The coordinator
+    /// orders its backlog by this before selecting a pass batch, so a
+    /// Critical withdrawal-dispute evaluation does not queue behind
+    /// setup work.
+    pub priority: Priority,
 }
 
 // ════════════════════════════════════════════════════════════════════════════

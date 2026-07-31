@@ -50,6 +50,9 @@ pub struct MosaicExecutor<SP: StorageProvider, TS: TableStore> {
     pub table_store: TS,
     /// Path to the v5c circuit file used for garbling and evaluation.
     pub circuit_path: PathBuf,
+    /// Outbox depth for transfer sessions, in garbled chunks. The default
+    /// is 8. To change it, use [`Self::with_transfer_outbox_depth`].
+    pub transfer_outbox_depth: usize,
     /// Cached exact ciphertext length for one garbling table.
     expected_ciphertext_bytes: parking_lot::Mutex<Option<usize>>,
 }
@@ -68,6 +71,7 @@ impl<SP: StorageProvider, TS: TableStore> MosaicExecutor<SP, TS> {
             storage,
             table_store,
             circuit_path,
+            transfer_outbox_depth: crate::circuit_sessions::TRANSFER_OUTBOX_DEPTH,
             expected_ciphertext_bytes: parking_lot::Mutex::new(None),
         }
     }
@@ -86,8 +90,15 @@ impl<SP: StorageProvider, TS: TableStore> MosaicExecutor<SP, TS> {
             storage,
             table_store,
             circuit_path,
+            transfer_outbox_depth: crate::circuit_sessions::TRANSFER_OUTBOX_DEPTH,
             expected_ciphertext_bytes: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Override the transfer outbox depth (default: 8 garbled chunks).
+    pub fn with_transfer_outbox_depth(mut self, depth: usize) -> Self {
+        self.transfer_outbox_depth = depth;
+        self
     }
 
     async fn expected_table_ciphertext_bytes(&self) -> Result<usize, CircuitError> {
