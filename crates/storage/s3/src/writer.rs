@@ -6,7 +6,10 @@
 //! visible only once the live commit marker is published during
 //! [`finish`](S3TableWriter::finish).
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
@@ -139,6 +142,35 @@ async fn background_writer(
     }
 }
 
+/// Minimum interval between object-store upload progress lines.
+const STORE_PROGRESS_PERIOD: Duration = Duration::from_secs(30);
+
+/// Emit one object-store upload progress line.
+///
+/// `put` is the throughput achieved while actually inside `put_part` — the
+/// store's own speed — whereas `avg` is measured against wall-clock and so is
+/// additionally diluted by time spent waiting for the producer to supply data.
+/// `put` well above `avg` means we are starved upstream; the two converging
+/// means the store is the constraint.
+fn log_store_progress(event: &str, parts: u64, bytes_put: u64, started: Instant, in_put: Duration) {
+    let wall = started.elapsed().as_secs_f64().max(1e-3);
+    let put_secs = in_put.as_secs_f64().max(1e-3);
+    tracing::info!(
+        target: "mosaic_progress",
+        phase = "table.store",
+        "table.store {} parts={} uploaded={:.1}GiB put={:.1}MB/s avg={:.1}MB/s \
+         elapsed={:.0}s in_put={:.0}s({:.0}%)",
+        event,
+        parts,
+        bytes_put as f64 / (1024.0 * 1024.0 * 1024.0),
+        bytes_put as f64 / put_secs / 1.0e6,
+        bytes_put as f64 / wall / 1.0e6,
+        wall,
+        in_put.as_secs_f64(),
+        in_put.as_secs_f64() * 100.0 / wall,
+    );
+}
+
 async fn background_writer_inner(
     store: &Arc<dyn ObjectStore>,
     root_paths: &TableRootPaths,
@@ -148,6 +180,18 @@ async fn background_writer_inner(
     // Start a multipart upload for the ciphertext object.
     let mut upload = store.put_multipart(&version_paths.ciphertexts).await?;
     let mut buffer = Vec::with_capacity(PART_BUFFER_SIZE);
+
+    // Upload-side progress. Parts are uploaded one at a time (each `put_part`
+    // is awaited before the next begins), so `in_put` is the true serialized
+    // cost of shipping this table to the object store. When it approaches the
+    // wall-clock, the store — not the peer or the CPU — is what is pacing the
+    // transfer, and the backpressure surfaces upstream through the bounded
+    // command channel.
+    let upload_started = Instant::now();
+    let mut last_log = upload_started;
+    let mut parts: u64 = 0;
+    let mut bytes_put: u64 = 0;
+    let mut in_put = Duration::ZERO;
 
     loop {
         let cmd = match cmd_rx.recv().await {
@@ -168,7 +212,17 @@ async fn background_writer_inner(
                 // Upload complete parts when the buffer is large enough.
                 while buffer.len() >= PART_BUFFER_SIZE {
                     let part: Vec<u8> = buffer.drain(..PART_BUFFER_SIZE).collect();
+                    let n = part.len() as u64;
+                    let put_started = Instant::now();
                     upload.put_part(Bytes::from(part).into()).await?;
+                    in_put += put_started.elapsed();
+                    parts += 1;
+                    bytes_put += n;
+                }
+
+                if last_log.elapsed() >= STORE_PROGRESS_PERIOD {
+                    log_store_progress("progress", parts, bytes_put, upload_started, in_put);
+                    last_log = Instant::now();
                 }
             }
 
@@ -179,11 +233,18 @@ async fn background_writer_inner(
                 // Upload any remaining buffered ciphertext as the final part.
                 if !buffer.is_empty() {
                     let final_part = std::mem::take(&mut buffer);
+                    let n = final_part.len() as u64;
+                    let put_started = Instant::now();
                     upload.put_part(Bytes::from(final_part).into()).await?;
+                    in_put += put_started.elapsed();
+                    parts += 1;
+                    bytes_put += n;
                 }
 
                 // Complete the multipart upload.
                 upload.complete().await?;
+
+                log_store_progress("summary", parts, bytes_put, upload_started, in_put);
 
                 // Upload translation material as a single object under the staged version.
                 store
