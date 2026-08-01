@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 90 # cold run takes a lot of time as each crate is compiled separately
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -34,7 +34,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@b8cecb83565409bcc297b2df6e77f030b2a468d5 # cargo-hack v2.82.0
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # cargo-hack v2.83.4
         with:
           tool: cargo-hack
 
