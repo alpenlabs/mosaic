@@ -161,7 +161,12 @@ where
             virtual_hosted_style_request,
             ..
         } => {
-            let mut builder = AmazonS3Builder::new()
+            // from_env() is required for IRSA: since object_store 0.14, build() no
+            // longer reads AWS_* env vars itself. When config credentials are
+            // omitted, resolution falls through to web-identity → ECS task →
+            // EKS pod identity → instance profile. Explicit settings below
+            // override anything taken from the environment.
+            let mut builder = AmazonS3Builder::from_env()
                 .with_bucket_name(bucket)
                 .with_region(region)
                 .with_allow_http(*allow_http)
@@ -182,8 +187,6 @@ where
                 builder = builder.with_secret_access_key(secret_access_key);
             }
 
-            // When credentials are omitted the builder falls through to the
-            // AWS credential chain: IRSA web-identity → ECS task → instance profile.
             if let Some(endpoint) = endpoint {
                 builder = builder.with_endpoint(endpoint);
             }
