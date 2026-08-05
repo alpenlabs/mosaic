@@ -19,7 +19,10 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicIsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -48,10 +51,12 @@ use mosaic_cac_types::{
         },
     },
 };
+pub(crate) use mosaic_job_api::short_id;
 use mosaic_job_api::{
     ActionCompletion, CircuitError, CircuitSession, HandlerOutcome, OwnedBlock, OwnedChunk,
 };
 use mosaic_net_client::BulkSender;
+use mosaic_net_svc_api::PeerId;
 use mosaic_storage_api::table_store::TableReader;
 use mosaic_vs3::{Index, Scalar, Share};
 
@@ -59,16 +64,6 @@ use crate::{
     garbling::{GarblingSession, GarblingSetup, compute_commitment, hash_garbling_params},
     progress::{HEARTBEAT_PERIOD, HeartbeatTracker, ProgressUnit, StageBreakdown},
 };
-
-/// Short-id helper used to label progress logs. Renders the first 4 bytes
-/// of a digest as `0x........`. Truncates gracefully if shorter.
-pub(crate) fn short_id(digest: &[u8]) -> String {
-    let mut s = String::from("0x");
-    for b in digest.iter().take(4) {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Gate parsing helpers for OwnedBlock
@@ -244,6 +239,7 @@ impl CommitmentSession {
     pub fn new(
         setup: GarblingSetup,
         output_wire_ids: Vec<u32>,
+        peer_id: &PeerId,
         index: Index,
         is_garbler: bool,
         total_gates: u64,
@@ -256,7 +252,7 @@ impl CommitmentSession {
         };
         let heartbeat = HeartbeatTracker::new(
             label,
-            format!("ckt{index}"),
+            format!("peer={} circuit_index={index}", short_id(peer_id.as_ref())),
             Some(total_gates),
             ProgressUnit::Blocks,
             HEARTBEAT_PERIOD,
@@ -453,24 +449,32 @@ struct WireMeter {
     heartbeat: HeartbeatTracker,
     stages: StageBreakdown,
     bytes: u64,
+    /// Live outbox occupancy, shared with the producer's [`UploadMeter`].
+    /// Decremented here on every buffer the drain takes off the queue, so
+    /// the producer's high-water mark reads true queue depth. Signed: the
+    /// two sides race with `Relaxed` ordering, so the count may transiently
+    /// dip below zero; the producer clamps when reading.
+    outbox_occupancy: Arc<AtomicIsize>,
 }
 
 impl WireMeter {
-    fn new(id: String, total_bytes: u64) -> Self {
+    fn new(ids: String, total_bytes: u64, outbox_occupancy: Arc<AtomicIsize>) -> Self {
         Self {
             heartbeat: HeartbeatTracker::new(
                 "table.wire",
-                id,
+                ids,
                 Some(total_bytes),
                 ProgressUnit::Bytes,
                 HEARTBEAT_PERIOD,
             ),
             stages: StageBreakdown::default(),
             bytes: 0,
+            outbox_occupancy,
         }
     }
 
     fn on_recv(&mut self, waited: Duration) {
+        self.outbox_occupancy.fetch_sub(1, Ordering::Relaxed);
         self.stages.feed_wait += waited;
     }
 
@@ -517,14 +521,23 @@ struct UploadMeter {
     /// Expected total ciphertext bytes (AND gates × 16); also the total for
     /// the drain's `table.wire` meter.
     total_bytes: u64,
+    /// Configured outbox depth, printed next to the high-water mark.
+    outbox_depth: usize,
+    /// Live outbox occupancy: incremented on enqueue here, decremented by
+    /// the drain's [`WireMeter::on_recv`]. `None` until the drain spawns.
+    outbox_occupancy: Option<Arc<AtomicIsize>>,
+    /// Highest occupancy observed, in buffers. Answers whether the
+    /// configured depth was actually used — `outbox_full` alone cannot
+    /// distinguish a near-full outbox from an empty one.
+    outbox_hwm: usize,
 }
 
 impl UploadMeter {
-    fn new(id: String, total_bytes: u64) -> Self {
+    fn new(ids: String, total_bytes: u64, outbox_depth: usize) -> Self {
         Self {
             heartbeat: HeartbeatTracker::new(
                 "table.upload",
-                id,
+                ids,
                 Some(total_bytes),
                 ProgressUnit::Bytes,
                 HEARTBEAT_PERIOD,
@@ -533,7 +546,16 @@ impl UploadMeter {
             bytes_enqueued: 0,
             send_parked_since: None,
             total_bytes,
+            outbox_depth,
+            outbox_occupancy: None,
+            outbox_hwm: 0,
         }
+    }
+
+    /// Wire up the occupancy counter shared with the drain. Called when the
+    /// drain spawns (first non-empty block).
+    fn attach_outbox(&mut self, occupancy: Arc<AtomicIsize>) {
+        self.outbox_occupancy = Some(occupancy);
     }
 
     /// Time a synchronous garbling step into `compute`.
@@ -560,6 +582,12 @@ impl UploadMeter {
         }
         if res.is_ok() {
             self.bytes_enqueued = self.bytes_enqueued.saturating_add(n);
+            if let Some(occupancy) = &self.outbox_occupancy {
+                // One Relaxed RMW per ~346 KiB block; the clamp covers the
+                // benign race with the drain's decrement.
+                let now = occupancy.fetch_add(1, Ordering::Relaxed) + 1;
+                self.outbox_hwm = self.outbox_hwm.max(now.max(0) as usize);
+            }
         }
         res
     }
@@ -572,17 +600,31 @@ impl UploadMeter {
 
     /// Emit the final attribution line, first reconciling any parked
     /// interval left behind by a chunk future dropped mid-`send`.
+    ///
+    /// The outbox high-water mark is formatted here, once — the per-chunk
+    /// path only tracks the integer.
     fn summary(&mut self) {
         if let Some(parked) = self.send_parked_since.take() {
             self.stages.outbox_full += parked.elapsed();
+        }
+        if self.outbox_occupancy.is_some() {
+            self.heartbeat.set_extra(format!(
+                "outbox_hwm={}/{}",
+                self.outbox_hwm, self.outbox_depth
+            ));
         }
         self.heartbeat
             .done_staged(self.bytes_enqueued, &self.stages);
     }
 
-    /// Mint the drain-side wire meter for this transfer.
-    fn mint_wire_meter(&self, id: String) -> WireMeter {
-        WireMeter::new(id, self.total_bytes)
+    /// Mint the drain-side wire meter for this transfer, sharing the
+    /// producer's identity string and occupancy counter.
+    fn mint_wire_meter(&self, occupancy: Arc<AtomicIsize>) -> WireMeter {
+        WireMeter::new(
+            self.heartbeat.ids().to_string(),
+            self.total_bytes,
+            occupancy,
+        )
     }
 }
 
@@ -707,9 +749,12 @@ impl TransferSession {
     /// `stream` is an open bulk transfer stream to the evaluator.
     /// `outbox_depth` sets the capacity of the bounded outbox, in garbled
     /// chunks.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session: GarblingSession,
         stream: BulkSender,
+        peer_id: &PeerId,
+        circuit_index: Index,
         seed: GarblingSeed,
         commitment: GarblingTableCommitment,
         output_wire_ids: Vec<u32>,
@@ -718,7 +763,14 @@ impl TransferSession {
     ) -> Self {
         // Each AND gate emits 16 ciphertext bytes on the wire.
         let total_bytes = total_and_gates.saturating_mul(16);
-        let meter = UploadMeter::new(short_id(commitment.as_ref()), total_bytes);
+        let meter = UploadMeter::new(
+            format!(
+                "peer={} circuit_index={circuit_index}",
+                short_id(peer_id.as_ref())
+            ),
+            total_bytes,
+            outbox_depth,
+        );
         Self {
             session,
             stream: Some(stream),
@@ -750,9 +802,9 @@ impl TransferSession {
         let (recycle_tx, recycle_rx) = mpsc_light::bounded::<Vec<u8>>(self.outbox_depth);
         let (done_tx, done_rx) = oneshot::oneshot();
         let (abort_tx, abort_rx) = oneshot::oneshot();
-        let meter = self
-            .meter
-            .mint_wire_meter(short_id(self.commitment.as_ref()));
+        let occupancy = Arc::new(AtomicIsize::new(0));
+        self.meter.attach_outbox(Arc::clone(&occupancy));
+        let meter = self.meter.mint_wire_meter(occupancy);
 
         let drain = async move {
             let result = drain_transfer_outbox(
@@ -1013,9 +1065,11 @@ impl EvaluationSession {
     ///
     /// All setup (share interpolation, label translation, instance creation,
     /// table reader opening) is done by the caller before constructing this.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         instance: ckt_gobble::EvaluationInstance,
         ct_reader: Box<dyn DynCiphertextReader>,
+        peer_id: &PeerId,
         index: Index,
         commitment: GarblingTableCommitment,
         output_wire_ids: Vec<u32>,
@@ -1024,7 +1078,7 @@ impl EvaluationSession {
     ) -> Self {
         let heartbeat = HeartbeatTracker::new(
             "table.eval",
-            short_id(commitment.as_ref()),
+            format!("peer={} circuit_index={index}", short_id(peer_id.as_ref())),
             Some(total_gates),
             ProgressUnit::Blocks,
             HEARTBEAT_PERIOD,
@@ -1272,7 +1326,7 @@ mod tests {
                 recycle_tx,
                 abort_rx,
                 Duration::from_secs(1),
-                WireMeter::new("0xtest".to_string(), 0),
+                WireMeter::new("0xtest".to_string(), 0, Arc::new(AtomicIsize::new(0))),
             ))
         })
         .join()
@@ -1309,7 +1363,7 @@ mod tests {
                 recycle_tx,
                 abort_rx,
                 Duration::from_millis(10),
-                WireMeter::new("0xtest".to_string(), 0),
+                WireMeter::new("0xtest".to_string(), 0, Arc::new(AtomicIsize::new(0))),
             ))
         })
         .join()
@@ -1348,7 +1402,7 @@ mod tests {
                 recycle_tx,
                 abort_rx,
                 Duration::from_secs(60),
-                WireMeter::new("0xtest".to_string(), 0),
+                WireMeter::new("0xtest".to_string(), 0, Arc::new(AtomicIsize::new(0))),
             ))
         });
 

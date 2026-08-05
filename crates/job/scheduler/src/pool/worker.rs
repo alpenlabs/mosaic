@@ -17,7 +17,7 @@
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use mosaic_cac_types::state_machine::{
@@ -37,6 +37,13 @@ const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(100);
 /// Maximum backoff delay. Caps the exponential growth so a persistently
 /// failing job doesn't wait unreasonably long between attempts.
 const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(10);
+
+/// Permit wait beyond which the pool counts as saturated and worth a warn
+/// (provided jobs are actually queued behind the busy slots).
+const SLOT_WAIT_WARN_THRESHOLD: Duration = Duration::from_secs(5);
+
+/// Minimum interval between saturation warns per worker.
+const SLOT_WAIT_WARN_PERIOD: Duration = Duration::from_secs(30);
 
 /// Compute exponential backoff with cap: `min(base * 2^attempts, max)`.
 ///
@@ -150,6 +157,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
     /// Each pulled job is spawned as a local monoio task, bounded by
     /// `concurrency`.
     pub(crate) fn spawn(
+        pool: &'static str,
         id: usize,
         dispatcher: Arc<D>,
         queue: Arc<JobQueue>,
@@ -157,7 +165,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
         fault_tx: kanal::AsyncSender<SchedulerFault>,
         concurrency: usize,
     ) -> Self {
-        let thread_name = format!("worker-{id}");
+        let thread_name = format!("{pool}-worker-{id}");
         let handle = std::thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
@@ -167,6 +175,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> Worker<D> {
                         .build()
                         .expect("failed to build monoio runtime")
                         .block_on(worker_loop(
+                            pool,
                             id,
                             dispatcher,
                             Arc::clone(&queue),
@@ -231,6 +240,7 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
 /// This ensures the worker only pulls from the shared queue when it has
 /// capacity to run the job — other workers can grab jobs in the meantime.
 async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
+    pool: &'static str,
     id: usize,
     dispatcher: Arc<D>,
     queue: Arc<JobQueue>,
@@ -252,9 +262,12 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
     let (task_done_tx, task_done_rx) = kanal::unbounded_async();
 
     async move {
-        tracing::info!(concurrency, "worker started");
+        tracing::info!(pool, concurrency, "worker started");
 
         let mut active_tasks = 0usize;
+        // Throttle for the saturation warn below: a saturated pool would
+        // otherwise warn on every job pull.
+        let mut last_slot_warn: Option<Instant> = None;
         loop {
             // Keep the count current during normal operation. Notifications
             // are unbounded and one-to-one with spawned tasks.
@@ -263,9 +276,30 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
             }
 
             // 1. Wait for capacity — blocks if all permits are held by in-flight tasks.
+            // Two `Instant` reads per job pull; everything else below is on
+            // the already-saturated path.
+            let permit_wait_started = Instant::now();
             if permit_rx.recv().await.is_err() {
                 tracing::debug!("permit channel closed; worker exiting");
                 break;
+            }
+            let permit_waited = permit_wait_started.elapsed();
+            // All slots were busy for a while AND work is queued behind
+            // them — the visible symptom of pool saturation (e.g. table
+            // receives holding light-pool slots for minutes).
+            if permit_waited >= SLOT_WAIT_WARN_THRESHOLD
+                && !queue.is_empty()
+                && last_slot_warn.is_none_or(|at| at.elapsed() >= SLOT_WAIT_WARN_PERIOD)
+            {
+                tracing::warn!(
+                    pool,
+                    worker = id,
+                    concurrency,
+                    waited_ms = permit_waited.as_millis(),
+                    queued = queue.len(),
+                    "pool at capacity — queued jobs delayed waiting for a free slot"
+                );
+                last_slot_warn = Some(Instant::now());
             }
             let permit = PermitGuard::new(permit_tx.clone());
 
@@ -348,7 +382,7 @@ async fn worker_loop<D: ExecuteGarblerJob + ExecuteEvaluatorJob>(
                 .instrument(tracing::debug_span!(
                     "job_scheduler.worker_job",
                     worker = id,
-                    peer = ?peer_id,
+                    peer = %peer_id,
                     role,
                     attempts
                 )),
@@ -766,6 +800,7 @@ mod tests {
             // Concurrency of 1: the retrying job and the completing job
             // compete for the same slot.
             let worker = monoio::spawn(worker_loop(
+                "test",
                 0,
                 dispatcher,
                 Arc::clone(&queue),
@@ -834,6 +869,7 @@ mod tests {
             let (fault_tx, _fault_rx) = kanal::bounded_async(1);
 
             let worker = monoio::spawn(worker_loop(
+                "test",
                 0,
                 dispatcher,
                 Arc::clone(&queue),
@@ -895,6 +931,7 @@ mod tests {
             drop(completion_rx);
 
             let worker = monoio::spawn(worker_loop(
+                "test",
                 0,
                 dispatcher,
                 Arc::clone(&queue),

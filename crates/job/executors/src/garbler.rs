@@ -682,7 +682,7 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
     pin_mut!(delay);
     let hint_delivered = matches!(select(send, delay).await, Either::Left((Ok(()), _)));
     if !hint_delivered {
-        tracing::debug!(peer = ?peer_id, "scheduler hint send failed or timed out; proceeding");
+        tracing::debug!(peer = %peer_id, "scheduler hint send failed or timed out; proceeding");
     }
     // Small gap between the hint and the bulk open so the peer's scheduler
     // has a chance to promote before the bulk stream lands on their net-svc.
@@ -735,6 +735,8 @@ pub(crate) async fn setup_transfer_session<SP: StorageProvider, TS: TableStore>(
     Ok(TransferSession::new(
         setup.session,
         stream,
+        peer_id,
+        circuit_index,
         seed,
         commitment,
         outputs,

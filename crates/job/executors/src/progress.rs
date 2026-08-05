@@ -90,7 +90,12 @@ impl StageBreakdown {
 #[derive(Debug)]
 pub struct HeartbeatTracker {
     label: &'static str,
-    short_id: String,
+    /// Pre-formatted identity fields, e.g. `"peer=0x1a2b3c4d circuit_index=5"`.
+    /// Built once at phase start; printed verbatim on every line.
+    ids: String,
+    /// Optional pre-formatted trailing fields (e.g. `"outbox_hwm=12/256"`).
+    /// Set via [`set_extra`](Self::set_extra); appended after the stages.
+    extra: String,
     total: Option<u64>,
     unit: ProgressUnit,
     started_at: Instant,
@@ -103,14 +108,15 @@ impl HeartbeatTracker {
     /// Create a new tracker.
     ///
     /// `label` is the phase name printed in the log (e.g. `"table.upload"`).
-    /// `short_id` is a stable identifier the caller chose for this work item
-    /// (e.g. a commitment short-hash, or a circuit index).
+    /// `ids` is a pre-formatted `key=value` identity string for this work
+    /// item; use full field names (`peer=`, `circuit_index=`,
+    /// `commitment=`) so lines are joinable across phases and nodes.
     /// `total` is the expected final count if known; `None` suppresses
     /// percent/ETA in the output. `period` is the minimum interval between
     /// emissions; pass [`HEARTBEAT_PERIOD`] for the default.
     pub fn new(
         label: &'static str,
-        short_id: String,
+        ids: String,
         total: Option<u64>,
         unit: ProgressUnit,
         period: Duration,
@@ -118,7 +124,8 @@ impl HeartbeatTracker {
         let now = Instant::now();
         Self {
             label,
-            short_id,
+            ids,
+            extra: String::new(),
             total,
             unit,
             started_at: now,
@@ -126,6 +133,18 @@ impl HeartbeatTracker {
             last_log_progress: 0,
             period,
         }
+    }
+
+    /// The identity string this tracker prints on every line.
+    pub fn ids(&self) -> &str {
+        &self.ids
+    }
+
+    /// Set trailing `key=value` fields appended to subsequent lines. Callers
+    /// should format lazily — ideally once, right before a summary — so the
+    /// per-chunk path stays formatting-free.
+    pub fn set_extra(&mut self, extra: String) {
+        self.extra = extra;
     }
 
     /// If [`HEARTBEAT_PERIOD`] has elapsed since the last log (or since
@@ -174,6 +193,11 @@ impl HeartbeatTracker {
 
         let event_label = if is_final { "summary" } else { "progress" };
         let stage_str = stages.fmt_nonzero(elapsed);
+        let extra_str = if self.extra.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", self.extra)
+        };
 
         match self.unit {
             ProgressUnit::Bytes => {
@@ -192,11 +216,10 @@ impl HeartbeatTracker {
                 tracing::info!(
                     target: "mosaic_progress",
                     phase = self.label,
-                    id = %self.short_id,
-                    "{} {} id={} done={}{} inst={}/s avg={}/s elapsed={}{}{}",
+                    "{} {} {} done={}{} inst={}/s avg={}/s elapsed={}{}{}{}",
                     self.label,
                     event_label,
-                    self.short_id,
+                    self.ids,
                     done_str,
                     pct_str,
                     fmt_rate(inst_rate),
@@ -204,6 +227,7 @@ impl HeartbeatTracker {
                     fmt_duration(elapsed),
                     eta_str,
                     stage_str,
+                    extra_str,
                 );
             }
             ProgressUnit::Blocks => {
@@ -214,14 +238,14 @@ impl HeartbeatTracker {
                 tracing::info!(
                     target: "mosaic_progress",
                     phase = self.label,
-                    id = %self.short_id,
-                    "{} {} id={}{} elapsed={}{}",
+                    "{} {} {}{} elapsed={}{}{}",
                     self.label,
                     event_label,
-                    self.short_id,
+                    self.ids,
                     pct_str,
                     fmt_duration(elapsed),
                     stage_str,
+                    extra_str,
                 );
             }
         }

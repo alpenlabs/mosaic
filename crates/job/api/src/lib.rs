@@ -37,9 +37,19 @@ mod hint;
 mod priority;
 mod submission;
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
 pub use hint::{HintKey, HintKind};
+
+/// Short-id helper used to label progress logs. Renders the first 4 bytes
+/// of a digest as `0x........`. Truncates gracefully if shorter.
+pub fn short_id(digest: &[u8]) -> String {
+    let mut s = String::from("0x");
+    for b in digest.iter().take(4) {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
 
 /// Return type for [`SessionFactory::create_session`].
 ///
@@ -226,6 +236,26 @@ pub struct PendingCircuitJob {
     /// Critical withdrawal-dispute evaluation does not queue behind
     /// setup work.
     pub priority: Priority,
+    /// When this job last entered the queue: set at submission, reset by
+    /// the coordinator when a bounced job re-enters the backlog. Drives
+    /// the `queue_wait` field of pass-assignment log lines.
+    pub queued_at: Instant,
+    /// Times this job has bounced back to the backlog (eviction, transient
+    /// create failure, finish retry). 0 on first submission.
+    pub attempts: u32,
+}
+
+impl PendingCircuitJob {
+    /// Create a freshly submitted job (`queued_at` = now, `attempts` = 0).
+    pub fn new(peer_id: PeerId, action: CircuitAction, priority: Priority) -> Self {
+        Self {
+            peer_id,
+            action,
+            priority,
+            queued_at: Instant::now(),
+            attempts: 0,
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

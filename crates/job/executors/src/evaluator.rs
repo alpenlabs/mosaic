@@ -322,12 +322,12 @@ struct ReceiveMeter {
 }
 
 impl ReceiveMeter {
-    fn new(peer_id: &PeerId) -> Self {
+    fn new(peer_id: &PeerId, index: Index, total_bytes: u64) -> Self {
         Self {
             heartbeat: HeartbeatTracker::new(
                 "table.receive",
-                short_id(peer_id.as_ref()),
-                None,
+                format!("peer={} circuit_index={index}", short_id(peer_id.as_ref())),
+                Some(total_bytes),
                 ProgressUnit::Bytes,
                 HEARTBEAT_PERIOD,
             ),
@@ -384,7 +384,9 @@ where
     S: PayloadStream,
     W: mosaic_storage_api::table_store::TableWriter,
 {
-    let mut meter = ReceiveMeter::new(peer_id);
+    // The stream carries translation bytes first, then ciphertext.
+    let total_bytes = (translation_size + expected_ciphertext_bytes) as u64;
+    let mut meter = ReceiveMeter::new(peer_id, index, total_bytes);
     let outcome = drain_table_payload_inner(
         stream,
         writer,
@@ -1341,6 +1343,7 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     Ok(EvaluationSession::new(
         instance,
         ct_reader,
+        peer_id,
         index,
         commitment,
         outputs,

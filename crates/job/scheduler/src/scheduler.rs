@@ -182,12 +182,14 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         let factory: Arc<dyn SessionFactory> = Arc::clone(&executor) as Arc<dyn SessionFactory>;
 
         let light = JobThreadPool::new(
+            "light",
             config.light,
             Arc::clone(&executor),
             completion_tx.clone(),
             fault_tx.clone(),
         );
         let heavy = JobThreadPool::new(
+            "heavy",
             config.heavy,
             Arc::clone(&executor),
             completion_tx.clone(),
@@ -319,7 +321,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
                         Ok(SchedulerFault::CompletionChannelClosed { source, peer_id }) => {
                             tracing::error!(
                                 source,
-                                peer = ?peer_id,
+                                peer = %peer_id,
                                 "job scheduler completion delivery failed; shutting down fail-closed"
                             );
                             break;
@@ -360,7 +362,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         };
         let span = tracing::debug_span!(
             "job_scheduler.dispatch_batch",
-            peer = ?peer_id,
+            peer = %peer_id,
             role,
             actions = action_count
         );
@@ -490,13 +492,13 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         self.garbling
             .as_ref()
             .expect("garbling coordinator must exist while scheduler is running")
-            .submit(PendingCircuitJob {
+            .submit(PendingCircuitJob::new(
                 peer_id,
-                action: circuit_action,
-                priority: action.priority(),
-            })
+                circuit_action,
+                action.priority(),
+            ))
             .await;
-        tracing::debug!(peer = ?peer_id, action = ?action, "submitted garbler circuit action");
+        tracing::debug!(peer = %peer_id, action = ?action, "submitted garbler circuit action");
     }
 
     /// Build a [`PendingCircuitJob`] for an evaluator circuit action and
@@ -535,13 +537,13 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobScheduler<D> {
         self.garbling
             .as_ref()
             .expect("garbling coordinator must exist while scheduler is running")
-            .submit(PendingCircuitJob {
+            .submit(PendingCircuitJob::new(
                 peer_id,
-                action: circuit_action,
-                priority: action.priority(),
-            })
+                circuit_action,
+                action.priority(),
+            ))
             .await;
-        tracing::debug!(peer = ?peer_id, action = ?action, "submitted evaluator circuit action");
+        tracing::debug!(peer = %peer_id, action = ?action, "submitted evaluator circuit action");
     }
 
     /// Shut down all pools gracefully.

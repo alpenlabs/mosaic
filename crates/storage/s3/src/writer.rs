@@ -152,15 +152,26 @@ const STORE_PROGRESS_PERIOD: Duration = Duration::from_secs(30);
 /// additionally diluted by time spent waiting for the producer to supply data.
 /// `put` well above `avg` means we are starved upstream; the two converging
 /// means the store is the constraint.
-fn log_store_progress(event: &str, parts: u64, bytes_put: u64, started: Instant, in_put: Duration) {
+fn log_store_progress(
+    event: &str,
+    path: &object_store::path::Path,
+    parts: u64,
+    bytes_put: u64,
+    started: Instant,
+    in_put: Duration,
+) {
     let wall = started.elapsed().as_secs_f64().max(1e-3);
     let put_secs = in_put.as_secs_f64().max(1e-3);
+    // The path embeds the sending peer's full hex id and the circuit index
+    // (`…/{peer_hex}/{index}/versions/…`), so concurrent receives on one
+    // node stay attributable to their table.
     tracing::info!(
         target: "mosaic_progress",
         phase = "table.store",
-        "table.store {} parts={} uploaded={:.1}GiB put={:.1}MB/s avg={:.1}MB/s \
+        "table.store {} path={} parts={} uploaded={:.1}GiB put={:.1}MB/s avg={:.1}MB/s \
          elapsed={:.0}s in_put={:.0}s({:.0}%)",
         event,
+        path,
         parts,
         bytes_put as f64 / (1024.0 * 1024.0 * 1024.0),
         bytes_put as f64 / put_secs / 1.0e6,
@@ -221,7 +232,14 @@ async fn background_writer_inner(
                 }
 
                 if last_log.elapsed() >= STORE_PROGRESS_PERIOD {
-                    log_store_progress("progress", parts, bytes_put, upload_started, in_put);
+                    log_store_progress(
+                        "progress",
+                        &version_paths.ciphertexts,
+                        parts,
+                        bytes_put,
+                        upload_started,
+                        in_put,
+                    );
                     last_log = Instant::now();
                 }
             }
@@ -244,7 +262,14 @@ async fn background_writer_inner(
                 // Complete the multipart upload.
                 upload.complete().await?;
 
-                log_store_progress("summary", parts, bytes_put, upload_started, in_put);
+                log_store_progress(
+                    "summary",
+                    &version_paths.ciphertexts,
+                    parts,
+                    bytes_put,
+                    upload_started,
+                    in_put,
+                );
 
                 // Upload translation material as a single object under the staged version.
                 store
