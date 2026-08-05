@@ -271,6 +271,7 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteGarblerJob for MosaicExecutor<S
                 Box::new(circuit_sessions::CommitmentSession::new(
                     setup,
                     outputs,
+                    &peer_id,
                     index,
                     true,
                     header.total_gates(),
@@ -409,6 +410,7 @@ impl<SP: StorageProvider, TS: TableStore> ExecuteEvaluatorJob for MosaicExecutor
                 Box::new(circuit_sessions::CommitmentSession::new(
                     setup,
                     outputs,
+                    &peer_id,
                     index,
                     false,
                     header.total_gates(),

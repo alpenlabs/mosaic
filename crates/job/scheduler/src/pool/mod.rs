@@ -98,6 +98,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
     /// Spawns worker threads immediately. Each worker runs its own monoio
     /// runtime and pulls jobs from the shared queue.
     pub(crate) fn new(
+        name: &'static str,
         config: PoolConfig,
         dispatcher: Arc<D>,
         completion_tx: kanal::AsyncSender<JobCompletion>,
@@ -111,6 +112,7 @@ impl<D: ExecuteGarblerJob + ExecuteEvaluatorJob> JobThreadPool<D> {
         let workers: Vec<Worker<D>> = (0..config.threads)
             .map(|id| {
                 Worker::spawn(
+                    name,
                     id,
                     Arc::clone(&dispatcher),
                     Arc::clone(&queue),

@@ -61,7 +61,7 @@ use std::{
 use ckt_fmtv5_types::v5::c::{Block, ReaderV5c, get_block_num_gates};
 use mosaic_job_api::{
     CircuitAction, CircuitError, CircuitSession, HandlerOutcome, JobCompletion, OwnedBlock,
-    OwnedChunk, PendingCircuitJob, SessionFactory,
+    OwnedChunk, PendingCircuitJob, SessionFactory, short_id,
 };
 use mosaic_net_svc_api::PeerId;
 use tracing::Instrument;
@@ -191,7 +191,12 @@ struct ActiveSession {
 /// Commands sent from the main coordinator thread to worker threads.
 enum WorkerCommand {
     /// Assign sessions for the upcoming pass. Replaces any previous sessions.
-    AssignSessions(Vec<ActiveSession>),
+    AssignSessions {
+        /// Coordinator-wide pass sequence number, echoed in worker logs so
+        /// strike/eviction warns join the pass's `circuit.pass` lines.
+        pass: u64,
+        sessions: Vec<ActiveSession>,
+    },
     /// Process this chunk for all assigned sessions.
     ProcessChunk(Arc<OwnedChunk>),
     /// All blocks processed — finalize sessions and report completions.
@@ -214,6 +219,11 @@ struct ChunkReport {
     evicted_jobs: Vec<PendingCircuitJob>,
     /// Jobs whose sessions remain active on this worker after the chunk.
     remaining_jobs: Vec<PendingCircuitJob>,
+    /// Wall-clock each session spent in `process_chunk` for this chunk
+    /// (including just-evicted sessions). The coordinator accumulates these
+    /// per peer to name the pass straggler; deltas — not cumulative totals —
+    /// so nothing is lost when a session is evicted mid-pass.
+    peer_busy: Vec<(PeerId, Duration)>,
 }
 
 /// Sent after finalizing all sessions at end of pass.
@@ -471,6 +481,11 @@ async fn coordinator_loop(
         // full retry set starve new submissions indefinitely.
         let mut backlog: VecDeque<PendingCircuitJob> = VecDeque::new();
 
+        // Monotonic pass counter. Included in every pass-scoped log line
+        // (`circuit.pass`, strike/eviction warns) so within-node joins are
+        // exact rather than timestamp-based.
+        let mut pass_seq: u64 = 0;
+
         loop {
             // ── 1. Collect a batch of jobs ───────────────────────────────
             let Some(jobs) = collect_batch(
@@ -513,8 +528,10 @@ async fn coordinator_loop(
 
             // ── 3. Run the pass ──────────────────────────────────────────
             let session_count = sessions.len();
+            pass_seq += 1;
             run_pass(
                 &config,
+                pass_seq,
                 sessions,
                 &mut workers,
                 &completion_tx,
@@ -523,6 +540,7 @@ async fn coordinator_loop(
             )
             .instrument(tracing::info_span!(
                 "job_scheduler.garbling_pass",
+                pass = pass_seq,
                 sessions = session_count
             ))
             .await;
@@ -559,6 +577,7 @@ async fn coordinator_loop(
 /// Surviving sessions are finalized by workers; completions go to the SM.
 async fn run_pass(
     config: &GarblingConfig,
+    pass_seq: u64,
     sessions: Vec<ActiveSession>,
     workers: &mut [WorkerHandle],
     completion_tx: &kanal::AsyncSender<JobCompletion>,
@@ -589,16 +608,18 @@ async fn run_pass(
     let mut active_jobs_by_worker: HashMap<usize, Vec<PendingCircuitJob>> = HashMap::new();
     for (wid, assignment) in assignments.into_iter().enumerate() {
         if !assignment.is_empty() {
-            let count = assignment.len();
             let tracked_jobs: Vec<PendingCircuitJob> =
                 assignment.iter().map(|active| active.job.clone()).collect();
             if workers[wid]
-                .send(WorkerCommand::AssignSessions(assignment))
+                .send(WorkerCommand::AssignSessions {
+                    pass: pass_seq,
+                    sessions: assignment,
+                })
                 .await
             {
                 active_worker_ids.push(wid);
+                log_pass_assignment(pass_seq, class_label, wid, &tracked_jobs);
                 active_jobs_by_worker.insert(wid, tracked_jobs);
-                tracing::debug!(worker = wid, sessions = count, "assigned sessions");
             } else {
                 tracing::error!(worker = wid, "failed to assign sessions — worker dead");
                 pending_retry.extend(tracked_jobs);
@@ -652,7 +673,7 @@ async fn run_pass(
     // The meter therefore also tracks each side's per-chunk *excess* over
     // the other — the additive numbers that name what actually set the pace
     // (see [`PassMeter`] for the busy-vs-gated reading).
-    let mut meter = PassMeter::new(class_label, session_count);
+    let mut meter = PassMeter::new(pass_seq, class_label, session_count);
 
     // ── Read blocks and broadcast to workers (pipelined) ─────────────
     //
@@ -692,7 +713,7 @@ async fn run_pass(
                 workers,
                 report_timeout,
                 pending_retry,
-                &mut meter.worker_wait,
+                &mut meter.peer_busy,
             )
             .await;
             (still_active, started.elapsed())
@@ -729,6 +750,49 @@ async fn run_pass(
 /// Minimum interval between pass-level progress lines.
 const PASS_PROGRESS_PERIOD: Duration = Duration::from_secs(30);
 
+/// Log one `circuit.pass assign` line per session at pass start: the pass's
+/// composition (who shares the batch with whom, on which worker), each job's
+/// bounce count and how long it waited in the queue. Runs once per pass, off
+/// the chunk path.
+fn log_pass_assignment(pass_seq: u64, class: &str, worker: usize, jobs: &[PendingCircuitJob]) {
+    for job in jobs {
+        tracing::info!(
+            target: "mosaic_progress",
+            phase = "circuit.pass",
+            "circuit.pass assign pass={} class={} worker={} peer={} {} attempts={} queue_wait={}s",
+            pass_seq,
+            class,
+            worker,
+            short_id(job.peer_id.as_ref()),
+            action_log_fields(&job.action),
+            job.attempts,
+            job.queued_at.elapsed().as_secs(),
+        );
+    }
+}
+
+/// Render a [`CircuitAction`]'s identity as `key=value` log fields.
+///
+/// `(peer, circuit_index)` identifies a table, so assignment lines join
+/// against the executor-side meters on those two alone. Garbling seeds are
+/// protocol secrets and never appear here, not even shortened — a
+/// transfer's `circuit_index` lands moments later on its `table.upload`
+/// line.
+fn action_log_fields(action: &CircuitAction) -> String {
+    match action {
+        CircuitAction::GarblerCommitment { index, .. } => {
+            format!("action=garbler_commitment circuit_index={index}")
+        }
+        CircuitAction::GarblerTransfer { .. } => "action=garbler_transfer".to_string(),
+        CircuitAction::EvaluatorCommitment { index, .. } => {
+            format!("action=evaluator_commitment circuit_index={index}")
+        }
+        CircuitAction::EvaluatorEvaluation { index, .. } => {
+            format!("action=evaluator_evaluation circuit_index={index}")
+        }
+    }
+}
+
 /// Pass-level wall-clock attribution across the pipelined read/barrier loop,
 /// logged as `circuit.pass` on the `mosaic_progress` target.
 ///
@@ -741,8 +805,11 @@ const PASS_PROGRESS_PERIOD: Duration = Duration::from_secs(30);
 /// *utilization*: each side's raw busy time, overlapped under pipelining
 /// (together they can approach 200% of elapsed) — they say how loaded each
 /// side already is, i.e. the floor you hit after fixing the current gate.
-/// `straggler` names the worker that most often kept the barrier waiting.
+/// `straggler_peer` names the peer whose session accumulated the most
+/// busy time processing chunks — the session that held the barrier longest.
 struct PassMeter {
+    /// Coordinator-wide pass sequence number.
+    pass: u64,
     /// Session class this pass serves (passes are class-homogeneous).
     class: &'static str,
     sessions: usize,
@@ -753,15 +820,18 @@ struct PassMeter {
     barrier_busy: Duration,
     read_gated: Duration,
     barrier_gated: Duration,
-    /// Cumulative in-order report wait per worker (see
-    /// [`collect_chunk_reports`]).
-    worker_wait: HashMap<usize, Duration>,
+    /// Cumulative per-peer busy time in `process_chunk`, accumulated from
+    /// worker [`ChunkReport`]s (see [`collect_chunk_reports`]). Measured
+    /// inside the worker per session, so it is free of the coordinator's
+    /// in-order report-collection skew.
+    peer_busy: HashMap<PeerId, Duration>,
 }
 
 impl PassMeter {
-    fn new(class: &'static str, sessions: usize) -> Self {
+    fn new(pass: u64, class: &'static str, sessions: usize) -> Self {
         let now = Instant::now();
         Self {
+            pass,
             class,
             sessions,
             started: now,
@@ -771,7 +841,7 @@ impl PassMeter {
             barrier_busy: Duration::ZERO,
             read_gated: Duration::ZERO,
             barrier_gated: Duration::ZERO,
-            worker_wait: HashMap::new(),
+            peer_busy: HashMap::new(),
         }
     }
 
@@ -819,19 +889,26 @@ impl PassMeter {
         let pct = |d: Duration| d.as_secs_f64() * 100.0 / secs;
 
         let straggler = self
-            .worker_wait
+            .peer_busy
             .iter()
             .max_by_key(|(_, d)| **d)
-            .map(|(wid, d)| format!(" straggler=worker{}({:.0}s)", wid, d.as_secs_f64()))
+            .map(|(peer_id, d)| {
+                format!(
+                    " straggler_peer={}({:.0}s)",
+                    short_id(peer_id.as_ref()),
+                    d.as_secs_f64()
+                )
+            })
             .unwrap_or_default();
 
         tracing::info!(
             target: "mosaic_progress",
             phase = "circuit.pass",
-            "circuit.pass {} class={} sessions={} read={:.1}GiB avg={:.1}MB/s elapsed={:.0}s \
+            "circuit.pass {} pass={} class={} sessions={} read={:.1}GiB avg={:.1}MB/s elapsed={:.0}s \
              read_gated={:.0}s({:.0}%) barrier_gated={:.0}s({:.0}%) \
              read_busy={:.0}s({:.0}%) barrier_busy={:.0}s({:.0}%){}",
             event,
+            self.pass,
             self.class,
             self.sessions,
             self.bytes_read as f64 / (1024.0 * 1024.0 * 1024.0),
@@ -860,20 +937,19 @@ async fn collect_chunk_reports(
     workers: &mut [WorkerHandle],
     report_timeout: Duration,
     pending_retry: &mut Vec<PendingCircuitJob>,
-    worker_wait: &mut HashMap<usize, Duration>,
+    peer_busy: &mut HashMap<PeerId, Duration>,
 ) -> Vec<usize> {
     let mut still_active: Vec<usize> = Vec::with_capacity(active_worker_ids.len());
 
     for &wid in active_worker_ids {
-        // Reports are awaited in order, so this is not a clean per-worker
-        // service time — a worker that finished while we waited on an earlier
-        // one records ~0. Accumulated across the pass it still identifies the
-        // worker that repeatedly makes the barrier wait, i.e. the straggler.
-        let wait_started = Instant::now();
         let report = workers[wid].recv_report(report_timeout).await;
-        *worker_wait.entry(wid).or_default() += wait_started.elapsed();
         match report {
             Some(WorkerReport::ChunkDone(report)) => {
+                // Workers measure each session's chunk busy time in place,
+                // so this attribution has no report-ordering skew.
+                for (peer_id, busy) in report.peer_busy {
+                    *peer_busy.entry(peer_id).or_default() += busy;
+                }
                 pending_retry.extend(report.evicted_jobs);
                 if report.remaining_jobs.is_empty() {
                     active_jobs_by_worker.remove(&wid);
@@ -1135,7 +1211,13 @@ fn requeue_bounced(
     while let Ok(Some(job)) = submit_rx.try_recv() {
         backlog.push_back(job);
     }
-    backlog.extend(bounced.drain(..));
+    backlog.extend(bounced.drain(..).map(|mut job| {
+        // Each bounce is a fresh queue stint: `queue_wait` on the next
+        // assignment line measures this stint, `attempts` counts the bounces.
+        job.attempts += 1;
+        job.queued_at = Instant::now();
+        job
+    }));
 }
 
 /// Create live sessions for a batch, concurrently.
@@ -1168,11 +1250,7 @@ async fn create_sessions(
             Ok(session) => {
                 sessions.push(ActiveSession {
                     peer_id: job.peer_id,
-                    job: PendingCircuitJob {
-                        peer_id: job.peer_id,
-                        action: job.action.clone(),
-                        priority: job.priority,
-                    },
+                    job,
                     session,
                 });
             }
@@ -1184,7 +1262,7 @@ async fn create_sessions(
                 // — drop the job. No completion is sent: the SM treats
                 // these completions as informational and has moved on.
                 tracing::info!(
-                    peer = ?job.peer_id,
+                    peer = %job.peer_id,
                     action = ?job.action,
                     "action no longer required per state machine — dropping job"
                 );
@@ -1192,7 +1270,7 @@ async fn create_sessions(
             Err(CircuitError::StorageUnavailable) => {
                 // Transient — data not yet written by STF. Keep for retry.
                 tracing::debug!(
-                    peer = ?job.peer_id,
+                    peer = %job.peer_id,
                     action = ?job.action,
                     "session storage unavailable — will retry next pass"
                 );
@@ -1201,7 +1279,7 @@ async fn create_sessions(
             Err(CircuitError::TransientFailure(reason)) => {
                 // Transient — e.g. peer not ready for bulk stream. Keep for retry.
                 tracing::debug!(
-                    peer = ?job.peer_id,
+                    peer = %job.peer_id,
                     action = ?job.action,
                     reason,
                     "transient setup failure — will retry next pass"
@@ -1213,7 +1291,7 @@ async fn create_sessions(
                 // This is a programming error — the action cannot be retried.
                 tracing::error!(
                     ?e,
-                    peer = ?job.peer_id,
+                    peer = %job.peer_id,
                     action = ?job.action,
                     "permanent session creation failure — action dropped"
                 );
@@ -1262,17 +1340,23 @@ async fn create_sessions(
 /// extend the budget *without* cancelling.
 async fn process_chunk_on_sessions(
     worker_id: usize,
+    pass: u64,
     sessions: &mut [ActiveSession],
     chunk: &Arc<OwnedChunk>,
     chunk_timeout: Duration,
     stall_strikes: u32,
-) -> Vec<usize> {
+) -> (Vec<usize>, Vec<(PeerId, Duration)>) {
     let stall_strikes = stall_strikes.max(1);
     let results =
         futures::future::join_all(sessions.iter_mut().enumerate().map(|(index, active)| {
             let peer_id = active.peer_id;
             let session = &mut active.session;
             async move {
+                // Wall-clock until this session's future completes,
+                // measured from the shared chunk start. The slowest
+                // session's time is what held the barrier; two `Instant`
+                // reads per session per ~4 MiB chunk is noise.
+                let started = Instant::now();
                 let mut fut = session.process_chunk(chunk);
                 let mut strikes = 0u32;
                 let result = loop {
@@ -1287,7 +1371,8 @@ async fn process_chunk_on_sessions(
                             }
                             tracing::warn!(
                                 worker = worker_id,
-                                peer = ?peer_id,
+                                pass,
+                                peer = %peer_id,
                                 strikes,
                                 budget = stall_strikes,
                                 timeout_ms = chunk_timeout.as_millis(),
@@ -1296,20 +1381,23 @@ async fn process_chunk_on_sessions(
                         }
                     }
                 };
-                (index, peer_id, result)
+                (index, peer_id, result, started.elapsed())
             }
         }))
         .await;
 
     let mut evicted_indices = Vec::new();
-    for (index, peer_id, result) in results {
+    let mut peer_busy = Vec::with_capacity(results.len());
+    for (index, peer_id, result, busy) in results {
+        peer_busy.push((peer_id, busy));
         match result {
             Some(Ok(())) => { /* session keeping up */ }
             Some(Err(e)) => {
                 tracing::warn!(
                     worker = worker_id,
+                    pass,
                     ?e,
-                    peer = ?peer_id,
+                    peer = %peer_id,
                     "session error — evicting for retry"
                 );
                 evicted_indices.push(index);
@@ -1317,7 +1405,8 @@ async fn process_chunk_on_sessions(
             None => {
                 tracing::warn!(
                     worker = worker_id,
-                    peer = ?peer_id,
+                    pass,
+                    peer = %peer_id,
                     strikes = stall_strikes,
                     "session exhausted its stall budget on one chunk — evicting for retry"
                 );
@@ -1330,7 +1419,7 @@ async fn process_chunk_on_sessions(
     // do; sorting keeps that invariant local rather than resting on the
     // ordering guarantees of a dependency.
     evicted_indices.sort_unstable();
-    evicted_indices
+    (evicted_indices, peer_busy)
 }
 
 /// Finalize a worker's sessions concurrently, splitting the outcomes into
@@ -1418,6 +1507,7 @@ async fn worker_loop(
         );
 
         let mut sessions: Vec<ActiveSession> = Vec::new();
+        let mut current_pass: u64 = 0;
 
         loop {
             let command = match command_rx.recv().await {
@@ -1426,18 +1516,24 @@ async fn worker_loop(
             };
 
             match command {
-                WorkerCommand::AssignSessions(new_sessions) => {
+                WorkerCommand::AssignSessions {
+                    pass,
+                    sessions: new_sessions,
+                } => {
                     tracing::debug!(
                         worker = id,
+                        pass,
                         count = new_sessions.len(),
                         "received session assignment"
                     );
                     sessions = new_sessions;
+                    current_pass = pass;
                 }
 
                 WorkerCommand::ProcessChunk(chunk) => {
-                    let evicted_indices = process_chunk_on_sessions(
+                    let (evicted_indices, peer_busy) = process_chunk_on_sessions(
                         id,
+                        current_pass,
                         &mut sessions,
                         &chunk,
                         chunk_timeout,
@@ -1457,6 +1553,7 @@ async fn worker_loop(
                     let report = WorkerReport::ChunkDone(ChunkReport {
                         evicted_jobs,
                         remaining_jobs: sessions.iter().map(|active| active.job.clone()).collect(),
+                        peer_busy,
                     });
                     if report_tx.send(report).await.is_err() {
                         tracing::error!(worker = id, "report channel closed — exiting");
@@ -1641,13 +1738,13 @@ mod tests {
     }
 
     fn sample_job_with_priority(peer_byte: u8, priority: Priority) -> PendingCircuitJob {
-        PendingCircuitJob {
-            peer_id: PeerId::from([peer_byte; 32]),
-            action: CircuitAction::GarblerTransfer {
+        PendingCircuitJob::new(
+            PeerId::from([peer_byte; 32]),
+            CircuitAction::GarblerTransfer {
                 seed: GarblingSeed::from([peer_byte; 32]),
             },
             priority,
-        }
+        )
     }
 
     fn sample_completion(peer_id: PeerId) -> JobCompletion {
@@ -1697,6 +1794,7 @@ mod tests {
                     chunk_timeout: Duration::from_millis(1),
                     chunk_stall_strikes: 1,
                 },
+                1,
                 sessions,
                 &mut workers,
                 &completion_tx,
@@ -1861,13 +1959,13 @@ mod tests {
             }];
             let mut active_jobs_by_worker = HashMap::from([(
                 0usize,
-                vec![PendingCircuitJob {
+                vec![PendingCircuitJob::new(
                     peer_id,
-                    action: CircuitAction::GarblerTransfer {
+                    CircuitAction::GarblerTransfer {
                         seed: GarblingSeed::from([5; 32]),
                     },
-                    priority: Priority::Normal,
-                }],
+                    Priority::Normal,
+                )],
             )]);
             let mut pending_retry = Vec::new();
 
@@ -2023,8 +2121,9 @@ mod tests {
                 .map(|i| active_session(i, probe(&active, &peak)))
                 .collect();
 
-            let evicted = process_chunk_on_sessions(
+            let (evicted, _peer_busy) = process_chunk_on_sessions(
                 0,
+                1,
                 &mut sessions,
                 &empty_chunk(),
                 Duration::from_secs(5),
@@ -2057,8 +2156,9 @@ mod tests {
             ];
 
             let started = std::time::Instant::now();
-            let evicted =
-                process_chunk_on_sessions(0, &mut sessions, &empty_chunk(), CHUNK_TIMEOUT, 1).await;
+            let (evicted, _peer_busy) =
+                process_chunk_on_sessions(0, 1, &mut sessions, &empty_chunk(), CHUNK_TIMEOUT, 1)
+                    .await;
             let elapsed = started.elapsed();
 
             assert_eq!(evicted, vec![1, 3], "only the stalled sessions are evicted");
@@ -2176,14 +2276,14 @@ mod tests {
     }
 
     fn sample_compute_job(peer_byte: u8) -> PendingCircuitJob {
-        PendingCircuitJob {
-            peer_id: PeerId::from([peer_byte; 32]),
-            action: CircuitAction::GarblerCommitment {
+        PendingCircuitJob::new(
+            PeerId::from([peer_byte; 32]),
+            CircuitAction::GarblerCommitment {
                 index: Index::new(1).expect("valid index"),
                 seed: GarblingSeed::from([peer_byte; 32]),
             },
-            priority: Priority::Normal,
-        }
+            Priority::Normal,
+        )
     }
 
     #[test]
@@ -2508,8 +2608,9 @@ mod tests {
                 let _ = ready_tx.to_sync().send(());
             });
 
-            let evicted = process_chunk_on_sessions(
+            let (evicted, _peer_busy) = process_chunk_on_sessions(
                 0,
+                1,
                 &mut sessions,
                 &empty_chunk(),
                 Duration::from_millis(100),
@@ -2538,8 +2639,9 @@ mod tests {
         run_monoio(async {
             let mut sessions = vec![active_session(0, Box::new(StalledSession))];
             let started = std::time::Instant::now();
-            let evicted = process_chunk_on_sessions(
+            let (evicted, _peer_busy) = process_chunk_on_sessions(
                 0,
+                1,
                 &mut sessions,
                 &empty_chunk(),
                 Duration::from_millis(100),
@@ -2567,8 +2669,9 @@ mod tests {
                 active_session(3, Box::new(FailingSession)),
             ];
 
-            let evicted = process_chunk_on_sessions(
+            let (evicted, _peer_busy) = process_chunk_on_sessions(
                 0,
+                1,
                 &mut sessions,
                 &empty_chunk(),
                 Duration::from_secs(5),

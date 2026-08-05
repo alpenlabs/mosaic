@@ -18,7 +18,6 @@ use config::{MosaicConfig, TableStoreBackend};
 use mimalloc::MiMalloc;
 use mosaic_cac_types::state_machine::{evaluator, garbler};
 // dependency to pass feature flag
-use mosaic_common as _;
 use mosaic_job_executors::MosaicExecutor;
 use mosaic_job_scheduler::JobScheduler;
 use mosaic_net_client::NetClient;
@@ -39,6 +38,12 @@ fn main() -> Result<()> {
     let config_path = config_path_from_args()?;
     let config = MosaicConfig::from_file(&config_path)?;
     init_tracing(&config.logging.filter)?;
+    // CaC variant for log analysis.
+    tracing::info!(
+        n_circuits = mosaic_common::constants::N_CIRCUITS,
+        n_open_circuits = mosaic_common::constants::N_OPEN_CIRCUITS,
+        "mosaic starting"
+    );
     config.validate()?;
 
     let _fdb_network = unsafe { foundationdb::boot() };
