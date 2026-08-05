@@ -8,13 +8,13 @@ name: Publish Bare-Metal Binaries (S3)
 # SECURITY MODEL
 # --------------
 # The ref to build is a free-form dispatch input (any commit/branch/tag/release),
-# so its build scripts (build.rs, proc-macros) are UNTRUSTED code. Two jobs keep
-# that code away from the AWS credentials:
-#   * build   — checks out + compiles the untrusted ref. Has NO id-token, so a
-#               malicious ref cannot mint/exfiltrate an OIDC token. Emits the
-#               binaries as a workflow artifact.
-#   * publish — downloads that artifact and uploads to S3. Has id-token:write but
-#               checks out no untrusted code and runs only trusted steps.
+# so its build scripts (build.rs, proc-macros) are UNTRUSTED code. Build jobs are
+# kept away from the AWS credentials:
+#   * build / build-macos — check out + compile the untrusted ref. Have NO
+#               id-token, so a malicious ref cannot mint/exfiltrate an OIDC
+#               token. Emit the binaries as workflow artifacts.
+#   * publish — downloads those artifacts and uploads to S3. Has id-token:write
+#               but checks out no untrusted code and runs only trusted steps.
 #
 # Publish is gated on the `baremetal-binaries` GitHub Environment: GitHub sets
 # the OIDC `sub` to `repo:alpenlabs/mosaic:environment:baremetal-binaries`, which
@@ -25,14 +25,25 @@ name: Publish Bare-Metal Binaries (S3)
 # Objects land at:
 #   s3://alpen-mosaic-artifacts/binaries/mosaic/<built-commit>/linux-amd64/
 #     mosaic  mosaic-peer-id  (+ a .sha256 sidecar each)
-# A COMPLETED publish (`.publish-complete` marker, written last) is write-once;
-# an interrupted upload is healed by re-running, never wedged.
+#   s3://alpen-mosaic-artifacts/binaries/mosaic/<built-commit>/macos-arm64/
+#     mosaic-peer-id  (+ .sha256)
+# macOS publishes ONLY mosaic-peer-id: it is the operator-workstation key tool
+# (no FoundationDB linkage), while the mosaic server itself is deployed on Linux
+# and links libfdb_c — a macOS mosaic build is deliberately out of scope.
+#
+# A COMPLETED publish (`.publish-complete` marker, written last) is write-once
+# PER PLATFORM; a platform prefix that is already complete is skipped (so a
+# later run can add macos-arm64 next to an existing linux-amd64 publish), and an
+# interrupted upload is healed by re-running, never wedged.
+#
+# NOTE: the ref input must be a FULL 40-char commit SHA, a branch, or a tag —
+# actions/checkout cannot fetch abbreviated SHAs.
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Ref to build & publish — commit SHA, branch, tag, or release (default: main)"
+        description: "Ref to build & publish — FULL commit SHA, branch, tag, or release (default: main). Short SHAs are not fetchable."
         required: false
         default: "main"
         type: string
@@ -50,7 +61,6 @@ env:
   AWS_ROLE_TO_ASSUME: arn:aws:iam::496607027995:role/github-actions-mosaic-binary-s3
   S3_BUCKET: alpen-mosaic-artifacts
   S3_PREFIX_ROOT: binaries/mosaic
-  PLATFORM: linux-amd64
   # Pinned so published binaries aren't built against whatever nightly exists on
   # dispatch day (compiler drift) and stay toolchain-consistent with the prod
   # image build. NOT a bit-reproducibility claim - that would need
@@ -60,7 +70,7 @@ env:
 
 jobs:
   build:
-    name: Build binaries (untrusted ref, no credentials)
+    name: Build linux-amd64 binaries (untrusted ref, no credentials)
     # Pinned (not -latest): binaries are dynamically linked; a floating runner
     # advancing would silently raise the glibc/libstdc++ floor above what
     # operators' Ubuntu 24.04 hosts ship (docs pin the target OS to 24.04).
@@ -129,27 +139,83 @@ jobs:
       # which GitHub persists into every LATER step of the SAME job — so any
       # shell `run:` here (install/cp/sha256sum) could be hijacked to plant
       # extra files or forge checksums, which the publish job would then ship to
-      # S3. Instead upload ONLY the two built binaries by explicit path (the JS
+      # S3. Instead upload ONLY the built binaries by explicit path (the JS
       # upload action reads these hardcoded paths, not a poisonable env var, and
       # does not resolve shell tools via PATH). Checksums are computed in the
       # clean publish job, which never runs untrusted code.
       - name: Upload built binaries as workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mosaic-binaries-${{ steps.rev.outputs.sha }}
+          name: mosaic-binaries-linux-amd64-${{ steps.rev.outputs.sha }}
           path: |
             target/release/mosaic
             target/release/mosaic-peer-id
           if-no-files-found: error
           retention-days: 30 # environment approval can wait up to 30 days (GitHub max)
 
+  build-macos:
+    name: Build macos-arm64 mosaic-peer-id (untrusted ref, no credentials)
+    # Apple Silicon runner, pinned for the same runner-drift reason as the linux
+    # job. mosaic-peer-id has no FoundationDB linkage, so no FDB install here.
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read # deliberately no id-token here
+    outputs:
+      commit: ${{ steps.rev.outputs.sha }}
+    steps:
+      - name: Checkout the ref to build
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Resolve built commit (immutable SHA)
+        id: rev
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          if [ -z "${sha}" ]; then
+            echo "::error::failed to resolve commit SHA"; exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Built commit: ${sha}"
+
+      - name: Install Rust toolchain (pinned nightly)
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_NIGHTLY}" --profile minimal
+          rustup default "${RUST_NIGHTLY}"
+
+      - name: Rust cache (restore-only)
+        # Same cache-poisoning rationale as the linux build job.
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          save-if: false
+
+      - name: Build release binary
+        # Same pinned-toolchain rationale as the linux build job.
+        run: cargo +"${RUST_NIGHTLY}" build --release --locked --bin mosaic-peer-id
+
+      # Same rationale as the linux job: no shell staging/checksum steps after
+      # building untrusted code; upload the binary by explicit path only.
+      - name: Upload built binary as workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mosaic-binaries-macos-arm64-${{ steps.rev.outputs.sha }}
+          path: target/release/mosaic-peer-id
+          if-no-files-found: error
+          retention-days: 30 # environment approval can wait up to 30 days (GitHub max)
+
   publish:
     name: Publish to S3 (credentialed, no untrusted code)
-    needs: build
+    needs: [build, build-macos]
     # Only the reviewed main copy of this workflow may publish. workflow_dispatch
     # can run a feature branch's YAML, so gate the OIDC-enabled job on the run ref
     # (belt-and-suspenders with the environment's main-only deployment policy).
-    if: ${{ github.ref == 'refs/heads/main' }}
+    # Only the linux build is required — a macOS runner flake degrades the run to
+    # linux-only, and a re-dispatch adds the platform (write-once is per-platform).
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: baremetal-binaries
@@ -162,12 +228,33 @@ jobs:
       contents: read
     env:
       COMMIT: ${{ needs.build.outputs.commit }}
+      COMMIT_MACOS: ${{ needs.build-macos.outputs.commit }}
+      # "true" only when the macOS build succeeded; drives the macos steps below.
+      HAVE_MACOS: ${{ needs.build-macos.result == 'success' }}
     steps:
-      - name: Download built binaries
+      - name: Assert both platforms built the same commit
+        if: ${{ needs.build-macos.result == 'success' }}
+        # A branch/tag ref could in principle advance between the two jobs'
+        # checkouts; refuse to publish mixed-commit artifacts under one prefix.
+        run: |
+          set -euo pipefail
+          if [ "${COMMIT}" != "${COMMIT_MACOS}" ]; then
+            echo "::error::platform builds resolved different commits (linux=${COMMIT}, macos=${COMMIT_MACOS}) — re-dispatch with an immutable SHA"
+            exit 1
+          fi
+
+      - name: Download built binaries (linux-amd64)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: mosaic-binaries-${{ needs.build.outputs.commit }}
-          path: bin
+          name: mosaic-binaries-linux-amd64-${{ needs.build.outputs.commit }}
+          path: bin/linux-amd64
+
+      - name: Download built binaries (macos-arm64)
+        if: ${{ needs.build-macos.result == 'success' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mosaic-binaries-macos-arm64-${{ needs.build-macos.outputs.commit }}
+          path: bin/macos-arm64
 
       # Checksums are computed HERE, in the clean credentialed job that never
       # ran the untrusted build — so PATH/env are pristine and sha256sum is the
@@ -176,11 +263,16 @@ jobs:
       - name: Checksum binaries (clean environment)
         run: |
           set -euo pipefail
-          test -f bin/mosaic && test -f bin/mosaic-peer-id   # exactly the declared binaries, nothing else
+          # exactly the declared binaries per platform, nothing else
+          test -f bin/linux-amd64/mosaic && test -f bin/linux-amd64/mosaic-peer-id
           for b in mosaic mosaic-peer-id; do
-            ( cd bin && sha256sum "${b}" > "${b}.sha256" )
+            ( cd bin/linux-amd64 && sha256sum "${b}" > "${b}.sha256" )
           done
-          echo "Checksummed:"; ls -la bin
+          if [ "${HAVE_MACOS}" = "true" ]; then
+            test -f bin/macos-arm64/mosaic-peer-id
+            ( cd bin/macos-arm64 && sha256sum mosaic-peer-id > mosaic-peer-id.sha256 )
+          fi
+          echo "Checksummed:"; ls -laR bin
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
@@ -188,39 +280,57 @@ jobs:
           role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Upload to S3 (write-once per completed publish)
+      - name: Upload to S3 (write-once per completed platform publish)
         run: |
           set -euo pipefail
-          DEST_KEY="${S3_PREFIX_ROOT}/${COMMIT}/${PLATFORM}"
-          DEST="s3://${S3_BUCKET}/${DEST_KEY}"
-          # Write-once is keyed on a completion marker written LAST, so an
-          # interrupted upload never wedges the prefix: marker present = complete
-          # publish, refuse; objects without marker = interrupted, heal by
-          # re-uploading. List results are captured OUTSIDE an `if` so a list
-          # error (missing ListBucket, transient) fails the job via set -e
-          # instead of being treated as "not published".
-          marker="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
-                     --prefix "${DEST_KEY}/.publish-complete" --max-items 1 \
-                     --query 'Contents[0].Key' --output text)"
-          if [ "${marker}" != "None" ] && [ -n "${marker}" ]; then
-            echo "::error::${DEST_KEY}/ already published (completion marker present) — refusing to overwrite"
+          # Write-once is keyed PER PLATFORM on a completion marker written
+          # LAST, so an interrupted upload never wedges the prefix: marker
+          # present = complete publish, SKIP that platform (a later run may be
+          # adding a new platform next to an existing publish); objects without
+          # marker = interrupted, heal by re-uploading. List results are
+          # captured OUTSIDE an `if` so a list error (missing ListBucket,
+          # transient) fails the job via set -e instead of being treated as
+          # "not published".
+          published_any=0
+          publish_platform() {
+            local platform="$1"; shift
+            local DEST_KEY="${S3_PREFIX_ROOT}/${COMMIT}/${platform}"
+            local DEST="s3://${S3_BUCKET}/${DEST_KEY}"
+            local marker partial b
+            marker="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
+                       --prefix "${DEST_KEY}/.publish-complete" --max-items 1 \
+                       --query 'Contents[0].Key' --output text)"
+            if [ "${marker}" != "None" ] && [ -n "${marker}" ]; then
+              echo "::notice::${DEST_KEY}/ already published (completion marker present) — skipping ${platform}"
+              return 0
+            fi
+            partial="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
+                        --prefix "${DEST_KEY}/" --max-items 1 \
+                        --query 'Contents[0].Key' --output text)"
+            if [ "${partial}" != "None" ] && [ -n "${partial}" ]; then
+              echo "::warning::${DEST_KEY}/ has objects but no completion marker (interrupted publish) — re-uploading"
+            fi
+            # Explicit per-file uploads (no `--recursive` glob) — only the declared
+            # binaries and their clean-computed sidecars are ever published.
+            for b in "$@"; do
+              aws s3 cp "bin/${platform}/${b}"         "${DEST}/${b}"         --no-progress
+              aws s3 cp "bin/${platform}/${b}.sha256"  "${DEST}/${b}.sha256"  --no-progress
+            done
+            printf 'commit=%s\ncompleted=%s\n' "${COMMIT}" "$(date -u +%FT%TZ)" \
+              | aws s3 cp - "${DEST}/.publish-complete"
+            echo "Published to ${DEST}/"
+            published_any=1
+          }
+          publish_platform linux-amd64 mosaic mosaic-peer-id
+          if [ "${HAVE_MACOS}" = "true" ]; then
+            publish_platform macos-arm64 mosaic-peer-id
+          else
+            echo "::warning::macOS build did not succeed — publishing linux-amd64 only; re-dispatch to add macos-arm64"
+          fi
+          if [ "${published_any}" = "0" ]; then
+            echo "::error::all platform prefixes for ${COMMIT} are already published — nothing to do"
             exit 1
           fi
-          partial="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" \
-                      --prefix "${DEST_KEY}/" --max-items 1 \
-                      --query 'Contents[0].Key' --output text)"
-          if [ "${partial}" != "None" ] && [ -n "${partial}" ]; then
-            echo "::warning::${DEST_KEY}/ has objects but no completion marker (interrupted publish) — re-uploading"
-          fi
-          # Explicit per-file uploads (no `--recursive` glob) — only the declared
-          # binaries and their clean-computed sidecars are ever published.
-          for b in mosaic mosaic-peer-id; do
-            aws s3 cp "bin/${b}"         "${DEST}/${b}"         --no-progress
-            aws s3 cp "bin/${b}.sha256"  "${DEST}/${b}.sha256"  --no-progress
-          done
-          printf 'commit=%s\ncompleted=%s\n' "${COMMIT}" "$(date -u +%FT%TZ)" \
-            | aws s3 cp - "${DEST}/.publish-complete"
-          echo "Published to ${DEST}/"
 
       - name: Job summary
         env:
@@ -230,6 +340,12 @@ jobs:
             echo "### Bare-metal binaries published"
             echo ""
             echo "- ref built: \`${BUILT_REF}\` → commit \`${COMMIT}\`"
-            echo "- location: \`s3://${S3_BUCKET}/${S3_PREFIX_ROOT}/${COMMIT}/${PLATFORM}/\`"
-            echo "- binaries: \`mosaic\`, \`mosaic-peer-id\` (+ \`.sha256\` each)"
+            echo "- location: \`s3://${S3_BUCKET}/${S3_PREFIX_ROOT}/${COMMIT}/\`"
+            echo "- linux-amd64: \`mosaic\`, \`mosaic-peer-id\` (+ \`.sha256\` each)"
+            if [ "${HAVE_MACOS}" = "true" ]; then
+              echo "- macos-arm64: \`mosaic-peer-id\` (+ \`.sha256\`)"
+            else
+              echo "- macos-arm64: NOT published (mac build did not succeed) — re-dispatch to add it"
+            fi
+            echo "- platforms already complete were skipped (see upload step log)"
           } >> "$GITHUB_STEP_SUMMARY"
