@@ -189,7 +189,7 @@ pub trait CircuitSession: Send {
 /// If session creation fails with [`CircuitError::StorageUnavailable`], the
 /// action stays in the coordinator's pending list for the next pass —
 /// no action is ever silently dropped.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CircuitAction {
     /// G3: Generate garbling table commitment.
     GarblerCommitment {
