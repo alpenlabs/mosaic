@@ -32,6 +32,8 @@
 //! 1. Collect [`PendingCircuitJob`]s from the front of a FIFO backlog fed by the submission
 //!    channel. Jobs that bounce (transient failure, eviction, finish retry) re-enter the backlog at
 //!    the *back*, behind everything already waiting — retries never pre-empt fresh work.
+//!    Submissions duplicating a live job (same peer, same action) are dropped at intake, so backlog
+//!    depth tracks outstanding work rather than how often waiting peers re-request.
 //! 2. Create live [`CircuitSession`]s via the [`SessionFactory`]. Jobs that fail with
 //!    [`CircuitError::StorageUnavailable`] bounce back to the backlog — **no action is ever
 //!    silently dropped**.
@@ -51,7 +53,7 @@
 //! [`Arc<OwnedChunk>`]: mosaic_job_api::OwnedChunk
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::Arc,
@@ -411,6 +413,9 @@ impl GarblingCoordinator {
     ///
     /// This is an **async** operation — it never blocks the scheduler thread.
     /// If the coordinator is mid-pass, the job queues up for the next one.
+    /// A submission duplicating a job that is still queued or running is
+    /// dropped at intake; once that job completes or is dropped, an
+    /// identical submission mints a fresh job again.
     pub async fn submit(&self, job: PendingCircuitJob) {
         if self.submit_tx.send(job).await.is_err() {
             tracing::error!("garbling coordinator channel closed — job dropped");
@@ -1104,13 +1109,55 @@ fn session_class(action: &CircuitAction) -> SessionClass {
     }
 }
 
+/// Identity of a job's work for duplicate suppression.
+type JobKey = (PeerId, CircuitAction);
+
+fn job_key(job: &PendingCircuitJob) -> JobKey {
+    (job.peer_id, job.action.clone())
+}
+
+/// Push a fresh arrival unless an identical job (same peer, same action) is
+/// already live, counting the suppression instead.
+///
+/// A waiting evaluator re-sends its table transfer request on a timer, and
+/// the STF deliberately serves every request — so without suppression each
+/// repeat minted another queued copy of the same job, growing the backlog
+/// with elapsed wait time (~60 copies per real table) instead of
+/// outstanding work, and letting whichever peer waited longest fill entire
+/// passes with its own duplicates.
+fn admit(
+    backlog: &mut VecDeque<PendingCircuitJob>,
+    live: &mut HashSet<JobKey>,
+    suppressed: &mut usize,
+    job: PendingCircuitJob,
+) {
+    if live.insert(job_key(&job)) {
+        backlog.push_back(job);
+    } else {
+        *suppressed += 1;
+    }
+}
+
+/// One counter line per intake drain, never a line per suppression — a
+/// retry storm must not become a log storm.
+fn log_suppressed(suppressed: usize, backlog: &VecDeque<PendingCircuitJob>) {
+    if suppressed > 0 {
+        tracing::info!(
+            suppressed,
+            backlog = backlog.len(),
+            "suppressed duplicate submissions of live circuit jobs"
+        );
+    }
+}
+
 /// Collect the next pass batch from the backlog and the submission channel.
 ///
 /// Blocks until at least one job is available, then keeps the batch window
 /// (`batch_timeout`) open for further arrivals, starting the pass early the
 /// moment `max_concurrent` jobs of the eventual lead session class are on
 /// hand. Selection is the backlog front — plain FIFO, where position is set
-/// by when a job entered the backlog (fresh arrival or requeue).
+/// by when a job entered the backlog (fresh arrival or requeue). Arrivals
+/// duplicating a job already in the backlog are dropped (see [`admit`]).
 ///
 /// Returns `None` when the submission channel is closed and the backlog is
 /// empty: shutdown.
@@ -1120,9 +1167,15 @@ async fn collect_batch(
     max_concurrent: usize,
     batch_timeout: Duration,
 ) -> Option<Vec<PendingCircuitJob>> {
+    // Intake happens only between passes, so everything live is in the
+    // backlog right now: jobs from the last pass have completed, been
+    // dropped, or re-entered via `requeue_bounced`.
+    let mut live: HashSet<JobKey> = backlog.iter().map(job_key).collect();
+    let mut suppressed = 0usize;
+
     if backlog.is_empty() {
         match submit_rx.recv().await {
-            Ok(job) => backlog.push_back(job),
+            Ok(job) => admit(backlog, &mut live, &mut suppressed, job),
             Err(_) => return None,
         }
     }
@@ -1134,7 +1187,7 @@ async fn collect_batch(
         // currently available arrivals into the backlog before priority and
         // class selection so they can influence the pass that starts now.
         while let Ok(Some(job)) = submit_rx.try_recv() {
-            backlog.push_back(job);
+            admit(backlog, &mut live, &mut suppressed, job);
         }
 
         // Priority sorting below determines which class leads the pass.
@@ -1160,11 +1213,12 @@ async fn collect_batch(
             break;
         }
         match monoio::time::timeout(remaining, submit_rx.recv()).await {
-            Ok(Ok(job)) => backlog.push_back(job),
+            Ok(Ok(job)) => admit(backlog, &mut live, &mut suppressed, job),
             Ok(Err(_)) => break, // Channel closed — run what we have.
             Err(_) => break,     // Window elapsed — start the pass.
         }
     }
+    log_suppressed(suppressed, backlog);
 
     // Most urgent first (`Critical = 0` sorts lowest). The sort is stable,
     // so FIFO order — including retries-at-the-back — is preserved within
@@ -1203,14 +1257,20 @@ async fn collect_batch(
 /// arrived *before* these jobs bounced, so it belongs ahead of them.
 /// Without the drain, requeues would slot in ahead of work that had been
 /// waiting in the channel for the whole pass.
+///
+/// Bounced jobs count as live for duplicate suppression: a re-request that
+/// raced the bounce must not double the job across the requeue.
 fn requeue_bounced(
     backlog: &mut VecDeque<PendingCircuitJob>,
     submit_rx: &kanal::AsyncReceiver<PendingCircuitJob>,
     bounced: &mut Vec<PendingCircuitJob>,
 ) {
+    let mut live: HashSet<JobKey> = backlog.iter().chain(bounced.iter()).map(job_key).collect();
+    let mut suppressed = 0usize;
     while let Ok(Some(job)) = submit_rx.try_recv() {
-        backlog.push_back(job);
+        admit(backlog, &mut live, &mut suppressed, job);
     }
+    log_suppressed(suppressed, backlog);
     backlog.extend(bounced.drain(..).map(|mut job| {
         // Each bounce is a fresh queue stint: `queue_wait` on the next
         // assignment line measures this stint, `attempts` counts the bounces.
@@ -2379,6 +2439,93 @@ mod tests {
                 .await
                 .expect("batch");
             assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1]);
+        });
+    }
+
+    #[test]
+    fn collect_batch_suppresses_duplicate_submissions() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::from([sample_job(1)]);
+
+            // A retry storm re-sends peer 1's request; peer 2 is real work.
+            tx.send(sample_job(1)).await.expect("send");
+            tx.send(sample_job(1)).await.expect("send");
+            tx.send(sample_job(2)).await.expect("send");
+
+            let batch = collect_batch(&mut backlog, &rx, 2, Duration::from_secs(60))
+                .await
+                .expect("batch");
+
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1, 2]);
+            assert!(backlog.is_empty());
+        });
+    }
+
+    #[test]
+    fn requeue_bounced_suppresses_duplicates_of_bounced_jobs() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::new();
+
+            // Peer 9 re-requested while its job was in the pass; the job
+            // then bounced. The bounced instance stays, the repeat drops.
+            tx.send(sample_job(9)).await.expect("send");
+            let mut bounced = vec![sample_job(9)];
+            requeue_bounced(&mut backlog, &rx, &mut bounced);
+
+            assert_eq!(backlog.iter().map(job_peer).collect::<Vec<_>>(), [9]);
+            assert_eq!(backlog[0].attempts, 1);
+        });
+    }
+
+    #[test]
+    fn rerequest_after_job_leaves_the_queue_mints_a_new_job() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::from([sample_job(1)]);
+
+            let batch = collect_batch(&mut backlog, &rx, 1, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1]);
+
+            // The job completed and left the system — a genuine re-request
+            // (e.g. after a failed transfer) must produce a fresh job.
+            tx.send(sample_job(1)).await.expect("send");
+            let batch = collect_batch(&mut backlog, &rx, 1, Duration::from_millis(10))
+                .await
+                .expect("batch");
+            assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1]);
+        });
+    }
+
+    #[test]
+    fn backlog_stays_bounded_under_retry_storm() {
+        run_monoio(async {
+            let (tx, rx) = kanal::unbounded_async::<PendingCircuitJob>();
+            let mut backlog = VecDeque::new();
+
+            tx.send(sample_job(1)).await.expect("send");
+            let mut batch = collect_batch(&mut backlog, &rx, 1, Duration::from_millis(10))
+                .await
+                .expect("batch");
+
+            // Each round: the evaluator re-requests twice while the pass
+            // runs, then the job bounces. Depth stays at the one real job.
+            for round in 1..=5u32 {
+                tx.send(sample_job(1)).await.expect("send");
+                tx.send(sample_job(1)).await.expect("send");
+                requeue_bounced(&mut backlog, &rx, &mut batch);
+                assert_eq!(backlog.len(), 1, "round {round}");
+
+                batch = collect_batch(&mut backlog, &rx, 1, Duration::from_millis(10))
+                    .await
+                    .expect("batch");
+                assert_eq!(batch.iter().map(job_peer).collect::<Vec<_>>(), [1]);
+                assert_eq!(batch[0].attempts, round);
+                assert!(backlog.is_empty());
+            }
         });
     }
 
