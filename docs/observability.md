@@ -197,8 +197,8 @@ pool at capacity — queued jobs delayed waiting for a free slot pool="light" wo
 ```
 
 On the light pool this is the signature of table receives holding slots for
-minutes while small protocol messages queue behind them (the reason
-production runs `concurrency_per_worker = 512`).
+minutes while small protocol messages queue behind them (the reason the light
+pool default is `concurrency_per_worker = 512`).
 
 ## Diagnosis recipe
 

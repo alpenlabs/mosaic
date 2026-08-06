@@ -48,7 +48,6 @@ completion_queue_size = 256
 
 [job_scheduler.light]
 threads = 1
-concurrency_per_worker = 32
 
 [job_scheduler.heavy]
 threads = 2
