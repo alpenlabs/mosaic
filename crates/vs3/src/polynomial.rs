@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Represents an evaluation index for a polynomial, type-safe and bounds-checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Index(usize);
 
 impl_serde_ark!(Index);
