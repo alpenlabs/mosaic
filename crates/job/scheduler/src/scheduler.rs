@@ -53,11 +53,14 @@ impl Default for JobSchedulerConfig {
         Self {
             light: PoolConfig {
                 threads: 1,
-                concurrency_per_worker: 32,
+                // Absorbs a multi-peer setup burst. Sends and acks from
+                // other peers then do not wait behind stalled bulk
+                // receives.
+                concurrency_per_worker: 512,
                 priority_queue: false,
-                // Boost cap: small vs concurrency (512 in production
-                // config) so a single peer / attack surface can't reorder
-                // the whole queue. See `SchedulerHint` design.
+                // Boost cap: small against the concurrency above, so one
+                // peer cannot reorder the whole queue. See `SchedulerHint`
+                // design.
                 max_boost_slots: Some(64),
             },
             heavy: PoolConfig {

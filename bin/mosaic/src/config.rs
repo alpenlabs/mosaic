@@ -81,14 +81,20 @@ impl MosaicConfig {
     pub(crate) fn build_job_scheduler_config(&self) -> JobSchedulerConfig {
         JobSchedulerConfig {
             light: PoolConfig {
-                threads: self.job_scheduler.light.threads,
-                concurrency_per_worker: self.job_scheduler.light.concurrency_per_worker,
+                threads: self.job_scheduler.light.threads(DEFAULT_LIGHT_POOL_THREADS),
+                concurrency_per_worker: self
+                    .job_scheduler
+                    .light
+                    .concurrency_per_worker(DEFAULT_LIGHT_POOL_CONCURRENCY),
                 priority_queue: false,
                 max_boost_slots: Some(64),
             },
             heavy: PoolConfig {
-                threads: self.job_scheduler.heavy.threads,
-                concurrency_per_worker: self.job_scheduler.heavy.concurrency_per_worker,
+                threads: self.job_scheduler.heavy.threads(DEFAULT_HEAVY_POOL_THREADS),
+                concurrency_per_worker: self
+                    .job_scheduler
+                    .heavy
+                    .concurrency_per_worker(DEFAULT_HEAVY_POOL_CONCURRENCY),
                 priority_queue: true,
                 max_boost_slots: None,
             },
@@ -167,8 +173,27 @@ impl MosaicConfig {
             );
         }
 
-        if self.job_scheduler.light.threads == 0 || self.job_scheduler.heavy.threads == 0 {
+        if self.job_scheduler.light.threads(DEFAULT_LIGHT_POOL_THREADS) == 0
+            || self.job_scheduler.heavy.threads(DEFAULT_HEAVY_POOL_THREADS) == 0
+        {
             bail!("job scheduler thread counts must be greater than zero");
+        }
+
+        // A worker takes a permit before it pulls a job, from a pool that
+        // holds this many permits. At zero the worker never pulls, and the
+        // pool accepts jobs that never run.
+        if self
+            .job_scheduler
+            .light
+            .concurrency_per_worker(DEFAULT_LIGHT_POOL_CONCURRENCY)
+            == 0
+            || self
+                .job_scheduler
+                .heavy
+                .concurrency_per_worker(DEFAULT_HEAVY_POOL_CONCURRENCY)
+                == 0
+        {
+            bail!("job scheduler concurrency_per_worker must be greater than zero");
         }
 
         if !self.circuit.path.is_file() {
@@ -390,7 +415,7 @@ impl TableStoreBackend {
 pub(crate) struct JobSchedulerSection {
     #[serde(default)]
     pub(crate) light: PoolSection,
-    #[serde(default = "default_heavy_pool_section")]
+    #[serde(default)]
     pub(crate) heavy: PoolSection,
     #[serde(default)]
     pub(crate) garbling: GarblingSection,
@@ -400,28 +425,28 @@ pub(crate) struct JobSchedulerSection {
     pub(crate) completion_queue_size: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Thread and concurrency settings for one job pool.
+///
+/// The light and heavy pools share this type but have different defaults, so
+/// an absent key stays `None` here. The owning pool applies its own default
+/// in [`MosaicConfig::build_job_scheduler_config`]. A serde field default
+/// cannot do this: it has no way to know which pool it deserializes.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PoolSection {
-    #[serde(default = "default_pool_threads")]
-    pub(crate) threads: usize,
-    #[serde(default = "default_pool_concurrency")]
-    pub(crate) concurrency_per_worker: usize,
+    threads: Option<usize>,
+    concurrency_per_worker: Option<usize>,
 }
 
-impl Default for PoolSection {
-    fn default() -> Self {
-        Self {
-            threads: default_pool_threads(),
-            concurrency_per_worker: default_pool_concurrency(),
-        }
+impl PoolSection {
+    /// Thread count, or `default` when the config omits the key.
+    fn threads(&self, default: usize) -> usize {
+        self.threads.unwrap_or(default)
     }
-}
 
-fn default_heavy_pool_section() -> PoolSection {
-    PoolSection {
-        threads: 2,
-        concurrency_per_worker: 8,
+    /// Concurrency per worker, or `default` when the config omits the key.
+    fn concurrency_per_worker(&self, default: usize) -> usize {
+        self.concurrency_per_worker.unwrap_or(default)
     }
 }
 
@@ -570,8 +595,17 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_RECONNECT_BACKOFF_SECS: u64 = 1;
 const DEFAULT_OPEN_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_ACK_TIMEOUT_SECS: u64 = 10;
-const DEFAULT_POOL_THREADS: usize = 1;
-const DEFAULT_POOL_CONCURRENCY: usize = 32;
+const DEFAULT_LIGHT_POOL_THREADS: usize = 1;
+// A setup burst from one peer can queue about 360 light-pool actions. Three
+// peers can queue more than 1000 at the worst moment. A default of 32 leaves
+// no headroom, so sends and acks from other peers wait behind stalled bulk
+// receives. These tasks park on async I/O, and each unused slot costs a few
+// KB.
+const DEFAULT_LIGHT_POOL_CONCURRENCY: usize = 512;
+const DEFAULT_HEAVY_POOL_THREADS: usize = 2;
+// The heavy pool runs CPU-bound work. More concurrency than a small multiple
+// of the thread count only makes the queue longer.
+const DEFAULT_HEAVY_POOL_CONCURRENCY: usize = 8;
 const DEFAULT_GARBLING_WORKER_THREADS: usize = 4;
 const DEFAULT_GARBLING_MAX_CONCURRENT: usize = 8;
 const DEFAULT_BATCH_TIMEOUT_MS: u64 = 20_000;
@@ -604,14 +638,6 @@ const fn default_open_timeout_secs() -> u64 {
 
 const fn default_ack_timeout_secs() -> u64 {
     DEFAULT_ACK_TIMEOUT_SECS
-}
-
-const fn default_pool_threads() -> usize {
-    DEFAULT_POOL_THREADS
-}
-
-const fn default_pool_concurrency() -> usize {
-    DEFAULT_POOL_CONCURRENCY
 }
 
 const fn default_garbling_worker_threads() -> usize {
@@ -795,6 +821,69 @@ bind_addr = "127.0.0.1:8080"
         assert_eq!(
             config.sm_executor.command_queue_size,
             DEFAULT_COMMAND_QUEUE_SIZE
+        );
+    }
+
+    #[test]
+    fn absent_pool_tables_use_each_pool_default() {
+        let path = std::env::current_exe().expect("current executable path");
+        let config: MosaicConfig =
+            toml::from_str(&sample_config_toml(&path)).expect("config should parse");
+        let scheduler = config.build_job_scheduler_config();
+
+        assert_eq!(scheduler.light.threads, DEFAULT_LIGHT_POOL_THREADS);
+        assert_eq!(
+            scheduler.light.concurrency_per_worker,
+            DEFAULT_LIGHT_POOL_CONCURRENCY
+        );
+        assert_eq!(scheduler.heavy.threads, DEFAULT_HEAVY_POOL_THREADS);
+        assert_eq!(
+            scheduler.heavy.concurrency_per_worker,
+            DEFAULT_HEAVY_POOL_CONCURRENCY
+        );
+    }
+
+    /// A pool table that names one key must keep its own pool's default for
+    /// the other key. The light and heavy pools once shared one serde field
+    /// default, so a heavy table without `concurrency_per_worker` took the
+    /// light pool value.
+    #[test]
+    fn partial_pool_tables_keep_their_own_pool_defaults() {
+        let path = std::env::current_exe().expect("current executable path");
+        let toml_text = sample_config_toml(&path).replace(
+            "[job_scheduler]\n",
+            "[job_scheduler]\n\n[job_scheduler.light]\nconcurrency_per_worker = 64\n\n\
+             [job_scheduler.heavy]\nthreads = 4\n",
+        );
+        let config: MosaicConfig = toml::from_str(&toml_text).expect("config should parse");
+        let scheduler = config.build_job_scheduler_config();
+
+        // The heavy table names only `threads`.
+        assert_eq!(scheduler.heavy.threads, 4);
+        assert_eq!(
+            scheduler.heavy.concurrency_per_worker,
+            DEFAULT_HEAVY_POOL_CONCURRENCY
+        );
+        // The light table names only `concurrency_per_worker`.
+        assert_eq!(scheduler.light.threads, DEFAULT_LIGHT_POOL_THREADS);
+        assert_eq!(scheduler.light.concurrency_per_worker, 64);
+    }
+
+    #[test]
+    fn validate_rejects_zero_pool_concurrency() {
+        let path = std::env::current_exe().expect("current executable path");
+        let toml_text = sample_config_toml(&path).replace(
+            "[job_scheduler]\n",
+            "[job_scheduler]\n\n[job_scheduler.heavy]\nconcurrency_per_worker = 0\n",
+        );
+        let config: MosaicConfig = toml::from_str(&toml_text).expect("config should parse");
+
+        let error = config.validate().expect_err("config should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("concurrency_per_worker must be greater than zero"),
+            "unexpected error: {error}"
         );
     }
 
