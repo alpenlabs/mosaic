@@ -636,7 +636,7 @@ const DEFAULT_COMPLETION_QUEUE_SIZE: usize = 256;
 const DEFAULT_COMMAND_QUEUE_SIZE: usize = 256;
 const DEFAULT_S3_REQUEST_TIMEOUT_SECS: u64 = 2 * 60 * 60;
 const DEFAULT_S3_CONNECT_TIMEOUT_SECS: u64 = 5;
-const MIB: usize = 1024 * 1024;
+pub(crate) const MIB: usize = 1024 * 1024;
 const DEFAULT_S3_PART_BUFFER_SIZE_MIB: usize = mosaic_storage_s3::DEFAULT_PART_BUFFER_SIZE / MIB;
 const MIN_S3_PART_BUFFER_SIZE_MIB: usize = mosaic_storage_s3::MIN_PART_SIZE / MIB;
 /// S3 caps individual parts at 5 GiB.

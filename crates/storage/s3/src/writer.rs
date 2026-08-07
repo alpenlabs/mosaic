@@ -230,17 +230,28 @@ async fn background_writer_inner(
 
         match cmd {
             WriterCmd::Write(data) => {
-                buffer.extend_from_slice(&data);
+                // Fill the buffer exactly to the part size and hand it off
+                // whole, splitting incoming chunks on part boundaries. The
+                // buffer never grows past its initial capacity (appending
+                // past it would double the allocation, which `drain` never
+                // returns), and moving it into `Bytes` avoids copying the
+                // part.
+                let mut data = data.as_slice();
+                while !data.is_empty() {
+                    let take = data.len().min(part_buffer_size - buffer.len());
+                    buffer.extend_from_slice(&data[..take]);
+                    data = &data[take..];
 
-                // Upload complete parts when the buffer is large enough.
-                while buffer.len() >= part_buffer_size {
-                    let part: Vec<u8> = buffer.drain(..part_buffer_size).collect();
-                    let n = part.len() as u64;
-                    let put_started = Instant::now();
-                    upload.put_part(Bytes::from(part).into()).await?;
-                    in_put += put_started.elapsed();
-                    parts += 1;
-                    bytes_put += n;
+                    if buffer.len() == part_buffer_size {
+                        let part =
+                            std::mem::replace(&mut buffer, Vec::with_capacity(part_buffer_size));
+                        let n = part.len() as u64;
+                        let put_started = Instant::now();
+                        upload.put_part(Bytes::from(part).into()).await?;
+                        in_put += put_started.elapsed();
+                        parts += 1;
+                        bytes_put += n;
+                    }
                 }
 
                 if last_log.elapsed() >= STORE_PROGRESS_PERIOD {

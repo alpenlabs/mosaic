@@ -42,8 +42,9 @@ pub const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
 ///
 /// Parts are uploaded when the buffer reaches this size. Parts upload
 /// serially, and single-stream S3 throughput scales with part size, so
-/// larger parts raise store throughput.
-pub const DEFAULT_PART_BUFFER_SIZE: usize = 32 * 1024 * 1024;
+/// deployments can raise this via [`S3TableStore::with_part_buffer_size`]
+/// at the cost of ~2x the part size in memory per active upload.
+pub const DEFAULT_PART_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
 /// Bounded channel capacity for streaming data between monoio and tokio.
 /// Controls backpressure: the producer blocks when this many chunks are
@@ -124,7 +125,13 @@ impl S3TableStore {
     /// between [`MIN_PART_SIZE`] and 5 GiB; values outside that range fail at
     /// upload time. Not enforced here so tests can use tiny parts against
     /// in-memory stores.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `part_buffer_size` is zero, which would make the writer
+    /// loop forever on empty parts.
     pub fn with_part_buffer_size(mut self, part_buffer_size: usize) -> Self {
+        assert!(part_buffer_size > 0, "part_buffer_size must be non-zero");
         self.part_buffer_size = part_buffer_size;
         self
     }
@@ -211,7 +218,7 @@ mod tests {
         fmt,
         sync::{
             Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
     };
 
@@ -224,7 +231,7 @@ mod tests {
     use object_store::{
         Attributes, CopyOptions, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
         MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload,
-        PutResult, Result as ObjectStoreResult, memory::InMemory, path::Path,
+        PutResult, Result as ObjectStoreResult, UploadPart, memory::InMemory, path::Path,
     };
 
     use super::*;
@@ -484,15 +491,123 @@ mod tests {
 
     #[tokio::test]
     async fn custom_part_buffer_size_splits_parts_and_roundtrips() {
-        let store = S3TableStore::new(Arc::new(InMemory::new()), "tables").with_part_buffer_size(4);
+        let backing = Arc::new(PartCountingStore::default());
+        let store = S3TableStore::new(Arc::clone(&backing) as Arc<dyn ObjectStore>, "tables")
+            .with_part_buffer_size(4);
         let id = table_id();
 
         let mut writer = store.create(&id).await.unwrap();
-        writer.write_ciphertext(b"abcdefghij").await.unwrap();
+        writer.write_ciphertext(b"abcdefg").await.unwrap();
+        writer.write_ciphertext(b"hij").await.unwrap();
         writer.finish(b"translation", metadata(3)).await.unwrap();
+
+        // 10 bytes at part size 4: two full parts plus a 2-byte final part.
+        // A no-op part size would flush everything as one part in finish.
+        assert_eq!(backing.parts.load(Ordering::SeqCst), 3);
 
         let mut reader = store.open(&id).await.unwrap();
         assert_eq!(read_all_ciphertexts(&mut reader).await, b"abcdefghij");
+    }
+
+    #[test]
+    #[should_panic(expected = "part_buffer_size must be non-zero")]
+    fn zero_part_buffer_size_is_rejected() {
+        let _ = S3TableStore::new(Arc::new(InMemory::new()), "tables").with_part_buffer_size(0);
+    }
+
+    /// Counts `put_part` calls so tests can assert part-splitting behavior,
+    /// not just data roundtrips.
+    #[derive(Debug, Default)]
+    struct PartCountingStore {
+        inner: InMemory,
+        parts: Arc<AtomicUsize>,
+    }
+
+    impl fmt::Display for PartCountingStore {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "PartCountingStore")
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingUpload {
+        inner: Box<dyn MultipartUpload>,
+        parts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl MultipartUpload for CountingUpload {
+        fn put_part(&mut self, data: PutPayload) -> UploadPart {
+            self.parts.fetch_add(1, Ordering::SeqCst);
+            self.inner.put_part(data)
+        }
+
+        async fn complete(&mut self) -> ObjectStoreResult<PutResult> {
+            self.inner.complete().await
+        }
+
+        async fn abort(&mut self) -> ObjectStoreResult<()> {
+            self.inner.abort().await
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for PartCountingStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> ObjectStoreResult<PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: PutMultipartOptions,
+        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+            let inner = self.inner.put_multipart_opts(location, opts).await?;
+            Ok(Box::new(CountingUpload {
+                inner,
+                parts: Arc::clone(&self.parts),
+            }))
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> ObjectStoreResult<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, ObjectStoreResult<Path>>,
+        ) -> BoxStream<'static, ObjectStoreResult<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> ObjectStoreResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
     }
 
     #[test]

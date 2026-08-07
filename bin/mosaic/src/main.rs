@@ -14,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use config::{MosaicConfig, TableStoreBackend};
+use config::{MIB, MosaicConfig, TableStoreBackend};
 use mimalloc::MiMalloc;
 use mosaic_cac_types::state_machine::{evaluator, garbler};
 // dependency to pass feature flag
@@ -205,7 +205,7 @@ where
                 .build()
                 .context("failed to initialize s3-compatible table store")?;
             let store = S3TableStore::new(Arc::new(s3) as Arc<dyn ObjectStore>, prefix)
-                .with_part_buffer_size(part_buffer_size_mib * 1024 * 1024);
+                .with_part_buffer_size(part_buffer_size_mib * MIB);
             run_with_components(config, storage, store, net_client, net_controller).await
         }
     }
