@@ -164,6 +164,7 @@ where
             session_token,
             allow_http,
             virtual_hosted_style_request,
+            part_buffer_size_mib,
             ..
         } => {
             // from_env() is required for IRSA: since object_store 0.14, build() no
@@ -203,7 +204,8 @@ where
             let s3 = builder
                 .build()
                 .context("failed to initialize s3-compatible table store")?;
-            let store = S3TableStore::new(Arc::new(s3) as Arc<dyn ObjectStore>, prefix);
+            let store = S3TableStore::new(Arc::new(s3) as Arc<dyn ObjectStore>, prefix)
+                .with_part_buffer_size(part_buffer_size_mib * 1024 * 1024);
             run_with_components(config, storage, store, net_client, net_controller).await
         }
     }

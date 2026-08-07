@@ -17,7 +17,6 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use tracing::error;
 
 use crate::{
-    PART_BUFFER_SIZE,
     error::S3Error,
     paths::{TableRootPaths, TableVersionPaths},
 };
@@ -36,7 +35,9 @@ enum WriterCmd {
 /// Streams garbling table data to object storage via a background tokio task.
 ///
 /// Ciphertext chunks are buffered and uploaded as multipart parts when the
-/// buffer exceeds [`PART_BUFFER_SIZE`]. Translation material and metadata are
+/// buffer exceeds the store's configured part buffer size (default
+/// [`DEFAULT_PART_BUFFER_SIZE`](crate::DEFAULT_PART_BUFFER_SIZE)).
+/// Translation material and metadata are
 /// written under an immutable version prefix, then a live commit marker is
 /// published on [`finish`](Self::finish).
 ///
@@ -56,6 +57,7 @@ impl S3TableWriter {
         store: Arc<dyn ObjectStore>,
         rt_handle: tokio::runtime::Handle,
         root_paths: TableRootPaths,
+        part_buffer_size: usize,
     ) -> Result<Self, S3Error> {
         let version_paths = root_paths.allocate_version_paths();
         let (cmd_tx, cmd_rx) = kanal::bounded_async(crate::STREAM_CHANNEL_CAPACITY);
@@ -65,6 +67,7 @@ impl S3TableWriter {
             store,
             root_paths,
             version_paths,
+            part_buffer_size,
             cmd_rx,
             result_tx,
         ));
@@ -126,10 +129,18 @@ async fn background_writer(
     store: Arc<dyn ObjectStore>,
     root_paths: TableRootPaths,
     version_paths: TableVersionPaths,
+    part_buffer_size: usize,
     cmd_rx: kanal::AsyncReceiver<WriterCmd>,
     result_tx: kanal::AsyncSender<Result<(), S3Error>>,
 ) {
-    let result = background_writer_inner(&store, &root_paths, &version_paths, &cmd_rx).await;
+    let result = background_writer_inner(
+        &store,
+        &root_paths,
+        &version_paths,
+        part_buffer_size,
+        &cmd_rx,
+    )
+    .await;
     if let Err(e) = &result {
         error!(
             path = %version_paths.ciphertexts,
@@ -186,11 +197,12 @@ async fn background_writer_inner(
     store: &Arc<dyn ObjectStore>,
     root_paths: &TableRootPaths,
     version_paths: &TableVersionPaths,
+    part_buffer_size: usize,
     cmd_rx: &kanal::AsyncReceiver<WriterCmd>,
 ) -> Result<(), S3Error> {
     // Start a multipart upload for the ciphertext object.
     let mut upload = store.put_multipart(&version_paths.ciphertexts).await?;
-    let mut buffer = Vec::with_capacity(PART_BUFFER_SIZE);
+    let mut buffer = Vec::with_capacity(part_buffer_size);
 
     // Upload-side progress. Parts are uploaded one at a time (each `put_part`
     // is awaited before the next begins), so `in_put` is the true serialized
@@ -221,8 +233,8 @@ async fn background_writer_inner(
                 buffer.extend_from_slice(&data);
 
                 // Upload complete parts when the buffer is large enough.
-                while buffer.len() >= PART_BUFFER_SIZE {
-                    let part: Vec<u8> = buffer.drain(..PART_BUFFER_SIZE).collect();
+                while buffer.len() >= part_buffer_size {
+                    let part: Vec<u8> = buffer.drain(..part_buffer_size).collect();
                     let n = part.len() as u64;
                     let put_started = Instant::now();
                     upload.put_part(Bytes::from(part).into()).await?;

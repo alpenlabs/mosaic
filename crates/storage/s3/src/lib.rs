@@ -34,13 +34,16 @@ use futures::StreamExt;
 use mosaic_storage_api::table_store::{TableId, TableStore};
 use object_store::{ObjectStore, ObjectStoreExt};
 
-/// Minimum part size for S3 multipart uploads (5 MiB).
-#[allow(dead_code)]
-const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
+/// Minimum part size for S3 multipart uploads (5 MiB). AWS S3 and compatible
+/// stores reject any non-final part smaller than this.
+pub const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
 
-/// Buffer size for ciphertext parts. Parts are uploaded when the buffer
-/// reaches this size. Larger parts = fewer HTTP requests.
-const PART_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+/// Default buffer size for ciphertext parts.
+///
+/// Parts are uploaded when the buffer reaches this size. Parts upload
+/// serially, and single-stream S3 throughput scales with part size, so
+/// larger parts raise store throughput.
+pub const DEFAULT_PART_BUFFER_SIZE: usize = 32 * 1024 * 1024;
 
 /// Bounded channel capacity for streaming data between monoio and tokio.
 /// Controls backpressure: the producer blocks when this many chunks are
@@ -60,6 +63,8 @@ pub struct S3TableStore {
     store: Arc<dyn ObjectStore>,
     /// Path prefix for all garbling tables.
     prefix: String,
+    /// Multipart part buffer size for ciphertext uploads.
+    part_buffer_size: usize,
     /// Background thread handle. Kept alive for the store's lifetime.
     _thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -107,8 +112,21 @@ impl S3TableStore {
             rt_handle,
             store,
             prefix: prefix.into(),
+            part_buffer_size: DEFAULT_PART_BUFFER_SIZE,
             _thread: Some(thread),
         }
+    }
+
+    /// Override the multipart part buffer size (default
+    /// [`DEFAULT_PART_BUFFER_SIZE`]).
+    ///
+    /// Real S3-compatible stores require every part except the last to be
+    /// between [`MIN_PART_SIZE`] and 5 GiB; values outside that range fail at
+    /// upload time. Not enforced here so tests can use tiny parts against
+    /// in-memory stores.
+    pub fn with_part_buffer_size(mut self, part_buffer_size: usize) -> Self {
+        self.part_buffer_size = part_buffer_size;
+        self
     }
 
     /// Run an async closure on the background tokio runtime and return the
@@ -145,7 +163,8 @@ impl TableStore for S3TableStore {
         let root_paths = paths::TableRootPaths::new(&self.prefix, id);
         let store = Arc::clone(&self.store);
         let rt_handle = self.rt_handle.clone();
-        async move { writer::S3TableWriter::new(store, rt_handle, root_paths).await }
+        let part_buffer_size = self.part_buffer_size;
+        async move { writer::S3TableWriter::new(store, rt_handle, root_paths, part_buffer_size).await }
     }
 
     fn open(&self, id: &TableId) -> impl Future<Output = Result<Self::Reader, Self::Error>> + Send {
@@ -461,6 +480,19 @@ mod tests {
 
         store.delete(&id).await.unwrap();
         assert!(!store.exists(&id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn custom_part_buffer_size_splits_parts_and_roundtrips() {
+        let store = S3TableStore::new(Arc::new(InMemory::new()), "tables").with_part_buffer_size(4);
+        let id = table_id();
+
+        let mut writer = store.create(&id).await.unwrap();
+        writer.write_ciphertext(b"abcdefghij").await.unwrap();
+        writer.finish(b"translation", metadata(3)).await.unwrap();
+
+        let mut reader = store.open(&id).await.unwrap();
+        assert_eq!(read_all_ciphertexts(&mut reader).await, b"abcdefghij");
     }
 
     #[test]
