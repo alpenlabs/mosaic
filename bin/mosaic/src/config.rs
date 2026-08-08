@@ -212,6 +212,7 @@ impl MosaicConfig {
             session_token,
             request_timeout_secs,
             connect_timeout_secs,
+            part_buffer_size_mib,
             ..
         } = &self.table_store.backend
         {
@@ -259,6 +260,20 @@ impl MosaicConfig {
 
             if *connect_timeout_secs == 0 {
                 bail!("table_store.connect_timeout_secs must be greater than zero");
+            }
+
+            if *part_buffer_size_mib < MIN_S3_PART_BUFFER_SIZE_MIB {
+                bail!(
+                    "table_store.part_buffer_size_mib must be at least \
+                     {MIN_S3_PART_BUFFER_SIZE_MIB} (S3 minimum part size)"
+                );
+            }
+
+            if *part_buffer_size_mib > MAX_S3_PART_BUFFER_SIZE_MIB {
+                bail!(
+                    "table_store.part_buffer_size_mib must be at most \
+                     {MAX_S3_PART_BUFFER_SIZE_MIB} (S3 maximum part size of 5 GiB)"
+                );
             }
 
             if let Some(endpoint) = endpoint
@@ -386,6 +401,12 @@ pub(crate) enum TableStoreBackend {
         request_timeout_secs: u64,
         #[serde(default = "default_s3_connect_timeout_secs")]
         connect_timeout_secs: u64,
+        /// Multipart part size in MiB for table uploads. Parts upload
+        /// serially and single-stream throughput scales with part size, so
+        /// larger parts raise store throughput at the cost of memory per
+        /// active upload.
+        #[serde(default = "default_s3_part_buffer_size_mib")]
+        part_buffer_size_mib: usize,
         #[serde(default)]
         allow_http: bool,
         #[serde(default)]
@@ -615,6 +636,11 @@ const DEFAULT_COMPLETION_QUEUE_SIZE: usize = 256;
 const DEFAULT_COMMAND_QUEUE_SIZE: usize = 256;
 const DEFAULT_S3_REQUEST_TIMEOUT_SECS: u64 = 2 * 60 * 60;
 const DEFAULT_S3_CONNECT_TIMEOUT_SECS: u64 = 5;
+pub(crate) const MIB: usize = 1024 * 1024;
+const DEFAULT_S3_PART_BUFFER_SIZE_MIB: usize = mosaic_storage_s3::DEFAULT_PART_BUFFER_SIZE / MIB;
+const MIN_S3_PART_BUFFER_SIZE_MIB: usize = mosaic_storage_s3::MIN_PART_SIZE / MIB;
+/// S3 caps individual parts at 5 GiB.
+const MAX_S3_PART_BUFFER_SIZE_MIB: usize = 5 * 1024;
 
 fn default_log_filter() -> String {
     DEFAULT_LOG_FILTER.to_string()
@@ -682,6 +708,10 @@ const fn default_s3_request_timeout_secs() -> u64 {
 
 const fn default_s3_connect_timeout_secs() -> u64 {
     DEFAULT_S3_CONNECT_TIMEOUT_SECS
+}
+
+const fn default_s3_part_buffer_size_mib() -> usize {
+    DEFAULT_S3_PART_BUFFER_SIZE_MIB
 }
 
 #[cfg(test)]
@@ -952,6 +982,53 @@ bind_addr = "127.0.0.1:8080"
             options.get_config_value(&ClientConfigKey::ConnectTimeout),
             expected.get_config_value(&ClientConfigKey::ConnectTimeout)
         );
+    }
+
+    #[test]
+    fn s3_part_buffer_size_defaults_and_overrides() {
+        let path = std::env::current_exe().expect("current executable path");
+
+        let config: MosaicConfig =
+            toml::from_str(&sample_s3_config_toml(&path, "")).expect("config should parse");
+        let TableStoreBackend::S3Compatible {
+            part_buffer_size_mib,
+            ..
+        } = &config.table_store.backend
+        else {
+            panic!("expected s3 backend");
+        };
+        assert_eq!(*part_buffer_size_mib, DEFAULT_S3_PART_BUFFER_SIZE_MIB);
+
+        let config: MosaicConfig =
+            toml::from_str(&sample_s3_config_toml(&path, "part_buffer_size_mib = 64"))
+                .expect("config should parse");
+        let TableStoreBackend::S3Compatible {
+            part_buffer_size_mib,
+            ..
+        } = &config.table_store.backend
+        else {
+            panic!("expected s3 backend");
+        };
+        assert_eq!(*part_buffer_size_mib, 64);
+        config.validate().expect("config should validate");
+    }
+
+    #[test]
+    fn validate_rejects_part_buffer_size_outside_s3_limits() {
+        let path = std::env::current_exe().expect("current executable path");
+
+        for (value, expected) in [
+            ("part_buffer_size_mib = 4", "must be at least"),
+            ("part_buffer_size_mib = 5121", "must be at most"),
+        ] {
+            let config: MosaicConfig =
+                toml::from_str(&sample_s3_config_toml(&path, value)).expect("config should parse");
+            let error = config.validate().expect_err("config should be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

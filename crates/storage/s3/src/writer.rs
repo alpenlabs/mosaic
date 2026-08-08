@@ -17,7 +17,6 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use tracing::error;
 
 use crate::{
-    PART_BUFFER_SIZE,
     error::S3Error,
     paths::{TableRootPaths, TableVersionPaths},
 };
@@ -35,8 +34,10 @@ enum WriterCmd {
 
 /// Streams garbling table data to object storage via a background tokio task.
 ///
-/// Ciphertext chunks are buffered and uploaded as multipart parts when the
-/// buffer exceeds [`PART_BUFFER_SIZE`]. Translation material and metadata are
+/// Ciphertext chunks fill fixed part-size buffers (default
+/// [`DEFAULT_PART_BUFFER_SIZE`](crate::DEFAULT_PART_BUFFER_SIZE)); a full
+/// part uploads in a background task while the next buffer fills (double
+/// buffering, one part in flight). Translation material and metadata are
 /// written under an immutable version prefix, then a live commit marker is
 /// published on [`finish`](Self::finish).
 ///
@@ -56,6 +57,7 @@ impl S3TableWriter {
         store: Arc<dyn ObjectStore>,
         rt_handle: tokio::runtime::Handle,
         root_paths: TableRootPaths,
+        part_buffer_size: usize,
     ) -> Result<Self, S3Error> {
         let version_paths = root_paths.allocate_version_paths();
         let (cmd_tx, cmd_rx) = kanal::bounded_async(crate::STREAM_CHANNEL_CAPACITY);
@@ -65,6 +67,7 @@ impl S3TableWriter {
             store,
             root_paths,
             version_paths,
+            part_buffer_size,
             cmd_rx,
             result_tx,
         ));
@@ -126,10 +129,18 @@ async fn background_writer(
     store: Arc<dyn ObjectStore>,
     root_paths: TableRootPaths,
     version_paths: TableVersionPaths,
+    part_buffer_size: usize,
     cmd_rx: kanal::AsyncReceiver<WriterCmd>,
     result_tx: kanal::AsyncSender<Result<(), S3Error>>,
 ) {
-    let result = background_writer_inner(&store, &root_paths, &version_paths, &cmd_rx).await;
+    let result = background_writer_inner(
+        &store,
+        &root_paths,
+        &version_paths,
+        part_buffer_size,
+        &cmd_rx,
+    )
+    .await;
     if let Err(e) = &result {
         error!(
             path = %version_paths.ciphertexts,
@@ -145,13 +156,42 @@ async fn background_writer(
 /// Minimum interval between object-store upload progress lines.
 const STORE_PROGRESS_PERIOD: Duration = Duration::from_secs(30);
 
+/// A part upload running in the background while the next buffer fills.
+struct InFlightPart {
+    /// Task driving the `put_part` future to completion.
+    handle: tokio::task::JoinHandle<Result<(), object_store::Error>>,
+    /// Size of the part being uploaded.
+    bytes: u64,
+}
+
+/// Wait for the in-flight part upload, if any, folding the time spent
+/// blocked here — the store failing to keep up with the producer — into
+/// `in_put`.
+async fn reap_in_flight(
+    in_flight: &mut Option<InFlightPart>,
+    parts: &mut u64,
+    bytes_put: &mut u64,
+    in_put: &mut Duration,
+) -> Result<(), S3Error> {
+    if let Some(f) = in_flight.take() {
+        let wait_started = Instant::now();
+        f.handle
+            .await
+            .map_err(|e| S3Error::StreamIo(format!("part upload task failed: {e}")))??;
+        *in_put += wait_started.elapsed();
+        *parts += 1;
+        *bytes_put += f.bytes;
+    }
+    Ok(())
+}
+
 /// Emit one object-store upload progress line.
 ///
-/// `put` is the throughput achieved while actually inside `put_part` — the
-/// store's own speed — whereas `avg` is measured against wall-clock and so is
-/// additionally diluted by time spent waiting for the producer to supply data.
-/// `put` well above `avg` means we are starved upstream; the two converging
-/// means the store is the constraint.
+/// `in_put` is the time the writer sat blocked on the store: waiting for a
+/// background part upload it could not overlap with buffering, plus the
+/// final flush. `avg` is measured against wall-clock. `put` well above
+/// `avg` means uploads are hiding behind the producer (we are starved
+/// upstream); the two converging means the store is the constraint.
 fn log_store_progress(
     event: &str,
     path: &object_store::path::Path,
@@ -186,18 +226,21 @@ async fn background_writer_inner(
     store: &Arc<dyn ObjectStore>,
     root_paths: &TableRootPaths,
     version_paths: &TableVersionPaths,
+    part_buffer_size: usize,
     cmd_rx: &kanal::AsyncReceiver<WriterCmd>,
 ) -> Result<(), S3Error> {
     // Start a multipart upload for the ciphertext object.
     let mut upload = store.put_multipart(&version_paths.ciphertexts).await?;
-    let mut buffer = Vec::with_capacity(PART_BUFFER_SIZE);
+    let mut buffer = Vec::with_capacity(part_buffer_size);
 
-    // Upload-side progress. Parts are uploaded one at a time (each `put_part`
-    // is awaited before the next begins), so `in_put` is the true serialized
-    // cost of shipping this table to the object store. When it approaches the
-    // wall-clock, the store — not the peer or the CPU — is what is pacing the
-    // transfer, and the backpressure surfaces upstream through the bounded
-    // command channel.
+    // Double buffering: one part uploads in a background task while the next
+    // buffer fills from the channel, so upload time hides behind the wait
+    // for the producer. The writer blocks only when a buffer fills before
+    // the previous part finished; `in_put` accumulates exactly that blocked
+    // time, so when it approaches the wall-clock the store — not the peer —
+    // is pacing the transfer, and the backpressure surfaces upstream through
+    // the bounded command channel.
+    let mut in_flight: Option<InFlightPart> = None;
     let upload_started = Instant::now();
     let mut last_log = upload_started;
     let mut parts: u64 = 0;
@@ -208,7 +251,11 @@ async fn background_writer_inner(
         let cmd = match cmd_rx.recv().await {
             Ok(cmd) => cmd,
             Err(_) => {
-                // Channel closed without Finish — abort the upload.
+                // Channel closed without Finish — settle any in-flight part
+                // (its result no longer matters), then abort the upload.
+                if let Some(f) = in_flight.take() {
+                    let _ = f.handle.await;
+                }
                 upload.abort().await?;
                 return Err(S3Error::StreamIo(
                     "writer dropped without calling finish".into(),
@@ -218,17 +265,31 @@ async fn background_writer_inner(
 
         match cmd {
             WriterCmd::Write(data) => {
-                buffer.extend_from_slice(&data);
+                // Fill the buffer exactly to the part size and hand it off
+                // whole, splitting incoming chunks on part boundaries. The
+                // buffer never grows past its initial capacity, and moving
+                // it into `Bytes` avoids copying the part.
+                let mut data = data.as_slice();
+                while !data.is_empty() {
+                    let take = data.len().min(part_buffer_size - buffer.len());
+                    buffer.extend_from_slice(&data[..take]);
+                    data = &data[take..];
 
-                // Upload complete parts when the buffer is large enough.
-                while buffer.len() >= PART_BUFFER_SIZE {
-                    let part: Vec<u8> = buffer.drain(..PART_BUFFER_SIZE).collect();
-                    let n = part.len() as u64;
-                    let put_started = Instant::now();
-                    upload.put_part(Bytes::from(part).into()).await?;
-                    in_put += put_started.elapsed();
-                    parts += 1;
-                    bytes_put += n;
+                    if buffer.len() == part_buffer_size {
+                        // Both buffers full: block until the previous part
+                        // finishes before starting the next one.
+                        reap_in_flight(&mut in_flight, &mut parts, &mut bytes_put, &mut in_put)
+                            .await?;
+
+                        let part =
+                            std::mem::replace(&mut buffer, Vec::with_capacity(part_buffer_size));
+                        let bytes = part.len() as u64;
+                        let fut = upload.put_part(Bytes::from(part).into());
+                        in_flight = Some(InFlightPart {
+                            handle: tokio::task::spawn(fut),
+                            bytes,
+                        });
+                    }
                 }
 
                 if last_log.elapsed() >= STORE_PROGRESS_PERIOD {
@@ -248,7 +309,9 @@ async fn background_writer_inner(
                 translation,
                 metadata_bytes,
             } => {
-                // Upload any remaining buffered ciphertext as the final part.
+                // Settle the in-flight part, then upload any remaining
+                // buffered ciphertext as the final part.
+                reap_in_flight(&mut in_flight, &mut parts, &mut bytes_put, &mut in_put).await?;
                 if !buffer.is_empty() {
                     let final_part = std::mem::take(&mut buffer);
                     let n = final_part.len() as u64;
