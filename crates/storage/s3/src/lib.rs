@@ -40,8 +40,8 @@ pub const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
 
 /// Default buffer size for ciphertext parts.
 ///
-/// Parts are uploaded when the buffer reaches this size. Parts upload
-/// serially, and single-stream S3 throughput scales with part size, so
+/// A full part uploads in the background while the next buffers (one part
+/// in flight). Single-stream S3 throughput scales with part size, so
 /// deployments can raise this via [`S3TableStore::with_part_buffer_size`]
 /// at the cost of ~2x the part size in memory per active upload.
 pub const DEFAULT_PART_BUFFER_SIZE: usize = 8 * 1024 * 1024;
