@@ -14,7 +14,7 @@ keywords.workspace = true
 anyhow.workspace = true
 mosaic-net-svc.workspace = true
 
-ed25519-dalek = "2.2"
+ed25519-dalek = "3.0"
 hex = "0.4"
 rand.workspace = true
 
