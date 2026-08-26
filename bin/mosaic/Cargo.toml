@@ -33,7 +33,7 @@ mosaic-storage-fdb.workspace = true
 mosaic-storage-s3.workspace = true
 
 ctrlc = "3.4"
-ed25519-dalek = "2.2"
+ed25519-dalek = "3.0"
 foundationdb.workspace = true
 jsonrpsee = { workspace = true, features = ["server"] }
 mimalloc = "0.1"
