@@ -716,10 +716,10 @@ dependencies = [
 [[package]]
 name = "ckt-fmtv5-types"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/ckt?tag=v0.3.0-rc.2#a7462a1d1372f5dbf0519c61b39a2f032898edff"
+source = "git+https://github.com/alpenlabs/ckt?tag=v0.4.0-rc.1#5e37aed7cc8d3cbc777d124a729b609db2201b58"
 dependencies = [
  "blake3",
- "cynosure 0.4.0",
+ "cynosure",
  "kanal",
  "libc",
  "monoio",
@@ -728,7 +728,7 @@ dependencies = [
 [[package]]
 name = "ckt-gobble"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/ckt?tag=v0.3.0-rc.2#a7462a1d1372f5dbf0519c61b39a2f032898edff"
+source = "git+https://github.com/alpenlabs/ckt?tag=v0.4.0-rc.1#5e37aed7cc8d3cbc777d124a729b609db2201b58"
 dependencies = [
  "bitvec",
  "blake3",
@@ -1036,19 +1036,12 @@ dependencies = [
 
 [[package]]
 name = "cynosure"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b87575c1637454fd3c7de54730c5780c9605c87c30f174e03ec3d94e634a36b"
-dependencies = [
- "futures",
- "monoio",
-]
-
-[[package]]
-name = "cynosure"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85ae3fe761ac97c0847c4a5af729031ad2a77bd0dab9cc24f22ad2a8c5e51d48"
+dependencies = [
+ "monoio",
+]
 
 [[package]]
 name = "darling"
@@ -1302,7 +1295,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1619,9 +1612,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.13"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f44da3a8150a6703ed5d34e164b875fd14c2cdab9af1252a9a1020bde2bdc54"
+checksum = "ef8e5e5a340588f4452631496976cf8636d4a7ecf600239fdc27615d2530bc16"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1861,7 +1854,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.2",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2562,7 +2555,7 @@ dependencies = [
  "blake3",
  "ckt-fmtv5-types",
  "ckt-gobble",
- "cynosure 0.6.0",
+ "cynosure",
  "futures",
  "futures-timer",
  "kanal",
@@ -3302,7 +3295,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.2",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3342,9 +3335,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.2",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3663,7 +3656,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3721,7 +3714,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4230,7 +4223,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4826,7 +4819,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
