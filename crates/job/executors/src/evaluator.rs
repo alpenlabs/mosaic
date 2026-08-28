@@ -1280,6 +1280,17 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     let rows_per_wire = 256usize;
     let bytes_per_wire = rows_per_wire * cts_per_row * bytes_per_ct;
 
+    // Persisted translation data can be truncated (interrupted write,
+    // corrupt store) — fail closed here instead of indexing out of bounds
+    // in the parse loop below.
+    let expected_translation_len = N_INPUT_WIRES * bytes_per_wire;
+    if translation_bytes.len() < expected_translation_len {
+        return Err(CircuitError::SetupFailed(format!(
+            "translation data truncated: expected {expected_translation_len} bytes, got {}",
+            translation_bytes.len()
+        )));
+    }
+
     for wire in 0..N_INPUT_WIRES {
         let wire_offset = wire * bytes_per_wire;
         let mut material = [[Ciphertext::from([0u8; 16]); 8]; 256];
