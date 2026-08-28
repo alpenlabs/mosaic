@@ -368,6 +368,8 @@ pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
     else {
         return HandlerOutcome::Retry;
     };
+    let id = ActionId::DepositVerifyAdaptors(deposit_id);
+
     let link_share_to_adaptor = is_adaptor_derived_from_shares(
         &reserved_input_shares,
         deposit_input,
@@ -375,11 +377,13 @@ pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
         &withdrawal_adaptors,
     );
     if link_share_to_adaptor.is_err() {
-        return HandlerOutcome::Retry;
+        return completed(
+            id,
+            ActionResult::DepositAdaptorVerificationResult(deposit_id, false),
+        );
     }
 
     let evaluator_pk = deposit_state.pk.0;
-    let id = ActionId::DepositVerifyAdaptors(deposit_id);
 
     // One adaptor per deposit wire, then 256 adaptors per withdrawal wire; each
     // wire has its own sighash. All ~33k relations are checked in one batch.
