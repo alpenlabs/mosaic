@@ -768,9 +768,16 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     let params_hash = hash_garbling_params(&aes_key, &public_s, &constant_one, &constant_zero);
     let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct, &params_hash);
     if computed != expected_commitment {
+        // The result carries the computed (mismatched) commitment rather
+        // than expected_commitment — `handle_table_received` in the
+        // evaluator STF compares the two and aborts the deposit on
+        // mismatch.
         error!(%peer_id, ?index, "commitment mismatch in receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
-        return HandlerOutcome::Retry;
+        return completed(
+            ActionId::ReceiveGarblingTable(expected_commitment),
+            ActionResult::GarblingTableReceived(index, computed),
+        );
     }
     let metadata = TableMetadata {
         output_label_ct,
