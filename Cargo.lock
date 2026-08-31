@@ -716,7 +716,7 @@ dependencies = [
 [[package]]
 name = "ckt-fmtv5-types"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/ckt?tag=v0.4.0-rc.1#5e37aed7cc8d3cbc777d124a729b609db2201b58"
+source = "git+https://github.com/alpenlabs/ckt?tag=v0.3.0-rc.2#a7462a1d1372f5dbf0519c61b39a2f032898edff"
 dependencies = [
  "blake3",
  "cynosure",
