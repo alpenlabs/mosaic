@@ -46,10 +46,10 @@ jobs:
           cache-on-failure: true
 
       - name: Install FoundationDB client library
-        uses: ./.github/actions/setup-foundationdb-client
+        uses: $/.github/actions/setup-foundationdb-client
 
       - name: Install and run FoundationDB server
-        uses: ./.github/actions/setup-foundationdb-server
+        uses: $/.github/actions/setup-foundationdb-server
 
       - name: Run tests
         run: |
@@ -80,7 +80,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install FoundationDB client library
-        uses: ./.github/actions/setup-foundationdb-client
+        uses: $/.github/actions/setup-foundationdb-client
 
       - name: Run doctests
         run: cargo test --doc --all-features

@@ -54,7 +54,7 @@ jobs:
           version: "v0.10.0" # sccache version
 
       - name: Install FoundationDB client library
-        uses: ./.github/actions/setup-foundationdb-client
+        uses: $/.github/actions/setup-foundationdb-client
 
       - name: Check crates compile
         run: cargo hack check

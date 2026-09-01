@@ -35,7 +35,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install FoundationDB client library
-        uses: ./.github/actions/setup-foundationdb-client
+        uses: $/.github/actions/setup-foundationdb-client
 
       - name: Run clippy
         run: cargo clippy --workspace --examples --tests --benches --all-features --all-targets --locked

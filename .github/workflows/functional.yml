@@ -60,7 +60,7 @@ jobs:
           persist-credentials: false
 
       - name: Cleanup space
-        uses: ./.github/actions/cleanup # zizmor: ignore[unpinned-uses]
+        uses: $/.github/actions/cleanup # zizmor: ignore[unpinned-uses]
 
       - name: Install Rust toolchain
         run: |
@@ -81,10 +81,10 @@ jobs:
           cache-suffix: "functional-tests"
 
       - name: Install FoundationDB client library
-        uses: ./.github/actions/setup-foundationdb-client
+        uses: $/.github/actions/setup-foundationdb-client
 
       - name: Install and run FoundationDB server
-        uses: ./.github/actions/setup-foundationdb-server
+        uses: $/.github/actions/setup-foundationdb-server
 
       - name: Build Cargo project
         run: |
