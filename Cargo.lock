@@ -716,7 +716,7 @@ dependencies = [
 [[package]]
 name = "ckt-fmtv5-types"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/ckt?tag=v0.4.0-rc.1#5e37aed7cc8d3cbc777d124a729b609db2201b58"
+source = "git+https://github.com/alpenlabs/ckt?tag=v0.4.0-rc.2#1a53a2dbdc6487be4acfc8a01e2309c02e2c3ddb"
 dependencies = [
  "blake3",
  "cynosure",
@@ -728,7 +728,7 @@ dependencies = [
 [[package]]
 name = "ckt-gobble"
 version = "0.1.0"
-source = "git+https://github.com/alpenlabs/ckt?tag=v0.4.0-rc.1#5e37aed7cc8d3cbc777d124a729b609db2201b58"
+source = "git+https://github.com/alpenlabs/ckt?tag=v0.4.0-rc.2#1a53a2dbdc6487be4acfc8a01e2309c02e2c3ddb"
 dependencies = [
  "bitvec",
  "blake3",
