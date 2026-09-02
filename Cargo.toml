@@ -99,17 +99,20 @@ bitcoin-scriptexec = { git = "https://github.com/BitVM/rust-bitcoin-scriptexec",
 bitvec = "1.0.1"
 blake3 = "1.8"
 bytes = "1.10"
-ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt", tag = "v0.3.0-rc.2" }
-ckt-gobble = { git = "https://github.com/alpenlabs/ckt", tag = "v0.3.0-rc.2" }
+ckt-fmtv5-types = { git = "https://github.com/alpenlabs/ckt", rev = "c83294f31a1789b0f21a25098455cd7c25e94413" }
+ckt-gobble = { git = "https://github.com/alpenlabs/ckt", rev = "c83294f31a1789b0f21a25098455cd7c25e94413" }
 criterion = "0.8"
 fasm = "0.4.0"
 # TODO(alpenlabs): switch back to crates.io foundationdb >= 0.11 once released.
 
+cynosure = { version = "0.6.0", default-features = false, features = [
+  "mpsc_light",
+  "oneshot",
+] }
 foundationdb = { git = "https://github.com/foundationdb-rs/foundationdb-rs.git", rev = "ed274ba533e15ec02e4ab8dd4defca7d18eaf355", features = [
   "embedded-fdb-include",
   "fdb-7_3",
 ] }
-cynosure = { version = "0.6.0", default-features = false, features = ["mpsc_light", "oneshot"] }
 futures = "0.3.31"
 hex = { version = "0.4.3", features = ["serde"] }
 jsonrpsee = { version = "0.26.0", features = ["macros"] }
