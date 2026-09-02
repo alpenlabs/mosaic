@@ -36,7 +36,6 @@ ctrlc = "3.4"
 ed25519-dalek = "2.2"
 foundationdb.workspace = true
 jsonrpsee = { workspace = true, features = ["server"] }
-mimalloc = "0.1"
 monoio = "0.2.4"
 object_store = { version = "0.14", features = ["aws"] }
 rand.workspace = true

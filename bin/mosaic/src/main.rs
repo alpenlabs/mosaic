@@ -15,7 +15,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use config::{MIB, MosaicConfig, TableStoreBackend};
-use mimalloc::MiMalloc;
 use mosaic_cac_types::state_machine::{evaluator, garbler};
 // dependency to pass feature flag
 use mosaic_job_executors::MosaicExecutor;
@@ -31,8 +30,9 @@ use object_store::{ObjectStore, aws::AmazonS3Builder, local::LocalFileSystem};
 use rand::SeedableRng as _;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-#[global_allocator]
-static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
+// No #[global_allocator]: mimalloc (v3) is suspected in the SIGSEGV during
+// garbling bursts (cross-thread free-list corruption); this branch A/B tests
+// the system allocator against bridge fn-test CI.
 
 fn main() -> Result<()> {
     let config_path = config_path_from_args()?;
