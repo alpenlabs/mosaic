@@ -396,8 +396,13 @@ pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
                 wire_adaptors.iter().map(move |adaptor| (adaptor, sighash))
             });
 
+    // One OS entropy call to seed a CSPRNG; drawing every batch coefficient
+    // straight from OsRng costs a syscall each and dominated the batch time.
+    use rand::SeedableRng;
+    let mut rng = rand_chacha::ChaCha20Rng::from_rng(rand::rngs::OsRng)
+        .expect("OS entropy source is available");
     let verified = Adaptor::batch_verify(
-        &mut rand::rngs::OsRng,
+        &mut rng,
         evaluator_pk,
         deposit_items.chain(withdrawal_items),
     )
