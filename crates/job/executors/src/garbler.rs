@@ -9,7 +9,7 @@ use futures::{
     pin_mut,
 };
 use mosaic_cac_types::{
-    AllPolynomials, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositInputs,
+    Adaptor, AllPolynomials, CommitMsgChunk, CompletedSignatures, DepositAdaptors, DepositInputs,
     GarblingSeed, GarblingTableCommitment, InputPolynomials, OutputPolynomial, PubKey,
     ReservedDepositInputShares, ReservedInputShares, ReservedWithdrawalInputShares, Seed,
     WideLabelWireShares, WithdrawalAdaptors,
@@ -381,38 +381,31 @@ pub(crate) async fn handle_verify_adaptors<SP: StorageProvider, TS: TableStore>(
     let evaluator_pk = deposit_state.pk.0;
     let id = ActionId::DepositVerifyAdaptors(deposit_id);
 
-    // Verify deposit adaptors (one per deposit wire)
-    for (wire, adaptor) in deposit_adaptors.iter().enumerate() {
-        if adaptor
-            .verify(evaluator_pk, sighashes[wire].0.as_ref())
-            .is_err()
-        {
-            return completed(
-                id,
-                ActionResult::DepositAdaptorVerificationResult(deposit_id, false),
-            );
-        }
-    }
+    // One adaptor per deposit wire, then 256 adaptors per withdrawal wire; each
+    // wire has its own sighash. All ~33k relations are checked in one batch.
+    let deposit_items = deposit_adaptors
+        .iter()
+        .enumerate()
+        .map(|(wire, adaptor)| (adaptor, sighashes[wire].0.as_ref()));
+    let withdrawal_items =
+        withdrawal_adaptors
+            .iter()
+            .enumerate()
+            .flat_map(|(wire, wire_adaptors)| {
+                let sighash: &[u8] = sighashes[N_DEPOSIT_INPUT_WIRES + wire].0.as_ref();
+                wire_adaptors.iter().map(move |adaptor| (adaptor, sighash))
+            });
 
-    // Verify withdrawal adaptors (each wire × 256 values)
-    for (wire, wire_adaptors) in withdrawal_adaptors.iter().enumerate() {
-        let sighash_idx = N_DEPOSIT_INPUT_WIRES + wire;
-        for adaptor in wire_adaptors.iter() {
-            if adaptor
-                .verify(evaluator_pk, sighashes[sighash_idx].0.as_ref())
-                .is_err()
-            {
-                return completed(
-                    id,
-                    ActionResult::DepositAdaptorVerificationResult(deposit_id, false),
-                );
-            }
-        }
-    }
+    let verified = Adaptor::batch_verify(
+        &mut rand::rngs::OsRng,
+        evaluator_pk,
+        deposit_items.chain(withdrawal_items),
+    )
+    .is_ok();
 
     completed(
         id,
-        ActionResult::DepositAdaptorVerificationResult(deposit_id, true),
+        ActionResult::DepositAdaptorVerificationResult(deposit_id, verified),
     )
 }
 

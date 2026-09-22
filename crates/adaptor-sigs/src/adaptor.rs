@@ -8,6 +8,8 @@
 //! - `Adaptor::generate` constructs (s', R', S) where R' = r'G, R = R' + S, e = H(tag, R.x, P.x,
 //!   sighash), s' = sign·r' + e·x.
 //! - `Adaptor::verify`   checks s'·G - e·P == sign·R'.
+//! - `Adaptor::batch_verify` checks that relation for many adaptors sharing `P` at once, via a
+//!   random linear combination (one fixed-base mul, one variable-base mul, one MSM).
 //! - `Adaptor::complete` produces a Schnorr-like (s, R) by s = s' + sign·share, R = R' + S.
 //! - `Adaptor::extract_share` recovers `share` from (s, R) and the adaptor as sign·(s − s').
 //
@@ -16,7 +18,7 @@
 // - `extract_share` is intentionally a pure algebraic operation and does not verify `R`. Callers
 //   who want that check should compare `sig.R` to `adaptor.expected_R()`.
 
-use ark_ec::{AffineRepr, CurveGroup};
+use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{AdditiveGroup, BigInteger, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand::{CryptoRng, Rng};
@@ -190,6 +192,24 @@ impl Adaptor {
         self.R_dash_commit + self.share_commitment
     }
 
+    /// Rejects an evaluator key that is the identity or lacks the canonical even-y form.
+    fn canonical_pk_affine(
+        evaluator_master_pk: ark_secp256k1::Projective,
+    ) -> Result<ark_secp256k1::Affine, Error> {
+        let evaluator_master_pk_affine = evaluator_master_pk.into_affine();
+        if evaluator_master_pk_affine.is_zero() {
+            return Err(Error::AdaptorGenerationFailed(
+                "input evaluator_master_pk can't be inf",
+            ));
+        }
+        if evaluator_master_pk_affine.y.into_bigint().is_odd() {
+            return Err(Error::AdaptorGenerationFailed(
+                "input evaluator_master_pk can't have odd y",
+            ));
+        }
+        Ok(evaluator_master_pk_affine)
+    }
+
     /// Verifies that this adaptor is well-formed for `(P, sighash)`:
     /// checks `s'·G - e·P == sign·R'`, where `e = H(tag, (R'+S).x, P.x, sighash)`.
     pub fn verify(
@@ -204,17 +224,7 @@ impl Adaptor {
             ));
         }
 
-        let evaluator_master_pk_affine = evaluator_master_pk.into_affine();
-        if evaluator_master_pk_affine.is_zero() {
-            return Err(Error::AdaptorGenerationFailed(
-                "input evaluator_master_pk can't be inf",
-            ));
-        }
-        if evaluator_master_pk_affine.y.into_bigint().is_odd() {
-            return Err(Error::AdaptorGenerationFailed(
-                "input evaluator_master_pk can't have odd y",
-            ));
-        }
+        let evaluator_master_pk_affine = Self::canonical_pk_affine(evaluator_master_pk)?;
 
         let e = Self::challenge_e(expected_R, evaluator_master_pk_affine, sighash);
 
@@ -231,6 +241,64 @@ impl Adaptor {
         } else {
             Err(Error::VerificationFailed {
                 what: "adaptor relation s'·G != sign·R' + e·P",
+            })
+        }
+    }
+
+    /// Verifies many adaptors sharing the evaluator key `P`, each against its own `sighash`.
+    ///
+    /// Accepts exactly when [`verify`](Self::verify) accepts every item, except that a batch
+    /// containing an invalid adaptor slips through with probability ~1/|Fr| per call. The
+    /// per-adaptor relations `s'·G - e·P - sign·R' = 0` are combined with coefficients `c_i`
+    /// sampled from `rng` and checked as `(Σ c_i·s'_i)·G == (Σ c_i·e_i)·P + Σ (c_i·sign_i)·R'_i`,
+    /// which costs one fixed-base mul, one variable-base mul and one MSM instead of two
+    /// multiplications per adaptor.
+    pub fn batch_verify<'a, R: Rng + CryptoRng>(
+        rng: &mut R,
+        evaluator_master_pk: ark_secp256k1::Projective,
+        items: impl IntoIterator<Item = (&'a Adaptor, &'a [u8])>,
+    ) -> Result<(), Error> {
+        let evaluator_master_pk_affine = Self::canonical_pk_affine(evaluator_master_pk)?;
+
+        let (adaptors, sighashes): (Vec<&Adaptor>, Vec<&[u8]>) = items.into_iter().unzip();
+        if adaptors.is_empty() {
+            return Ok(());
+        }
+
+        // Two batch normalizations (one inversion each) replace 2N affine conversions.
+        let expected_Rs = ark_secp256k1::Projective::normalize_batch(
+            &adaptors.iter().map(|a| a.expected_R()).collect::<Vec<_>>(),
+        );
+        let R_dashes = ark_secp256k1::Projective::normalize_batch(
+            &adaptors.iter().map(|a| a.R_dash_commit).collect::<Vec<_>>(),
+        );
+
+        let mut s_acc = ark_secp256k1::Fr::ZERO;
+        let mut e_acc = ark_secp256k1::Fr::ZERO;
+        let mut R_dash_scalars = Vec::with_capacity(adaptors.len());
+        for ((adaptor, sighash), expected_R) in adaptors.iter().zip(&sighashes).zip(&expected_Rs) {
+            if expected_R.is_zero() {
+                return Err(Error::AdaptorGenerationFailed(
+                    "evaluator can guess garbler's secret share",
+                ));
+            }
+            let e = Self::challenge_e(*expected_R, evaluator_master_pk_affine, sighash);
+            let neg = Self::neg_from_R_parity(expected_R);
+
+            let c = ark_secp256k1::Fr::rand(rng);
+            s_acc += c * adaptor.tweaked_s;
+            e_acc += c * e;
+            R_dash_scalars.push(Self::apply_sign_scalar(c, neg));
+        }
+
+        let signed_R_dash_sum = ark_secp256k1::Projective::msm(&R_dashes, &R_dash_scalars)
+            .expect("bases and scalars are built from the same adaptors");
+
+        if gen_mul(&s_acc) == evaluator_master_pk * e_acc + signed_R_dash_sum {
+            Ok(())
+        } else {
+            Err(Error::VerificationFailed {
+                what: "batched adaptor relation Σc·(s'·G - e·P) != Σc·sign·R'",
             })
         }
     }
@@ -378,6 +446,152 @@ mod tests {
             // Extract share back
             let extracted = fx.adaptor.extract_share(&sig);
             assert_eq!(extracted, fx.share);
+        }
+    }
+
+    /// Adaptors for one evaluator key, each with its own share and sighash.
+    fn batch_fixture<R: CryptoRng + RngCore>(
+        rng: &mut R,
+        n: usize,
+    ) -> (
+        ark_secp256k1::Fr,
+        ark_secp256k1::Projective,
+        Vec<(Adaptor, Vec<u8>)>,
+    ) {
+        let mut x = ark_secp256k1::Fr::rand(rng);
+        let mut P = gen_mul(&x);
+        if P.into_affine().y.into_bigint().is_odd() {
+            x.neg_in_place();
+            P.neg_in_place();
+        }
+        let items = (0..n)
+            .map(|i| {
+                let S = gen_mul(&ark_secp256k1::Fr::rand(rng));
+                let sighash = Sha256::digest(format!("msg {i}")).to_vec();
+                let adaptor = Adaptor::generate(rng, S, x, P, &sighash).expect("valid adaptor");
+                (adaptor, sighash)
+            })
+            .collect();
+        (x, P, items)
+    }
+
+    /// Batch verification must agree with verifying every item individually.
+    fn assert_batch_matches_individual<R: CryptoRng + RngCore>(
+        rng: &mut R,
+        P: ark_secp256k1::Projective,
+        items: &[(Adaptor, Vec<u8>)],
+        expect_ok: bool,
+    ) {
+        let individual = items.iter().all(|(a, s)| a.verify(P, s).is_ok());
+        let batched = Adaptor::batch_verify(rng, P, items.iter().map(|(a, s)| (a, s.as_slice())));
+        assert_eq!(
+            individual, expect_ok,
+            "unbatched verify disagrees with scenario"
+        );
+        assert_eq!(
+            batched.is_ok(),
+            expect_ok,
+            "batched verify disagrees with scenario"
+        );
+    }
+
+    #[test]
+    fn batch_verify_accepts_valid_batches() {
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        for n in [0usize, 1, 2, 3, 64, 513] {
+            let (_, P, items) = batch_fixture(&mut rng, n);
+            assert_batch_matches_individual(&mut rng, P, &items, true);
+        }
+    }
+
+    #[test]
+    fn batch_verify_rejects_any_single_tampered_item() {
+        let mut rng = ChaCha20Rng::seed_from_u64(8);
+        let (_, P, items) = batch_fixture(&mut rng, 300);
+        let g = ark_secp256k1::Projective::generator();
+
+        for tamper in 0..4 {
+            for &idx in &[0usize, 137, 299] {
+                let mut items = items.clone();
+                match tamper {
+                    0 => items[idx].0.tweaked_s += ark_secp256k1::Fr::from(1u64),
+                    1 => items[idx].0.R_dash_commit += g,
+                    2 => items[idx].0.share_commitment += g,
+                    _ => items[idx].1 = Sha256::digest(b"other message").to_vec(),
+                }
+                assert_batch_matches_individual(&mut rng, P, &items, false);
+            }
+        }
+    }
+
+    #[test]
+    fn batch_verify_rejects_wrong_key_like_unbatched() {
+        let mut rng = ChaCha20Rng::seed_from_u64(9);
+        let (_, P, items) = batch_fixture(&mut rng, 32);
+
+        // A different (valid, even-y) key fails the relation.
+        let mut P_wrong = gen_mul(&ark_secp256k1::Fr::rand(&mut rng));
+        if P_wrong.into_affine().y.into_bigint().is_odd() {
+            P_wrong.neg_in_place();
+        }
+        assert_batch_matches_individual(&mut rng, P_wrong, &items, false);
+        assert!(matches!(
+            Adaptor::batch_verify(
+                &mut rng,
+                P_wrong,
+                items.iter().map(|(a, s)| (a, s.as_slice()))
+            ),
+            Err(Error::VerificationFailed { .. })
+        ));
+
+        // Odd-y and identity keys are rejected structurally by both paths.
+        for bad_pk in [-P, ark_secp256k1::Projective::zero()] {
+            assert_batch_matches_individual(&mut rng, bad_pk, &items, false);
+            let individual = items[0].0.verify(bad_pk, &items[0].1);
+            let batched = Adaptor::batch_verify(
+                &mut rng,
+                bad_pk,
+                items.iter().map(|(a, s)| (a, s.as_slice())),
+            );
+            assert!(matches!(individual, Err(Error::AdaptorGenerationFailed(_))));
+            assert!(matches!(batched, Err(Error::AdaptorGenerationFailed(_))));
+        }
+    }
+
+    #[test]
+    fn batch_verify_rejects_zero_expected_r_like_unbatched() {
+        let mut rng = ChaCha20Rng::seed_from_u64(10);
+        let (_, P, mut items) = batch_fixture(&mut rng, 16);
+        // S = -R' makes R = R' + S the identity, which both paths reject before any math.
+        items[5].0.share_commitment = -items[5].0.R_dash_commit;
+        assert_batch_matches_individual(&mut rng, P, &items, false);
+        let individual = items[5].0.verify(P, &items[5].1);
+        let batched =
+            Adaptor::batch_verify(&mut rng, P, items.iter().map(|(a, s)| (a, s.as_slice())));
+        assert!(matches!(individual, Err(Error::AdaptorGenerationFailed(_))));
+        assert!(matches!(batched, Err(Error::AdaptorGenerationFailed(_))));
+    }
+
+    #[test]
+    fn batch_verify_randomized_agreement_with_unbatched() {
+        // Random subsets of items get random tampering; the two paths must always agree.
+        let mut rng = ChaCha20Rng::seed_from_u64(11);
+        let g = ark_secp256k1::Projective::generator();
+        for round in 0..40 {
+            let n = 1 + (rng.next_u32() as usize % 40);
+            let (_, P, mut items) = batch_fixture(&mut rng, n);
+            let tampered = round % 3 != 0 && rng.next_u32() % 2 == 0;
+            if tampered {
+                let idx = rng.next_u32() as usize % n;
+                match rng.next_u32() % 3 {
+                    0 => {
+                        items[idx].0.tweaked_s.neg_in_place();
+                    }
+                    1 => items[idx].0.R_dash_commit += g,
+                    _ => items[idx].0.share_commitment -= g,
+                }
+            }
+            assert_batch_matches_individual(&mut rng, P, &items, !tampered);
         }
     }
 
