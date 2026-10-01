@@ -146,7 +146,7 @@ jobs:
           fi
 
       - name: Configure private AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
@@ -157,7 +157,7 @@ jobs:
             | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Build to local Docker daemon so Trivy can scan the image before any push.
       - name: Build Mosaic image
@@ -243,7 +243,7 @@ jobs:
       - name: Upload Trivy SARIF to GitHub Security tab
         if: always()
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           sarif_file: trivy-results/mosaic.sarif
           category: mosaic-ecr
@@ -267,7 +267,7 @@ jobs:
         run: docker push "${IMAGE_REF}"
 
       - name: Configure public ECR credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.PUBLIC_ECR_REGION }}
@@ -284,7 +284,7 @@ jobs:
           docker push "${PUBLIC_IMAGE_REF}"
 
       - name: Restore private AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
