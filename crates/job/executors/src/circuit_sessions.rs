@@ -1050,6 +1050,13 @@ pub struct EvaluationSession {
     heartbeat: HeartbeatTracker,
     /// Cumulative gates evaluated so far (matches `HeaderV5c::total_gates`).
     gates_processed: u64,
+    /// Set once the stored table is found to be truncated/corrupt (ciphertext
+    /// reader hit unexpected EOF). Once set, `process_chunk` becomes a no-op
+    /// for the rest of the pass and `finish` reports a terminal negative
+    /// result instead of querying the (incompletely fed) evaluation
+    /// instance. This avoids the coordinator's evict-and-retry path, which
+    /// would otherwise re-read the same corrupt table forever.
+    corrupted: Option<String>,
 }
 
 impl std::fmt::Debug for EvaluationSession {
@@ -1092,6 +1099,7 @@ impl EvaluationSession {
             output_label_ct,
             heartbeat,
             gates_processed: 0,
+            corrupted: None,
         }
     }
 }
@@ -1103,6 +1111,13 @@ impl CircuitSession for EvaluationSession {
     ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
         let chunk = Arc::clone(chunk);
         Box::pin(async move {
+            // Once the table has been found corrupt, the ciphertext reader
+            // is already exhausted — nothing left to do but let the pass
+            // run to completion so `finish` can report the terminal result.
+            if self.corrupted.is_some() {
+                return Ok(());
+            }
+
             // Count AND gates across all blocks in this chunk so we can
             // pre-read exactly the right number of ciphertexts in one call.
             let and_count: usize = chunk.blocks.iter().map(count_and_gates).sum();
@@ -1118,9 +1133,20 @@ impl CircuitSession for EvaluationSession {
                         .read_ciphertext(&mut ct_data[filled..])
                         .await?;
                     if n == 0 {
-                        return Err(CircuitError::ChunkFailed(
-                            "unexpected EOF reading ciphertexts from table store".into(),
-                        ));
+                        // The stored table is truncated/corrupt — not a
+                        // transient read failure. Mark the session corrupted
+                        // and complete this chunk as a no-op instead of
+                        // erroring, so the coordinator doesn't evict and
+                        // retry a download that will fail identically every
+                        // time. `finish` delivers the terminal negative
+                        // result once the pass completes.
+                        tracing::warn!(
+                            index = %self.index,
+                            "unexpected EOF reading ciphertexts from table store — table is corrupt"
+                        );
+                        self.corrupted =
+                            Some("unexpected EOF reading ciphertexts from table store".into());
+                        return Ok(());
                     }
                     filled += n;
                 }
@@ -1142,6 +1168,23 @@ impl CircuitSession for EvaluationSession {
     fn finish(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
         self.heartbeat.done(self.gates_processed);
         Box::pin(async move {
+            if let Some(reason) = &self.corrupted {
+                // The instance was never fully fed (ciphertext stream ran
+                // out early), so its state is incomplete — querying it is
+                // not meaningful. Report the terminal negative result via
+                // the same "no output produced" channel used for translate
+                // failures below, instead of retrying a corrupt table.
+                tracing::warn!(
+                    index = %self.index,
+                    reason,
+                    "evaluation session corrupted — reporting no output"
+                );
+                return HandlerOutcome::Done(ActionCompletion::Evaluator {
+                    id: EvaluatorActionId::EvaluateGarblingTable(self.index),
+                    result: EvaluatorActionResult::TableEvaluationResult(self.commitment, None),
+                });
+            }
+
             // Extract output labels and values from the evaluation instance.
             let wire_ids: Vec<u64> = self.output_wire_ids.iter().map(|&w| w as u64).collect();
             let n = self.output_wire_ids.len();
@@ -1418,5 +1461,107 @@ mod tests {
             futures::executor::block_on(ct_tx.send(vec![2])).is_err(),
             "producer must observe the cancelled drain"
         );
+    }
+
+    // ── EvaluationSession: EOF handling ──────────────────────────────────
+
+    /// Ciphertext reader that reports EOF (`Ok(0)`) on every read.
+    struct EofCiphertextReader;
+
+    impl DynCiphertextReader for EofCiphertextReader {
+        fn read_ciphertext<'a>(
+            &'a mut self,
+            _buf: &'a mut [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<usize, CircuitError>> + Send + 'a>> {
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    fn evaluation_session_with_eof_reader(
+        commitment: GarblingTableCommitment,
+    ) -> EvaluationSession {
+        use ckt_gobble::traits::{EvaluationInstanceConfig, GobbleEngine};
+
+        let config = EvaluationInstanceConfig {
+            scratch_space: 3,
+            selected_primary_input_labels: &[],
+            selected_primary_input_values: &bitvec::vec::BitVec::new(),
+            aes128_key: [0u8; 16],
+            public_s: [0u8; 16],
+            constant_zero_label: [0u8; 16],
+            constant_one_label: [0u8; 16],
+        };
+        let instance = ckt_gobble::Engine::new().new_evaluation_instance(config);
+
+        EvaluationSession::new(
+            instance,
+            Box::new(EofCiphertextReader),
+            &PeerId::from([1u8; 32]),
+            Index::new(1).expect("index in range"),
+            commitment,
+            Vec::new(),
+            [0u8; 32],
+            1,
+        )
+    }
+
+    /// A single-AND-gate block: `in1=0, in2=1, out=2` (wires 0/1 are the
+    /// constant labels), gate type bitmap with bit 0 set.
+    fn one_and_gate_block() -> OwnedBlock {
+        let mut gate_data = Vec::with_capacity(12);
+        gate_data.extend_from_slice(&0u32.to_le_bytes());
+        gate_data.extend_from_slice(&1u32.to_le_bytes());
+        gate_data.extend_from_slice(&2u32.to_le_bytes());
+        OwnedBlock {
+            gate_data,
+            gate_types: vec![0b0000_0001],
+            num_gates: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluation_session_eof_reports_no_output_instead_of_retrying() {
+        let commitment = GarblingTableCommitment::from([7u8; 32]);
+        let mut session = evaluation_session_with_eof_reader(commitment);
+
+        let chunk = Arc::new(OwnedChunk {
+            blocks: vec![one_and_gate_block()],
+        });
+
+        // EOF while reading ciphertext for a real AND gate must be treated
+        // as terminal corruption, not a retryable chunk error.
+        let result = session.process_chunk(&chunk).await;
+        assert!(
+            result.is_ok(),
+            "EOF must be absorbed as corruption, not surfaced as CircuitError: {result:?}"
+        );
+
+        // A later chunk after corruption must also be a no-op, not attempt
+        // another (equally futile) read.
+        let second_chunk = Arc::new(OwnedChunk {
+            blocks: vec![one_and_gate_block()],
+        });
+        assert!(session.process_chunk(&second_chunk).await.is_ok());
+
+        let outcome = Box::new(session).finish().await;
+        match outcome {
+            HandlerOutcome::Done(ActionCompletion::Evaluator { id, result }) => {
+                assert_eq!(
+                    id,
+                    EvaluatorActionId::EvaluateGarblingTable(Index::new(1).expect("in range"))
+                );
+                match result {
+                    EvaluatorActionResult::TableEvaluationResult(c, output_share) => {
+                        assert_eq!(c, commitment);
+                        assert!(
+                            output_share.is_none(),
+                            "corrupted table must report no output, not a fabricated share"
+                        );
+                    }
+                    other => panic!("expected TableEvaluationResult, got {other:?}"),
+                }
+            }
+            other => panic!("expected a terminal Done completion, got {other:?}"),
+        }
     }
 }

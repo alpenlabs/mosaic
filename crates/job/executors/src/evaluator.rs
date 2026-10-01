@@ -768,9 +768,16 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     let params_hash = hash_garbling_params(&aes_key, &public_s, &constant_one, &constant_zero);
     let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct, &params_hash);
     if computed != expected_commitment {
+        // The result carries the computed (mismatched) commitment rather
+        // than expected_commitment — `handle_table_received` in the
+        // evaluator STF compares the two and aborts the deposit on
+        // mismatch.
         error!(%peer_id, ?index, "commitment mismatch in receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
-        return HandlerOutcome::Retry;
+        return completed(
+            ActionId::ReceiveGarblingTable(expected_commitment),
+            ActionResult::GarblingTableReceived(index, computed),
+        );
     }
     let metadata = TableMetadata {
         output_label_ct,
@@ -1272,6 +1279,17 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     let cts_per_row = 8usize;
     let rows_per_wire = 256usize;
     let bytes_per_wire = rows_per_wire * cts_per_row * bytes_per_ct;
+
+    // Persisted translation data can be truncated (interrupted write,
+    // corrupt store) — fail closed here instead of indexing out of bounds
+    // in the parse loop below.
+    let expected_translation_len = N_INPUT_WIRES * bytes_per_wire;
+    if translation_bytes.len() < expected_translation_len {
+        return Err(CircuitError::SetupFailed(format!(
+            "translation data truncated: expected {expected_translation_len} bytes, got {}",
+            translation_bytes.len()
+        )));
+    }
 
     for wire in 0..N_INPUT_WIRES {
         let wire_offset = wire * bytes_per_wire;
