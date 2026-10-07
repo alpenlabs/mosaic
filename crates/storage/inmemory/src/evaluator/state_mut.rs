@@ -254,6 +254,12 @@ impl StateMut for StoredEvaluatorState {
 
         Ok(())
     }
+
+    async fn put_table_integrity_failure(&mut self, reason: &str) -> Result<(), Self::Error> {
+        self.table_integrity_failure = Some(reason.to_owned());
+
+        Ok(())
+    }
 }
 
 impl Commit for StoredEvaluatorState {

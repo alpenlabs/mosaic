@@ -91,6 +91,13 @@ pub enum ActionResult {
     /// Garbling table evaluation completed.
     /// `None` means no output was produced; `Some` contains the output share.
     TableEvaluationResult(GarblingTableCommitment, Option<CircuitOutputShare>),
+    /// The stored garbling table for an evaluation circuit failed an integrity
+    /// check, so the evaluation did not run. The string holds the reason.
+    ///
+    /// This is different from `TableEvaluationResult(_, None)`. That result
+    /// means the evaluation ran and produced no output share. This result
+    /// means the table could not be evaluated.
+    TableIntegrityFailure(GarblingTableCommitment, String),
 }
 
 // ============================================================================

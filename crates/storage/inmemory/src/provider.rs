@@ -563,6 +563,10 @@ impl evaluator::StateRead for InMemoryEvaluatorSession {
     async fn get_fault_secret_share(&self) -> Result<Option<Share>, Self::Error> {
         self.inner.get_fault_secret_share().await
     }
+
+    async fn get_table_integrity_failure(&self) -> Result<Option<String>, Self::Error> {
+        self.inner.get_table_integrity_failure().await
+    }
 }
 
 impl evaluator::StateMut for InMemoryEvaluatorSession {
@@ -763,6 +767,10 @@ impl evaluator::StateMut for InMemoryEvaluatorSession {
 
     async fn put_fault_secret_share(&mut self, fault: &Share) -> Result<(), Self::Error> {
         self.inner.put_fault_secret_share(fault).await
+    }
+
+    async fn put_table_integrity_failure(&mut self, reason: &str) -> Result<(), Self::Error> {
+        self.inner.put_table_integrity_failure(reason).await
     }
 }
 

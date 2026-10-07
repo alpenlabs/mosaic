@@ -96,7 +96,9 @@ crate::state_machine::define_step_phase! {
         SetupConsumed {
             /// Disputed withdrawal for deposit
             deposit_id: DepositId,
-            /// If final secret was extracted and can be used to sign transaction (evaluator)
+            /// If final secret was extracted and can be used to sign transaction (evaluator).
+            /// `false` also covers stored tables that failed an integrity check and were
+            /// not evaluated. The evaluator storage records the first such failure.
             success: bool,
         },
         /// Setup was aborted due to a protocol violation.

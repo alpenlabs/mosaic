@@ -21,7 +21,8 @@ use crate::row_spec::{
         ROW_TAG_INPUT_POLY_ZEROTH_COEFF, ROW_TAG_OPENED_GARBLING_SEEDS,
         ROW_TAG_OPENED_INPUT_SHARE_CHUNK, ROW_TAG_OPENED_OUTPUT_SHARES, ROW_TAG_OUTPUT_LABEL_CT,
         ROW_TAG_OUTPUT_POLY_COMMITMENT, ROW_TAG_PUBLIC_S, ROW_TAG_RESERVED_SETUP_INPUT_SHARES,
-        ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK, ROW_TAG_WITHDRAWAL_INPUTS,
+        ROW_TAG_TABLE_INTEGRITY_FAILURE, ROW_TAG_WITHDRAWAL_ADAPTOR_CHUNK,
+        ROW_TAG_WITHDRAWAL_INPUTS,
     },
 };
 
@@ -257,4 +258,16 @@ impl KVRowSpec for FaultSecretRowSpec {
 
     type Key = ProtocolSingletonKey;
     type Value = Share;
+}
+
+/// Row spec for the reason recorded for the first evaluation table that
+/// failed an integrity check.
+#[derive(Debug)]
+pub struct TableIntegrityFailureRowSpec;
+
+impl KVRowSpec for TableIntegrityFailureRowSpec {
+    const ROW_TAG: u8 = ROW_TAG_TABLE_INTEGRITY_FAILURE;
+
+    type Key = ProtocolSingletonKey;
+    type Value = String;
 }

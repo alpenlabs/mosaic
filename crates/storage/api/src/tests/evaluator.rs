@@ -713,5 +713,30 @@ macro_rules! evaluator_store_tests {
                 Some(expected)
             );
         }
+
+        #[tokio::test]
+        async fn table_integrity_failure_roundtrip() {
+            let provider = $create_provider;
+            let peer = test_peer_id();
+
+            let store = provider.evaluator_state(&peer).await.expect("get read");
+            assert_eq!(
+                store.get_table_integrity_failure().await.expect("get"),
+                None
+            );
+
+            let mut store = provider.evaluator_state_mut(&peer).await.expect("get mut");
+            store
+                .put_table_integrity_failure("ciphertext truncated")
+                .await
+                .expect("put integrity failure");
+            store.commit().await.expect("commit");
+
+            let store = provider.evaluator_state(&peer).await.expect("get read");
+            assert_eq!(
+                store.get_table_integrity_failure().await.expect("get"),
+                Some("ciphertext truncated".to_owned())
+            );
+        }
     };
 }

@@ -440,6 +440,20 @@ impl SerializableValue for Byte32 {
     }
 }
 
+impl SerializableValue for String {
+    type SerializeError = postcard::Error;
+    type DeserializeError = postcard::Error;
+    type Serialized = Vec<u8>;
+
+    fn serialize(&self) -> Result<Self::Serialized, Self::SerializeError> {
+        postcard::to_allocvec(self)
+    }
+
+    fn deserialize(bytes: &[u8]) -> Result<Self, Self::DeserializeError> {
+        decode_postcard_canonical(bytes)
+    }
+}
+
 /// Decode a postcard-encoded value, rejecting any trailing bytes.
 ///
 /// `postcard::from_bytes` succeeds even when the input contains extra bytes

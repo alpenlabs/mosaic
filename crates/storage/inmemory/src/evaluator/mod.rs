@@ -55,6 +55,9 @@ pub struct StoredEvaluatorState {
     pub deposits: HashMap<DepositId, EvaluatorDepositState>,
     /// Fault secret
     pub fault_secret: Option<Share>,
+    /// Reason recorded for the first evaluation table that failed an
+    /// integrity check.
+    pub table_integrity_failure: Option<String>,
 }
 
 impl StoredEvaluatorState {
