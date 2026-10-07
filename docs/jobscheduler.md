@@ -238,7 +238,7 @@ These are plain data descriptors that can be stored, retried, and resubmitted. T
 | GenerateDepositAdaptors | DepositAdaptorsGenerated |
 | GenerateWithdrawalAdaptorsChunk | WithdrawalAdaptorsChunkGenerated |
 | DepositSendAdaptorMsgChunk | DepositAdaptorChunkSent |
-| EvaluateGarblingTable | TableEvaluationResult |
+| EvaluateGarblingTable | TableEvaluationResult, or TableIntegrityFailure when the stored table is truncated or corrupt |
 
 ## Light Pool
 
@@ -313,8 +313,10 @@ This naturally balances load — no worker gets more than `ceil(total / workers)
 |---------|----------|
 | `StorageUnavailable` during session creation | Job stays on retry list, tried again next pass |
 | `TransientFailure` during session creation | Job stays on retry list, tried again next pass (e.g. peer not ready for bulk stream) |
+| `Concluded` during session creation | Completion delivered to the SM without a pass, job dropped (e.g. stored translation material has the wrong length) |
 | `SetupFailed` during session creation | Permanent error — logged and dropped (programming bug) |
 | Session error during `process_chunk` | Session evicted, job moved to retry list |
+| Stored ciphertext ends early during evaluation `process_chunk` | Session skips the remaining chunks; `finish` delivers `TableIntegrityFailure` |
 | Session timeout during `process_chunk` | Session evicted, job moved to retry list |
 | `session.finish()` returns `Retry` | Job moved to retry list |
 | Circuit reader fails to open | All jobs moved to retry list |

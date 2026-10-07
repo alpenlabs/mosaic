@@ -28,9 +28,11 @@
 //!
 //! The scheduler submits [`PendingCircuitJob`]s to the garbling coordinator.
 //! The coordinator creates sessions via [`SessionFactory::create_session`],
-//! retrying on [`CircuitError::StorageUnavailable`]. If a session is evicted
-//! mid-pass (timeout or error), the original [`CircuitAction`] is preserved
-//! for retry on the next pass. No action is ever silently dropped.
+//! retrying on [`CircuitError::StorageUnavailable`]. If session setup already
+//! determines the result ([`CircuitError::Concluded`]), the coordinator
+//! delivers that completion without a pass. If a session is evicted mid-pass
+//! (timeout or error), the original [`CircuitAction`] is preserved for retry
+//! on the next pass. No action is ever silently dropped.
 
 mod handle;
 mod hint;
@@ -107,6 +109,11 @@ pub enum CircuitError {
     /// [`StorageUnavailable`](Self::StorageUnavailable), which means the
     /// data is not written *yet* and retrying will eventually succeed.
     AlreadyComplete,
+    /// Session setup determined the action's result without running a pass,
+    /// for example because a stored garbling table failed an integrity check.
+    /// A retry cannot change this result. The coordinator delivers the
+    /// completion to the state machine and drops the job.
+    Concluded(Box<ActionCompletion>),
 }
 
 /// A block of circuit gate data shared across concurrent sessions via [`Arc`].
@@ -280,6 +287,8 @@ pub trait SessionFactory: Send + Sync + 'static {
     ///
     /// - [`CircuitError::StorageUnavailable`] — transient; the coordinator will keep the job and
     ///   retry on the next pass.
+    /// - [`CircuitError::Concluded`] — the result is known without a pass; the coordinator delivers
+    ///   the completion and drops the job.
     /// - [`CircuitError::SetupFailed`] — permanent; the coordinator logs an error and drops the job
     ///   (programming bug).
     fn create_session<'a>(&'a self, job: &'a PendingCircuitJob) -> CreateSessionFuture<'a>;

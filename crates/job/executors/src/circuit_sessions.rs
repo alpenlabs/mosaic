@@ -1050,6 +1050,14 @@ pub struct EvaluationSession {
     heartbeat: HeartbeatTracker,
     /// Cumulative gates evaluated so far (matches `HeaderV5c::total_gates`).
     gates_processed: u64,
+    /// Reason set when the stored ciphertext ends before the circuit does.
+    ///
+    /// The table is then truncated or corrupt, and every later read fails the
+    /// same way, so a retry cannot help. Once the reason is set,
+    /// `process_chunk` does nothing for the rest of the pass, and `finish`
+    /// reports [`EvaluatorActionResult::TableIntegrityFailure`] instead of
+    /// querying the incompletely fed evaluation instance.
+    integrity_failure: Option<String>,
 }
 
 impl std::fmt::Debug for EvaluationSession {
@@ -1092,6 +1100,7 @@ impl EvaluationSession {
             output_label_ct,
             heartbeat,
             gates_processed: 0,
+            integrity_failure: None,
         }
     }
 }
@@ -1103,6 +1112,12 @@ impl CircuitSession for EvaluationSession {
     ) -> Pin<Box<dyn Future<Output = Result<(), CircuitError>> + Send + '_>> {
         let chunk = Arc::clone(chunk);
         Box::pin(async move {
+            // The stored table already ended early. Let the pass run to its
+            // end so that `finish` reports the integrity failure.
+            if self.integrity_failure.is_some() {
+                return Ok(());
+            }
+
             // Count AND gates across all blocks in this chunk so we can
             // pre-read exactly the right number of ciphertexts in one call.
             let and_count: usize = chunk.blocks.iter().map(count_and_gates).sum();
@@ -1118,9 +1133,22 @@ impl CircuitSession for EvaluationSession {
                         .read_ciphertext(&mut ct_data[filled..])
                         .await?;
                     if n == 0 {
-                        return Err(CircuitError::ChunkFailed(
-                            "unexpected EOF reading ciphertexts from table store".into(),
-                        ));
+                        // The stored table is truncated or corrupt. A read
+                        // error stays a `ChunkFailed` for retry, but an early
+                        // end is permanent: the coordinator must not evict
+                        // and re-read this table forever.
+                        let reason = format!(
+                            "stored ciphertext ended early: got {filled} of {ct_bytes_needed} bytes for the chunk after {} gates",
+                            self.gates_processed
+                        );
+                        tracing::error!(
+                            index = %self.index,
+                            commitment = %self.commitment,
+                            reason,
+                            "stored garbling table failed integrity check"
+                        );
+                        self.integrity_failure = Some(reason);
+                        return Ok(());
                     }
                     filled += n;
                 }
@@ -1142,6 +1170,13 @@ impl CircuitSession for EvaluationSession {
     fn finish(mut self: Box<Self>) -> Pin<Box<dyn Future<Output = HandlerOutcome> + Send>> {
         self.heartbeat.done(self.gates_processed);
         Box::pin(async move {
+            if let Some(reason) = self.integrity_failure.take() {
+                return HandlerOutcome::Done(ActionCompletion::Evaluator {
+                    id: EvaluatorActionId::EvaluateGarblingTable(self.index),
+                    result: EvaluatorActionResult::TableIntegrityFailure(self.commitment, reason),
+                });
+            }
+
             // Extract output labels and values from the evaluation instance.
             let wire_ids: Vec<u64> = self.output_wire_ids.iter().map(|&w| w as u64).collect();
             let n = self.output_wire_ids.len();
@@ -1417,6 +1452,127 @@ mod tests {
         assert!(
             futures::executor::block_on(ct_tx.send(vec![2])).is_err(),
             "producer must observe the cancelled drain"
+        );
+    }
+
+    // ── EvaluationSession: stored ciphertext ends early ──────────────────
+
+    /// Ciphertext reader with a scripted outcome: a read error on every
+    /// read, or up to `partial` bytes on the first read and then EOF.
+    struct ScriptedCiphertextReader {
+        fail: bool,
+        partial: usize,
+    }
+
+    impl DynCiphertextReader for ScriptedCiphertextReader {
+        fn read_ciphertext<'a>(
+            &'a mut self,
+            buf: &'a mut [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<usize, CircuitError>> + Send + 'a>> {
+            let fail = self.fail;
+            let n = self.partial.min(buf.len());
+            self.partial = 0;
+            Box::pin(async move {
+                if fail {
+                    Err(CircuitError::ChunkFailed("backend read failed".into()))
+                } else {
+                    Ok(n)
+                }
+            })
+        }
+    }
+
+    fn evaluation_session(
+        commitment: GarblingTableCommitment,
+        reader: ScriptedCiphertextReader,
+    ) -> EvaluationSession {
+        use ckt_gobble::traits::{EvaluationInstanceConfig, GobbleEngine};
+
+        let config = EvaluationInstanceConfig {
+            scratch_space: 3,
+            selected_primary_input_labels: &[],
+            selected_primary_input_values: &bitvec::vec::BitVec::new(),
+            aes128_key: [0u8; 16],
+            public_s: [0u8; 16],
+            constant_zero_label: [0u8; 16],
+            constant_one_label: [0u8; 16],
+        };
+        let instance = ckt_gobble::Engine::new().new_evaluation_instance(config);
+
+        EvaluationSession::new(
+            instance,
+            Box::new(reader),
+            &PeerId::from([1u8; 32]),
+            Index::new(1).expect("index in range"),
+            commitment,
+            Vec::new(),
+            [0u8; 32],
+            1,
+        )
+    }
+
+    /// A chunk with one AND gate (`in1=0, in2=1, out=2`), so the session must
+    /// read one ciphertext.
+    fn one_and_gate_chunk() -> Arc<OwnedChunk> {
+        let mut gate_data = Vec::with_capacity(12);
+        gate_data.extend_from_slice(&0u32.to_le_bytes());
+        gate_data.extend_from_slice(&1u32.to_le_bytes());
+        gate_data.extend_from_slice(&2u32.to_le_bytes());
+        Arc::new(OwnedChunk {
+            blocks: vec![OwnedBlock {
+                gate_data,
+                gate_types: vec![0b0000_0001],
+                num_gates: 1,
+            }],
+        })
+    }
+
+    #[tokio::test]
+    async fn evaluation_session_reports_early_ciphertext_end_as_integrity_failure() {
+        let commitment = GarblingTableCommitment::from([7u8; 32]);
+        // The table holds half of the one ciphertext the chunk needs.
+        let reader = ScriptedCiphertextReader {
+            fail: false,
+            partial: 8,
+        };
+        let mut session = evaluation_session(commitment, reader);
+
+        // An early end must not evict the session for a retry that reads the
+        // same truncated table again.
+        let first = session.process_chunk(&one_and_gate_chunk()).await;
+        assert!(first.is_ok(), "early end must not evict: {first:?}");
+        let second = session.process_chunk(&one_and_gate_chunk()).await;
+        assert!(second.is_ok(), "later chunks must be skipped: {second:?}");
+
+        match Box::new(session).finish().await {
+            HandlerOutcome::Done(ActionCompletion::Evaluator {
+                id,
+                result: EvaluatorActionResult::TableIntegrityFailure(c, reason),
+            }) => {
+                assert_eq!(
+                    id,
+                    EvaluatorActionId::EvaluateGarblingTable(Index::new(1).expect("in range"))
+                );
+                assert_eq!(c, commitment);
+                assert!(reason.contains("got 8 of 16 bytes"), "got: {reason}");
+            }
+            other => panic!("expected a table integrity failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluation_session_read_error_stays_retryable() {
+        let commitment = GarblingTableCommitment::from([7u8; 32]);
+        let reader = ScriptedCiphertextReader {
+            fail: true,
+            partial: 0,
+        };
+        let mut session = evaluation_session(commitment, reader);
+
+        let result = session.process_chunk(&one_and_gate_chunk()).await;
+        assert!(
+            matches!(result, Err(CircuitError::ChunkFailed(_))),
+            "a backend read error must evict the session for retry, got {result:?}"
         );
     }
 }

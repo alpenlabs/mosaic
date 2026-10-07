@@ -515,7 +515,9 @@ async fn coordinator_loop(
             let mut pending_retry: Vec<PendingCircuitJob> = Vec::new();
 
             // ── 2. Create sessions from collected jobs ───────────────────
-            let sessions = create_sessions(factory.as_ref(), jobs, &mut pending_retry).await;
+            let (sessions, concluded) =
+                create_sessions(factory.as_ref(), jobs, &mut pending_retry).await;
+            forward_concluded(concluded, &completion_tx, &fault_tx).await;
 
             if sessions.is_empty() {
                 if !pending_retry.is_empty() {
@@ -1289,15 +1291,16 @@ fn requeue_bounced(
 /// (worst case minutes per pass); `join_all` overlaps them so the pass
 /// starts after the slowest creation, not the sum.
 ///
-/// Failure handling per job is unchanged: `AlreadyComplete` drops the job
-/// (idempotent success), transient failures push it to `pending_retry`
-/// (re-entering the backlog at the back via `requeue_bounced`), permanent
-/// failures are logged and dropped.
+/// Failure handling per job: `AlreadyComplete` drops the job (idempotent
+/// success), transient failures push it to `pending_retry` (re-entering the
+/// backlog at the back via `requeue_bounced`), `Concluded` returns the
+/// completion for delivery without a pass, and permanent failures are logged
+/// and dropped.
 async fn create_sessions(
     factory: &dyn SessionFactory,
     jobs: Vec<PendingCircuitJob>,
     pending_retry: &mut Vec<PendingCircuitJob>,
-) -> Vec<ActiveSession> {
+) -> (Vec<ActiveSession>, Vec<JobCompletion>) {
     let creations = futures::future::join_all(jobs.into_iter().map(|job| async move {
         let result = factory.create_session(&job).await;
         (job, result)
@@ -1305,6 +1308,7 @@ async fn create_sessions(
     .await;
 
     let mut sessions: Vec<ActiveSession> = Vec::with_capacity(creations.len());
+    let mut concluded: Vec<JobCompletion> = Vec::new();
     for (job, result) in creations {
         match result {
             Ok(session) => {
@@ -1346,6 +1350,20 @@ async fn create_sessions(
                 );
                 pending_retry.push(job);
             }
+            Err(CircuitError::Concluded(completion)) => {
+                // Setup already determined the result (e.g. a stored table
+                // failed an integrity check). A retry cannot change it, so
+                // deliver the completion and drop the job.
+                tracing::info!(
+                    peer = %job.peer_id,
+                    action = ?job.action,
+                    "session setup concluded without a pass — delivering completion"
+                );
+                concluded.push(JobCompletion {
+                    peer_id: job.peer_id,
+                    completion: *completion,
+                });
+            }
             Err(e) => {
                 // Permanent failure (SetupFailed, ChunkFailed during setup).
                 // This is a programming error — the action cannot be retried.
@@ -1358,7 +1376,28 @@ async fn create_sessions(
             }
         }
     }
-    sessions
+    (sessions, concluded)
+}
+
+/// Deliver completions that session setup produced without a pass.
+async fn forward_concluded(
+    concluded: Vec<JobCompletion>,
+    completion_tx: &kanal::AsyncSender<JobCompletion>,
+    fault_tx: &kanal::AsyncSender<SchedulerFault>,
+) {
+    for completion in concluded {
+        let peer_id = completion.peer_id;
+        if completion_tx.send(completion).await.is_err() {
+            tracing::error!("completion channel closed while forwarding a concluded session setup");
+            let _ = fault_tx
+                .send(SchedulerFault::CompletionChannelClosed {
+                    source: "garbling_coordinator",
+                    peer_id,
+                })
+                .await;
+            return;
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2532,7 +2571,8 @@ mod tests {
     // ── Concurrent create/finish ─────────────────────────────────────
 
     /// Factory whose create futures record overlap and classify by peer
-    /// byte: 0 → AlreadyComplete, 1 → StorageUnavailable, else Ok.
+    /// byte: 0 → AlreadyComplete, 1 → StorageUnavailable, 4 → Concluded,
+    /// else Ok.
     struct ProbeFactory {
         active: Arc<AtomicUsize>,
         peak: Arc<AtomicUsize>,
@@ -2551,6 +2591,12 @@ mod tests {
                 match byte {
                     0 => Err(CircuitError::AlreadyComplete),
                     1 => Err(CircuitError::StorageUnavailable),
+                    4 => Err(CircuitError::Concluded(Box::new(
+                        ActionCompletion::Garbler {
+                            id: ActionId::SendCommitMsgHeader,
+                            result: ActionResult::CommitMsgHeaderAcked,
+                        },
+                    ))),
                     _ => Ok(Box::new(NoopSession) as Box<dyn CircuitSession>),
                 }
             })
@@ -2566,21 +2612,39 @@ mod tests {
                 active: Arc::clone(&active),
                 peak: Arc::clone(&peak),
             };
-            let jobs: Vec<PendingCircuitJob> = (0u8..4).map(sample_job).collect();
+            let jobs: Vec<PendingCircuitJob> = (0u8..5).map(sample_job).collect();
             let mut pending_retry = Vec::new();
 
-            let sessions = create_sessions(&factory, jobs, &mut pending_retry).await;
+            let (sessions, concluded) = create_sessions(&factory, jobs, &mut pending_retry).await;
 
             assert_eq!(
                 peak.load(Ordering::SeqCst),
-                4,
+                5,
                 "session creations did not overlap"
             );
             assert_eq!(sessions.len(), 2, "peers 2 and 3 create successfully");
             assert_eq!(
                 pending_retry.iter().map(job_peer).collect::<Vec<_>>(),
                 [1],
-                "only the StorageUnavailable job is retried; AlreadyComplete drops"
+                "only the StorageUnavailable job is retried; AlreadyComplete and Concluded drop"
+            );
+            let [concluded] = concluded.as_slice() else {
+                panic!("exactly one concluded setup, got {}", concluded.len());
+            };
+            assert_eq!(
+                concluded.peer_id,
+                PeerId::from([4; 32]),
+                "a concluded setup delivers its completion instead of vanishing"
+            );
+            assert!(
+                matches!(
+                    &concluded.completion,
+                    ActionCompletion::Garbler {
+                        id: ActionId::SendCommitMsgHeader,
+                        result: ActionResult::CommitMsgHeaderAcked,
+                    }
+                ),
+                "the completion from session setup must be delivered unchanged"
             );
         });
     }
