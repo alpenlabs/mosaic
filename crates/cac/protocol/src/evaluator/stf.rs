@@ -620,6 +620,49 @@ pub(crate) async fn handle_action_result<S: StateMut>(
                 _ => return Err(SMError::UnexpectedInput),
             }
         }
+        ActionResult::TableIntegrityFailure(commitment, reason) => match &mut root_state.step {
+            Step::EvaluatingTables {
+                deposit_id,
+                eval_indices: _,
+                eval_commitments,
+                evaluated,
+            } => {
+                let Some(idx) = eval_commitments.iter().position(|c| *c == commitment) else {
+                    return Err(SMError::InvalidInputData);
+                };
+
+                warn!(%commitment, %reason, "evaluator stored table failed integrity check, continuing with remaining tables");
+                evaluated[idx] = true;
+
+                // Keep the first recorded reason. A later failure, for this
+                // table or another one, must not overwrite it.
+                if state
+                    .get_table_integrity_failure()
+                    .await
+                    .map_err(SMError::storage)?
+                    .is_none()
+                {
+                    state
+                        .put_table_integrity_failure(&format!(
+                            "stored garbling table {commitment} failed integrity check: {reason}"
+                        ))
+                        .await
+                        .map_err(SMError::storage)?;
+                }
+
+                if evaluated.all() {
+                    info!(%deposit_id, success = false, "evaluator table evaluations complete, setup consumed");
+                    root_state.step = Step::SetupConsumed {
+                        deposit_id: *deposit_id,
+                        success: false,
+                    };
+                }
+                // else the remaining tables can still yield the fault secret
+            }
+            // A late result after the evaluation has concluded.
+            Step::SetupConsumed { .. } => {}
+            _ => return Err(SMError::UnexpectedInput),
+        },
     };
 
     state

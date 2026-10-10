@@ -161,7 +161,9 @@ impl S3TableReader {
             return Ok(0);
         }
 
-        // Fetch the next chunk from the background streaming task.
+        // Fetch the next chunk from the background streaming task. The task
+        // never sends an empty chunk, so `Ok(0)` here means the channel closed
+        // at the end of the ciphertext.
         match self.ct_rx.recv().await {
             Ok(Ok(chunk)) => {
                 let n = chunk.len().min(buf.len());
@@ -322,6 +324,11 @@ async fn stream_ciphertexts(
 
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
+                // An object store stream can yield empty chunks before more
+                // data. Drop them: the reader treats a zero-length read as the
+                // end of the stored table, and an empty chunk is no progress,
+                // so it must not reset the retry budget.
+                Ok(bytes) if bytes.is_empty() => {}
                 Ok(bytes) => {
                     let len = bytes.len();
                     if tx.send(Ok(bytes.to_vec())).await.is_err() {

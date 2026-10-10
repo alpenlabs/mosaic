@@ -338,6 +338,8 @@ mod tests {
     struct ResumeStore {
         inner: InMemory,
         fail_first_ciphertext_stream: AtomicBool,
+        empty_chunk_first: AtomicBool,
+        empty_chunk_then_error: AtomicBool,
         seen_offsets: Mutex<Vec<u64>>,
     }
 
@@ -393,7 +395,18 @@ mod tests {
             let total = bytes.len() as u64;
             let offset_usize = offset as usize;
 
-            let payload = if offset == 0
+            let payload = if self.empty_chunk_then_error.load(Ordering::SeqCst) {
+                let injected = object_store::Error::Generic {
+                    store: "test",
+                    source: Box::new(std::io::Error::other("injected stream failure")),
+                };
+                let stream = futures::stream::iter(vec![
+                    Ok(bytes.slice(offset_usize..offset_usize)),
+                    Err(injected),
+                ])
+                .boxed();
+                GetResultPayload::Stream(stream)
+            } else if offset == 0
                 && self
                     .fail_first_ciphertext_stream
                     .swap(false, Ordering::SeqCst)
@@ -406,6 +419,13 @@ mod tests {
                 let stream =
                     futures::stream::iter(vec![Ok(bytes.slice(0..first_len)), Err(injected)])
                         .boxed();
+                GetResultPayload::Stream(stream)
+            } else if self.empty_chunk_first.swap(false, Ordering::SeqCst) {
+                let stream = futures::stream::iter(vec![
+                    Ok(bytes.slice(offset_usize..offset_usize)),
+                    Ok(bytes.slice(offset_usize..)),
+                ])
+                .boxed();
                 GetResultPayload::Stream(stream)
             } else {
                 let stream = futures::stream::iter(vec![Ok(bytes.slice(offset_usize..))]).boxed();
@@ -633,6 +653,8 @@ mod tests {
         let backing = Arc::new(ResumeStore {
             inner: InMemory::new(),
             fail_first_ciphertext_stream: AtomicBool::new(true),
+            empty_chunk_first: AtomicBool::new(false),
+            empty_chunk_then_error: AtomicBool::new(false),
             seen_offsets: Mutex::new(Vec::new()),
         });
         let store = S3TableStore::new(backing.clone() as Arc<dyn ObjectStore>, "tables");
@@ -645,5 +667,62 @@ mod tests {
         let mut reader = store.open(&id).await.unwrap();
         assert_eq!(read_all_ciphertexts(&mut reader).await, b"abcdefghij");
         assert_eq!(backing.seen_offsets(), vec![0, 5]);
+    }
+
+    #[tokio::test]
+    async fn ciphertext_after_an_empty_stream_chunk_is_still_read() {
+        let backing = Arc::new(ResumeStore {
+            inner: InMemory::new(),
+            fail_first_ciphertext_stream: AtomicBool::new(false),
+            empty_chunk_first: AtomicBool::new(true),
+            empty_chunk_then_error: AtomicBool::new(false),
+            seen_offsets: Mutex::new(Vec::new()),
+        });
+        let store = S3TableStore::new(backing.clone() as Arc<dyn ObjectStore>, "tables");
+        let id = table_id();
+
+        let mut writer = store.create(&id).await.unwrap();
+        writer.write_ciphertext(b"abcdefghij").await.unwrap();
+        writer.finish(b"translation", metadata(9)).await.unwrap();
+
+        // An empty chunk is not the end of the table: `Ok(0)` there would be
+        // reported as a truncated table.
+        let mut reader = store.open(&id).await.unwrap();
+        assert_eq!(read_all_ciphertexts(&mut reader).await, b"abcdefghij");
+        assert!(
+            !backing.empty_chunk_first.load(Ordering::SeqCst),
+            "the stream must have delivered the empty chunk"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_stream_chunks_do_not_reset_the_retry_budget() {
+        let backing = Arc::new(ResumeStore {
+            inner: InMemory::new(),
+            fail_first_ciphertext_stream: AtomicBool::new(false),
+            empty_chunk_first: AtomicBool::new(false),
+            empty_chunk_then_error: AtomicBool::new(true),
+            seen_offsets: Mutex::new(Vec::new()),
+        });
+        let store = S3TableStore::new(backing.clone() as Arc<dyn ObjectStore>, "tables");
+        let id = table_id();
+
+        let mut writer = store.create(&id).await.unwrap();
+        writer.write_ciphertext(b"abcdefghij").await.unwrap();
+        writer.finish(b"translation", metadata(9)).await.unwrap();
+
+        // Every GET yields an empty chunk and then fails. The empty chunk is no
+        // progress, so the stream must use up its retries and report the error
+        // instead of resuming forever.
+        let mut reader = store.open(&id).await.unwrap();
+        let mut buf = [0u8; 4];
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reader.read_ciphertext(&mut buf),
+        )
+        .await
+        .expect("the ciphertext stream must stop retrying");
+        assert!(result.is_err(), "got: {result:?}");
+        assert!(backing.seen_offsets().iter().all(|&offset| offset == 0));
     }
 }

@@ -225,4 +225,8 @@ impl StateRead for StoredEvaluatorState {
     async fn get_fault_secret_share(&self) -> Result<Option<Share>, Self::Error> {
         Ok(self.fault_secret)
     }
+
+    async fn get_table_integrity_failure(&self) -> Result<Option<String>, Self::Error> {
+        Ok(self.table_integrity_failure.clone())
+    }
 }

@@ -153,6 +153,12 @@ pub trait StateRead {
     fn get_fault_secret_share(
         &self,
     ) -> impl Future<Output = Result<Option<Share>, Self::Error>> + Send;
+
+    /// Retrieves the recorded reason for the first evaluation table that
+    /// failed an integrity check, if any.
+    fn get_table_integrity_failure(
+        &self,
+    ) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send;
 }
 
 /// Mutable access to evaluator state storage.
@@ -305,5 +311,12 @@ pub trait StateMut: StateRead {
     fn put_fault_secret_share(
         &mut self,
         fault: &Share,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Records the reason for an evaluation table that failed an integrity
+    /// check.
+    fn put_table_integrity_failure(
+        &mut self,
+        reason: &str,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

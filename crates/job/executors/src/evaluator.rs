@@ -633,7 +633,7 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
 
     // The garbler sends: translation bytes first, then ciphertext data.
     // Translation covers ALL input wires (setup + deposit + withdrawal).
-    let translation_size: usize = N_INPUT_WIRES * 256 * 8 * 16;
+    let translation_size: usize = N_INPUT_WIRES * TRANSLATION_BYTES_PER_WIRE;
 
     // Open a table writer for persistent storage.
     let table_id = TableId {
@@ -768,9 +768,16 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
     let params_hash = hash_garbling_params(&aes_key, &public_s, &constant_one, &constant_zero);
     let computed = compute_commitment(&ct_hash, &translate_hash, &output_label_ct, &params_hash);
     if computed != expected_commitment {
+        // The result carries the computed (mismatched) commitment rather
+        // than expected_commitment — `handle_table_received` in the
+        // evaluator STF compares the two and aborts the deposit on
+        // mismatch.
         error!(%peer_id, ?index, "commitment mismatch in receive_garbling_table");
         let _ = ctx.table_store.delete(&table_id).await;
-        return HandlerOutcome::Retry;
+        return completed(
+            ActionId::ReceiveGarblingTable(expected_commitment),
+            ActionResult::GarblingTableReceived(index, computed),
+        );
     }
     let metadata = TableMetadata {
         output_label_ct,
@@ -1267,25 +1274,18 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
         .map_err(|e| CircuitError::SetupFailed(format!("translation read: {e}")))?;
 
     // ── Parse translation material from bytes ───────────────────────────
-    let mut translation_material: Vec<InputTranslationMaterial> = Vec::with_capacity(N_INPUT_WIRES);
-    let bytes_per_ct = 16usize;
-    let cts_per_row = 8usize;
-    let rows_per_wire = 256usize;
-    let bytes_per_wire = rows_per_wire * cts_per_row * bytes_per_ct;
-
-    for wire in 0..N_INPUT_WIRES {
-        let wire_offset = wire * bytes_per_wire;
-        let mut material = [[Ciphertext::from([0u8; 16]); 8]; 256];
-        for (row_idx, material_row) in material.iter_mut().enumerate() {
-            for (ct_idx, ciphertext) in material_row.iter_mut().enumerate() {
-                let offset = wire_offset + (row_idx * cts_per_row + ct_idx) * bytes_per_ct;
-                let mut ct_bytes = [0u8; 16];
-                ct_bytes.copy_from_slice(&translation_bytes[offset..offset + 16]);
-                *ciphertext = Ciphertext::from(ct_bytes);
-            }
+    let translation_material = match parse_translation_material(&translation_bytes) {
+        Ok(material) => material,
+        Err(reason) => {
+            error!(%peer_id, ?index, %commitment, %reason, "stored garbling table failed integrity check");
+            return Err(CircuitError::Concluded(Box::new(
+                ActionCompletion::Evaluator {
+                    id: ActionId::EvaluateGarblingTable(index),
+                    result: ActionResult::TableIntegrityFailure(commitment, reason),
+                },
+            )));
         }
-        translation_material.push(material);
-    }
+    };
 
     // ── Translate byte labels → bit labels ──────────────────────────────
     let num_primary = header.primary_inputs as usize;
@@ -1352,6 +1352,43 @@ pub(crate) async fn setup_evaluation_session<SP: StorageProvider, TS: TableStore
     ))
 }
 
+/// Bytes of input translation material for one input wire: 256 rows of 8
+/// ciphertexts of 16 bytes each.
+const TRANSLATION_BYTES_PER_WIRE: usize = 256 * 8 * 16;
+
+/// Parse stored input translation material into one table per input wire.
+///
+/// Stored material holds exactly `N_INPUT_WIRES` wires. Any other length
+/// means the stored table is corrupt. The function then returns the reason
+/// instead of reading out of bounds.
+fn parse_translation_material(bytes: &[u8]) -> Result<Vec<InputTranslationMaterial>, String> {
+    let expected = N_INPUT_WIRES * TRANSLATION_BYTES_PER_WIRE;
+    if bytes.len() != expected {
+        return Err(format!(
+            "translation material has {} bytes, expected {expected}",
+            bytes.len()
+        ));
+    }
+
+    let bytes_per_ct = 16usize;
+    let cts_per_row = 8usize;
+    let mut translation_material: Vec<InputTranslationMaterial> = Vec::with_capacity(N_INPUT_WIRES);
+    for wire in 0..N_INPUT_WIRES {
+        let wire_offset = wire * TRANSLATION_BYTES_PER_WIRE;
+        let mut material = [[Ciphertext::from([0u8; 16]); 8]; 256];
+        for (row_idx, material_row) in material.iter_mut().enumerate() {
+            for (ct_idx, ciphertext) in material_row.iter_mut().enumerate() {
+                let offset = wire_offset + (row_idx * cts_per_row + ct_idx) * bytes_per_ct;
+                let mut ct_bytes = [0u8; 16];
+                ct_bytes.copy_from_slice(&bytes[offset..offset + bytes_per_ct]);
+                *ciphertext = Ciphertext::from(ct_bytes);
+            }
+        }
+        translation_material.push(material);
+    }
+    Ok(translation_material)
+}
+
 // ============================================================================
 // Tests for the bulk-payload drain helper
 // ============================================================================
@@ -1364,6 +1401,32 @@ mod tests {
     use mosaic_storage_api::table_store::{TableMetadata, TableWriter};
 
     use super::*;
+
+    // Tests for parse_translation_material
+
+    #[test]
+    fn translation_material_with_wrong_length_is_an_integrity_failure() {
+        let expected = N_INPUT_WIRES * TRANSLATION_BYTES_PER_WIRE;
+        for len in [0, expected - 1, expected + 16] {
+            let reason = parse_translation_material(&vec![0u8; len])
+                .expect_err("a wrong length must not parse");
+            assert!(reason.contains(&len.to_string()), "got: {reason}");
+        }
+    }
+
+    #[test]
+    fn translation_material_parses_one_table_per_wire_in_order() {
+        let bytes: Vec<u8> = (0..N_INPUT_WIRES * TRANSLATION_BYTES_PER_WIRE)
+            .map(|i| (i / 16) as u8)
+            .collect();
+        let material = parse_translation_material(&bytes).expect("exact length parses");
+        assert_eq!(material.len(), N_INPUT_WIRES);
+
+        // Ciphertext k of the stream is row k / 8, column k % 8 of its wire.
+        let last_wire = N_INPUT_WIRES - 1;
+        let k = last_wire * 256 * 8 + 9;
+        assert_eq!(<[u8; 16]>::from(material[last_wire][1][1]), [k as u8; 16]);
+    }
 
     // Tests for resolve_pending_evaluator_commitment
 

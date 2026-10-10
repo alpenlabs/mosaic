@@ -52,6 +52,8 @@ pub const ROW_TAG_OUTPUT_LABEL_CT: u8 = 0x15;
 pub const ROW_TAG_FAULT_SECRET: u8 = 0x16;
 /// Row tag for zeroth coefficient of input polynomial commitment by wire index.
 pub const ROW_TAG_INPUT_POLY_ZEROTH_COEFF: u8 = 0x17;
+/// Row tag for the recorded evaluation table integrity failure.
+pub const ROW_TAG_TABLE_INTEGRITY_FAILURE: u8 = 0x18;
 
 pub use protocol::*;
 pub use state::*;

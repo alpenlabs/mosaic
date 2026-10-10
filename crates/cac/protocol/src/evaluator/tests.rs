@@ -1201,3 +1201,292 @@ fn verify_reserved_setup_input_shares_rejects_first_offending_wire() {
         "reason should pinpoint the offending wire, got: {reason}"
     );
 }
+
+// ============================================================================
+// Disputed-withdrawal evaluation: table integrity failures
+// ============================================================================
+
+// The tests below need a second evaluation table after a failed one.
+const _: () = assert!(N_EVAL_CIRCUITS > 1);
+
+/// Evaluation fixture in `EvaluatingTables`.
+///
+/// The opened output shares and the output polynomial commitment come from
+/// `output_poly`. The share of `output_poly` at an evaluation index therefore
+/// yields the fault secret.
+struct EvaluationFixture {
+    state: StoredEvaluatorState,
+    deposit_id: DepositId,
+    output_poly: Polynomial,
+    eval_indices: EvaluationIndices,
+    eval_commitments: EvalGarblingTableCommitments,
+}
+
+impl EvaluationFixture {
+    async fn new() -> Self {
+        let mut state = StoredEvaluatorState::default();
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let output_poly = Polynomial::rand(&mut rng);
+
+        let opened_output_shares: OpenedOutputShares =
+            HeapArray::new(|i| output_poly.eval(Index::new(i + 1).expect("valid index")));
+        state
+            .put_opened_output_shares(&opened_output_shares)
+            .await
+            .expect("store opened output shares");
+        state
+            .put_output_polynomial_commitment(&HeapArray::from_elem(output_poly.commit()))
+            .await
+            .expect("store output polynomial commitment");
+
+        let deposit_id = DepositId::from([9; 32]);
+        let eval_indices: EvaluationIndices =
+            std::array::from_fn(|i| Index::new(N_OPEN_CIRCUITS + i + 1).expect("valid index"));
+        let eval_commitments: EvalGarblingTableCommitments =
+            HeapArray::new(|i| [i as u8 + 1; 32].into());
+        state
+            .put_root_state(&EvaluatorState {
+                config: None,
+                step: Step::EvaluatingTables {
+                    deposit_id,
+                    eval_indices,
+                    eval_commitments: eval_commitments.clone(),
+                    evaluated: HeapArray::from_elem(false),
+                },
+            })
+            .await
+            .expect("write evaluating state");
+
+        Self {
+            state,
+            deposit_id,
+            output_poly,
+            eval_indices,
+            eval_commitments,
+        }
+    }
+
+    async fn integrity_failure(&mut self, slot: usize) {
+        self.integrity_failure_with_reason(slot, "ciphertext truncated")
+            .await;
+    }
+
+    async fn integrity_failure_with_reason(&mut self, slot: usize, reason: &str) {
+        self.deliver(
+            slot,
+            ActionResult::TableIntegrityFailure(self.eval_commitments[slot], reason.into()),
+        )
+        .await;
+    }
+
+    async fn no_output(&mut self, slot: usize) {
+        self.deliver(
+            slot,
+            ActionResult::TableEvaluationResult(self.eval_commitments[slot], None),
+        )
+        .await;
+    }
+
+    async fn fault_secret_output(&mut self, slot: usize) {
+        let share = self.output_poly.eval(self.eval_indices[slot]);
+        self.deliver(
+            slot,
+            ActionResult::TableEvaluationResult(self.eval_commitments[slot], Some(share)),
+        )
+        .await;
+    }
+
+    async fn deliver(&mut self, slot: usize, result: ActionResult) {
+        let id = ActionId::EvaluateGarblingTable(self.eval_indices[slot]);
+        let mut actions = Vec::new();
+        handle_action_result(&mut self.state, id, result, &mut actions)
+            .await
+            .expect("evaluation completion is accepted");
+        assert!(actions.is_empty(), "evaluation completions emit no actions");
+    }
+
+    async fn step(&self) -> Step {
+        self.state
+            .get_root_state()
+            .await
+            .expect("read root state")
+            .expect("root state exists")
+            .step
+    }
+
+    async fn recorded_failure(&self) -> Option<String> {
+        self.state
+            .get_table_integrity_failure()
+            .await
+            .expect("read integrity failure")
+    }
+}
+
+#[tokio::test]
+async fn integrity_failure_leaves_remaining_tables_pending() {
+    let mut fx = EvaluationFixture::new().await;
+
+    fx.integrity_failure(0).await;
+
+    let Step::EvaluatingTables { evaluated, .. } = fx.step().await else {
+        panic!("one failed table must not end the evaluation");
+    };
+    assert!(evaluated[0], "the failed table must not be evaluated again");
+    assert_eq!(evaluated.count_ones(), 1);
+    let recorded = fx
+        .recorded_failure()
+        .await
+        .expect("integrity failure is recorded");
+    assert!(recorded.contains("ciphertext truncated"), "got: {recorded}");
+
+    // After a restart, only the tables still pending are evaluated again.
+    let mut actions = Vec::new();
+    restore(&fx.state, &mut actions)
+        .await
+        .expect("restore succeeds");
+    let replayed: Vec<_> = actions
+        .into_iter()
+        .map(|action| {
+            let FasmAction::Tracked(tracked) = action;
+            let (_id, action) = tracked.into_parts();
+            let Action::EvaluateGarblingTable(index, _) = action else {
+                panic!("unexpected action emitted during EvaluatingTables restore");
+            };
+            index
+        })
+        .collect();
+    assert_eq!(replayed.len(), N_EVAL_CIRCUITS - 1);
+    assert!(
+        !replayed.contains(&fx.eval_indices[0]),
+        "the failed table must not be replayed"
+    );
+}
+
+#[tokio::test]
+async fn integrity_failure_with_unknown_commitment_is_invalid_input() {
+    let mut fx = EvaluationFixture::new().await;
+    let before = fx.step().await;
+
+    let mut actions = Vec::new();
+    let result = handle_action_result(
+        &mut fx.state,
+        ActionId::EvaluateGarblingTable(fx.eval_indices[0]),
+        ActionResult::TableIntegrityFailure([0xFF; 32].into(), "corrupt".into()),
+        &mut actions,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(crate::error::SMError::InvalidInputData)),
+        "unknown commitment must be InvalidInputData, got: {result:?}"
+    );
+    assert_eq!(fx.step().await, before);
+    assert_eq!(fx.recorded_failure().await, None);
+}
+
+#[tokio::test]
+async fn fault_secret_found_after_integrity_failure_consumes_setup() {
+    let mut fx = EvaluationFixture::new().await;
+
+    fx.integrity_failure(0).await;
+    fx.fault_secret_output(1).await;
+
+    assert_eq!(
+        fx.step().await,
+        Step::SetupConsumed {
+            deposit_id: fx.deposit_id,
+            success: true,
+        }
+    );
+    assert!(
+        fx.state
+            .get_fault_secret_share()
+            .await
+            .expect("read fault secret")
+            .is_some(),
+        "the fault secret must be stored"
+    );
+}
+
+#[tokio::test]
+async fn integrity_failure_after_fault_secret_is_ignored() {
+    let mut fx = EvaluationFixture::new().await;
+
+    fx.fault_secret_output(0).await;
+    fx.integrity_failure(1).await;
+
+    assert_eq!(
+        fx.step().await,
+        Step::SetupConsumed {
+            deposit_id: fx.deposit_id,
+            success: true,
+        }
+    );
+}
+
+#[tokio::test]
+async fn integrity_failure_record_keeps_the_first_reason() {
+    let mut fx = EvaluationFixture::new().await;
+
+    fx.integrity_failure_with_reason(0, "first failure").await;
+    fx.integrity_failure_with_reason(1, "second failure").await;
+    // Reduced circuits have exactly two evaluation tables, so this loop can be empty.
+    for slot in (0..N_EVAL_CIRCUITS).skip(2) {
+        fx.no_output(slot).await;
+    }
+
+    let recorded = fx
+        .recorded_failure()
+        .await
+        .expect("integrity failure is recorded");
+    assert!(
+        recorded.contains("first failure") && !recorded.contains("second failure"),
+        "got: {recorded}"
+    );
+}
+
+#[tokio::test]
+async fn evaluation_without_fault_secret_consumes_setup_and_keeps_failure_record() {
+    let consumed_without_secret = |deposit_id| Step::SetupConsumed {
+        deposit_id,
+        success: false,
+    };
+
+    // Every table evaluated, none yielded the fault secret.
+    let mut fx = EvaluationFixture::new().await;
+    for slot in 0..N_EVAL_CIRCUITS {
+        fx.no_output(slot).await;
+    }
+    assert_eq!(fx.step().await, consumed_without_secret(fx.deposit_id));
+    assert_eq!(fx.recorded_failure().await, None);
+
+    // One table failed its integrity check. The failure arrives first in one
+    // case and last in the other, so each completion handler ends the
+    // evaluation once.
+    for failed_slot in [0, N_EVAL_CIRCUITS - 1] {
+        let mut fx = EvaluationFixture::new().await;
+        for slot in 0..N_EVAL_CIRCUITS {
+            if slot == failed_slot {
+                fx.integrity_failure(slot).await;
+            } else {
+                fx.no_output(slot).await;
+            }
+        }
+
+        assert_eq!(
+            fx.step().await,
+            consumed_without_secret(fx.deposit_id),
+            "failed slot {failed_slot}"
+        );
+        let recorded = fx
+            .recorded_failure()
+            .await
+            .expect("integrity failure is recorded");
+        assert!(recorded.contains("ciphertext truncated"), "got: {recorded}");
+
+        // Late duplicate completions leave the consumed setup unchanged.
+        fx.no_output(failed_slot).await;
+        fx.integrity_failure(failed_slot).await;
+        assert_eq!(fx.step().await, consumed_without_secret(fx.deposit_id));
+    }
+}

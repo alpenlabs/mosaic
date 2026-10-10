@@ -38,7 +38,7 @@ use crate::{
             InputPolynomialCommitmentRowSpec, OpenedGarblingSeedsRowSpec, OpenedInputShareRowSpec,
             OpenedOutputSharesRowSpec, OutputLabelCtRowSpec, OutputPolynomialCommitmentRowSpec,
             PublicSRowSpec, ReservedSetupInputSharesRowSpec, RootStateKey, RootStateRowSpec,
-            WithdrawalAdaptorRowSpec, WithdrawalInputsRowSpec,
+            TableIntegrityFailureRowSpec, WithdrawalAdaptorRowSpec, WithdrawalInputsRowSpec,
         },
     },
     storage_error::StorageError,
@@ -343,6 +343,11 @@ impl<KV: KvStore + Sync> StateRead for KvStoreEvaluator<KV> {
         self.get_value::<FaultSecretRowSpec>(&ProtocolSingletonKey)
             .await
     }
+
+    async fn get_table_integrity_failure(&self) -> Result<Option<String>, Self::Error> {
+        self.get_value::<TableIntegrityFailureRowSpec>(&ProtocolSingletonKey)
+            .await
+    }
 }
 
 impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
@@ -580,6 +585,11 @@ impl<KV: KvStore + Sync> StateMut for KvStoreEvaluator<KV> {
             .await?;
 
         Ok(())
+    }
+
+    async fn put_table_integrity_failure(&mut self, reason: &str) -> Result<(), Self::Error> {
+        self.put_value::<TableIntegrityFailureRowSpec>(&ProtocolSingletonKey, &reason.to_owned())
+            .await
     }
 }
 
