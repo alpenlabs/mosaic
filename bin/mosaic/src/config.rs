@@ -420,11 +420,13 @@ impl TableStoreBackend {
             Self::S3Compatible {
                 request_timeout_secs,
                 connect_timeout_secs,
+                allow_http,
                 ..
             } => Some(
                 ClientOptions::new()
                     .with_timeout(Duration::from_secs(*request_timeout_secs))
-                    .with_connect_timeout(Duration::from_secs(*connect_timeout_secs)),
+                    .with_connect_timeout(Duration::from_secs(*connect_timeout_secs))
+                    .with_allow_http(*allow_http),
             ),
             Self::LocalFilesystem { .. } => None,
         }
@@ -982,6 +984,28 @@ bind_addr = "127.0.0.1:8080"
             options.get_config_value(&ClientConfigKey::ConnectTimeout),
             expected.get_config_value(&ClientConfigKey::ConnectTimeout)
         );
+    }
+
+    #[test]
+    fn s3_allow_http_is_applied_to_client_options() {
+        let path = std::env::current_exe().expect("current executable path");
+
+        for (extra, expected) in [("", "false"), ("allow_http = true", "true")] {
+            let config: MosaicConfig =
+                toml::from_str(&sample_s3_config_toml(&path, extra)).expect("config should parse");
+            let options = config
+                .table_store
+                .backend
+                .build_s3_client_options()
+                .expect("s3 backend should build client options");
+
+            assert_eq!(
+                options
+                    .get_config_value(&ClientConfigKey::AllowHttp)
+                    .as_deref(),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

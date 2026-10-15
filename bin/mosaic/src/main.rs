@@ -162,7 +162,6 @@ where
             secret_access_key,
             endpoint,
             session_token,
-            allow_http,
             virtual_hosted_style_request,
             part_buffer_size_mib,
             ..
@@ -175,7 +174,6 @@ where
             let mut builder = AmazonS3Builder::from_env()
                 .with_bucket_name(bucket)
                 .with_region(region)
-                .with_allow_http(*allow_http)
                 .with_virtual_hosted_style_request(*virtual_hosted_style_request)
                 .with_client_options(
                     config
