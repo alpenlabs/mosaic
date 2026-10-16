@@ -170,7 +170,9 @@ where
             // longer reads AWS_* env vars itself. When config credentials are
             // omitted, resolution falls through to web-identity → ECS task →
             // EKS pod identity → instance profile. Explicit settings below
-            // override anything taken from the environment.
+            // override the matching values from the environment, except that
+            // with_client_options replaces every HTTP client option, so client
+            // settings from the environment (e.g. AWS_ALLOW_HTTP) are discarded.
             let mut builder = AmazonS3Builder::from_env()
                 .with_bucket_name(bucket)
                 .with_region(region)
