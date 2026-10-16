@@ -1526,10 +1526,11 @@ mod tests {
         let waker = noop_waker_ref();
         let mut cx = Context::from_waker(waker);
 
+        // Boxed so the future can be moved into `drop` below.
         let mut recv_fut = Box::pin(rx.recv());
         assert!(matches!(recv_fut.as_mut().poll(&mut cx), Poll::Pending));
 
-        let mut send_fut = Box::pin(tx.send(7));
+        let mut send_fut = std::pin::pin!(tx.send(7));
         assert!(matches!(
             send_fut.as_mut().poll(&mut cx),
             Poll::Ready(Ok(()))
@@ -1549,10 +1550,10 @@ mod tests {
         let waker = noop_waker_ref();
         let mut cx = Context::from_waker(waker);
 
-        let mut recv_fut = Box::pin(rx.recv());
+        let mut recv_fut = std::pin::pin!(rx.recv());
         assert!(matches!(recv_fut.as_mut().poll(&mut cx), Poll::Pending));
 
-        let mut send_fut = Box::pin(tx.send(9));
+        let mut send_fut = std::pin::pin!(tx.send(9));
         assert!(matches!(
             send_fut.as_mut().poll(&mut cx),
             Poll::Ready(Ok(()))
