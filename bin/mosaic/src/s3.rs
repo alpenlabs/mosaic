@@ -6,10 +6,36 @@ pub(crate) fn configured_builder(
     session_token: Option<&str>,
     endpoint: Option<&str>,
 ) -> AmazonS3Builder {
-    // Static config must not inherit an unrelated AWS_SESSION_TOKEN or endpoint.
+    // Preserve independent AWS options, while static config must not inherit
+    // credentials, an unrelated AWS_SESSION_TOKEN, or an ambient endpoint.
     // Without configured keys, retain from_env() for IRSA and container credentials.
     let mut builder = if access_key_id.is_some() && secret_access_key.is_some() {
-        AmazonS3Builder::new()
+        let mut builder = AmazonS3Builder::new();
+        // Match from_env() parsing without an allowlist that would lose options
+        // such as S3 Express or newly supported object_store configuration.
+        for (key, value) in std::env::vars_os() {
+            let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
+                continue;
+            };
+            if !key.starts_with("AWS_") {
+                continue;
+            }
+            let Ok(config_key) = key.to_ascii_lowercase().parse::<AmazonS3ConfigKey>() else {
+                continue;
+            };
+            if matches!(
+                config_key,
+                AmazonS3ConfigKey::AccessKeyId
+                    | AmazonS3ConfigKey::SecretAccessKey
+                    | AmazonS3ConfigKey::Token
+                    | AmazonS3ConfigKey::Endpoint
+                    | AmazonS3ConfigKey::S3Endpoint
+            ) {
+                continue;
+            }
+            builder = builder.with_config(config_key, value);
+        }
+        builder
     } else {
         AmazonS3Builder::from_env()
     };
@@ -227,6 +253,59 @@ mod tests {
             None,
             "s3.us-east-1.amazonaws.com",
         );
+    }
+
+    #[test]
+    fn static_credentials_preserve_independent_environment_options() {
+        if !in_child(
+            "s3::tests::static_credentials_preserve_independent_environment_options",
+            &[
+                ("AWS_S3_EXPRESS", "true"),
+                ("AWS_UNSIGNED_PAYLOAD", "true"),
+                ("AWS_ACCESS_KEY_ID", "ambient-key"),
+                ("AWS_SECRET_ACCESS_KEY", "ambient-secret"),
+                ("AWS_SESSION_TOKEN", "stale-token"),
+                ("AWS_TOKEN", "stale-token-alias"),
+                ("AWS_ENDPOINT", "https://generic-alias.invalid"),
+                ("AWS_ENDPOINT_URL", "https://generic-ambient.invalid"),
+                ("AWS_ENDPOINT_URL_S3", "https://s3-ambient.invalid"),
+            ],
+        ) {
+            return;
+        }
+        let builder = configured_builder(Some("config-key"), Some("config-secret"), None, None);
+        for key in [
+            AmazonS3ConfigKey::S3Express,
+            AmazonS3ConfigKey::UnsignedPayload,
+        ] {
+            assert_eq!(builder.get_config_value(&key).as_deref(), Some("true"));
+        }
+        for key in [
+            AmazonS3ConfigKey::Token,
+            AmazonS3ConfigKey::Endpoint,
+            AmazonS3ConfigKey::S3Endpoint,
+        ] {
+            assert_eq!(builder.get_config_value(&key), None);
+        }
+        let store = builder
+            .with_bucket_name("mosaic-test--use1-az4--x-s3")
+            .with_region("us-east-1")
+            .build()
+            .expect("build S3 Express store without a request");
+        tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(async {
+                // Inspect the base credentials without resolving the S3
+                // Express session provider, which would contact AWS.
+                let credentials = store
+                    .credentials()
+                    .get_credential()
+                    .await
+                    .expect("static base credentials");
+                assert_eq!(credentials.key_id, "config-key");
+                assert_eq!(credentials.secret_key, "config-secret");
+                assert_eq!(credentials.token, None);
+            });
     }
 
     #[test]
