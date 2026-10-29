@@ -481,8 +481,8 @@ pub struct NetServiceHandle {
     protocol_stream_rx: AsyncReceiver<InboundProtocolStream>,
     /// Incoming scheduler-hint payloads (shared receiver).
     hint_stream_rx: AsyncReceiver<InboundHintStream>,
-    /// Monotonic request ID generator for explicit stream-open cancellation.
-    next_open_request_id: Arc<AtomicU64>,
+    /// Shared request ID generator for stream opens and bulk registrations.
+    next_request_id: Arc<AtomicU64>,
 }
 
 impl NetServiceHandle {
@@ -501,18 +501,14 @@ impl NetServiceHandle {
             command_tx,
             protocol_stream_rx,
             hint_stream_rx,
-            next_open_request_id: Arc::new(AtomicU64::new(1)),
+            next_request_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
-    fn allocate_open_request_id(&self) -> u64 {
-        let id = self.next_open_request_id.fetch_add(1, Ordering::Relaxed);
-        if id == 0 {
-            self.next_open_request_id.store(1, Ordering::Relaxed);
-            1
-        } else {
-            id
-        }
+    fn allocate_request_id(&self) -> u64 {
+        self.next_request_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("network request ID space exhausted")
     }
 
     /// Get the shared configuration.
@@ -564,7 +560,7 @@ impl NetServiceHandle {
             return Err(OpenStreamError::PeerNotFound);
         }
 
-        let request_id = self.allocate_open_request_id();
+        let request_id = self.allocate_request_id();
         let cancel_token = Arc::new(AtomicBool::new(false));
         let mut cancel_guard =
             OpenCancelOnDrop::new(request_id, self.command_tx.clone(), cancel_token.clone());
@@ -617,7 +613,7 @@ impl NetServiceHandle {
             return Err(OpenStreamError::PeerNotFound);
         }
 
-        let request_id = self.allocate_open_request_id();
+        let request_id = self.allocate_request_id();
         let cancel_token = Arc::new(AtomicBool::new(false));
         let mut cancel_guard =
             OpenCancelOnDrop::new(request_id, self.command_tx.clone(), cancel_token.clone());
@@ -660,7 +656,7 @@ impl NetServiceHandle {
             return Err(OpenStreamError::PeerNotFound);
         }
 
-        let request_id = self.allocate_open_request_id();
+        let request_id = self.allocate_request_id();
         let cancel_token = Arc::new(AtomicBool::new(false));
         let mut cancel_guard =
             OpenCancelOnDrop::new(request_id, self.command_tx.clone(), cancel_token.clone());
@@ -695,7 +691,10 @@ impl NetServiceHandle {
     /// Only one waiter per `(peer, identifier)` is supported. If another task
     /// registers the same identifier, it will receive `ExpectError::AlreadyRegistered`.
     ///
-    /// Dropping the returned expectation handle cancels the registration.
+    /// Dropping this future before it returns, or dropping the returned handle,
+    /// cancels only this registration. Cleanup ownership transfers to the handle
+    /// without an intervening await. A failed duplicate registration or an older
+    /// handle cannot cancel another registration for the same key.
     ///
     /// **Call this before the peer sends**, otherwise the transfer may be
     /// rejected (peer will retry after timeout).
@@ -708,9 +707,17 @@ impl NetServiceHandle {
             return Err(ExpectError::PeerNotFound);
         }
 
+        let registration_id = self.allocate_request_id();
+        let cancel_guard = BulkCancelOnDrop {
+            registration_id,
+            peer,
+            identifier,
+            command_tx: self.command_tx.clone(),
+        };
         let (resp_tx, resp_rx) = kanal::bounded_async(1);
         self.command_tx
             .send(NetCommand::ExpectBulkTransfer {
+                registration_id,
                 peer,
                 identifier,
                 respond_to: resp_tx,
@@ -724,9 +731,7 @@ impl NetServiceHandle {
             .map_err(|_| ExpectError::ServiceDown)??;
 
         Ok(BulkTransferExpectation {
-            peer,
-            identifier,
-            command_tx: self.command_tx.clone(),
+            _cancel_guard: cancel_guard,
             rx,
         })
     }
@@ -776,13 +781,34 @@ impl Drop for OpenCancelOnDrop {
     }
 }
 
-/// Handle for a registered bulk transfer expectation.
-///
-/// Dropping this handle signals net-svc to cancel the expectation.
-pub struct BulkTransferExpectation {
+struct BulkCancelOnDrop {
+    registration_id: u64,
     peer: PeerId,
     identifier: [u8; 32],
     command_tx: AsyncSender<NetCommand>,
+}
+
+impl Drop for BulkCancelOnDrop {
+    fn drop(&mut self) {
+        let _ = self
+            .command_tx
+            .clone()
+            .to_sync()
+            .try_send(NetCommand::CancelBulkTransfer {
+                registration_id: self.registration_id,
+                peer: self.peer,
+                identifier: self.identifier,
+            });
+    }
+}
+
+/// Handle owning a registered bulk transfer expectation.
+///
+/// Dropping this handle queues cancellation of its registration, including when
+/// a pending [`Self::recv`] future is dropped. Cancellation does not remove a
+/// newer registration for the same peer and identifier.
+pub struct BulkTransferExpectation {
+    _cancel_guard: BulkCancelOnDrop,
     rx: AsyncReceiver<Stream>,
 }
 
@@ -794,28 +820,14 @@ impl BulkTransferExpectation {
 
     /// Explicitly cancel the registered expectation.
     ///
-    /// Cancellation is sent best-effort by the [`Drop`] impl, which uses
-    /// `try_send` so it never blocks the caller if net-svc's command queue
-    /// is full. Consuming `self` here makes intent explicit and lets the
-    /// `Drop` run immediately.
+    /// Consuming this handle immediately drops its cleanup owner, which queues
+    /// cancellation without blocking on the service's unbounded command queue.
+    /// A closed queue means the service can no longer process the registration.
     pub fn cancel(self) {}
 
     /// Borrow the underlying receiver.
     pub fn receiver(&self) -> &AsyncReceiver<Stream> {
         &self.rx
-    }
-}
-
-impl Drop for BulkTransferExpectation {
-    fn drop(&mut self) {
-        let _ = self
-            .command_tx
-            .clone()
-            .to_sync()
-            .try_send(NetCommand::CancelBulkTransfer {
-                peer: self.peer,
-                identifier: self.identifier,
-            });
     }
 }
 
@@ -859,6 +871,8 @@ pub enum NetCommand {
     },
     /// Register to receive a bulk transfer.
     ExpectBulkTransfer {
+        /// Unique registration ID for owner-matched cancellation.
+        registration_id: u64,
         /// Source peer.
         peer: PeerId,
         /// 32-byte routing identifier.
@@ -868,6 +882,8 @@ pub enum NetCommand {
     },
     /// Cancel a previously registered bulk transfer expectation.
     CancelBulkTransfer {
+        /// Registration ID of the owner requesting cancellation.
+        registration_id: u64,
         /// Source peer.
         peer: PeerId,
         /// 32-byte routing identifier.

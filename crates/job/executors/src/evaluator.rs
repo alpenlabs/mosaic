@@ -589,9 +589,12 @@ pub(crate) async fn handle_receive_garbling_table<SP: StorageProvider, TS: Table
         .expect_bulk_receiver(*peer_id, identifier)
         .await;
 
-    let Ok(expectation) = expectation else {
-        warn!(%peer_id, "bulk receiver registration failed for receive_garbling_table");
-        return HandlerOutcome::Retry;
+    let expectation = match expectation {
+        Ok(expectation) => expectation,
+        Err(error) => {
+            warn!(%peer_id, ?index, %expected_commitment, %error, "bulk receiver registration failed for receive_garbling_table");
+            return HandlerOutcome::Retry;
+        }
     };
 
     // Registration succeeded — now tell the garbler to start the transfer.
