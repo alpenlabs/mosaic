@@ -382,15 +382,22 @@ mod tests {
     };
     use bitcoin_script::script;
     use bitcoin_scriptexec::{Exec, ExecCtx, Options, TxTemplate};
-    use k256::{
-        elliptic_curve::point::AffineCoordinates,
-        schnorr::{Signature as KSig, SigningKey, VerifyingKey},
-    };
+    use k256::schnorr::{Signature as KSig, SigningKey, VerifyingKey};
     use rand::{RngCore, SeedableRng, thread_rng};
     use rand_chacha::ChaCha20Rng;
     use sha2::{Digest, Sha256};
 
     use super::*;
+
+    fn reference_signing_key<R: CryptoRng + RngCore>(rng: &mut R) -> SigningKey {
+        let mut bytes = [0u8; 32];
+        loop {
+            rng.fill_bytes(&mut bytes);
+            if let Ok(key) = SigningKey::from_slice(&bytes) {
+                return key;
+            }
+        }
+    }
 
     /// Build a consistent fixture for many tests.
     #[allow(dead_code)]
@@ -768,7 +775,7 @@ mod tests {
         }
         let mut rng = ChaCha20Rng::seed_from_u64(20);
         for _ in 0..10 {
-            let evaluator_privkey = SigningKey::random(&mut rng);
+            let evaluator_privkey = reference_signing_key(&mut rng);
             let mut evaluator_secret_fr = fr_from_sk(&evaluator_privkey);
             let mut evaluator_master_pk = gen_mul(&evaluator_secret_fr);
             if evaluator_master_pk.into_affine().y.into_bigint().is_odd() {
@@ -887,8 +894,8 @@ mod tests {
     fn test_tx() {
         let mut rng = rand::thread_rng();
         for _ in 0..10 {
-            let evaluator_privkey = SigningKey::random(&mut rng);
-            let evaluator_pubkey = evaluator_privkey.verifying_key().as_affine().x().to_vec();
+            let evaluator_privkey = reference_signing_key(&mut rng);
+            let evaluator_pubkey = evaluator_privkey.verifying_key().to_bytes().to_vec();
             let mut evaluator_secret_fr = {
                 let b = evaluator_privkey.to_bytes();
                 ark_secp256k1::Fr::from_be_bytes_mod_order(b.as_slice())
