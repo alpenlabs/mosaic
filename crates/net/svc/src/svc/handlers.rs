@@ -4,6 +4,7 @@
 //! These handlers update state and spawn tasks but never block on I/O.
 
 use std::{
+    collections::hash_map::Entry,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,9 +16,9 @@ use kanal::{AsyncReceiver, bounded_async};
 
 use super::{
     state::{
-        ConnectionDirection, IncomingCandidate, IncomingCandidateId, OpenRequestState,
-        OutboundAttempt, PeerConnectionState, PendingStreamRequest, ServiceEvent, ServiceState,
-        TrackedConnection,
+        BulkTransferRegistration, ConnectionDirection, IncomingCandidate, IncomingCandidateId,
+        OpenRequestState, OutboundAttempt, PeerConnectionState, PendingStreamRequest, ServiceEvent,
+        ServiceState, TrackedConnection,
     },
     tasks,
 };
@@ -71,21 +72,30 @@ pub fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
         }
 
         NetCommand::ExpectBulkTransfer {
+            registration_id,
             peer,
             identifier,
             respond_to,
         } => {
-            handle_expect_bulk_transfer(peer, identifier, respond_to, state);
+            handle_expect_bulk_transfer(registration_id, peer, identifier, respond_to, state);
         }
 
-        NetCommand::CancelBulkTransfer { peer, identifier } => {
+        NetCommand::CancelBulkTransfer {
+            registration_id,
+            peer,
+            identifier,
+        } => {
             let key = (peer, blake3::hash(&identifier).into());
-            if state.bulk_expectations.remove(&key).is_some() {
-                tracing::debug!(
-                    peer = %hex::encode(peer),
-                    identifier = %hex::encode(identifier),
-                    "cancelled bulk transfer expectation"
-                );
+            match state.bulk_expectations.entry(key) {
+                Entry::Occupied(entry) if entry.get().registration_id == registration_id => {
+                    entry.remove();
+                    tracing::debug!(
+                        peer = %hex::encode(peer),
+                        identifier = %hex::encode(identifier),
+                        "cancelled bulk transfer expectation"
+                    );
+                }
+                _ => {}
             }
         }
 
@@ -628,6 +638,7 @@ fn handle_open_stream_request(
 
 /// Handle a request to expect a bulk transfer.
 fn handle_expect_bulk_transfer(
+    registration_id: u64,
     peer: PeerId,
     identifier: [u8; 32],
     respond_to: kanal::AsyncSender<Result<AsyncReceiver<Stream>, ExpectError>>,
@@ -650,7 +661,13 @@ fn handle_expect_bulk_transfer(
     }
 
     let (tx, rx) = bounded_async(1);
-    state.bulk_expectations.insert(key, tx);
+    state.bulk_expectations.insert(
+        key,
+        BulkTransferRegistration {
+            registration_id,
+            sender: tx,
+        },
+    );
 
     tracing::debug!(
         peer = %hex::encode(peer),
@@ -1565,8 +1582,8 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     let hash: [u8; 32] = blake3::hash(&identifier).into();
                     let key = (peer, hash);
 
-                    if let Some(expectation_tx) = state.bulk_expectations.remove(&key) {
-                        tasks::spawn_bulk_stream_router(peer, send, recv, expectation_tx);
+                    if let Some(registration) = state.bulk_expectations.remove(&key) {
+                        tasks::spawn_bulk_stream_router(peer, send, recv, registration.sender);
                     } else {
                         tracing::debug!(
                             peer = %hex::encode(peer),

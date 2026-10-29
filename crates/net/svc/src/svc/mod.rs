@@ -26,6 +26,9 @@ mod stream;
 mod tasks;
 mod version_handshake;
 
+#[cfg(test)]
+mod tests;
+
 use std::{
     collections::HashSet,
     sync::Arc,
@@ -34,6 +37,7 @@ use std::{
 };
 
 use ahash::{HashMap, HashMapExt};
+use futures::StreamExt;
 use kanal::{AsyncReceiver, AsyncSender, bounded_async, unbounded_async};
 use quinn::{Endpoint, ServerConfig};
 use state::{OpenRequestCancelRegistry, PeerConnectionState, ServiceEvent, ServiceState};
@@ -342,23 +346,6 @@ async fn run_service_async(
         state.pending_reconnects.push((peer_config.peer_id, now));
     }
 
-    // Reconnect timer (deadline-driven).
-    //
-    // Using a fixed 1s ticker makes reconnection effectively quantized to 1s even if
-    // `reconnect_backoff` is much smaller. Instead, drive reconnect attempts off the
-    // earliest pending reconnect deadline.
-    let reconnect_sleep = tokio::time::sleep(handlers::idle_housekeeping_sleep());
-    tokio::pin!(reconnect_sleep);
-
-    // Arm housekeeping timer for the first time.
-    if let Some(next) = handlers::next_wakeup_deadline(&state) {
-        reconnect_sleep.as_mut().reset(next);
-    } else {
-        reconnect_sleep
-            .as_mut()
-            .reset(tokio::time::Instant::now() + handlers::idle_housekeeping_sleep());
-    }
-
     tracing::info!(
         bind_addr = %config.bind_addr,
         peer_count = state.config.peers.len(),
@@ -476,46 +463,13 @@ async fn run_service_async(
         config.reduced_circuits,
     );
 
-    // Main event loop - NEVER blocks on I/O, only receives and dispatches
-    loop {
-        // Re-arm timer from the earliest reconnect deadline.
-        if let Some(next) = handlers::next_wakeup_deadline(&state) {
-            reconnect_sleep.as_mut().reset(next);
-        } else {
-            reconnect_sleep
-                .as_mut()
-                .reset(tokio::time::Instant::now() + handlers::idle_housekeeping_sleep());
-        }
-
-        // Fair select for command/event processing to avoid starvation.
-        tokio::select! {
-            _ = shutdown_rx.recv() => {
-                tracing::info!("shutdown signal received");
-                break;
-            }
-
-            // Deadline-driven reconnect housekeeping.
-            _ = &mut reconnect_sleep => {
-                tracing::trace!(
-                    pending_reconnects = state.pending_reconnects.len(),
-                    "running reconnect housekeeping"
-                );
-                handlers::process_pending_reconnects(&mut state);
-            }
-
-            // Handle commands from handles - dispatches to tasks, never blocks
-            Ok(cmd) = command_rx.recv() => {
-                tracing::trace!("received network service command");
-                handlers::handle_command(cmd, &mut state);
-            }
-
-            // Handle events from spawned tasks - just updates state, never blocks
-            Some(event) = event_rx.recv() => {
-                tracing::trace!("received network service task event");
-                handlers::handle_event(event, &mut state);
-            }
-        }
-    }
+    run_service_loop(
+        &mut state,
+        command_rx,
+        shutdown_rx,
+        futures::stream::poll_fn(|cx| event_rx.poll_recv(cx)),
+    )
+    .await;
 
     // Graceful shutdown
     tracing::info!("shutting down network service");
@@ -550,6 +504,69 @@ async fn run_service_async(
 
     tracing::info!("network service shut down");
     Ok(())
+}
+
+/// Dispatches service events until shutdown is received or its channel closes.
+/// Pending control receives survive competing event selections.
+async fn run_service_loop(
+    state: &mut ServiceState,
+    command_rx: AsyncReceiver<NetCommand>,
+    shutdown_rx: AsyncReceiver<()>,
+    mut events: impl futures::Stream<Item = ServiceEvent> + Unpin,
+) {
+    let reconnect_sleep = tokio::time::sleep(handlers::idle_housekeeping_sleep());
+    tokio::pin!(reconnect_sleep);
+    // Kanal receive futures retain direct handoffs when another select branch wins.
+    let mut command_recv = std::pin::pin!(command_rx.recv());
+    let mut shutdown_recv = std::pin::pin!(shutdown_rx.recv());
+    let mut commands_open = true;
+
+    // Main event loop - NEVER blocks on I/O, only receives and dispatches
+    loop {
+        // Re-arm timer from the earliest reconnect deadline.
+        if let Some(next) = handlers::next_wakeup_deadline(state) {
+            reconnect_sleep.as_mut().reset(next);
+        } else {
+            reconnect_sleep
+                .as_mut()
+                .reset(tokio::time::Instant::now() + handlers::idle_housekeeping_sleep());
+        }
+
+        // Fair select for command/event processing to avoid starvation.
+        tokio::select! {
+            _ = &mut shutdown_recv => {
+                tracing::info!("shutdown signal received");
+                break;
+            }
+
+            // Deadline-driven reconnect housekeeping.
+            _ = &mut reconnect_sleep => {
+                tracing::trace!(
+                    pending_reconnects = state.pending_reconnects.len(),
+                    "running reconnect housekeeping"
+                );
+                handlers::process_pending_reconnects(state);
+            }
+
+            // Handle commands from handles - dispatches to tasks, never blocks
+            command = &mut command_recv, if commands_open => {
+                match command {
+                    Ok(cmd) => {
+                        command_recv.set(command_rx.recv());
+                        tracing::trace!("received network service command");
+                        handlers::handle_command(cmd, state);
+                    }
+                    Err(_) => commands_open = false,
+                }
+            }
+
+            // Handle events from spawned tasks - just updates state, never blocks
+            Some(event) = events.next() => {
+                tracing::trace!("received network service task event");
+                handlers::handle_event(event, state);
+            }
+        }
+    }
 }
 
 /// Apply transport configuration (keep-alive, etc.) to server config.

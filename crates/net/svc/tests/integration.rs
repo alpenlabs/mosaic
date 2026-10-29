@@ -126,9 +126,15 @@ fn create_peer_pair() -> (TestPeer, TestPeer) {
         let port_a = next_port();
         let port_b = next_port();
 
-        let key_a = test_key_from_tag(next_key_tag());
-        let key_b = test_key_from_tag(next_key_tag());
-
+        let first = test_key_from_tag(next_key_tag());
+        let second = test_key_from_tag(next_key_tag());
+        // Stream-opening tests use the peer whose outgoing connection wins the tie-break.
+        let (key_a, key_b) = if peer_id_from_signing_key(&first) < peer_id_from_signing_key(&second)
+        {
+            (first, second)
+        } else {
+            (second, first)
+        };
         let peer_id_a = peer_id_from_signing_key(&key_a);
         let peer_id_b = peer_id_from_signing_key(&key_b);
 
@@ -914,53 +920,154 @@ fn test_bulk_transfer_registered() {
 }
 
 #[test]
+fn dropping_consumed_bulk_expectation_preserves_new_waiter() {
+    let (peer_a, peer_b) = create_peer_pair();
+
+    run_async(async {
+        // Connection selection can replace streams during startup. Retry only fixture setup,
+        // using fresh identifiers so late streams cannot satisfy a subsequent attempt.
+        let (identifier, old, old_sender, old_receiver) = retry_until_ok(CI_TIMEOUT, || async {
+            let mut identifier = [0x9d; 32];
+            identifier[..8].copy_from_slice(&next_key_tag().to_le_bytes());
+            let old = tokio::time::timeout(
+                CI_TIMEOUT,
+                peer_b
+                    .handle
+                    .expect_bulk_transfer(peer_a.peer_id, identifier),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+            let mut old_sender = tokio::time::timeout(
+                CI_TIMEOUT,
+                peer_a
+                    .handle
+                    .open_bulk_stream(peer_b.peer_id, identifier, -1),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+            let mut old_receiver = tokio::time::timeout(CI_TIMEOUT, old.receiver().recv())
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ())?;
+            tokio::time::timeout(
+                CI_TIMEOUT,
+                old_sender.write(b"initial registration".to_vec()),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+            let payload = tokio::time::timeout(CI_TIMEOUT, old_receiver.read())
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ())?;
+            if payload != b"initial registration" {
+                return Err(());
+            }
+            Ok((identifier, old, old_sender, old_receiver))
+        })
+        .await;
+        tokio::time::timeout(CI_TIMEOUT, old_sender.reset(0))
+            .await
+            .unwrap();
+        tokio::time::timeout(CI_TIMEOUT, old_receiver.reset(0))
+            .await
+            .unwrap();
+
+        let current = tokio::time::timeout(
+            CI_TIMEOUT,
+            peer_b
+                .handle
+                .expect_bulk_transfer(peer_a.peer_id, identifier),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(old);
+        assert!(matches!(
+            tokio::time::timeout(
+                CI_TIMEOUT,
+                peer_b
+                    .handle
+                    .expect_bulk_transfer(peer_a.peer_id, identifier),
+            )
+            .await
+            .unwrap(),
+            Err(mosaic_net_svc::api::ExpectError::AlreadyRegistered)
+        ));
+
+        let mut sender = tokio::time::timeout(
+            CI_TIMEOUT,
+            peer_a
+                .handle
+                .open_bulk_stream(peer_b.peer_id, identifier, -1),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut receiver = tokio::time::timeout(CI_TIMEOUT, current.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(CI_TIMEOUT, sender.write(b"current registration".to_vec()))
+            .await
+            .unwrap()
+            .unwrap();
+        let payload = tokio::time::timeout(CI_TIMEOUT, receiver.read())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload, b"current registration");
+        tokio::time::timeout(CI_TIMEOUT, sender.reset(0))
+            .await
+            .unwrap();
+        tokio::time::timeout(CI_TIMEOUT, receiver.reset(0))
+            .await
+            .unwrap();
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
 fn test_multiple_streams_concurrent() {
     let (peer_a, peer_b) = create_peer_pair();
 
     run_async(async {
-        retry_until_ok(CI_TIMEOUT, || async {
-            let (_warm, _warm_inbound) =
-                open_stream_pair_eventually(&peer_a, &peer_b, b"warm").await;
-            let mut streams_a = Vec::new();
-            for _ in 0..3 {
-                let s = tokio::time::timeout(
-                    Duration::from_secs(10),
-                    peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
-                )
+        let (_warm, _warm_inbound) = open_stream_pair_eventually(&peer_a, &peer_b, b"warm").await;
+        let mut streams_a = Vec::new();
+        for _ in 0..3 {
+            let stream = tokio::time::timeout(
+                CI_TIMEOUT,
+                peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+            )
+            .await
+            .expect("opening a concurrent stream must complete")
+            .expect("the selected connection must remain available");
+            streams_a.push(stream);
+        }
+
+        for (index, stream) in streams_a.iter_mut().enumerate() {
+            tokio::time::timeout(CI_TIMEOUT, stream.write(format!("msg{index}").into_bytes()))
                 .await
-                .map_err(|_| ())?
-                .map_err(|_| ())?;
-                streams_a.push(s);
-            }
+                .expect("concurrent stream write must complete")
+                .expect("concurrent stream write must succeed");
+        }
 
-            for (i, s) in streams_a.iter_mut().enumerate() {
-                s.write(format!("msg{}", i).into_bytes())
-                    .await
-                    .map_err(|_| ())?;
-            }
-
-            let mut streams_b = Vec::new();
-            for _ in 0..3 {
-                streams_b.push(
-                    recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await,
-                );
-            }
-
-            let mut msgs = Vec::new();
-            for s in streams_b.iter_mut() {
-                let data = tokio::time::timeout(Duration::from_secs(10), s.read())
-                    .await
-                    .map_err(|_| ())?
-                    .map_err(|_| ())?;
-                msgs.push(String::from_utf8(data).map_err(|_| ())?);
-            }
-            msgs.sort();
-            if msgs != vec!["msg0", "msg1", "msg2"] {
-                return Err(());
-            }
-            Ok::<_, ()>(())
-        })
-        .await;
+        let mut messages = Vec::new();
+        for _ in 0..3 {
+            let mut inbound =
+                recv_with_timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv()).await;
+            let payload = tokio::time::timeout(CI_TIMEOUT, inbound.read())
+                .await
+                .expect("concurrent stream read must complete")
+                .expect("concurrent stream payload must be available");
+            messages.push(String::from_utf8(payload).expect("test payload must be UTF-8"));
+        }
+        messages.sort();
+        assert_eq!(messages, ["msg0", "msg1", "msg2"]);
     });
 
     peer_a.shutdown();

@@ -152,6 +152,12 @@ pub enum PeerConnectionState {
     },
 }
 
+/// Pending bulk transfer delivery channel and its cancellation identity.
+pub struct BulkTransferRegistration {
+    pub registration_id: u64,
+    pub sender: AsyncSender<Stream>,
+}
+
 /// Internal service state (owned by main loop, no mutex needed).
 pub struct ServiceState {
     /// Shared configuration.
@@ -166,7 +172,7 @@ pub struct ServiceState {
 
     /// Pending bulk transfer registrations.
     /// Key: (peer_id, blake3_hash(identifier))
-    pub bulk_expectations: HashMap<(PeerId, [u8; 32]), AsyncSender<Stream>>,
+    pub bulk_expectations: HashMap<(PeerId, [u8; 32]), BulkTransferRegistration>,
 
     /// Channel to send incoming protocol requests to handles.
     pub protocol_stream_tx: AsyncSender<InboundProtocolStream>,

@@ -45,6 +45,16 @@ The stream header (first byte) tells net-svc how to route incoming streams:
 - Protocol → SM Scheduler
 - Bulk → JobScheduler (matched against pre-registered expectations)
 
+### Bulk Transfer Registrations
+
+A receiver registers an expectation for a `(peer, identifier)` pair before requesting a table. Only one expectation can own that pair at a time. A second active registration returns `AlreadyRegistered`.
+
+Cancellation ownership covers both the pending registration call and the returned expectation handle. Dropping either queues cancellation through the unbounded service command channel. Each registration has a unique process-local ID, and cancellation removes only the matching owner. A rejected duplicate or a consumed older handle cannot cancel a newer expectation for the same pair.
+
+Registration IDs do not appear in QUIC stream headers or peer messages.
+
+The service retains its command and shutdown receive futures across event-loop iterations. A competing event does not discard a control message already delivered to its receiver.
+
 ### Crate Separation
 
 **net-wire** is pure, no I/O—just encoding/decoding. Useful for testing and keeping the protocol format separate from transport.
