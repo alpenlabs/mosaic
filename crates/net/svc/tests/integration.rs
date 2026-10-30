@@ -119,10 +119,13 @@ impl TestPeer {
 }
 
 fn create_peer_pair() -> (TestPeer, TestPeer) {
-    create_peer_pair_with(CongestionController::default())
+    create_peer_pair_configured(|config| config)
 }
 
-fn create_peer_pair_with(congestion_controller: CongestionController) -> (TestPeer, TestPeer) {
+/// Like [`create_peer_pair`], applying `configure` to both peers' configs.
+fn create_peer_pair_configured(
+    configure: impl Fn(NetServiceConfig) -> NetServiceConfig,
+) -> (TestPeer, TestPeer) {
     init_tracing();
     // Retry with different ports if we hit "address in use" errors.
     // This handles port collisions in CI where multiple test processes run in parallel.
@@ -145,15 +148,15 @@ fn create_peer_pair_with(congestion_controller: CongestionController) -> (TestPe
         let addr_a = test_addr(port_a);
         let addr_b = test_addr(port_b);
 
-        let config_a =
+        let config_a = configure(
             NetServiceConfig::new(key_a, addr_a, vec![PeerConfig::new(peer_id_b, addr_b)])
-                .with_reconnect_backoff(Duration::from_millis(50))
-                .with_congestion_controller(congestion_controller);
+                .with_reconnect_backoff(Duration::from_millis(50)),
+        );
 
-        let config_b =
+        let config_b = configure(
             NetServiceConfig::new(key_b, addr_b, vec![PeerConfig::new(peer_id_a, addr_a)])
-                .with_reconnect_backoff(Duration::from_millis(50))
-                .with_congestion_controller(congestion_controller);
+                .with_reconnect_backoff(Duration::from_millis(50)),
+        );
 
         let (handle_a, ctrl_a) = match NetService::new(config_a) {
             Ok(result) => result,
@@ -874,6 +877,79 @@ fn test_buffer_returned_after_write() {
 }
 
 #[test]
+fn protocol_stream_reset_after_configured_first_payload_timeout() {
+    let timeout = Duration::from_secs(1);
+    let (peer_a, peer_b) =
+        create_peer_pair_configured(|config| config.with_protocol_first_payload_timeout(timeout));
+
+    run_async(async {
+        let _warm = open_stream_pair_eventually(&peer_a, &peer_b, b"warm").await;
+
+        let mut outbound = tokio::time::timeout(
+            CI_TIMEOUT,
+            peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+        )
+        .await
+        .expect("open protocol stream in time")
+        .expect("open protocol stream");
+        let opened = std::time::Instant::now();
+
+        // Withhold the payload; the receiver resets the stream at its deadline.
+        tokio::time::timeout(CI_TIMEOUT, outbound.read())
+            .await
+            .expect("stream reset in time")
+            .expect_err("receiver must reset a stream without a first payload");
+        let elapsed = opened.elapsed();
+        assert!(
+            elapsed >= timeout
+                && elapsed < NetServiceConfig::DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT,
+            "reset after {elapsed:?}, expected the configured {timeout:?}"
+        );
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn protocol_stream_accepts_payload_within_configured_first_payload_timeout() {
+    let (peer_a, peer_b) = create_peer_pair_configured(|config| {
+        config.with_protocol_first_payload_timeout(Duration::from_secs(30))
+    });
+
+    run_async(async {
+        let _warm = open_stream_pair_eventually(&peer_a, &peer_b, b"warm").await;
+
+        let mut outbound = tokio::time::timeout(
+            CI_TIMEOUT,
+            peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
+        )
+        .await
+        .expect("open protocol stream in time")
+        .expect("open protocol stream");
+
+        // Longer than the default timeout, which would have reset the stream.
+        tokio::time::sleep(
+            NetServiceConfig::DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT + Duration::from_secs(1),
+        )
+        .await;
+        outbound
+            .write(b"late payload".to_vec())
+            .await
+            .expect("write late payload");
+
+        let inbound = tokio::time::timeout(CI_TIMEOUT, peer_b.handle.protocol_streams().recv())
+            .await
+            .expect("inbound protocol stream in time")
+            .expect("inbound protocol stream");
+        assert_eq!(inbound.payload(), Some(&b"late payload"[..]));
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
 fn test_bulk_transfer_registered() {
     let (peer_a, peer_b) = create_peer_pair();
 
@@ -931,7 +1007,9 @@ fn test_bulk_transfer_with_bbr() {
     const CHUNKS: usize = 64;
     const CHUNK_LEN: usize = 64 * 1024;
 
-    let (peer_a, peer_b) = create_peer_pair_with(CongestionController::Bbr);
+    let (peer_a, peer_b) = create_peer_pair_configured(|config| {
+        config.with_congestion_controller(CongestionController::Bbr)
+    });
 
     run_async(async {
         retry_until_ok(CI_TIMEOUT, || async {

@@ -45,6 +45,25 @@ The stream header (first byte) tells net-svc how to route incoming streams:
 - Protocol → SM Scheduler
 - Bulk → JobScheduler (matched against pre-registered expectations)
 
+### Protocol Stream Timeouts
+
+A protocol message travels as the stream's single first frame, and some are
+several MB (a commit chunk is about 2.85 MB). The receiver resets a stream whose
+complete first frame has not arrived within `[network]
+protocol_first_payload_timeout_secs` (default 5) of accepting it, and the
+sender then retries the whole message.
+
+- The sender bounds the same transfer with `[network.client] ack_timeout_secs`,
+  separately for the write and for the acknowledgment. Raise it together with
+  the receiver's timeout; whichever side gives up first resets the stream.
+- Size the timeout for the path's throughput. quinn shares up to 10 MB of
+  unacknowledged data per connection among the streams being sent, so on a
+  slow path an in-flight message takes roughly 10 MB divided by the
+  connection's throughput (about 25 s at 400 KB/s).
+- A longer timeout also lets an authenticated peer hold a stream slot, and up
+  to 4 MiB of buffered frame, for longer without completing a message.
+- Scheduler-hint streams keep a fixed 5 s timeout.
+
 ### Bulk Transfer Registrations
 
 A receiver registers an expectation for a `(peer, identifier)` pair before requesting a table. Only one expectation can own that pair at a time. A second active registration returns `AlreadyRegistered`.
