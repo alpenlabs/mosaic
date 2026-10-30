@@ -89,6 +89,8 @@ its implementation experimental.
 - It is local to the sender and not visible on the wire, so peers with
   different settings interoperate and no protocol version change is needed.
 - The selected controller is reported in the `network service started` log.
+- Each connection's `net.path` lines (see [observability.md](observability.md))
+  show its send rate, loss and congestion window.
 
 ## Version Handshake
 

@@ -187,6 +187,32 @@ table.store progress path=tables/9b41…d7aa/4/versions/0000…0001/ciphertexts 
 `put` well above `avg` means the writer is starved upstream; the two
 converging means the store is the constraint.
 
+## `net.path` — QUIC path statistics
+
+Every connection emits a `progress` line each 30 s and a `summary` line when it
+closes. `progress` rates and counts cover the interval since the previous line;
+`summary` covers the connection's lifetime. `peer=` and `generation=` identify
+the connection.
+
+```text
+net.path progress peer=0x8d4e8f44 generation=1 rtt=71.8ms min_rtt=68.2ms cwnd=29KiB tx=0.41MB/s rx=0.02MB/s sent_pkts=10512 lost_pkts=47 loss=0.45% congestion_events=31 mtu=1452 elapsed=30s
+```
+
+| Field | Meaning |
+|---|---|
+| `rtt=` / `min_rtt=` | Smoothed and minimum round-trip time (current values) |
+| `cwnd=` | Congestion window (current value; in `summary`, its value at close) |
+| `tx=` / `rx=` | UDP bytes sent / received per second |
+| `sent_pkts=` / `lost_pkts=` / `loss=` | Packets sent, packets declared lost, and their ratio |
+| `congestion_events=` | Times the congestion controller reacted to congestion |
+| `mtu=` | Current path MTU |
+
+`tx` is the rate this node sends to the peer, which its congestion controller
+governs (see `congestion_controller` in [network.md](network.md)). Steady loss
+with `tx` near `cwnd / rtt` and frequent `congestion_events` means the
+controller is limiting the sender; `tx` well below that points elsewhere, such
+as flow control or the application.
+
 ## Pool saturation warns
 
 Pool workers warn (throttled to one per 30 s per worker) when all slots were

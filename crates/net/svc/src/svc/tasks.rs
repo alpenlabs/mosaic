@@ -659,6 +659,8 @@ pub fn spawn_connection_monitor(
     connection: quinn::Connection,
     event_tx: UnboundedSender<ServiceEvent>,
 ) {
+    spawn_path_stats_logger(peer, generation, connection.clone());
+
     tokio::spawn(
         async move {
             tracing::debug!(peer = %hex::encode(peer), "connection monitor started");
@@ -714,6 +716,101 @@ pub fn spawn_connection_monitor(
             peer = %hex::encode(peer),
             generation
         )),
+    );
+}
+
+/// Interval between `net.path` progress lines for each connection.
+const PATH_STATS_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Spawn a task that logs QUIC path statistics for a connection.
+///
+/// Emits a `net.path progress` line every [`PATH_STATS_INTERVAL`] with rates
+/// and loss over that interval, and a `net.path summary` line with lifetime
+/// totals once the connection closes. Lines go to the `mosaic_progress`
+/// target alongside the garbling progress logs.
+fn spawn_path_stats_logger(peer: PeerId, generation: u64, connection: quinn::Connection) {
+    let ids = format!(
+        "peer=0x{} generation={generation}",
+        hex::encode(&peer.as_bytes()[..4])
+    );
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let mut prev = quinn::ConnectionStats::default();
+        let mut prev_at = started;
+        let mut ticker = tokio::time::interval_at(
+            tokio::time::Instant::now() + PATH_STATS_INTERVAL,
+            PATH_STATS_INTERVAL,
+        );
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = connection.closed() => break,
+                _ = ticker.tick() => {
+                    let stats = connection.stats();
+                    log_path_stats(&ids, "progress", &stats, &prev, prev_at.elapsed());
+                    prev = stats;
+                    prev_at = Instant::now();
+                }
+            }
+        }
+
+        let lifetime = quinn::ConnectionStats::default();
+        log_path_stats(
+            &ids,
+            "summary",
+            &connection.stats(),
+            &lifetime,
+            started.elapsed(),
+        );
+    });
+}
+
+/// Log path statistics accumulated since `base` over `window`.
+fn log_path_stats(
+    ids: &str,
+    event: &str,
+    stats: &quinn::ConnectionStats,
+    base: &quinn::ConnectionStats,
+    window: Duration,
+) {
+    let secs = window.as_secs_f64().max(f64::EPSILON);
+    let sent_packets = stats
+        .path
+        .sent_packets
+        .saturating_sub(base.path.sent_packets);
+    let lost_packets = stats
+        .path
+        .lost_packets
+        .saturating_sub(base.path.lost_packets);
+    let loss_pct = if sent_packets == 0 {
+        0.0
+    } else {
+        lost_packets as f64 * 100.0 / sent_packets as f64
+    };
+    let tx_bytes = stats.udp_tx.bytes.saturating_sub(base.udp_tx.bytes);
+    let rx_bytes = stats.udp_rx.bytes.saturating_sub(base.udp_rx.bytes);
+    tracing::info!(
+        target: "mosaic_progress",
+        phase = "net.path",
+        "net.path {} {} rtt={:.1}ms min_rtt={:.1}ms cwnd={}KiB tx={:.2}MB/s rx={:.2}MB/s \
+         sent_pkts={} lost_pkts={} loss={:.2}% congestion_events={} mtu={} elapsed={:.0}s",
+        event,
+        ids,
+        stats.path.rtt.as_secs_f64() * 1e3,
+        stats.path.min_rtt.as_secs_f64() * 1e3,
+        stats.path.cwnd / 1024,
+        tx_bytes as f64 / secs / 1.0e6,
+        rx_bytes as f64 / secs / 1.0e6,
+        sent_packets,
+        lost_packets,
+        loss_pct,
+        stats
+            .path
+            .congestion_events
+            .saturating_sub(base.path.congestion_events),
+        stats.path.current_mtu,
+        secs,
     );
 }
 
