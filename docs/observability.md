@@ -191,8 +191,8 @@ converging means the store is the constraint.
 
 Every connection emits a `progress` line each 30 s and a `summary` line when it
 closes. `progress` rates and counts cover the interval since the previous line;
-`summary` covers the connection's lifetime. `peer=` and `generation=` identify
-the connection.
+`summary` covers the time since the connection was selected, excluding its
+handshakes. `peer=` and `generation=` identify the connection.
 
 ```text
 net.path progress peer=0x8d4e8f44 generation=1 rtt=71.8ms min_rtt=68.2ms cwnd=29KiB tx=0.41MB/s rx=0.02MB/s sent_pkts=10512 lost_pkts=47 loss=0.45% congestion_events=31 mtu=1452 elapsed=30s

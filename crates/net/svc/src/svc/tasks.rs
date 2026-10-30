@@ -725,9 +725,9 @@ const PATH_STATS_INTERVAL: Duration = Duration::from_secs(30);
 /// Spawn a task that logs QUIC path statistics for a connection.
 ///
 /// Emits a `net.path progress` line every [`PATH_STATS_INTERVAL`] with rates
-/// and loss over that interval, and a `net.path summary` line with lifetime
-/// totals once the connection closes. Lines go to the `mosaic_progress`
-/// target alongside the garbling progress logs.
+/// and loss over that interval, and a `net.path summary` line with totals
+/// since the logger started once the connection closes. Lines go to the
+/// `mosaic_progress` target alongside the garbling progress logs.
 fn spawn_path_stats_logger(peer: PeerId, generation: u64, connection: quinn::Connection) {
     let ids = format!(
         "peer=0x{} generation={generation}",
@@ -735,7 +735,10 @@ fn spawn_path_stats_logger(peer: PeerId, generation: u64, connection: quinn::Con
     );
     tokio::spawn(async move {
         let started = Instant::now();
-        let mut prev = quinn::ConnectionStats::default();
+        // The connection is already past its handshakes; counting from this
+        // snapshot keeps every line's counts and time window aligned.
+        let baseline = connection.stats();
+        let mut prev = baseline;
         let mut prev_at = started;
         let mut ticker = tokio::time::interval_at(
             tokio::time::Instant::now() + PATH_STATS_INTERVAL,
@@ -755,12 +758,11 @@ fn spawn_path_stats_logger(peer: PeerId, generation: u64, connection: quinn::Con
             }
         }
 
-        let lifetime = quinn::ConnectionStats::default();
         log_path_stats(
             &ids,
             "summary",
             &connection.stats(),
-            &lifetime,
+            &baseline,
             started.elapsed(),
         );
     });
