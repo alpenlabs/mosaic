@@ -553,4 +553,38 @@ mod tests {
             .expect("stop waiter still alive");
         done_rx.recv().await.expect("stop acknowledgement");
     }
+
+    #[tokio::test]
+    async fn reset_returns_when_tasks_exit_without_reading_control() {
+        let (_payload_tx, payload_rx) = bounded_async(1);
+        let (request_tx, _request_rx) = bounded_async(1);
+        let (reset_tx, reset_rx) = bounded_async(RESET_CHANNEL_SIZE);
+        let (stop_tx, stop_rx) = bounded_async(RESET_CHANNEL_SIZE);
+        let (_buf_return_tx, buf_return_rx) = bounded_async(1);
+        let (_close_tx, close_rx) = bounded_async(1);
+        let stream = Stream::new(
+            PeerId::from_bytes([0; 32]),
+            payload_rx,
+            request_tx,
+            reset_tx,
+            stop_tx,
+            buf_return_rx,
+            close_rx,
+        );
+
+        let reset = tokio::spawn(stream.reset(0));
+        // Both control messages are queued while the bridge tasks are still
+        // alive, but the tasks exit on their own terminal events without
+        // reading them.
+        while reset_rx.is_empty() || stop_rx.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        drop(reset_rx);
+        drop(stop_rx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), reset)
+            .await
+            .expect("reset must not wait for acknowledgements from exited tasks")
+            .expect("reset task");
+    }
 }
