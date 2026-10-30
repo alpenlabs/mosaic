@@ -5,7 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use kanal::{AsyncReceiver, AsyncSender, bounded_async};
+use futures::FutureExt;
+use kanal::{AsyncReceiver, AsyncSender, ReceiveError, bounded_async};
 use quinn::{RecvStream, SendStream};
 use tracing::Instrument;
 
@@ -139,18 +140,24 @@ enum ReadOrStop<T> {
     Stop(StreamStop),
 }
 
-/// Wait for a transport write while allowing a reset to cancel it.
+/// Wait for write-task work while allowing a reset to cancel it.
 ///
 /// Dropping the write future releases its mutable borrow of the QUIC send
 /// stream, after which the caller can apply the reset immediately.
-async fn write_or_reset<F, T>(write: F, reset_rx: &AsyncReceiver<StreamReset>) -> WriteOrReset<T>
+///
+/// `reset_recv` is the write task's long-lived reset receive future. kanal
+/// hands a value directly to a receive future that is already waiting, and
+/// dropping that future drops the value, so it is polled by reference and
+/// survives when `write` wins.
+async fn write_or_reset<F, T, R>(write: F, reset_recv: &mut R) -> WriteOrReset<T>
 where
     F: Future<Output = T>,
+    R: Future<Output = Result<StreamReset, ReceiveError>> + Unpin,
 {
     tokio::pin!(write);
     tokio::select! {
         biased;
-        reset = reset_rx.recv() => {
+        reset = reset_recv => {
             match reset {
                 Ok(reset) => WriteOrReset::Reset(reset),
                 // Graceful Stream drop closes both channels. Do not cancel a
@@ -163,14 +170,18 @@ where
 }
 
 /// Wait for receive-side work while allowing local reset to stop it.
-async fn read_or_stop<F, T>(read: F, stop_rx: &AsyncReceiver<StreamStop>) -> ReadOrStop<T>
+///
+/// `stop_recv` is the read task's long-lived stop receive future, polled by
+/// reference for the same reason as the reset future in [`write_or_reset`].
+async fn read_or_stop<F, T, S>(read: F, stop_recv: &mut S) -> ReadOrStop<T>
 where
     F: Future<Output = T>,
+    S: Future<Output = Result<StreamStop, ReceiveError>> + Unpin,
 {
     tokio::pin!(read);
     tokio::select! {
         biased;
-        stop = stop_rx.recv() => {
+        stop = stop_recv => {
             match stop {
                 Ok(stop) => ReadOrStop::Stop(stop),
                 // Graceful Stream drop must not discard data already read
@@ -190,13 +201,16 @@ where
 /// reason it preempts `write_all`: the caller consumes its receive side while
 /// waiting for reset acknowledgement, so an ordinary blocking send would
 /// deadlock.
-async fn return_buffer_or_reset(
+async fn return_buffer_or_reset<R>(
     mut buf: PayloadBuf,
     buf_return_tx: &AsyncSender<PayloadBuf>,
-    reset_rx: &AsyncReceiver<StreamReset>,
-) -> Option<StreamReset> {
+    reset_recv: &mut R,
+) -> Option<StreamReset>
+where
+    R: Future<Output = Result<StreamReset, ReceiveError>> + Unpin,
+{
     buf.clear();
-    match write_or_reset(buf_return_tx.send(buf), reset_rx).await {
+    match write_or_reset(buf_return_tx.send(buf), reset_recv).await {
         WriteOrReset::Write(_) => None,
         WriteOrReset::Reset(reset) => Some(reset),
     }
@@ -244,22 +258,22 @@ async fn write_task(
 ) {
     let limits = mosaic_net_wire::FrameLimits::default();
     let mut frame_buf = Vec::with_capacity(4 + 64 * 1024);
+    // Created once and polled by reference so a reset handed to it is never
+    // dropped with a losing select! branch. Fused because it stays pending
+    // after the reset channel closes on a normal Stream drop.
+    let reset_recv = reset_rx.recv().fuse();
+    tokio::pin!(reset_recv);
 
     loop {
-        let request = tokio::select! {
-            biased;
-            reset = reset_rx.recv() => {
-                match reset {
-                    Ok(reset) => {
-                        apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
-                        break;
-                    }
-                    // The Stream was dropped normally. Drain any request
-                    // already accepted before finishing the send side.
-                    Err(_) => request_rx.recv().await,
-                }
+        // On a normal Stream drop the reset channel closes and this same
+        // request receive is awaited, so a request already handed to it is
+        // written before the send side finishes.
+        let request = match write_or_reset(request_rx.recv(), &mut reset_recv).await {
+            WriteOrReset::Write(request) => request,
+            WriteOrReset::Reset(reset) => {
+                apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
+                break;
             }
-            request = request_rx.recv() => request,
         };
 
         match request {
@@ -277,7 +291,7 @@ async fn write_task(
                             let _ = send.reset(0u32.into());
                             // Return buffer anyway
                             if let Some(reset) =
-                                return_buffer_or_reset(buf, &buf_return_tx, &reset_rx).await
+                                return_buffer_or_reset(buf, &buf_return_tx, &mut reset_recv).await
                             {
                                 apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
                             }
@@ -288,7 +302,7 @@ async fn write_task(
                         // selectable. A reset drops write_all before touching
                         // the send stream, so flow-control stalls are
                         // cancelled rather than inherited by a retry.
-                        match write_or_reset(send.write_all(&frame_buf), &reset_rx).await {
+                        match write_or_reset(send.write_all(&frame_buf), &mut reset_recv).await {
                             WriteOrReset::Write(Ok(())) => {}
                             WriteOrReset::Write(Err(e)) => {
                                 tracing::debug!(error = %e, "write error, closing stream");
@@ -297,7 +311,8 @@ async fn write_task(
                                 }
                                 // Return buffer
                                 if let Some(reset) =
-                                    return_buffer_or_reset(buf, &buf_return_tx, &reset_rx).await
+                                    return_buffer_or_reset(buf, &buf_return_tx, &mut reset_recv)
+                                        .await
                                 {
                                     apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
                                 }
@@ -311,7 +326,7 @@ async fn write_task(
 
                         // Return buffer (cleared for reuse)
                         if let Some(reset) =
-                            return_buffer_or_reset(buf, &buf_return_tx, &reset_rx).await
+                            return_buffer_or_reset(buf, &buf_return_tx, &mut reset_recv).await
                         {
                             apply_reset(&mut send, reset, &close_tx, close_state.as_ref());
                             break;
@@ -356,13 +371,17 @@ async fn read_task(
     let mut buf =
         Vec::with_capacity(INITIAL_READ_BUFFER_CAPACITY.min(limits.max_recv_size as usize + 4));
     let mut read_buf = [0u8; 64 * 1024];
+    // Created once and polled by reference so a stop handed to it is never
+    // dropped with a losing select! branch.
+    let stop_recv = stop_rx.recv().fuse();
+    tokio::pin!(stop_recv);
 
     loop {
         // Try to decode a complete frame from buffer
         match mosaic_net_wire::decode_frame(&buf, &limits) {
             Ok((payload, consumed)) => {
                 // Send payload to caller
-                match read_or_stop(payload_tx.send(payload), &stop_rx).await {
+                match read_or_stop(payload_tx.send(payload), &mut stop_recv).await {
                     ReadOrStop::Read(Ok(())) => {}
                     ReadOrStop::Read(Err(_)) => {
                         // Receiver dropped - stop reading
@@ -399,7 +418,7 @@ async fn read_task(
         }
 
         // Read more data from QUIC stream
-        match read_or_stop(recv.read(&mut read_buf), &stop_rx).await {
+        match read_or_stop(recv.read(&mut read_buf), &mut stop_recv).await {
             ReadOrStop::Stop(stop) => {
                 apply_stop(&mut recv, stop);
                 break;
@@ -415,7 +434,7 @@ async fn read_task(
                 while !buf.is_empty() {
                     match mosaic_net_wire::decode_frame(&buf, &limits) {
                         Ok((payload, consumed)) => {
-                            match read_or_stop(payload_tx.send(payload), &stop_rx).await {
+                            match read_or_stop(payload_tx.send(payload), &mut stop_recv).await {
                                 ReadOrStop::Read(_) => {}
                                 ReadOrStop::Stop(stop) => {
                                     apply_stop(&mut recv, stop);
@@ -468,8 +487,10 @@ mod tests {
     async fn reset_preempts_pending_transport_write() {
         let (reset_tx, reset_rx) = bounded_async(1);
         let (done_tx, done_rx) = bounded_async(1);
+        let reset_recv = reset_rx.recv().fuse();
+        tokio::pin!(reset_recv);
 
-        let wait_for_write = write_or_reset(pending::<()>(), &reset_rx);
+        let wait_for_write = write_or_reset(pending::<()>(), &mut reset_recv);
         let send_reset = async move {
             reset_tx
                 .send(StreamReset { code: 7, done_tx })
@@ -500,8 +521,10 @@ mod tests {
             .expect("fill buffer return channel");
         let (reset_tx, reset_rx) = bounded_async(1);
         let (done_tx, done_rx) = bounded_async(1);
+        let reset_recv = reset_rx.recv().fuse();
+        tokio::pin!(reset_recv);
 
-        let return_buffer = return_buffer_or_reset(vec![2], &buf_return_tx, &reset_rx);
+        let return_buffer = return_buffer_or_reset(vec![2], &buf_return_tx, &mut reset_recv);
         let send_reset = async move {
             reset_tx
                 .send(StreamReset { code: 9, done_tx })
@@ -532,8 +555,10 @@ mod tests {
     async fn stop_preempts_pending_transport_read() {
         let (stop_tx, stop_rx) = bounded_async(1);
         let (done_tx, done_rx) = bounded_async(1);
+        let stop_recv = stop_rx.recv().fuse();
+        tokio::pin!(stop_recv);
 
-        let wait_for_read = read_or_stop(pending::<()>(), &stop_rx);
+        let wait_for_read = read_or_stop(pending::<()>(), &mut stop_recv);
         let send_stop = async move {
             stop_tx
                 .send(StreamStop { code: 11, done_tx })
@@ -552,5 +577,73 @@ mod tests {
             .await
             .expect("stop waiter still alive");
         done_rx.recv().await.expect("stop acknowledgement");
+    }
+
+    #[tokio::test]
+    async fn reset_handed_off_while_write_completes_is_retained() {
+        let (reset_tx, reset_rx) = bounded_async(1);
+        let (done_tx, _done_rx) = bounded_async(1);
+        let reset_recv = reset_rx.recv().fuse();
+        tokio::pin!(reset_recv);
+
+        // The biased select polls the reset receive first, which registers it
+        // as waiting. The write then sends the reset, which kanal hands
+        // directly to that waiting future, and completes in the same poll.
+        let reset = StreamReset { code: 13, done_tx };
+        let write = async { assert!(reset_tx.try_send(reset).expect("reset receiver open")) };
+        let WriteOrReset::Write(()) = write_or_reset(write, &mut reset_recv).await else {
+            panic!("reset was sent before the reset branch was polled");
+        };
+
+        let WriteOrReset::Reset(reset) = write_or_reset(pending::<()>(), &mut reset_recv).await
+        else {
+            panic!("handed-off reset was dropped with the losing branch");
+        };
+        assert_eq!(reset.code, 13);
+    }
+
+    #[tokio::test]
+    async fn stop_handed_off_while_read_completes_is_retained() {
+        let (stop_tx, stop_rx) = bounded_async(1);
+        let (done_tx, _done_rx) = bounded_async(1);
+        let stop_recv = stop_rx.recv().fuse();
+        tokio::pin!(stop_recv);
+
+        let stop = StreamStop { code: 17, done_tx };
+        let read = async { assert!(stop_tx.try_send(stop).expect("stop receiver open")) };
+        let ReadOrStop::Read(()) = read_or_stop(read, &mut stop_recv).await else {
+            panic!("stop was sent before the stop branch was polled");
+        };
+
+        let ReadOrStop::Stop(stop) = read_or_stop(pending::<()>(), &mut stop_recv).await else {
+            panic!("handed-off stop was dropped with the losing branch");
+        };
+        assert_eq!(stop.code, 17);
+    }
+
+    #[tokio::test]
+    async fn request_handed_off_before_stream_drop_is_returned() {
+        let (request_tx, request_rx) = bounded_async(1);
+        let (reset_tx, reset_rx) = bounded_async::<StreamReset>(1);
+        let reset_recv = reset_rx.recv().fuse();
+        tokio::pin!(reset_recv);
+
+        let wait_for_request = write_or_reset(request_rx.recv(), &mut reset_recv);
+        tokio::pin!(wait_for_request);
+        assert!(futures::poll!(&mut wait_for_request).is_pending());
+
+        // A normal Stream drop right after a request is handed to the waiting
+        // request receive closes the reset channel too.
+        assert!(
+            request_tx
+                .try_send(StreamRequest::SetPriority(3))
+                .expect("request receiver open")
+        );
+        drop(request_tx);
+        drop(reset_tx);
+
+        let WriteOrReset::Write(Ok(StreamRequest::SetPriority(3))) = wait_for_request.await else {
+            panic!("handed-off request was dropped on stream drop");
+        };
     }
 }
