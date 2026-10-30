@@ -59,8 +59,11 @@ pub const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for writing stream headers (5 seconds).
 pub const STREAM_HEADER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Timeout for receiving the first protocol payload frame (5 seconds).
-pub const PROTOCOL_FIRST_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(5);
+/// Timeout for receiving a scheduler-hint stream's payload frame (5 seconds).
+///
+/// Protocol streams use the configurable
+/// `NetServiceConfig::protocol_first_payload_timeout` instead.
+pub const HINT_FIRST_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Metadata for a single outbound connection attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

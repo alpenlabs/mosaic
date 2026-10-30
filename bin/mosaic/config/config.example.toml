@@ -10,6 +10,9 @@ bind_addr = "0.0.0.0:7000"
 keep_alive_interval_secs = 1
 idle_timeout_secs = 5
 reconnect_backoff_secs = 1
+# Seconds an inbound protocol stream may take to deliver its complete first
+# message (default 5). Raise network.client.ack_timeout_secs on senders to match.
+# protocol_first_payload_timeout_secs = 300
 
 [network.client]
 open_timeout_secs = 5

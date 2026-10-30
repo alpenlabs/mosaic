@@ -27,8 +27,8 @@ use tracing::Instrument;
 use super::{
     conn,
     state::{
-        CONNECTION_TIMEOUT, HEADER_READ_TIMEOUT, IncomingCandidateId, OpenRequestCancelRegistry,
-        OutboundAttempt, OverlapKey, PROTOCOL_FIRST_PAYLOAD_TIMEOUT, ServiceEvent,
+        CONNECTION_TIMEOUT, HEADER_READ_TIMEOUT, HINT_FIRST_PAYLOAD_TIMEOUT, IncomingCandidateId,
+        OpenRequestCancelRegistry, OutboundAttempt, OverlapKey, ServiceEvent,
     },
     stream,
     version_handshake::{HandshakeError, run_inbound_handshake, run_outbound_handshake},
@@ -913,15 +913,18 @@ pub fn spawn_stream_opener(ctx: StreamOpenCtx) {
 /// Spawn a task to route a protocol stream to the protocol stream channel.
 ///
 /// This creates a Stream handle and sends it to the protocol stream channel.
+/// The stream is reset if its first payload frame is not complete within
+/// `first_payload_timeout`.
 pub fn spawn_protocol_stream_router(
     peer: PeerId,
     send: quinn::SendStream,
     recv: quinn::RecvStream,
     protocol_stream_tx: AsyncSender<InboundProtocolStream>,
+    first_payload_timeout: Duration,
 ) {
     tokio::spawn(async move {
         let mut recv = recv;
-        match read_first_protocol_payload(&mut recv).await {
+        match read_first_protocol_payload(&mut recv, first_payload_timeout).await {
             Ok(payload) => {
                 let _ = recv.stop(0u32.into());
                 let stream = stream::create_write_only_stream(peer, send);
@@ -962,7 +965,7 @@ pub fn spawn_hint_stream_router(
     let hint_limits = mosaic_net_wire::FrameLimits::new(HINT_FRAME_MAX_SIZE, HINT_FRAME_MAX_SIZE);
     tokio::spawn(async move {
         let mut recv = recv;
-        match read_first_framed_payload(&mut recv, hint_limits).await {
+        match read_first_framed_payload(&mut recv, hint_limits, HINT_FIRST_PAYLOAD_TIMEOUT).await {
             Ok(payload) => {
                 let _ = recv.stop(0u32.into());
                 let mut send = send;
@@ -1019,11 +1022,15 @@ pub fn spawn_bulk_stream_router(
 
 /// Read the first framed payload from a stream using the default frame
 /// limits (4 MiB). Used by protocol streams.
-async fn read_first_protocol_payload(recv: &mut quinn::RecvStream) -> Result<Vec<u8>, String> {
-    read_first_framed_payload(recv, mosaic_net_wire::FrameLimits::default()).await
+async fn read_first_protocol_payload(
+    recv: &mut quinn::RecvStream,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    read_first_framed_payload(recv, mosaic_net_wire::FrameLimits::default(), timeout).await
 }
 
-/// Read the first framed payload with caller-specified limits.
+/// Read the first framed payload with caller-specified limits, failing if the
+/// complete frame has not arrived within `timeout`.
 ///
 /// Hint streams pass a small cap (256 bytes) so a buggy peer can't drive
 /// hundreds of MiB of transient buffer allocation through the 256-entry
@@ -1031,10 +1038,11 @@ async fn read_first_protocol_payload(recv: &mut quinn::RecvStream) -> Result<Vec
 async fn read_first_framed_payload(
     recv: &mut quinn::RecvStream,
     limits: mosaic_net_wire::FrameLimits,
+    timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     let mut buf = Vec::with_capacity((limits.max_recv_size as usize).min(4 * 1024));
     let mut read_buf = [0u8; 64 * 1024];
-    let deadline = Instant::now() + PROTOCOL_FIRST_PAYLOAD_TIMEOUT;
+    let deadline = Instant::now() + timeout;
 
     loop {
         match mosaic_net_wire::decode_frame(&buf, &limits) {
