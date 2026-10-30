@@ -59,6 +59,9 @@ impl MosaicConfig {
             .with_keep_alive_interval(Duration::from_secs(self.network.keep_alive_interval_secs))
             .with_idle_timeout(Duration::from_secs(self.network.idle_timeout_secs))
             .with_reconnect_backoff(Duration::from_secs(self.network.reconnect_backoff_secs))
+            .with_protocol_first_payload_timeout(Duration::from_secs(
+                self.network.protocol_first_payload_timeout_secs,
+            ))
             .with_deployment_version(self.network.deployment_version.clone())
             .with_context(|| "invalid network.deployment_version")
             .map(|cfg| cfg.with_reduced_circuits(cfg!(feature = "reduced-circuits")))
@@ -136,6 +139,14 @@ impl MosaicConfig {
 
         if self.network.keep_alive_interval_secs >= self.network.idle_timeout_secs {
             bail!("network.keep_alive_interval_secs must be less than network.idle_timeout_secs");
+        }
+
+        if !(1..=MAX_PROTOCOL_FIRST_PAYLOAD_TIMEOUT_SECS)
+            .contains(&self.network.protocol_first_payload_timeout_secs)
+        {
+            bail!(
+                "network.protocol_first_payload_timeout_secs must be between 1 and {MAX_PROTOCOL_FIRST_PAYLOAD_TIMEOUT_SECS}"
+            );
         }
 
         if self.job_scheduler.garbling.max_concurrent == 0 {
@@ -311,6 +322,12 @@ pub(crate) struct NetworkConfig {
     pub(crate) idle_timeout_secs: u64,
     #[serde(default = "default_reconnect_backoff_secs")]
     pub(crate) reconnect_backoff_secs: u64,
+    /// Seconds an inbound protocol stream may take to deliver its complete
+    /// first message before it is reset. Senders bound the same transfer
+    /// with their own `network.client.ack_timeout_secs`, so raise both
+    /// together.
+    #[serde(default = "default_protocol_first_payload_timeout_secs")]
+    pub(crate) protocol_first_payload_timeout_secs: u64,
     /// Deployment-cohort identifier exchanged in the version handshake.
     /// `None` (the default) skips cohort coordination — suitable for
     /// single-operator dev. Coordinated deployments must set this to the
@@ -616,6 +633,10 @@ const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_KEEP_ALIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_RECONNECT_BACKOFF_SECS: u64 = 1;
+const DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT_SECS: u64 =
+    NetServiceConfig::DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT.as_secs();
+/// One day; far above any realistic transfer and well clear of deadline overflow.
+const MAX_PROTOCOL_FIRST_PAYLOAD_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const DEFAULT_OPEN_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_ACK_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_LIGHT_POOL_THREADS: usize = 1;
@@ -658,6 +679,10 @@ const fn default_idle_timeout_secs() -> u64 {
 
 const fn default_reconnect_backoff_secs() -> u64 {
     DEFAULT_RECONNECT_BACKOFF_SECS
+}
+
+const fn default_protocol_first_payload_timeout_secs() -> u64 {
+    DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT_SECS
 }
 
 const fn default_open_timeout_secs() -> u64 {
@@ -834,6 +859,7 @@ bind_addr = "127.0.0.1:8080"
             toml::from_str(&sample_config_toml(&path)).expect("config should parse");
 
         assert_eq!(config.logging.filter, "debug");
+        assert_eq!(config.network.protocol_first_payload_timeout_secs, 5);
         assert_eq!(
             config.network.client.open_timeout_secs,
             DEFAULT_OPEN_TIMEOUT_SECS
@@ -917,6 +943,42 @@ bind_addr = "127.0.0.1:8080"
                 .contains("concurrency_per_worker must be greater than zero"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn protocol_first_payload_timeout_is_configurable_and_bounded() {
+        let path = std::env::current_exe().expect("current executable path");
+        let with_timeout = |secs: u64| {
+            let toml_text = sample_config_toml(&path).replace(
+                "bind_addr = \"127.0.0.1:7000\"\n",
+                &format!(
+                    "bind_addr = \"127.0.0.1:7000\"\nprotocol_first_payload_timeout_secs = {secs}\n"
+                ),
+            );
+            toml::from_str::<MosaicConfig>(&toml_text).expect("config should parse")
+        };
+
+        let config = with_timeout(300);
+        config.validate().expect("config should validate");
+        assert_eq!(
+            config
+                .build_net_service_config()
+                .unwrap()
+                .protocol_first_payload_timeout,
+            Duration::from_secs(300)
+        );
+
+        for secs in [0, MAX_PROTOCOL_FIRST_PAYLOAD_TIMEOUT_SECS + 1] {
+            let error = with_timeout(secs)
+                .validate()
+                .expect_err("config should be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("protocol_first_payload_timeout_secs must be between"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

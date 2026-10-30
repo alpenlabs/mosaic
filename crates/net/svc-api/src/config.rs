@@ -130,6 +130,12 @@ pub struct NetServiceConfig {
     pub idle_timeout: std::time::Duration,
     /// Backoff duration between reconnection attempts (default: 1 second).
     pub reconnect_backoff: std::time::Duration,
+    /// Time allowed to receive an inbound protocol stream's complete first
+    /// payload frame, measured from when the stream is accepted (default: 5
+    /// seconds). Streams that miss it are reset. The frame is the whole
+    /// protocol message, so on slow paths this must cover the message size
+    /// divided by the share of throughput the stream receives.
+    pub protocol_first_payload_timeout: std::time::Duration,
     /// Per-peer protocol-stream rate limit. Defaults to [`PeerStreamRateLimit::default`].
     pub peer_stream_rate_limit: PeerStreamRateLimit,
     /// Protocol version this node advertises during the version handshake.
@@ -160,6 +166,10 @@ impl NetServiceConfig {
     /// Default reconnection backoff (1 second).
     pub const DEFAULT_RECONNECT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
+    /// Default protocol first-payload timeout (5 seconds).
+    pub const DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(5);
+
     /// Create a new configuration.
     pub fn new(signing_key: SigningKey, bind_addr: SocketAddr, peers: Vec<PeerConfig>) -> Self {
         Self {
@@ -169,6 +179,7 @@ impl NetServiceConfig {
             keep_alive_interval: Self::DEFAULT_KEEP_ALIVE_INTERVAL,
             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             reconnect_backoff: Self::DEFAULT_RECONNECT_BACKOFF,
+            protocol_first_payload_timeout: Self::DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT,
             peer_stream_rate_limit: PeerStreamRateLimit::default(),
             protocol_version: PROTOCOL_VERSION,
             deployment_version: None,
@@ -197,6 +208,12 @@ impl NetServiceConfig {
     /// Set the reconnection backoff duration.
     pub fn with_reconnect_backoff(mut self, backoff: std::time::Duration) -> Self {
         self.reconnect_backoff = backoff;
+        self
+    }
+
+    /// Set the protocol first-payload timeout.
+    pub fn with_protocol_first_payload_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.protocol_first_payload_timeout = timeout;
         self
     }
 
@@ -273,6 +290,10 @@ impl std::fmt::Debug for NetServiceConfig {
             .field("peers", &self.peers.len())
             .field("keep_alive_interval", &self.keep_alive_interval)
             .field("idle_timeout", &self.idle_timeout)
+            .field(
+                "protocol_first_payload_timeout",
+                &self.protocol_first_payload_timeout,
+            )
             .field("protocol_version", &self.protocol_version)
             .field("deployment_version", &self.deployment_version)
             .field("reduced_circuits", &self.reduced_circuits)
