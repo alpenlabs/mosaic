@@ -46,7 +46,7 @@ use tokio::runtime::Builder;
 use crate::{
     api::{InboundProtocolStream, NetCommand, NetServiceHandle},
     close_codes::CLOSE_NORMAL,
-    config::NetServiceConfig,
+    config::{CongestionController, NetServiceConfig},
     tls::{self, PeerId},
 };
 
@@ -349,6 +349,7 @@ async fn run_service_async(
     tracing::info!(
         bind_addr = %config.bind_addr,
         peer_count = state.config.peers.len(),
+        congestion_controller = ?config.congestion_controller,
         "network service started"
     );
 
@@ -599,5 +600,16 @@ fn build_transport_config(config: &NetServiceConfig) -> quinn::TransportConfig {
         quinn::IdleTimeout::try_from(config.idle_timeout)
             .expect("validated net service idle timeout must fit within quinn idle-timeout bounds"),
     ));
+    // Set explicitly for both choices so the default does not follow quinn's.
+    match config.congestion_controller {
+        CongestionController::Cubic => {
+            transport
+                .congestion_controller_factory(Arc::new(quinn::congestion::CubicConfig::default()));
+        }
+        CongestionController::Bbr => {
+            transport
+                .congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+        }
+    }
     transport
 }

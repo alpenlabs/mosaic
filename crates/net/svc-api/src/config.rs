@@ -112,6 +112,21 @@ impl Default for PeerStreamRateLimit {
     }
 }
 
+/// QUIC congestion controller for this node's connections.
+///
+/// Congestion control governs only the data this node sends; each peer's own
+/// setting governs the reverse direction. Peers with different settings
+/// interoperate, since the choice is not negotiated or visible on the wire.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CongestionController {
+    /// CUBIC, quinn's default. Treats packet loss as congestion.
+    #[default]
+    Cubic,
+    /// BBR, which paces to measured bandwidth and RTT rather than backing off
+    /// on loss. Quinn marks its implementation experimental.
+    Bbr,
+}
+
 /// Network service configuration.
 ///
 /// This configuration is immutable after creation. The network service will
@@ -130,6 +145,9 @@ pub struct NetServiceConfig {
     pub idle_timeout: std::time::Duration,
     /// Backoff duration between reconnection attempts (default: 1 second).
     pub reconnect_backoff: std::time::Duration,
+    /// Congestion controller applied to every connection, inbound and
+    /// outbound. Defaults to [`CongestionController::Cubic`].
+    pub congestion_controller: CongestionController,
     /// Per-peer protocol-stream rate limit. Defaults to [`PeerStreamRateLimit::default`].
     pub peer_stream_rate_limit: PeerStreamRateLimit,
     /// Protocol version this node advertises during the version handshake.
@@ -169,6 +187,7 @@ impl NetServiceConfig {
             keep_alive_interval: Self::DEFAULT_KEEP_ALIVE_INTERVAL,
             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             reconnect_backoff: Self::DEFAULT_RECONNECT_BACKOFF,
+            congestion_controller: CongestionController::default(),
             peer_stream_rate_limit: PeerStreamRateLimit::default(),
             protocol_version: PROTOCOL_VERSION,
             deployment_version: None,
@@ -197,6 +216,12 @@ impl NetServiceConfig {
     /// Set the reconnection backoff duration.
     pub fn with_reconnect_backoff(mut self, backoff: std::time::Duration) -> Self {
         self.reconnect_backoff = backoff;
+        self
+    }
+
+    /// Set the congestion controller.
+    pub fn with_congestion_controller(mut self, controller: CongestionController) -> Self {
+        self.congestion_controller = controller;
         self
     }
 
@@ -273,6 +298,7 @@ impl std::fmt::Debug for NetServiceConfig {
             .field("peers", &self.peers.len())
             .field("keep_alive_interval", &self.keep_alive_interval)
             .field("idle_timeout", &self.idle_timeout)
+            .field("congestion_controller", &self.congestion_controller)
             .field("protocol_version", &self.protocol_version)
             .field("deployment_version", &self.deployment_version)
             .field("reduced_circuits", &self.reduced_circuits)

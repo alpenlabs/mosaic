@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use mosaic_job_executors::evaluator::BULK_READ_TIMEOUT;
 use mosaic_job_scheduler::{GarblingConfig, JobSchedulerConfig, PoolConfig};
 use mosaic_net_client::NetClientConfig;
-use mosaic_net_svc::{NetServiceConfig, PeerConfig, PeerId};
+use mosaic_net_svc::{CongestionController, NetServiceConfig, PeerConfig, PeerId};
 use mosaic_sm_executor_api::SmExecutorConfig;
 use mosaic_storage_fdb::FdbStorageConfig;
 use object_store::ClientOptions;
@@ -59,6 +59,7 @@ impl MosaicConfig {
             .with_keep_alive_interval(Duration::from_secs(self.network.keep_alive_interval_secs))
             .with_idle_timeout(Duration::from_secs(self.network.idle_timeout_secs))
             .with_reconnect_backoff(Duration::from_secs(self.network.reconnect_backoff_secs))
+            .with_congestion_controller(self.network.congestion_controller.into())
             .with_deployment_version(self.network.deployment_version.clone())
             .with_context(|| "invalid network.deployment_version")
             .map(|cfg| cfg.with_reduced_circuits(cfg!(feature = "reduced-circuits")))
@@ -311,6 +312,11 @@ pub(crate) struct NetworkConfig {
     pub(crate) idle_timeout_secs: u64,
     #[serde(default = "default_reconnect_backoff_secs")]
     pub(crate) reconnect_backoff_secs: u64,
+    /// QUIC congestion controller for the data this node sends, on every
+    /// connection. `"cubic"` (the default) or `"bbr"`, which quinn marks
+    /// experimental.
+    #[serde(default)]
+    pub(crate) congestion_controller: CongestionControllerSetting,
     /// Deployment-cohort identifier exchanged in the version handshake.
     /// `None` (the default) skips cohort coordination — suitable for
     /// single-operator dev. Coordinated deployments must set this to the
@@ -322,6 +328,23 @@ pub(crate) struct NetworkConfig {
     pub(crate) client: NetworkClientConfig,
     #[serde(default)]
     pub(crate) peers: Vec<PeerEntry>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CongestionControllerSetting {
+    #[default]
+    Cubic,
+    Bbr,
+}
+
+impl From<CongestionControllerSetting> for CongestionController {
+    fn from(setting: CongestionControllerSetting) -> Self {
+        match setting {
+            CongestionControllerSetting::Cubic => Self::Cubic,
+            CongestionControllerSetting::Bbr => Self::Bbr,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -835,6 +858,10 @@ bind_addr = "127.0.0.1:8080"
 
         assert_eq!(config.logging.filter, "debug");
         assert_eq!(
+            config.network.congestion_controller,
+            CongestionControllerSetting::Cubic
+        );
+        assert_eq!(
             config.network.client.open_timeout_secs,
             DEFAULT_OPEN_TIMEOUT_SECS
         );
@@ -854,6 +881,29 @@ bind_addr = "127.0.0.1:8080"
             config.sm_executor.command_queue_size,
             DEFAULT_COMMAND_QUEUE_SIZE
         );
+    }
+
+    #[test]
+    fn congestion_controller_parses_bbr_and_rejects_unknown_values() {
+        let path = std::env::current_exe().expect("current executable path");
+        let with_controller = |value: &str| {
+            sample_config_toml(&path).replace(
+                "bind_addr = \"127.0.0.1:7000\"\n",
+                &format!("bind_addr = \"127.0.0.1:7000\"\ncongestion_controller = \"{value}\"\n"),
+            )
+        };
+
+        let config: MosaicConfig =
+            toml::from_str(&with_controller("bbr")).expect("config should parse");
+        assert_eq!(
+            config
+                .build_net_service_config()
+                .unwrap()
+                .congestion_controller,
+            CongestionController::Bbr
+        );
+
+        assert!(toml::from_str::<MosaicConfig>(&with_controller("reno")).is_err());
     }
 
     #[test]
