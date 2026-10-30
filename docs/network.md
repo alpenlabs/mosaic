@@ -74,6 +74,22 @@ This layering means net-svc could theoretically be reused for other protocols.
 - Keep-alives prevent idle timeouts
 - On simultaneous connect (both sides dial), lower peer_id wins deterministically
 
+### Congestion Control
+
+`[network] congestion_controller` selects the QUIC congestion controller:
+`"cubic"` (default) or `"bbr"`. CUBIC treats packet loss as congestion, so
+throughput on a path with persistent random loss is limited well below the
+path's capacity. BBR paces to measured bandwidth and RTT instead; quinn marks
+its implementation experimental.
+
+- The setting governs only the data this node sends. To speed up transfers
+  from A to B, set it on A.
+- It applies to every connection on the node, including paths that already
+  perform well under CUBIC.
+- It is local to the sender and not visible on the wire, so peers with
+  different settings interoperate and no protocol version change is needed.
+- The selected controller is reported in the `network service started` log.
+
 ## Version Handshake
 
 After QUIC TLS authentication and the overlap-key check, both sides exchange a
