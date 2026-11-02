@@ -31,7 +31,7 @@ use ed25519_dalek::SigningKey;
 use mosaic_net_svc::{
     PeerId,
     api::{InboundProtocolStream, OpenStreamError, Stream},
-    config::{NetServiceConfig, PeerConfig},
+    config::{CongestionController, NetServiceConfig, PeerConfig},
     svc::NetService,
     tls::peer_id_from_signing_key,
 };
@@ -119,6 +119,10 @@ impl TestPeer {
 }
 
 fn create_peer_pair() -> (TestPeer, TestPeer) {
+    create_peer_pair_with(CongestionController::default())
+}
+
+fn create_peer_pair_with(congestion_controller: CongestionController) -> (TestPeer, TestPeer) {
     init_tracing();
     // Retry with different ports if we hit "address in use" errors.
     // This handles port collisions in CI where multiple test processes run in parallel.
@@ -143,11 +147,13 @@ fn create_peer_pair() -> (TestPeer, TestPeer) {
 
         let config_a =
             NetServiceConfig::new(key_a, addr_a, vec![PeerConfig::new(peer_id_b, addr_b)])
-                .with_reconnect_backoff(Duration::from_millis(50));
+                .with_reconnect_backoff(Duration::from_millis(50))
+                .with_congestion_controller(congestion_controller);
 
         let config_b =
             NetServiceConfig::new(key_b, addr_b, vec![PeerConfig::new(peer_id_a, addr_a)])
-                .with_reconnect_backoff(Duration::from_millis(50));
+                .with_reconnect_backoff(Duration::from_millis(50))
+                .with_congestion_controller(congestion_controller);
 
         let (handle_a, ctrl_a) = match NetService::new(config_a) {
             Ok(result) => result,
@@ -910,6 +916,68 @@ fn test_bulk_transfer_registered() {
             if received != b"bulk data" {
                 return Err(());
             }
+            Ok::<_, ()>(())
+        })
+        .await;
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
+fn test_bulk_transfer_with_bbr() {
+    // Several MiB, enough to leave slow start so BBR shapes the transfer.
+    const CHUNKS: usize = 64;
+    const CHUNK_LEN: usize = 64 * 1024;
+
+    let (peer_a, peer_b) = create_peer_pair_with(CongestionController::Bbr);
+
+    run_async(async {
+        retry_until_ok(CI_TIMEOUT, || async {
+            let mut identifier = [0xbb; 32];
+            identifier[..8].copy_from_slice(&next_key_tag().to_le_bytes());
+            let expectation = tokio::time::timeout(
+                CI_TIMEOUT,
+                peer_b
+                    .handle
+                    .expect_bulk_transfer(peer_a.peer_id, identifier),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+            let mut sender = tokio::time::timeout(
+                CI_TIMEOUT,
+                peer_a
+                    .handle
+                    .open_bulk_stream(peer_b.peer_id, identifier, -1),
+            )
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+            let mut receiver = tokio::time::timeout(CI_TIMEOUT, expectation.recv())
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ())?;
+
+            let chunk = |i: usize| vec![i as u8; CHUNK_LEN];
+            let send = async {
+                for i in 0..CHUNKS {
+                    sender.write(chunk(i)).await.map_err(|_| ())?;
+                }
+                Ok::<_, ()>(())
+            };
+            let recv = async {
+                for i in 0..CHUNKS {
+                    if receiver.read().await.map_err(|_| ())? != chunk(i) {
+                        return Err(());
+                    }
+                }
+                Ok(())
+            };
+            tokio::time::timeout(CI_TIMEOUT, async { tokio::try_join!(send, recv) })
+                .await
+                .map_err(|_| ())??;
             Ok::<_, ()>(())
         })
         .await;

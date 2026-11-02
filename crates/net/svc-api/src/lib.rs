@@ -31,7 +31,7 @@ pub use api::{
     BulkTransferExpectation, ExpectError, InboundHintStream, InboundProtocolStream,
     NetServiceHandle, OpenStreamError, PayloadBuf, Stream, StreamClosed,
 };
-pub use config::{NetServiceConfig, PeerConfig, PeerStreamRateLimit};
+pub use config::{CongestionController, NetServiceConfig, PeerConfig, PeerStreamRateLimit};
 pub use handshake::{
     HANDSHAKE_MAGIC, HandshakeMismatch, HandshakePayload, MAX_DEPLOYMENT_VERSION_LEN,
     MAX_HANDSHAKE_PAYLOAD_BYTES, PROTOCOL_VERSION, validate_handshake,
