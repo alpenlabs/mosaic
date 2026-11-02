@@ -1141,7 +1141,8 @@ async fn read_first_framed_payload(
 ) -> Result<Vec<u8>, String> {
     let mut buf = Vec::with_capacity((limits.max_recv_size as usize).min(4 * 1024));
     let mut read_buf = [0u8; 64 * 1024];
-    let deadline = Instant::now() + timeout;
+    // A timeout too large to add to the current instant never expires.
+    let deadline = Instant::now().checked_add(timeout);
 
     loop {
         match mosaic_net_wire::decode_frame(&buf, &limits) {
@@ -1161,8 +1162,12 @@ async fn read_first_framed_payload(
             Err(error) => return Err(format!("protocol frame decode error: {}", error)),
         }
 
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return Err("first protocol payload timed out".to_string());
+        let remaining = match deadline {
+            Some(deadline) => match deadline.checked_duration_since(Instant::now()) {
+                Some(remaining) => remaining,
+                None => return Err("first protocol payload timed out".to_string()),
+            },
+            None => timeout,
         };
 
         match tokio::time::timeout(remaining, recv.read(&mut read_buf)).await {

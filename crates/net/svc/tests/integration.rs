@@ -952,6 +952,23 @@ fn protocol_stream_accepts_payload_within_configured_first_payload_timeout() {
 }
 
 #[test]
+fn protocol_stream_accepts_payload_with_unrepresentable_first_payload_timeout() {
+    // `Duration::MAX` cannot be added to an `Instant`, so the deadline must not
+    // be computed with unchecked arithmetic.
+    let (peer_a, peer_b) = create_peer_pair_configured(|config| {
+        config.with_protocol_first_payload_timeout(Duration::MAX)
+    });
+
+    run_async(async {
+        let (_outbound, inbound) = open_stream_pair_eventually(&peer_a, &peer_b, b"payload").await;
+        assert_eq!(inbound.payload(), Some(&b"payload"[..]));
+    });
+
+    peer_a.shutdown();
+    peer_b.shutdown();
+}
+
+#[test]
 fn test_bulk_transfer_registered() {
     let (peer_a, peer_b) = create_peer_pair();
 
