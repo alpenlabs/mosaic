@@ -885,6 +885,9 @@ fn protocol_stream_reset_after_configured_first_payload_timeout() {
     run_async(async {
         let _warm = open_stream_pair_eventually(&peer_a, &peer_b, b"warm").await;
 
+        // The receiver's deadline starts when it reads the stream header, which
+        // can happen before the open returns here, so measure from before it.
+        let started = std::time::Instant::now();
         let mut outbound = tokio::time::timeout(
             CI_TIMEOUT,
             peer_a.handle.open_protocol_stream(peer_b.peer_id, 0),
@@ -892,14 +895,13 @@ fn protocol_stream_reset_after_configured_first_payload_timeout() {
         .await
         .expect("open protocol stream in time")
         .expect("open protocol stream");
-        let opened = std::time::Instant::now();
 
         // Withhold the payload; the receiver resets the stream at its deadline.
         tokio::time::timeout(CI_TIMEOUT, outbound.read())
             .await
             .expect("stream reset in time")
             .expect_err("receiver must reset a stream without a first payload");
-        let elapsed = opened.elapsed();
+        let elapsed = started.elapsed();
         assert!(
             elapsed >= timeout
                 && elapsed < NetServiceConfig::DEFAULT_PROTOCOL_FIRST_PAYLOAD_TIMEOUT,
