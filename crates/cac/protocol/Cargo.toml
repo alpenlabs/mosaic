@@ -36,7 +36,7 @@ mosaic-common = { workspace = true, features = ["reduced-circuits"] }
 mosaic-storage-s3.workspace = true
 mosaic-storage-kvstore.workspace = true
 
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
 ed25519-dalek = "3.0"
 ckt-fmtv5-types.workspace = true
 object_store = { version = "0.14", features = ["aws"] }

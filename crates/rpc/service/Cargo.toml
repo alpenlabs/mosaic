@@ -39,7 +39,7 @@ kanal.workspace = true
 mosaic-storage-inmemory.workspace = true
 proptest.workspace = true
 sha2.workspace = true
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true
