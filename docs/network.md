@@ -53,13 +53,22 @@ complete first frame has not arrived within `[network]
 protocol_first_payload_timeout_secs` (default 5) of accepting it, and the
 sender then retries the whole message.
 
-- The sender bounds the same transfer with `[network.client] ack_timeout_secs`,
-  separately for the write and for the acknowledgment. Raise it together with
-  the receiver's timeout; whichever side gives up first resets the stream.
-- Size the timeout for the path's throughput. quinn shares up to 10 MB of
-  unacknowledged data per connection among the streams being sent, so on a
-  slow path an in-flight message takes roughly 10 MB divided by the
-  connection's throughput (about 25 s at 400 KB/s).
+- Size the timeout for concurrent load, not a single message. The stream
+  header is written when the stream opens, so the receiver's clock starts
+  before the payload is queued. Protocol streams to a peer share the
+  connection at the same priority, and quinn alternates between them, so K
+  concurrent messages of size S all finish after about K × S / throughput. K
+  is capped by the 100 concurrent streams a node accepts per connection. A
+  garbler sends a setup's 164 commit chunks at once, so a single setup reaches
+  that cap: about 285 MB, roughly 12 minutes at 400 KB/s. quinn's 10 MB send
+  window limits how much data is buffered, not how long a stream waits.
+- On the sender, `[network.client] ack_timeout_secs` bounds the write and the
+  ack wait separately. The write completes once quinn has buffered the last
+  byte, which can be up to 10 MB of connection-wide data before the receiver
+  has it. The ack wait then covers delivering that remainder, the receiver
+  decoding and applying the message, and a round trip. Set it at least as
+  high as the receiver's timeout plus a margin for that processing. Whichever
+  side gives up first resets the stream.
 - A longer timeout also lets an authenticated peer hold a stream slot, and up
   to 4 MiB of buffered frame, for longer without completing a message.
 - Scheduler-hint streams keep a fixed 5 s timeout.
