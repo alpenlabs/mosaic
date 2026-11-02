@@ -347,6 +347,10 @@ impl Stream {
     /// error code. Consumes the stream and waits until the network service has
     /// cancelled active transport I/O and applied the reset and stop.
     pub async fn reset(self, code: u32) {
+        // Each control sender is dropped once its message is queued. A bridge
+        // task can exit on its own terminal event without reading the queued
+        // message; once both channel ends are gone the message and its
+        // `done_tx` are dropped, so the acknowledgement wait below completes.
         let (write_done_tx, write_done_rx) = bounded_async(1);
         let wait_for_write = self
             .reset_tx
@@ -356,9 +360,10 @@ impl Stream {
             })
             .await
             .is_ok();
+        drop(self.reset_tx);
 
         let mut read_done_rx = None;
-        if let Some(stop_tx) = &self.stop_tx {
+        if let Some(stop_tx) = self.stop_tx {
             let (done_tx, done_rx) = bounded_async(1);
             if stop_tx.send(StreamStop { code, done_tx }).await.is_ok() {
                 read_done_rx = Some(done_rx);
