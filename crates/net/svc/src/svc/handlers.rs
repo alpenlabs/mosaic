@@ -1576,6 +1576,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                         send,
                         recv,
                         state.protocol_stream_tx.clone(),
+                        state.config.protocol_first_payload_timeout,
                     );
                 }
                 mosaic_net_wire::StreamType::BulkTransfer { identifier } => {
@@ -1597,7 +1598,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
                     // can otherwise open many hint streams that trickle
                     // or withhold the first frame, tying up
                     // `spawn_hint_stream_router` tasks + QUIC bidi slots
-                    // for `PROTOCOL_FIRST_PAYLOAD_TIMEOUT` each. Hint
+                    // for `HINT_FIRST_PAYLOAD_TIMEOUT` each. Hint
                     // arrival rate is tiny (a handful per setup) so
                     // sharing the protocol bucket costs nothing in
                     // steady state.
