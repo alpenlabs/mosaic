@@ -14,7 +14,7 @@ keywords.workspace = true
 mosaic-net-svc-api = { path = "../svc-api" }
 
 kanal = "0.1.1"
-tokio = { version = "1.50.0", default-features = false, features = [
+tokio = { workspace = true, features = [
   "macros",
   "net",
   "parking_lot",

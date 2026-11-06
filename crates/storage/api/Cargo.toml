@@ -28,7 +28,7 @@ mosaic-vs3.workspace = true
 futures = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { version = "1", features = ["rt", "macros"], optional = true }
+tokio = { workspace = true, features = ["rt", "macros"], optional = true }
 
 [lints]
 workspace = true

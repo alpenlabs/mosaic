@@ -23,14 +23,14 @@ futures-timer = "3"
 futures-util = "0.3"
 
 # Async runtime for timeouts
-tokio = { version = "1", features = ["time"] }
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 # Workspace crates for tests
 mosaic-vs3 = { path = "../../vs3" }
 
 # Async runtime for tests
-tokio = { version = "1", features = [
+tokio = { workspace = true, features = [
   "rt",
   "rt-multi-thread",
   "macros",
