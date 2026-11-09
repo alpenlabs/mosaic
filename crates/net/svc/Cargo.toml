@@ -36,7 +36,7 @@ x509-parser = "0.18"
 
 # Wire format
 ark-serialize = { workspace = true }
-mosaic-net-wire = { path = "../wire" }
+mosaic-net-wire.workspace = true
 
 # Utilities
 ahash = "0.8"

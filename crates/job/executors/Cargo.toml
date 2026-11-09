@@ -21,7 +21,7 @@ mosaic-storage-api.workspace = true
 mosaic-vs3.workspace = true
 
 ark-ff.workspace = true
-bitvec = "1.0"
+bitvec.workspace = true
 blake3.workspace = true
 ckt-fmtv5-types.workspace = true
 ckt-gobble.workspace = true

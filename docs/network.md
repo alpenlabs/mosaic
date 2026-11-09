@@ -7,8 +7,8 @@ The `net-*` crates provide P2P communication between Mosaic instances.
 | Crate | Purpose |
 |-------|---------|
 | net-wire | Wire format: length-prefixed framing, stream type headers |
+| net-svc-api | Public API types for interacting with net-svc |
 | net-svc | Connection management, QUIC/TLS, stream multiplexing |
-| net-types | Application message types and serialization |
 | net-client | Typed API for SM Scheduler and JobScheduler |
 
 ## Design Decisions
@@ -89,9 +89,9 @@ The service retains its command and shutdown receive futures across event-loop i
 
 **net-svc** handles connections but knows nothing about Mosaic messages. It just moves bytes with priority.
 
-**net-types** defines what those bytes mean (message enums, serialization).
+**net-svc-api** holds the types needed to talk to net-svc without pulling in its QUIC/TLS implementation.
 
-**net-client** combines them into a typed API that Jobs and SMs actually use.
+**net-client** gives those bytes meaning: it serializes the protocol `Msg` type from `cac-types` and provides the typed API that Jobs and SMs actually use.
 
 This layering means net-svc could theoretically be reused for other protocols.
 

@@ -70,7 +70,6 @@ mosaic-job-scheduler = { path = "crates/job/scheduler" }
 mosaic-net-client = { path = "crates/net/client" }
 mosaic-net-svc = { path = "crates/net/svc" }
 mosaic-net-svc-api = { path = "crates/net/svc-api" }
-mosaic-net-types = { path = "crates/net/types" }
 mosaic-net-wire = { path = "crates/net/wire" }
 mosaic-rpc-api = { path = "crates/rpc/api" }
 mosaic-rpc-server = { path = "crates/rpc/server" }
