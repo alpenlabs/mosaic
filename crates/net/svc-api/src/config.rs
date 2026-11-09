@@ -331,7 +331,12 @@ impl std::fmt::Debug for NetServiceConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentVersionError {
     /// String exceeded [`MAX_DEPLOYMENT_VERSION_LEN`] bytes.
-    TooLong { len: usize, max: usize },
+    TooLong {
+        /// Length of the supplied string, in bytes.
+        len: usize,
+        /// Maximum allowed length, in bytes.
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for DeploymentVersionError {
