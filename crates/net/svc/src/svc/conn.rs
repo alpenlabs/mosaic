@@ -9,7 +9,7 @@ use crate::tls::PeerId;
 /// Extract the peer ID from a QUIC connection's certificate.
 ///
 /// The peer ID is the 32-byte Ed25519 public key from the peer's certificate.
-pub fn extract_peer_id(conn: &Connection) -> Option<PeerId> {
+pub(crate) fn extract_peer_id(conn: &Connection) -> Option<PeerId> {
     // Get peer's certificate chain
     let identity = conn.peer_identity()?;
     let certs = identity

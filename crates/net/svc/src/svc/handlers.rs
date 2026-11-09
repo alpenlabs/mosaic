@@ -31,7 +31,7 @@ use crate::{
 /// Handle a command from a NetServiceHandle.
 ///
 /// This function NEVER blocks. It either updates state instantly or spawns tasks.
-pub fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
+pub(crate) fn handle_command(cmd: NetCommand, state: &mut ServiceState) {
     match cmd {
         NetCommand::OpenProtocolStream {
             request_id,
@@ -1371,7 +1371,7 @@ fn on_stream_open_finished(
 /// Handle an event from a spawned task.
 ///
 /// This function NEVER blocks. It only updates state and spawns tasks.
-pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
+pub(crate) fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
     match event {
         ServiceEvent::IncomingConnectionAccepted {
             peer_guess,
@@ -1662,7 +1662,7 @@ pub fn handle_event(event: ServiceEvent, state: &mut ServiceState) {
 /// Process pending reconnection attempts.
 ///
 /// This function NEVER blocks. It only spawns connection tasks.
-pub fn process_pending_reconnects(state: &mut ServiceState) {
+pub(crate) fn process_pending_reconnects(state: &mut ServiceState) {
     let now = tokio::time::Instant::now();
 
     let mut to_reconnect = Vec::new();
@@ -1712,11 +1712,11 @@ pub fn process_pending_reconnects(state: &mut ServiceState) {
 }
 
 /// Return the earliest wakeup needed for reconnect work.
-pub fn next_wakeup_deadline(state: &ServiceState) -> Option<tokio::time::Instant> {
+pub(crate) fn next_wakeup_deadline(state: &ServiceState) -> Option<tokio::time::Instant> {
     state.pending_reconnects.iter().map(|(_, t)| *t).min()
 }
 
 /// Fallback sleep duration when no reconnect work is pending.
-pub fn idle_housekeeping_sleep() -> Duration {
+pub(crate) fn idle_housekeeping_sleep() -> Duration {
     Duration::from_secs(3600)
 }

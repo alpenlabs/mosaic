@@ -20,16 +20,16 @@ use crate::{
 };
 
 /// Unique identifier for an accepted incoming candidate.
-pub type IncomingCandidateId = u64;
+pub(crate) type IncomingCandidateId = u64;
 /// Opaque overlap identity for one establishment window.
-pub type OverlapKey = u64;
+pub(crate) type OverlapKey = u64;
 
 /// Direction metadata for a stored connection.
 ///
 /// This is used to make deterministic choices when both peers connect
 /// simultaneously (inbound + outbound connections racing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionDirection {
+pub(crate) enum ConnectionDirection {
     /// Connection accepted by our endpoint.
     Incoming,
     /// Connection initiated by us.
@@ -38,7 +38,7 @@ pub enum ConnectionDirection {
 
 /// Stored connection plus metadata.
 #[derive(Debug, Clone)]
-pub struct TrackedConnection {
+pub(crate) struct TrackedConnection {
     pub connection: quinn::Connection,
     pub direction: ConnectionDirection,
     /// Monotonic generation used to ignore stale monitor events.
@@ -48,26 +48,26 @@ pub struct TrackedConnection {
 }
 
 /// Default connection timeout (5 seconds).
-pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for reading stream headers (5 seconds).
-pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for opening bidirectional streams (5 seconds).
-pub const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for writing stream headers (5 seconds).
-pub const STREAM_HEADER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const STREAM_HEADER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for receiving a scheduler-hint stream's payload frame (5 seconds).
 ///
 /// Protocol streams use the configurable
 /// `NetServiceConfig::protocol_first_payload_timeout` instead.
-pub const HINT_FIRST_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const HINT_FIRST_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Metadata for a single outbound connection attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutboundAttempt {
+pub(crate) struct OutboundAttempt {
     pub attempt_id: u64,
     pub started_at: tokio::time::Instant,
     pub overlap_key: OverlapKey,
@@ -75,7 +75,7 @@ pub struct OutboundAttempt {
 
 /// Metadata for an accepted incoming candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IncomingCandidate {
+pub(crate) struct IncomingCandidate {
     pub candidate_id: IncomingCandidateId,
     pub peer_guess: PeerId,
     pub accepted_at: tokio::time::Instant,
@@ -84,7 +84,7 @@ pub struct IncomingCandidate {
 
 /// Lifecycle state for a stream-open request identified by request ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenRequestState {
+pub(crate) enum OpenRequestState {
     /// Request is queued waiting for a usable connection to this peer.
     Pending { peer: PeerId },
     /// Request has been handed to a spawned stream opener task.
@@ -92,39 +92,39 @@ pub enum OpenRequestState {
 }
 
 /// Shared cancellation markers for stream-open requests.
-pub struct OpenRequestCancelRegistry {
+pub(crate) struct OpenRequestCancelRegistry {
     canceled: Mutex<HashSet<u64>>,
 }
 
 impl OpenRequestCancelRegistry {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             canceled: Mutex::new(HashSet::default()),
         }
     }
 
-    pub fn cancel(&self, request_id: u64) {
+    pub(crate) fn cancel(&self, request_id: u64) {
         self.canceled
             .lock()
             .expect("open-request cancel registry mutex poisoned")
             .insert(request_id);
     }
 
-    pub fn take_if_canceled(&self, request_id: u64) -> bool {
+    pub(crate) fn take_if_canceled(&self, request_id: u64) -> bool {
         self.canceled
             .lock()
             .expect("open-request cancel registry mutex poisoned")
             .remove(&request_id)
     }
 
-    pub fn is_canceled(&self, request_id: u64) -> bool {
+    pub(crate) fn is_canceled(&self, request_id: u64) -> bool {
         self.canceled
             .lock()
             .expect("open-request cancel registry mutex poisoned")
             .contains(&request_id)
     }
 
-    pub fn clear(&self, request_id: u64) {
+    pub(crate) fn clear(&self, request_id: u64) {
         self.canceled
             .lock()
             .expect("open-request cancel registry mutex poisoned")
@@ -134,7 +134,7 @@ impl OpenRequestCancelRegistry {
 
 /// Explicit connection state for a single peer.
 #[derive(Debug, Clone)]
-pub enum PeerConnectionState {
+pub(crate) enum PeerConnectionState {
     /// No active connection and no outbound attempt in flight.
     Idle,
     /// Outbound attempt is in flight.
@@ -156,13 +156,13 @@ pub enum PeerConnectionState {
 }
 
 /// Pending bulk transfer delivery channel and its cancellation identity.
-pub struct BulkTransferRegistration {
+pub(crate) struct BulkTransferRegistration {
     pub registration_id: u64,
     pub sender: AsyncSender<Stream>,
 }
 
 /// Internal service state (owned by main loop, no mutex needed).
-pub struct ServiceState {
+pub(crate) struct ServiceState {
     /// Shared configuration.
     pub config: Arc<NetServiceConfig>,
     /// QUIC endpoint.
@@ -235,7 +235,7 @@ pub struct ServiceState {
 
 impl ServiceState {
     /// Allocate the next outbound attempt ID.
-    pub fn allocate_outbound_attempt_id(&mut self) -> u64 {
+    pub(crate) fn allocate_outbound_attempt_id(&mut self) -> u64 {
         let id = self.next_outbound_attempt_id;
         self.next_outbound_attempt_id = self.next_outbound_attempt_id.wrapping_add(1);
         if self.next_outbound_attempt_id == 0 {
@@ -246,7 +246,7 @@ impl ServiceState {
     }
 
     /// Allocate the next connection generation.
-    pub fn allocate_connection_generation(&mut self) -> u64 {
+    pub(crate) fn allocate_connection_generation(&mut self) -> u64 {
         let id = self.next_connection_generation;
         self.next_connection_generation = self.next_connection_generation.wrapping_add(1);
         if self.next_connection_generation == 0 {
@@ -256,7 +256,7 @@ impl ServiceState {
     }
 
     /// Allocate the next overlap key.
-    pub fn allocate_overlap_key(&mut self) -> OverlapKey {
+    pub(crate) fn allocate_overlap_key(&mut self) -> OverlapKey {
         let key = self.next_overlap_key;
         self.next_overlap_key = self.next_overlap_key.wrapping_add(1);
         if self.next_overlap_key == 0 {
@@ -267,7 +267,7 @@ impl ServiceState {
 }
 
 /// A pending request to open a stream.
-pub struct PendingStreamRequest {
+pub(crate) struct PendingStreamRequest {
     /// Unique request ID used for explicit cancellation.
     pub request_id: u64,
     /// Shared cancel token set by API future drop.
@@ -285,7 +285,7 @@ pub struct PendingStreamRequest {
 /// These events are sent by spawned tasks to report their results.
 /// The main loop processes these events to update state and spawn
 /// follow-up tasks as needed.
-pub enum ServiceEvent {
+pub(crate) enum ServiceEvent {
     /// Incoming connection was accepted by the endpoint for a known peer address.
     IncomingConnectionAccepted {
         peer_guess: PeerId,
