@@ -12,8 +12,5 @@ keywords.workspace = true
 
 [dependencies]
 
-# [lints]
-# workspace = true
-
 [lints]
 workspace = true
