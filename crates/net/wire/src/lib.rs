@@ -75,6 +75,7 @@ impl FrameLimits {
 /// Header sent at the start of every stream to indicate its type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamHeader {
+    /// Type of the stream this header opens.
     pub stream_type: StreamType,
 }
 
@@ -290,7 +291,12 @@ pub fn peek_frame_length(buf: &[u8]) -> Option<u32> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodeError {
     /// Payload exceeds maximum allowed size.
-    PayloadTooLarge { size: usize, max: usize },
+    PayloadTooLarge {
+        /// Payload size, in bytes.
+        size: usize,
+        /// Maximum allowed payload size, in bytes.
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for EncodeError {
@@ -309,11 +315,22 @@ impl std::error::Error for EncodeError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
     /// Need more bytes to complete decoding.
-    Incomplete { needed: usize },
+    Incomplete {
+        /// Number of additional bytes needed.
+        needed: usize,
+    },
     /// Frame exceeds maximum allowed size.
-    FrameTooLarge { size: usize, max: usize },
+    FrameTooLarge {
+        /// Payload size from the frame's length prefix, in bytes.
+        size: usize,
+        /// Maximum allowed payload size, in bytes.
+        max: usize,
+    },
     /// Invalid stream type tag.
-    InvalidTag { tag: u8 },
+    InvalidTag {
+        /// The unrecognized tag byte.
+        tag: u8,
+    },
 }
 
 impl std::fmt::Display for DecodeError {

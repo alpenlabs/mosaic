@@ -90,8 +90,11 @@ pub fn generate_self_signed_cert(
 /// Error generating self-signed certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertGenError {
+    /// The signing key could not be converted into an rcgen key pair.
     KeyConversion,
+    /// The certificate parameters were rejected.
     InvalidParams,
+    /// Self-signing the certificate failed.
     Signing,
 }
 
@@ -325,8 +328,11 @@ pub fn make_server_config(
 /// Error creating QUIC configuration.
 #[derive(Debug)]
 pub enum ConfigError {
+    /// Generating the self-signed certificate failed.
     CertGen(CertGenError),
+    /// rustls rejected the certificate and key pair.
     InvalidKey,
+    /// The rustls config could not be converted into a QUIC config.
     QuicConfig,
 }
 
