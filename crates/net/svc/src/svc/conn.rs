@@ -13,7 +13,7 @@ pub fn extract_peer_id(conn: &Connection) -> Option<PeerId> {
     // Get peer's certificate chain
     let identity = conn.peer_identity()?;
     let certs = identity
-        .downcast::<Vec<rustls::pki_types::CertificateDer>>()
+        .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()
         .ok()?;
     let cert = certs.first()?;
 

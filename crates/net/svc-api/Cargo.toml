@@ -19,3 +19,6 @@ serde = { version = "1.0", features = ["derive"] }
 
 # [lints]
 # workspace = true
+
+[lints]
+workspace = true
