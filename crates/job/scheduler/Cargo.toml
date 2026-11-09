@@ -22,7 +22,7 @@ futures.workspace = true
 hex = "0.4"
 kanal = "0.1.1"
 monoio = { version = "0.2", features = ["sync"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 tracing.workspace = true
 
 [dev-dependencies]
