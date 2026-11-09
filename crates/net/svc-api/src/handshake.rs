@@ -262,6 +262,7 @@ impl std::fmt::Display for HandshakeMismatch {
 impl std::error::Error for HandshakeMismatch {}
 
 /// Validate a received handshake payload against the local configuration.
+///
 /// `local_deployment_version` is the deployment-version this node is
 /// configured with (or `None` for uncoordinated single-operator dev).
 /// `local_reduced_circuits` is whether this node is running reduced circuits.
