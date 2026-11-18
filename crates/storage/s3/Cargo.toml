@@ -14,7 +14,7 @@ keywords.workspace = true
 mosaic-common.workspace = true
 mosaic-storage-api.workspace = true
 
-bytes = "1.10"
+bytes.workspace = true
 futures = "0.3"
 kanal = "0.1.1"
 object_store = { version = "0.14", features = ["aws"] }
