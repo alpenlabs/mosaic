@@ -171,7 +171,7 @@ wheels = [
 [[package]]
 name = "flexitest"
 version = "0.1.0"
-source = { git = "https://codeberg.org/treyd/flexitest.git#3f1346143922bdcdccb3ad64298db80825e6ae93" }
+source = { git = "https://github.com/alpenlabs/flexitest.git?rev=50841c19444e154eb18750cade4cd89587c24344#50841c19444e154eb18750cade4cd89587c24344" }
 
 [[package]]
 name = "greenlet"
@@ -418,7 +418,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bitcoinlib", specifier = ">=0.6.15" },
-    { name = "flexitest", git = "https://codeberg.org/treyd/flexitest.git" },
+    { name = "flexitest", git = "https://github.com/alpenlabs/flexitest.git?rev=50841c19444e154eb18750cade4cd89587c24344" },
     { name = "pathlib" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "toml", specifier = ">=0.10.2" },
