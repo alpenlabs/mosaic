@@ -15,11 +15,11 @@ use quinn::Connection;
 /// Maximum time the handshake exchange may take, end-to-end (stream open +
 /// send + receive). Generous to absorb scheduling jitter; this is local LAN
 /// traffic for a tiny payload.
-pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Result of an attempted handshake exchange.
 #[derive(Debug)]
-pub enum HandshakeError {
+pub(crate) enum HandshakeError {
     /// The remote payload was a valid `HandshakePayload` but did not match
     /// our local config (protocol-version, deployment-version, magic).
     Mismatch(HandshakeMismatch),
@@ -35,7 +35,7 @@ pub enum HandshakeError {
 
 impl HandshakeError {
     /// Short, log-safe reason string.
-    pub fn reason(&self) -> String {
+    pub(crate) fn reason(&self) -> String {
         match self {
             Self::Mismatch(m) => m.reason().to_string(),
             Self::Timeout => "handshake timed out".to_string(),
@@ -60,7 +60,7 @@ impl HandshakeError {
     /// incompatible. Behaviorally fine — our retries either keep failing
     /// (and the peer keeps suppressing) or succeed once one side is
     /// upgraded, at which point a successful inbound clears both sides.
-    pub fn indicates_incompatibility(&self) -> bool {
+    pub(crate) fn indicates_incompatibility(&self) -> bool {
         match self {
             Self::Mismatch(_) | Self::PayloadTooLarge { .. } | Self::Decode(_) => true,
             Self::Timeout | Self::Transport(_) => false,
@@ -81,7 +81,7 @@ impl std::error::Error for HandshakeError {}
 
 /// Outbound side: open a bi-stream, send our payload, read the peer's payload,
 /// validate. Returns the validated remote payload on success.
-pub async fn run_outbound_handshake(
+pub(crate) async fn run_outbound_handshake(
     connection: &Connection,
     local_protocol_version: u32,
     local_deployment_version: Option<&str>,
@@ -114,7 +114,7 @@ pub async fn run_outbound_handshake(
 
 /// Inbound side: accept a bi-stream, read the peer's payload, send our payload,
 /// validate. Returns the validated remote payload on success.
-pub async fn run_inbound_handshake(
+pub(crate) async fn run_inbound_handshake(
     connection: &Connection,
     local_protocol_version: u32,
     local_deployment_version: Option<&str>,

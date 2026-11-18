@@ -184,17 +184,38 @@ pub enum HandshakeMismatch {
     /// or a malformed handshake.
     MagicMismatch,
     /// Protocol versions differed. Operators are running incompatible builds.
-    ProtocolVersionMismatch { local: u32, remote: u32 },
+    ProtocolVersionMismatch {
+        /// Our protocol version.
+        local: u32,
+        /// The peer's protocol version.
+        remote: u32,
+    },
     /// Both peers set a `deployment_version` but they differ.
-    DeploymentVersionMismatch { local: String, remote: String },
+    DeploymentVersionMismatch {
+        /// Our deployment version.
+        local: String,
+        /// The peer's deployment version.
+        remote: String,
+    },
     /// Local has `deployment_version` set, remote does not.
-    DeploymentVersionMissingRemote { local: String },
+    DeploymentVersionMissingRemote {
+        /// Our deployment version.
+        local: String,
+    },
     /// Remote has `deployment_version` set, local does not.
-    DeploymentVersionMissingLocal { remote: String },
+    DeploymentVersionMissingLocal {
+        /// The peer's deployment version.
+        remote: String,
+    },
     /// Reduced-circuits mode differed. One side is running full circuits and
     /// the other reduced (or vice versa) — wire-incompatible because the
     /// circuit shape diverges.
-    ReducedCircuitsMismatch { local: bool, remote: bool },
+    ReducedCircuitsMismatch {
+        /// Whether we run reduced circuits.
+        local: bool,
+        /// Whether the peer runs reduced circuits.
+        remote: bool,
+    },
 }
 
 impl HandshakeMismatch {
@@ -241,6 +262,7 @@ impl std::fmt::Display for HandshakeMismatch {
 impl std::error::Error for HandshakeMismatch {}
 
 /// Validate a received handshake payload against the local configuration.
+///
 /// `local_deployment_version` is the deployment-version this node is
 /// configured with (or `None` for uncoordinated single-operator dev).
 /// `local_reduced_circuits` is whether this node is running reduced circuits.

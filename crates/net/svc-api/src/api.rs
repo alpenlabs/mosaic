@@ -35,6 +35,18 @@ pub enum StreamRequest {
     SetPriority(i32),
 }
 
+impl std::fmt::Debug for StreamRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Write { buf } => f
+                .debug_struct("Write")
+                .field("buf_len", &buf.len())
+                .finish(),
+            Self::SetPriority(priority) => f.debug_tuple("SetPriority").field(priority).finish(),
+        }
+    }
+}
+
 /// High-priority request to reset a stream.
 ///
 /// Reset uses a separate channel from [`StreamRequest`] so the network
@@ -42,6 +54,7 @@ pub enum StreamRequest {
 /// behind it. `done_tx` acknowledges that the write task has applied the
 /// transport reset and is terminating.
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct StreamReset {
     /// Application error code sent to the peer.
     pub code: u32,
@@ -54,6 +67,7 @@ pub struct StreamReset {
 /// This complements [`StreamReset`]: local reset terminates both halves of a
 /// bidirectional stream even if the peer never closes its send direction.
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct StreamStop {
     /// Application error code sent to the peer.
     pub code: u32,
@@ -115,6 +129,7 @@ impl std::error::Error for StreamClosed {}
 /// let buf2 = stream.recv_buffer().await;
 /// let buf3 = stream.recv_buffer().await;
 /// ```
+#[derive(Debug)]
 pub struct Stream {
     /// The peer this stream is connected to.
     pub peer: PeerId,
@@ -476,7 +491,7 @@ impl std::fmt::Debug for InboundHintStream {
 ///
 /// This is cheaply cloneable and can be sent to any thread. All methods use
 /// channels internally to communicate with the service running on a tokio thread.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NetServiceHandle {
     /// Shared configuration.
     config: Arc<NetServiceConfig>,
@@ -786,6 +801,7 @@ impl Drop for OpenCancelOnDrop {
     }
 }
 
+#[derive(Debug)]
 struct BulkCancelOnDrop {
     registration_id: u64,
     peer: PeerId,
@@ -812,6 +828,7 @@ impl Drop for BulkCancelOnDrop {
 /// Dropping this handle queues cancellation of its registration, including when
 /// a pending [`Self::recv`] future is dropped. Cancellation does not remove a
 /// newer registration for the same peer and identifier.
+#[derive(Debug)]
 pub struct BulkTransferExpectation {
     _cancel_guard: BulkCancelOnDrop,
     rx: AsyncReceiver<Stream>,
@@ -845,6 +862,7 @@ impl BulkTransferExpectation {
 /// This type is an implementation detail shared between the API and
 /// the service backend. It is not intended for external use.
 #[doc(hidden)]
+#[derive(Debug)]
 pub enum NetCommand {
     /// Open a protocol stream to a peer.
     OpenProtocolStream {

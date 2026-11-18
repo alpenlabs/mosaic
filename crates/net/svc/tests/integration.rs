@@ -7,6 +7,8 @@
 //! That is inherently flaky in CI. Prefer waiting for an actual successful
 //! operation with a timeout.
 
+#![allow(unused_crate_dependencies)]
+
 use std::{
     net::SocketAddr,
     sync::{

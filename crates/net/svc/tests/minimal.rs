@@ -6,6 +6,8 @@
 //! - Service creation and shutdown
 //! - QUIC endpoint binding
 
+#![allow(unused_crate_dependencies)]
+
 use std::{sync::mpsc, time::Duration};
 
 use mosaic_net_svc::close_codes::CLOSE_NORMAL;

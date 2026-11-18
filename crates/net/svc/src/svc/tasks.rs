@@ -238,7 +238,7 @@ pub(super) fn normalize_socket_addr(addr: SocketAddr) -> SocketAddr {
 /// Each accepted connection is handed to a separate handshake task with an
 /// `accepted_at` timestamp captured at accept time.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_accept_loop(
+pub(crate) fn spawn_accept_loop(
     endpoint: Endpoint,
     allowed_peers: Arc<HashSet<PeerId>>,
     peer_by_addr: Arc<HashMap<SocketAddr, PeerId>>,
@@ -504,7 +504,7 @@ fn spawn_incoming_connection_handler(incoming: quinn::Incoming, ctx: IncomingHan
 /// This attempts to connect to a peer with a timeout and sends the result
 /// back via the event channel.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_outbound_connection(
+pub(crate) fn spawn_outbound_connection(
     endpoint: Endpoint,
     client_config: quinn::ClientConfig,
     peer: PeerId,
@@ -653,7 +653,7 @@ pub fn spawn_outbound_connection(
 ///
 /// This task runs for the lifetime of a connection, accepting incoming
 /// bidirectional streams and sending them to the main loop for routing.
-pub fn spawn_connection_monitor(
+pub(crate) fn spawn_connection_monitor(
     peer: PeerId,
     generation: u64,
     connection: quinn::Connection,
@@ -820,7 +820,7 @@ fn log_path_stats(
 ///
 /// This reads the stream header with a timeout and sends the result back
 /// via the event channel for routing.
-pub fn spawn_stream_header_reader(
+pub(crate) fn spawn_stream_header_reader(
     peer: PeerId,
     generation: u64,
     mut send: quinn::SendStream,
@@ -897,7 +897,7 @@ pub fn spawn_stream_header_reader(
 ///
 /// This opens a bidirectional stream, sets priority, writes the header,
 /// and sends the result back to the caller.
-pub struct StreamOpenCtx {
+pub(crate) struct StreamOpenCtx {
     pub request_id: u64,
     pub peer: PeerId,
     pub generation: u64,
@@ -910,7 +910,7 @@ pub struct StreamOpenCtx {
     pub event_tx: UnboundedSender<ServiceEvent>,
 }
 
-pub fn spawn_stream_opener(ctx: StreamOpenCtx) {
+pub(crate) fn spawn_stream_opener(ctx: StreamOpenCtx) {
     tokio::spawn(async move {
         let StreamOpenCtx {
             request_id,
@@ -1014,7 +1014,7 @@ pub fn spawn_stream_opener(ctx: StreamOpenCtx) {
 /// This creates a Stream handle and sends it to the protocol stream channel.
 /// The stream is reset if its first payload frame is not complete within
 /// `first_payload_timeout`.
-pub fn spawn_protocol_stream_router(
+pub(crate) fn spawn_protocol_stream_router(
     peer: PeerId,
     send: quinn::SendStream,
     recv: quinn::RecvStream,
@@ -1049,7 +1049,7 @@ pub fn spawn_protocol_stream_router(
 /// Spawn a task to read one payload from a scheduler-hint stream and push
 /// it to the hint stream channel. Best-effort — a failed read is silently
 /// dropped (hints are advisory).
-pub fn spawn_hint_stream_router(
+pub(crate) fn spawn_hint_stream_router(
     peer: PeerId,
     send: quinn::SendStream,
     recv: quinn::RecvStream,
@@ -1105,7 +1105,7 @@ pub fn spawn_hint_stream_router(
 /// Spawn a task to route a bulk transfer stream to its expectation.
 ///
 /// This creates a Stream handle and sends it to the registered expectation channel.
-pub fn spawn_bulk_stream_router(
+pub(crate) fn spawn_bulk_stream_router(
     peer: PeerId,
     send: quinn::SendStream,
     recv: quinn::RecvStream,

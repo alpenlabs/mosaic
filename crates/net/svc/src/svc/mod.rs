@@ -55,6 +55,7 @@ const MAX_CONCURRENT_BIDI_STREAMS: u32 = 100;
 const MAX_CONCURRENT_UNI_STREAMS: u32 = 0;
 
 /// Handle to control the network service.
+#[derive(Debug)]
 pub struct NetServiceController {
     /// Thread handle for joining.
     thread_handle: Option<JoinHandle<Result<(), ServiceError>>>,
@@ -128,6 +129,7 @@ impl std::error::Error for ServiceError {}
 ///
 /// Manages QUIC connections to peers and provides stream-based communication.
 /// Runs on a dedicated thread with its own tokio runtime.
+#[derive(Debug)]
 pub struct NetService;
 
 impl NetService {

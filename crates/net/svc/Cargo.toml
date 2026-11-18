@@ -49,5 +49,5 @@ tracing = "0.1"
 rand = "0.8"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# [lints]
-# workspace = true
+[lints]
+workspace = true

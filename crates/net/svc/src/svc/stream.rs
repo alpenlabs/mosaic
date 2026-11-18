@@ -57,7 +57,7 @@ impl CloseState {
 ///
 /// Returns a `Stream` that can be used by the caller. The bridge tasks handle
 /// communication between the QUIC stream and the channel-based API.
-pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream {
+pub(crate) fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream {
     // Create channels
     let (payload_tx, payload_rx) = bounded_async(PAYLOAD_CHANNEL_SIZE);
     let (request_tx, request_rx) = bounded_async(REQUEST_CHANNEL_SIZE);
@@ -104,7 +104,7 @@ pub fn create_stream(peer: PeerId, send: SendStream, recv: RecvStream) -> Stream
 ///
 /// The request payload has already been extracted by net-svc, so only the
 /// send side remains relevant for acknowledgment/reset handling.
-pub fn create_write_only_stream(peer: PeerId, send: SendStream) -> Stream {
+pub(crate) fn create_write_only_stream(peer: PeerId, send: SendStream) -> Stream {
     let (request_tx, request_rx) = bounded_async(REQUEST_CHANNEL_SIZE);
     let (reset_tx, reset_rx) = bounded_async(RESET_CHANNEL_SIZE);
     let (buf_return_tx, buf_return_rx) = bounded_async(BUF_RETURN_CHANNEL_SIZE);
