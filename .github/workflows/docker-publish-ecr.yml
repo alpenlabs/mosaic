@@ -16,10 +16,10 @@ on:
         type: string
 
 
+# The image is published to ECR Public only (public.ecr.aws/alpenlabs/mosaic,
+# alias z5c7y9u9), which is what every deployment pulls. The former private
+# copy in the legacy dev account (888577024788 tn1/mosaic) had no consumers.
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '888577024788.dkr.ecr.us-east-1.amazonaws.com' }}
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'tn1/mosaic' }}
   PUBLIC_ECR_REGISTRY: public.ecr.aws
   PUBLIC_ECR_NAMESPACE: z5c7y9u9
   PUBLIC_ECR_REPOSITORY: mosaic
@@ -74,7 +74,7 @@ jobs:
 
             # Allowlist for user-supplied image_tag values. The only
             # production tag namespace is the short SHA that the default
-            # path pushes to both private and public ECR, and a
+            # path pushes to public ECR, and a
             # dispatcher can supply that exact SHA as an override to
             # overwrite a trusted tag from an arbitrary ref. A denylist of
             # reserved names cannot cover this: the trusted namespace is
@@ -117,15 +117,13 @@ jobs:
           short_sha="$(git -C build-src rev-parse --short=8 HEAD)"
           checkout_ref="${INPUT_REF:-${GITHUB_SHA}}"
           image_tag="${INPUT_IMAGE_TAG:-${short_sha}}"
-          image_ref="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
-          public_image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${image_tag}"
+          image_ref="${PUBLIC_ECR_REGISTRY}/${PUBLIC_ECR_NAMESPACE}/${PUBLIC_ECR_REPOSITORY}:${image_tag}"
 
           {
             echo "CHECKOUT_REF=${checkout_ref}"
             echo "RESOLVED_SHA=${resolved_sha}"
             echo "IMAGE_TAG=${image_tag}"
             echo "IMAGE_REF=${image_ref}"
-            echo "PUBLIC_IMAGE_REF=${public_image_ref}"
           } >> "${GITHUB_ENV}"
 
       - name: Cleanup space
@@ -133,28 +131,12 @@ jobs:
 
       - name: Validate AWS publish configuration
         env:
-          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
           PUBLIC_AWS_ROLE_TO_ASSUME: ${{ vars.PUBLIC_AWS_ROLE_TO_ASSUME }}
         run: |
-          if [[ -z "${AWS_ROLE_TO_ASSUME}" ]]; then
-            echo "::error::Repository variable AWS_ROLE_TO_ASSUME is required for ECR publishing"
-            exit 1
-          fi
           if [[ -z "${PUBLIC_AWS_ROLE_TO_ASSUME}" ]]; then
             echo "::error::Repository variable PUBLIC_AWS_ROLE_TO_ASSUME is required for public ECR publishing"
             exit 1
           fi
-
-      - name: Configure private AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to private ECR
-        run: |
-          aws ecr get-login-password --region "${AWS_REGION}" \
-            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -262,10 +244,6 @@ jobs:
             trivy-results/mosaic.sbom.json
             trivy-results/mosaic.md
 
-      # Push only reaches this step if the hard gate scan above passed.
-      - name: Push Mosaic image to private ECR
-        run: docker push "${IMAGE_REF}"
-
       - name: Configure public ECR credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -277,32 +255,24 @@ jobs:
           aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
             | docker login --username AWS --password-stdin "${PUBLIC_ECR_REGISTRY}"
 
-      - name: Push image to public ECR
-        run: |
-          set -euo pipefail
-          docker tag "${IMAGE_REF}" "${PUBLIC_IMAGE_REF}"
-          docker push "${PUBLIC_IMAGE_REF}"
+      # Push only reaches this step if the hard gate scan above passed.
+      - name: Push Mosaic image to public ECR
+        run: docker push "${IMAGE_REF}"
 
-      - name: Restore private AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to private ECR for follow-up steps
-        run: |
-          aws ecr get-login-password --region "${AWS_REGION}" \
-            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
-
+      # Read the digest the registry returned for the push from the local
+      # daemon (RepoDigests), so the role needs no ecr-public:DescribeImages.
+      # Deployments pin mosaic as "<tag>@<digest>"; the summary prints that.
       - name: Resolve pushed image digest
         id: digest
         run: |
           set -euo pipefail
-          digest="$(aws ecr describe-images \
-            --repository-name "${ECR_REPOSITORY}" \
-            --image-ids imageTag="${IMAGE_TAG}" \
-            --query 'imageDetails[0].imageDigest' \
-            --output text)"
+          repo="${IMAGE_REF%:*}"
+          digest="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE_REF}" \
+            | awk -F@ -v repo="${repo}" '$1 == repo { print $2; exit }')"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::could not resolve pushed digest for ${IMAGE_REF}"
+            exit 1
+          fi
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
       - name: Append publish summary
@@ -317,8 +287,10 @@ jobs:
             echo "- Checkout ref: \`${CHECKOUT_REF}\`"
             echo "- Resolved SHA: \`${RESOLVED_SHA}\`"
             echo "- Image: \`${IMAGE_REF}\`"
-            echo "- Public image: \`${PUBLIC_IMAGE_REF}\`"
             echo "- Digest: \`${IMAGE_DIGEST:-not pushed}\`"
+            if [[ -n "${IMAGE_DIGEST}" ]]; then
+              echo "- Deployments pin: \`tag: \"${IMAGE_TAG}@${IMAGE_DIGEST}\"\`"
+            fi
             echo "- Trivy artifact: \`${trivy_artifact}\`"
             echo
             # Render the Trivy markdown table produced by render_trivy_summary.py.
