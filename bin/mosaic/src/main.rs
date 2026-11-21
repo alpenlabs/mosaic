@@ -2,6 +2,7 @@
 
 mod config;
 mod rpc;
+mod s3;
 
 use std::{
     env,
@@ -27,7 +28,7 @@ use mosaic_sm_executor_api::SmExecutorHandle;
 use mosaic_storage_api::{Commit, StorageProvider, StorageProviderMut, TableStore};
 use mosaic_storage_fdb::FdbStorageProvider;
 use mosaic_storage_s3::S3TableStore;
-use object_store::{ObjectStore, aws::AmazonS3Builder, local::LocalFileSystem};
+use object_store::{ObjectStore, local::LocalFileSystem};
 use rand::SeedableRng as _;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -166,40 +167,26 @@ where
             part_buffer_size_mib,
             ..
         } => {
-            // from_env() is required for IRSA: since object_store 0.14, build() no
-            // longer reads AWS_* env vars itself. When config credentials are
-            // omitted, resolution falls through to web-identity → ECS task →
-            // EKS pod identity → instance profile. Explicit settings below
-            // override the matching values from the environment, except that
-            // with_client_options replaces every HTTP client option, so client
-            // settings from the environment (e.g. AWS_ALLOW_HTTP) are discarded.
-            let mut builder = AmazonS3Builder::from_env()
-                .with_bucket_name(bucket)
-                .with_region(region)
-                .with_virtual_hosted_style_request(*virtual_hosted_style_request)
-                .with_client_options(
-                    config
-                        .table_store
-                        .backend
-                        .build_s3_client_options()
-                        .expect("s3 backend should build client options"),
-                );
-
-            if let Some(access_key_id) = access_key_id {
-                builder = builder.with_access_key_id(access_key_id);
-            }
-
-            if let Some(secret_access_key) = secret_access_key {
-                builder = builder.with_secret_access_key(secret_access_key);
-            }
-
-            if let Some(endpoint) = endpoint {
-                builder = builder.with_endpoint(endpoint);
-            }
-
-            if let Some(session_token) = session_token {
-                builder = builder.with_token(session_token);
-            }
+            // Explicit credentials and endpoints take precedence over ambient
+            // AWS settings; omitted keys retain the IRSA/container credential
+            // chain. Client options come entirely from table-store config,
+            // including allow_http, rather than environment client settings.
+            let builder = s3::configured_builder(
+                access_key_id.as_deref(),
+                secret_access_key.as_deref(),
+                session_token.as_deref(),
+                endpoint.as_deref(),
+            )
+            .with_bucket_name(bucket)
+            .with_region(region)
+            .with_virtual_hosted_style_request(*virtual_hosted_style_request)
+            .with_client_options(
+                config
+                    .table_store
+                    .backend
+                    .build_s3_client_options()
+                    .expect("s3 backend should build client options"),
+            );
 
             let s3 = builder
                 .build()
