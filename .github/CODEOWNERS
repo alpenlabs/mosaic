@@ -1,3 +1,6 @@
+# Default owner for everything not matched below
+*                         @pramodkandel
+
 # Dependency management: Dependabot configuration and Cargo lockfiles
 /.github/dependabot.yml   @storopoli
 /.github/dependabot.yaml  @storopoli
