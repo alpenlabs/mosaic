@@ -1,0 +1,4 @@
+# Dependency management: Dependabot configuration and Cargo lockfiles
+/.github/dependabot.yml   @storopoli
+/.github/dependabot.yaml  @storopoli
+**/Cargo.lock             @storopoli
